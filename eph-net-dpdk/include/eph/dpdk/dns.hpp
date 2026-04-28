@@ -32,7 +32,9 @@
 #include <rte_ether.h>
 #include <rte_mbuf.h>
 
+#include "eph/core/error.hpp"
 #include "eph/dpdk/net_header.hpp"
+#include "eph/utils/time.hpp"  // TSC::now() — canonical timer per CLAUDE.md
 
 namespace eph::dpdk::dns {
 
@@ -539,8 +541,506 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public API: blocking DNS resolution over DPDK
+// AsyncDnsResolver — DpdkPollable-driven DNS state machine
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Design rationale (T1.2 of crypto-HFT review):
+//   The blocking `resolve()` below serializes multi-venue reconnect — every
+//   venue waits on its predecessor's full DNS RTT. `AsyncDnsResolverT` exposes
+//   the same state machine as a `DpdkPollable` so an orchestrator can launch N
+//   concurrent resolves on one DpdkPoller cycle.
+//
+// Concept conformance:
+//   AsyncDnsResolverT satisfies `eph::net::dpdk::DpdkPollable`:
+//     - `process_burst_(mbufs, n, tsc)` — feed RX mbufs, parse for matching reply
+//     - `on_poll_tick_(tsc)`            — periodic resend / timeout check
+//     - `tuple_for_poller_(...)`        — register the (src,dst,sport,dport,UDP) tuple
+//     - `notify_attached_/notify_detached_` — Poller lifecycle hooks
+//   It is therefore registerable via `DpdkPoller::add()`.
+//
+// Testability:
+//   The template parameter `Io` is the NIC TX shim. Production uses
+//   `RealNicIo` which calls `rte_eth_tx_burst` directly. Unit tests
+//   substitute a `FakeNicIo` that records sent packets without touching
+//   real hardware. RX is exercised by feeding mbufs through `process_burst_`.
+//
+// Error model:
+//   `result()` returns `std::expected<uint32_t, eph::core::ErrorInfo>` —
+//   the project standard. The blocking `resolve()` wrapper still exposes
+//   `expected<uint32_t, std::string>` for backwards compatibility (existing
+//   callers in `examples/binance_latency.cpp` and `tests/integration/`
+//   inspect the string).
+
+/// @brief Default NIC IO shim — calls `rte_eth_tx_burst` directly.
+///
+/// Pure pass-through, zero overhead. Compiles down to a single call instr.
+/// The `noexcept` is genuine — DPDK PMD `tx_burst` is documented noexcept.
+struct RealNicIo {
+    [[nodiscard]] static uint16_t tx_burst(uint16_t port_id, uint16_t queue_id,
+                                            rte_mbuf** pkts, uint16_t n) noexcept {
+        return ::rte_eth_tx_burst(port_id, queue_id, pkts, n);
+    }
+};
+
+/// @brief Lifecycle status of an `AsyncDnsResolverT`.
+///
+/// Linear progression:
+///   `Idle` → `InProgress` → `Ready` | `TimedOut` | `Error`
+/// Terminal states (`Ready`, `TimedOut`, `Error`) do not auto-reset; the
+/// resolver is single-shot. Re-resolution requires a fresh instance.
+enum class ResolveStatus : uint8_t {
+    Idle = 0,    ///< Constructed, `start()` not yet called.
+    InProgress,  ///< Query sent, awaiting reply or timeout.
+    Ready,       ///< A-record received and parsed; result() returns the IP.
+    TimedOut,    ///< Deadline elapsed without a valid reply.
+    Error,       ///< Send / build / config failure; result() carries detail.
+};
+
+/// @brief Stable string for a `ResolveStatus` value (logging / diagnostics).
+[[nodiscard]] constexpr const char* to_string(ResolveStatus s) noexcept {
+    switch (s) {
+        case ResolveStatus::Idle:        return "Idle";
+        case ResolveStatus::InProgress:  return "InProgress";
+        case ResolveStatus::Ready:       return "Ready";
+        case ResolveStatus::TimedOut:    return "TimedOut";
+        case ResolveStatus::Error:       return "Error";
+    }
+    return "UNKNOWN";
+}
+
+/// @brief Async DNS resolver as a `DpdkPollable`.
+///
+/// @tparam Io  NIC IO shim (default `RealNicIo`). Tests substitute a recorder.
+///
+/// Lifetime contract:
+///   - Construct with the same params as blocking `resolve()` minus hostname.
+///   - Optionally `add()` to a DpdkPoller (recommended for production).
+///   - Call `start(hostname)` to issue the first query and begin the timer.
+///   - Drive via the Poller (preferred) OR call `process_burst_` /
+///     `on_poll_tick_` directly.
+///   - Inspect `status()` and `result()`.
+///   - When done, optionally `remove()` from the Poller before destruction;
+///     the Poller's destructor also calls `notify_detached_` so leak is
+///     handled.
+///
+/// Thread safety: not MT-safe. Like the rest of `DpdkPollable`, one driver
+/// (lcore or app thread) owns the resolver.
+template <class Io = RealNicIo>
+class AsyncDnsResolverT {
+public:
+    /// @brief Maximum number of query attempts before declaring `TimedOut`.
+    ///        Mirrors the blocking `resolve()` behavior (3 sends per query).
+    static constexpr int kMaxAttempts = 3;
+
+    /// @brief Number of ports the resolver advertises to the Poller for
+    ///        routing. Filled into `tuple_for_poller_` as src_port=ephemeral
+    ///        chosen at `start()` time, dst_port=cfg.port. Routing matches
+    ///        on the swap (incoming src=cfg.port, dst=ephemeral).
+    using NicIo = Io;
+
+    // ── Construction ────────────────────────────────────────────────────────
+
+    /// @brief Construct an idle resolver. No allocation, no I/O.
+    ///
+    /// @param port_id    DPDK port to send/receive on.
+    /// @param queue_id   TX/RX queue for the query and response.
+    /// @param pool       Mempool for outgoing mbuf allocation.
+    /// @param src_mac    Our NIC MAC (for Ethernet framing).
+    /// @param dst_mac    Gateway MAC (from prior ARP resolution).
+    /// @param src_ip     Our IPv4 address (host byte order).
+    /// @param cfg        Nameserver / port / timeout config.
+    AsyncDnsResolverT(uint16_t port_id,
+                       uint16_t queue_id,
+                       rte_mempool* pool,
+                       const rte_ether_addr& src_mac,
+                       const rte_ether_addr& dst_mac,
+                       uint32_t src_ip,
+                       DnsConfig cfg = {}) noexcept
+        : port_id_(port_id), queue_id_(queue_id), pool_(pool),
+          src_mac_(src_mac), dst_mac_(dst_mac), src_ip_(src_ip),
+          cfg_(cfg) {
+        SPDLOG_LOGGER_TRACE(detail::dns_logger(),
+            "AsyncDnsResolver ctor: port={} queue={} ns={} timeout={}ms",
+            port_id_, queue_id_, net::format_ipv4(cfg_.nameserver_ip).data(),
+            cfg_.timeout.count());
+    }
+
+    AsyncDnsResolverT(const AsyncDnsResolverT&)            = delete;
+    AsyncDnsResolverT& operator=(const AsyncDnsResolverT&) = delete;
+    AsyncDnsResolverT(AsyncDnsResolverT&&)                 = delete;
+    AsyncDnsResolverT& operator=(AsyncDnsResolverT&&)      = delete;
+
+    // ── Lifecycle ───────────────────────────────────────────────────────────
+
+    /// @brief Initiate resolution. Validates inputs, generates tx_id /
+    ///        ephemeral src_port, builds the query, and sends it once.
+    ///
+    /// On any pre-flight failure (empty hostname, null pool, invalid config,
+    /// CSPRNG failure, encode failure) the resolver transitions to `Error`
+    /// with a detail string and the function returns the same ErrorInfo.
+    ///
+    /// On success, status becomes `InProgress` and the first query is in
+    /// flight. The deadline starts ticking from `now`.
+    ///
+    /// @param hostname  Hostname to resolve. Dotted-decimal IPv4 inputs
+    ///                  short-circuit to `Ready` without any I/O.
+    /// @return `void` on success; `ErrorInfo` on the pre-flight failures
+    ///         above. Subsequent timeout / parse errors are surfaced via
+    ///         `status()` + `result()`, NOT this return value.
+    [[nodiscard]] std::expected<void, eph::core::ErrorInfo>
+    start(const std::string& hostname) noexcept {
+        auto* log = detail::dns_logger();
+        SPDLOG_LOGGER_DEBUG(log, "AsyncDnsResolver::start: hostname='{}'",
+                            hostname);
+
+        // Repeated start() is a programming error — the resolver is
+        // single-shot. Surface it loudly rather than silently re-starting.
+        if (status_ != ResolveStatus::Idle) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(log,
+                "AsyncDnsResolver::start called in non-Idle state ({}) for '{}'",
+                to_string(status_), hostname);
+            return std::unexpected(eph::core::ErrorInfo{
+                eph::core::Error::InvalidConfig,
+                "AsyncDnsResolver::start called from non-Idle state"});
+        }
+        hostname_ = hostname;
+
+        // Fast path: dotted-decimal IPv4 needs no NIC, pool, or nameserver.
+        // Mirrors the blocking resolve() short-circuit so callers can use
+        // either form interchangeably.
+        uint32_t fast_ip = net::parse_ipv4(hostname.c_str());
+        if (fast_ip != 0) {
+            result_ip_ = fast_ip;
+            status_ = ResolveStatus::Ready;
+            SPDLOG_LOGGER_DEBUG(log,
+                "AsyncDnsResolver::start: dotted-decimal fast path '{}' -> {}",
+                hostname, net::format_ipv4(fast_ip).data());
+            return {};
+        }
+
+        if (auto err = cfg_.validate(); !err.empty()) {
+            return set_error_("Invalid DNS config",
+                              eph::core::Error::InvalidConfig);
+        }
+        if (hostname.empty()) {
+            return set_error_("hostname is empty",
+                              eph::core::Error::InvalidConfig);
+        }
+        if (!pool_) {
+            return set_error_("mempool is null",
+                              eph::core::Error::InvalidConfig);
+        }
+
+        // Surface advisory warnings (loopback nameserver on DPDK, etc.)
+        // — same advisory pattern as blocking resolve() / Platform / etc.
+        for (const auto& w : cfg_.warnings()) {
+            SPDLOG_LOGGER_WARN(log, "DnsConfig advisory: {}", w);
+        }
+
+        // Generate random transaction ID + ephemeral source port via
+        // kernel CSPRNG. Avoids OpenSSL/aws-lc rand to keep the TU clean.
+        if (::getrandom(&tx_id_, sizeof(tx_id_), GRND_NONBLOCK)
+                != sizeof(tx_id_)) {
+            return set_error_("CSPRNG failure for transaction ID",
+                              eph::core::Error::InvalidConfig);
+        }
+        src_port_ = detail::random_ephemeral_port();
+        if (src_port_ == 0) {
+            return set_error_("CSPRNG failure for ephemeral port",
+                              eph::core::Error::InvalidConfig);
+        }
+        tx_id_net_ = net::hton16(tx_id_);
+
+        // Build the immutable query payload once. We reuse it across
+        // retries — only the surrounding mbuf is freshly allocated each
+        // time so freeing-after-tx is straightforward.
+        dns_payload_len_ = detail::build_dns_query(
+            dns_payload_buf_, tx_id_net_, hostname);
+        if (dns_payload_len_ == 0) {
+            return set_error_("failed to encode DNS query (bad hostname)",
+                              eph::core::Error::InvalidConfig);
+        }
+
+        // Establish timing baselines using TSC (per CLAUDE.md: TSC, not
+        // steady_clock). All deadline / retry checks below operate on
+        // TSC ticks. The timeout is converted once at start().
+        start_tsc_ = eph::utils::TSC::now();
+        auto timeout_cycles_opt = eph::utils::TSC::to_cycles(
+            std::chrono::nanoseconds{cfg_.timeout}.count());
+        if (!timeout_cycles_opt) {
+            // TSC not yet calibrated. Fall back to a generous fixed
+            // estimate (3 GHz upper bound) so we still time out
+            // eventually rather than spinning forever; emit a single
+            // WARN so misconfiguration is visible. Production paths
+            // call TSC::init() at startup and never hit this branch.
+            SPDLOG_LOGGER_WARN(log,
+                "AsyncDnsResolver::start: TSC not calibrated, "
+                "using 3GHz fallback for timeout deadline");
+            timeout_cycles_ = static_cast<uint64_t>(3'000'000'000ULL) *
+                              static_cast<uint64_t>(cfg_.timeout.count()) / 1000ULL;
+        } else {
+            timeout_cycles_ = *timeout_cycles_opt;
+        }
+        // Retry interval: timeout / kMaxAttempts, lower-bounded at 100 ms
+        // to mirror the blocking resolve() backoff (which uses the same
+        // bound). Lower bound prevents pathological 1-ms timeouts from
+        // causing 1ms-spaced retries that exceed pool capacity.
+        auto retry_ms = cfg_.timeout / kMaxAttempts;
+        if (retry_ms < std::chrono::milliseconds{100}) {
+            retry_ms = std::chrono::milliseconds{100};
+        }
+        auto retry_cycles_opt = eph::utils::TSC::to_cycles(
+            std::chrono::nanoseconds{retry_ms}.count());
+        retry_interval_cycles_ = retry_cycles_opt.value_or(
+            static_cast<uint64_t>(3'000'000'000ULL) *
+            static_cast<uint64_t>(retry_ms.count()) / 1000ULL);
+
+        status_ = ResolveStatus::InProgress;
+        // Send the first query NOW. If TX fails (rare — usually transient
+        // ring fullness), we still transition to InProgress so the
+        // periodic tick will retry; first-attempt errors are not fatal.
+        if (!send_query_()) {
+            SPDLOG_LOGGER_WARN(log,
+                "AsyncDnsResolver::start: initial tx failed for '{}', "
+                "will retry on next poll tick", hostname);
+            // attempts_sent_ stayed at 0 so the first tick attempts again
+            // — rather than counting a failed TX against the 3-attempt
+            // budget which would unfairly shrink retries.
+            next_send_tsc_ = start_tsc_ + retry_interval_cycles_;
+        } else {
+            ++attempts_sent_;
+            next_send_tsc_ = start_tsc_ + retry_interval_cycles_;
+            SPDLOG_LOGGER_DEBUG(log,
+                "AsyncDnsResolver::start: query #1 in flight for '{}' "
+                "(txid=0x{:04x}, src_port={})",
+                hostname, tx_id_, src_port_);
+        }
+        return {};
+    }
+
+    // ── Status / result ─────────────────────────────────────────────────────
+
+    [[nodiscard]] ResolveStatus status() const noexcept { return status_; }
+
+    /// @brief True iff status() is one of the terminal states.
+    [[nodiscard]] bool is_done() const noexcept {
+        return status_ == ResolveStatus::Ready ||
+               status_ == ResolveStatus::TimedOut ||
+               status_ == ResolveStatus::Error;
+    }
+
+    /// @brief Resolved IPv4 (host byte order) on success; ErrorInfo otherwise.
+    ///
+    /// Calling before `is_done()` returns a `Timeout`-coded error; this lets
+    /// the caller treat "not yet" the same way as "failed" if it doesn't
+    /// want to inspect status() separately.
+    [[nodiscard]] std::expected<uint32_t, eph::core::ErrorInfo>
+    result() const noexcept {
+        if (status_ == ResolveStatus::Ready) return result_ip_;
+        return std::unexpected(error_);
+    }
+
+    // ── Diagnostics / metrics ───────────────────────────────────────────────
+
+    /// @brief Number of TX bursts the resolver has issued (1..kMaxAttempts).
+    ///        Increments on send success only; failed txs do not count
+    ///        toward the attempt budget.
+    [[nodiscard]] int attempts_sent() const noexcept { return attempts_sent_; }
+
+    /// @brief TSC delta from `start()` to the moment status became terminal.
+    ///        Returns 0 before completion. Convertible to ns via
+    ///        `TSC::to_ns()` — mirrors the `eph::utils::TSC` contract.
+    [[nodiscard]] uint64_t resolve_duration_tsc() const noexcept {
+        return resolve_duration_tsc_;
+    }
+
+    /// @brief Transaction ID actually used for this resolve (host order).
+    ///        0 if `start()` has not run yet. Diagnostic only.
+    [[nodiscard]] uint16_t tx_id() const noexcept { return tx_id_; }
+
+    /// @brief Ephemeral src_port used for this resolve. 0 before `start()`.
+    [[nodiscard]] uint16_t src_port() const noexcept { return src_port_; }
+
+    // ── DpdkPollable concept hooks ──────────────────────────────────────────
+
+    /// @brief RX burst dispatch from DpdkPoller. Walks each mbuf, attempts
+    ///        to parse it as a DNS reply matching our tx_id / src_port /
+    ///        nameserver. First successful match transitions to Ready.
+    ///
+    /// All mbufs are freed (matched or not) per the poller's ownership
+    /// contract — once dispatched to a Pollable the mbufs are the
+    /// Pollable's responsibility.
+    void process_burst_(rte_mbuf** mbufs, uint16_t n,
+                         uint64_t rx_tsc) noexcept {
+        for (uint16_t i = 0; i < n; ++i) {
+            // Already terminated? Just free remaining mbufs to honour the
+            // ownership contract — late-arriving replies after Ready /
+            // TimedOut are normal in retry scenarios.
+            if (is_done()) {
+                rte_pktmbuf_free(mbufs[i]);
+                continue;
+            }
+            auto resolved = detail::try_parse_dns_packet(
+                mbufs[i], tx_id_net_, cfg_.nameserver_ip,
+                cfg_.port, src_port_);
+            if (resolved) {
+                result_ip_ = *resolved;
+                status_ = ResolveStatus::Ready;
+                resolve_duration_tsc_ = rx_tsc - start_tsc_;
+                SPDLOG_LOGGER_INFO(detail::dns_logger(),
+                    "AsyncDnsResolver: resolved '{}' -> {} "
+                    "(after {} attempt(s), {} cycles)",
+                    hostname_, net::format_ipv4(*resolved).data(),
+                    attempts_sent_, resolve_duration_tsc_);
+            }
+            rte_pktmbuf_free(mbufs[i]);
+        }
+    }
+
+    /// @brief Periodic per-cycle tick — invoked by `DpdkPoller::poll()`.
+    ///        Implements: (a) deadline check → TimedOut, (b) retry tick →
+    ///        send next query if interval elapsed and budget remains.
+    void on_poll_tick_(uint64_t tsc) noexcept {
+        if (status_ != ResolveStatus::InProgress) return;
+
+        // Deadline check first: even if we have retries left in budget,
+        // overall timeout governs.
+        if ((tsc - start_tsc_) >= timeout_cycles_) {
+            status_ = ResolveStatus::TimedOut;
+            error_ = eph::core::ErrorInfo{
+                eph::core::Error::Timeout,
+                "AsyncDnsResolver: DNS resolve timeout"};
+            resolve_duration_tsc_ = tsc - start_tsc_;
+            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+                "AsyncDnsResolver: timeout for '{}' after {} attempt(s) "
+                "({}ms budget)",
+                hostname_, attempts_sent_, cfg_.timeout.count());
+            return;
+        }
+
+        // Retry tick: only if interval elapsed AND budget remains.
+        if (attempts_sent_ < kMaxAttempts && tsc >= next_send_tsc_) {
+            if (send_query_()) {
+                ++attempts_sent_;
+                SPDLOG_LOGGER_DEBUG(detail::dns_logger(),
+                    "AsyncDnsResolver: retry #{} for '{}'",
+                    attempts_sent_, hostname_);
+            }
+            // Schedule next tick regardless of send success — backoff
+            // protects the pool from thrashing when allocation fails.
+            next_send_tsc_ = tsc + retry_interval_cycles_;
+        }
+    }
+
+    /// @brief Tuple-for-routing hook. Tells the Poller our 5-tuple so
+    ///        incoming replies route here.
+    ///
+    /// IMPORTANT: tuple_for_poller_ MUST be called only after start() has
+    /// allocated src_port_. Calling add() before start() will register
+    /// src_port=0 which is unroutable. The recommended usage order is
+    /// `start()` first, then `poller->add()`.
+    void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
+                            uint16_t* src_port, uint16_t* dst_port,
+                            uint8_t*  proto) noexcept {
+        *src_ip   = src_ip_;
+        *dst_ip   = cfg_.nameserver_ip;
+        *src_port = src_port_;
+        *dst_port = cfg_.port;
+        *proto    = eph::dpdk::net::kIpProtoUdp;
+    }
+
+    /// @brief Poller attach / detach hooks. Stored only for diagnostics —
+    ///        AsyncDnsResolver does not currently need to call back into
+    ///        the Poller (no auto-detach on Ready, since the caller may
+    ///        want to inspect status one more time before remove()).
+    void notify_attached_(void* p) noexcept { attached_to_ = p; }
+    void notify_detached_() noexcept { attached_to_ = nullptr; }
+
+    /// @brief Diagnostic — true iff currently attached to a Poller.
+    [[nodiscard]] bool is_attached() const noexcept {
+        return attached_to_ != nullptr;
+    }
+
+private:
+    // Shared error-setter — keeps start()'s pre-flight failures uniform.
+    [[nodiscard]] std::expected<void, eph::core::ErrorInfo>
+    set_error_(const char* detail, eph::core::Error code) noexcept {
+        status_ = ResolveStatus::Error;
+        error_ = eph::core::ErrorInfo{code, detail};
+        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+            "AsyncDnsResolver error: {}", detail);
+        return std::unexpected(error_);
+    }
+
+    // Allocate + build + tx a single DNS query mbuf. Returns true iff TX
+    // succeeded. Caller increments attempts_sent_ only on true.
+    [[nodiscard]] bool send_query_() noexcept {
+        auto* pkt = detail::build_dns_packet(
+            pool_, src_mac_, dst_mac_, src_ip_,
+            cfg_.nameserver_ip, src_port_, cfg_.port,
+            dns_payload_buf_, dns_payload_len_);
+        if (!pkt) {
+            // Pool exhaustion is the typical cause. Logged once per
+            // failure so a stuck condition is visible without flooding.
+            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+                "AsyncDnsResolver: mbuf alloc failed for '{}' "
+                "(port={} queue={} attempt={})",
+                hostname_, port_id_, queue_id_, attempts_sent_ + 1);
+            return false;
+        }
+        uint16_t sent = Io::tx_burst(port_id_, queue_id_, &pkt, 1);
+        if (sent != 1) {
+            rte_pktmbuf_free(pkt);
+            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+                "AsyncDnsResolver: tx_burst rejected packet for '{}' "
+                "(port={} queue={} attempt={})",
+                hostname_, port_id_, queue_id_, attempts_sent_ + 1);
+            return false;
+        }
+        return true;
+    }
+
+    // ── Construction-time inputs (immutable after ctor) ──
+    uint16_t              port_id_;
+    uint16_t              queue_id_;
+    rte_mempool*          pool_;
+    rte_ether_addr        src_mac_;
+    rte_ether_addr        dst_mac_;
+    uint32_t              src_ip_;
+    DnsConfig             cfg_;
+
+    // ── start()-set state ──
+    std::string           hostname_;
+    uint16_t              tx_id_       {0};
+    uint16_t              tx_id_net_   {0};
+    uint16_t              src_port_    {0};
+    uint8_t               dns_payload_buf_[kMaxDnsPacketLen]{};
+    size_t                dns_payload_len_{0};
+
+    // Timing — TSC ticks, not steady_clock. start_tsc_ is the baseline.
+    uint64_t              start_tsc_           {0};
+    uint64_t              next_send_tsc_       {0};
+    uint64_t              timeout_cycles_      {0};
+    uint64_t              retry_interval_cycles_{0};
+
+    // ── Outputs ──
+    ResolveStatus         status_      {ResolveStatus::Idle};
+    uint32_t              result_ip_   {0};
+    eph::core::ErrorInfo  error_       {eph::core::Error::Timeout, ""};
+    int                   attempts_sent_{0};
+    uint64_t              resolve_duration_tsc_{0};
+
+    // ── Poller bookkeeping ──
+    void*                 attached_to_ {nullptr};
+};
+
+/// @brief Default production typedef using the real NIC TX shim.
+///        Tests instantiate `AsyncDnsResolverT<FakeNicIo>` to record TX
+///        without touching real hardware.
+using AsyncDnsResolver = AsyncDnsResolverT<RealNicIo>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API: blocking DNS resolution over DPDK
 
 /// Resolve a hostname to an IPv4 address via DNS over DPDK.
 ///
