@@ -109,6 +109,15 @@ target("test_dpdk_rss_platform")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
+-- EalGuard::init_with_pins integration test (rte_eal_init success path
+-- with typed LcorePin spec). Runs in --no-pci mode so no vfio binding
+-- is needed; SKIPs cleanly when no free hugepages are available.
+target("test_eal_init_with_pins")
+    add_rules("eph-test")
+    add_files("tests/integration/test_eal_init_with_pins.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Multi-process (primary+secondary) e2e test binaries — one per role,
 -- coordinated by tests/integration/dpdk_mp_e2e.sh. Each skips cleanly
 -- when the env vars set by the orchestrator are absent, so `xmake run -g

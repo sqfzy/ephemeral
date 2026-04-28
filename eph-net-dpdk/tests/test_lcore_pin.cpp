@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/utils/cpu.hpp"
 
@@ -247,4 +248,76 @@ TEST(RegisteredLcoreGuard, ReleaseSkipsUnregistration) {
 
     // Cleanup so the next test isn't polluted.
     eph::utils::unregister_external_pin(80);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// EalGuard::init_with_pins — pre-EAL paths only.
+//
+// The success path calls rte_eal_init() and therefore requires DPDK
+// runtime (hugepages / vfio). That lives in
+// tests/integration/test_eal_init_with_pins.cpp. Here we cover the
+// validation paths that fail BEFORE rte_eal_init is reached, so the
+// EAL global state stays untouched and the tests are safe to run on
+// any host.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(InitWithPins, RejectsConflictingCfgLcoresAndPins) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    EalConfig cfg;
+    cfg.lcores = {"0@4"};  // raw escape-hatch path
+    std::array pins = { LcorePin{0, 4, "rx"} };  // typed path
+
+    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("mutually exclusive"), std::string::npos)
+        << r.error();
+    // Registry must be untouched.
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
+}
+
+TEST(InitWithPins, PinValidationFailureDoesNotTouchEAL) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    // Pre-occupy cpu 4 by an unrelated owner so register_lcore_pins fails.
+    ASSERT_TRUE(eph::utils::register_external_pin(4, "occupant").has_value());
+
+    EalConfig cfg;
+    std::array pins = { LcorePin{0, 4, "rx"} };
+
+    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("init_with_pins"), std::string::npos);
+    EXPECT_NE(r.error().find("already occupied"), std::string::npos);
+    EXPECT_NE(r.error().find("occupant"), std::string::npos);
+
+    // Pre-existing occupant must remain in the registry.
+    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(4));
+
+    eph::utils::unregister_external_pin(4);
+}
+
+TEST(InitWithPins, MultiCpuConflictRollsBackEarlierStaged) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    // Pre-occupy cpu 6 by an unrelated owner. Pin 0 (cpu 4) and Pin 1
+    // (cpu 5) will succeed; Pin 2 (cpu 6) will fail; Pins 0 and 1 must
+    // be rolled back so the registry returns to its pre-call state.
+    ASSERT_TRUE(eph::utils::register_external_pin(6, "occupant").has_value());
+
+    EalConfig cfg;
+    std::array pins = {
+        LcorePin{0, 4, "rx"},
+        LcorePin{1, 5, "tx"},
+        LcorePin{2, 6, "control"},
+    };
+
+    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    ASSERT_FALSE(r.has_value());
+
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(5));
+    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(6));   // pre-existing
+
+    eph::utils::unregister_external_pin(6);
 }
