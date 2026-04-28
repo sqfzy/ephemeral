@@ -49,21 +49,28 @@ What changed inside: instead of `src_port = random_ephemeral_port()`,
 the resolver now calls `detail::select_dns_src_port(port_id, queue_id,
 nameserver_ip, local_ip, dns_server_port)`. That helper:
 
-1. Probes RSS state via `query_rss_state(port_id)`. If the probe fails
-   (single-queue NIC / RSS not configured), falls back to the
-   pre-RSS random ephemeral port.
-2. Otherwise walks `[32768, 60999]` varying the **dst_port** slot of
-   the inbound reply 5-tuple `(nameserver_ip, 53, local_ip, dst_port)`
-   — that's where our local SP lives in the reply direction (per
-   `flow_steering.hpp:686-692`'s `queue_for_tuple` contract). Returns
-   the first port whose hash lands on `queue_id`.
-3. If the search exhausts (no port in the range hashes correctly),
-   returns `RssHashPredictExhausted` and the resolve fails fast.
+1. Delegates to `eph::net::dpdk::find_src_port_for_queue`, which
+   internally probes RSS state via `query_rss_state(port_id)` and
+   walks `[32768, 60999]` varying the **dst_port** slot of the
+   inbound reply 5-tuple `(nameserver_ip, 53, local_ip, dst_port)` —
+   that's where our local SP lives in the reply direction (per
+   `flow_steering.hpp`'s `queue_for_tuple` contract).
+2. If the helper succeeds, the picked port is returned for use as our
+   query's outgoing src_port (so the inbound reply's dst_port matches).
+3. If `find_src_port_for_queue` reports `RssHashPredictExhausted` (no
+   port in the range hashes correctly), the DNS path surfaces the same
+   error and the resolve fails fast. If the helper reports any other
+   error (e.g. RSS state unavailable on a single-queue NIC), the
+   resolver falls back to the pre-RSS random ephemeral port.
 
-Why a custom loop and not `find_src_port_for_queue`: the latter varies
-the **src_port** slot of the hash, which for an inbound reply is the
-remote sender's application port (always 53 for a DNS server). DNS's
-only caller-controllable hash input is the dst_port slot.
+Originally the DNS path had its own search loop because the shared
+`find_src_port_for_queue` had a Toeplitz-argument-order bug that
+transposed src_port and dst_port hash slots. That bug was fixed in
+commit 4af709c5; the DNS path was retargeted to the now-correct shared
+helper in 271438e0. The pure `detail::select_dns_src_port_with_state`
+test variant remains for unit tests that don't have a real NIC, and
+itself delegates to `find_src_port_for_queue_with_state` (commit
+7aec86fa).
 
 Security trade-off: under 4-queue RSS, src_port entropy drops from
 ~28k to ~7k bits — only one quarter of the ephemeral range hashes
