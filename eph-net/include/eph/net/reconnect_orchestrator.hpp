@@ -88,6 +88,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -101,6 +102,8 @@
 
 #include "eph/core/error.hpp"
 #include "eph/core/metrics_concept.hpp"
+#include "eph/core/tcp_state.hpp"
+#include "eph/utils/time.hpp"
 
 #include "eph/net/concepts.hpp"
 #include "eph/net/detail/reconnect_logger.hpp"
@@ -215,11 +218,16 @@ template <Stream S>
 class ReconnectOrchestrator {
 public:
     using StreamPtr    = std::unique_ptr<S>;
+    // Note: std::function does not support `noexcept`-qualified function types
+    // under libstdc++ 14 (the qualifier becomes part of the type in C++17 but
+    // std::function's primary template doesn't model it). Concrete callbacks
+    // are still allowed to be noexcept lambdas; the type alias just can't
+    // carry the qualifier.
     using Factory      = std::function<std::expected<StreamPtr, eph::core::ErrorInfo>()>;
-    using OnDisconnect = std::function<void(const eph::core::ErrorInfo&) noexcept>;
-    using OnReconnect  = std::function<void(uint32_t attempt, uint64_t duration_ns) noexcept>;
-    using AttachFn     = std::function<std::expected<void, eph::core::ErrorInfo>(S*) noexcept>;
-    using DetachFn     = std::function<void(S*) noexcept>;
+    using OnDisconnect = std::function<void(const eph::core::ErrorInfo&)>;
+    using OnReconnect  = std::function<void(uint32_t attempt, uint64_t duration_ns)>;
+    using AttachFn     = std::function<std::expected<void, eph::core::ErrorInfo>(S*)>;
+    using DetachFn     = std::function<void(S*)>;
 
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -397,43 +405,199 @@ void publish_reconnect_metrics(const Orch& orch, Sink& sink,
 }
 
 // ---------------------------------------------------------------------------
-// Stage-1 placeholder definitions — Stage 2 implements the real bodies.
-// Kept inline in the header so the class is fully usable today (Idle stays
-// Idle on tick(); start() returns success; mark_disconnected logs only).
+// Method implementations (header-only)
 // ---------------------------------------------------------------------------
 
 template <Stream S>
 inline std::expected<void, eph::core::ErrorInfo>
-ReconnectOrchestrator<S>::start(uint64_t /*now_tsc*/) noexcept {
-    SPDLOG_LOGGER_DEBUG(detail::reconnect_logger(),
-        "ReconnectOrchestrator::start: stage-1 placeholder (state={})",
-        to_string(state_));
+ReconnectOrchestrator<S>::start(uint64_t now_tsc) noexcept {
+    auto* log = detail::reconnect_logger();
+    if (state_ != ReconnectState::Idle) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(log,
+            "ReconnectOrchestrator::start called in non-Idle state ({})",
+            to_string(state_));
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "ReconnectOrchestrator::start called in non-Idle state"});
+    }
+    if (!factory_) [[unlikely]] {
+        SPDLOG_LOGGER_ERROR(log, "ReconnectOrchestrator::start: factory is null");
+        state_ = ReconnectState::Failed;
+        return std::unexpected(eph::core::ErrorInfo{
+            eph::core::Error::InvalidConfig,
+            "ReconnectOrchestrator: factory callback is required"});
+    }
+    SPDLOG_LOGGER_DEBUG(log,
+        "ReconnectOrchestrator::start: kicking off initial connection");
+    // Initial attempt has no preceding disconnect — duration is measured
+    // from start() to first Connected, so disconnect_tsc_ = now_tsc.
+    disconnect_tsc_ = now_tsc;
+    try_attempt_(now_tsc);
     return {};
 }
 
 template <Stream S>
-inline void ReconnectOrchestrator<S>::tick(uint64_t /*now_tsc*/) noexcept {
-    // Stage-1 placeholder. Stage 2 implements the real state machine.
+inline void ReconnectOrchestrator<S>::tick(uint64_t now_tsc) noexcept {
+    if (stopped_) [[unlikely]] return;
+    switch (state_) {
+        case ReconnectState::Idle:
+        case ReconnectState::Failed:
+            return;  // No-op
+        case ReconnectState::Connecting:
+            // Should not normally remain in Connecting across ticks — try_attempt_
+            // is synchronous. Defensive no-op for callers that subclass/override.
+            return;
+        case ReconnectState::Connected: {
+            if (!cfg_.auto_detect_via_state || !stream_) return;
+            const auto s = stream_->state();
+            // Established is the steady state; Listen / SynSent / SynReceived
+            // are transient during fresh handshake (we won't see them post-create).
+            // Anything else (Closed / FinWait* / TimeWait / etc.) means peer
+            // closed or aborted.
+            if (s == TcpState::Established) return;
+            SPDLOG_LOGGER_INFO(detail::reconnect_logger(),
+                "ReconnectOrchestrator: auto-detected disconnect via state={}",
+                tcp_state_name(s));
+            mark_disconnected(eph::core::ErrorInfo{
+                eph::core::Error::Disconnected,
+                "auto-detected via stream state"});
+            return;
+        }
+        case ReconnectState::Backoff:
+            if (now_tsc >= next_attempt_tsc_) {
+                try_attempt_(now_tsc);
+            }
+            return;
+    }
 }
 
 template <Stream S>
-inline void ReconnectOrchestrator<S>::mark_disconnected(eph::core::ErrorInfo reason) noexcept {
-    SPDLOG_LOGGER_DEBUG(detail::reconnect_logger(),
-        "ReconnectOrchestrator::mark_disconnected: stage-1 placeholder ({})",
-        reason.detail);
+inline void
+ReconnectOrchestrator<S>::mark_disconnected(eph::core::ErrorInfo reason) noexcept {
+    auto* log = detail::reconnect_logger();
+    if (state_ != ReconnectState::Connected) {
+        SPDLOG_LOGGER_WARN(log,
+            "ReconnectOrchestrator::mark_disconnected ignored in state {} ({})",
+            to_string(state_), reason.detail);
+        return;
+    }
+    SPDLOG_LOGGER_WARN(log,
+        "ReconnectOrchestrator: disconnect — {}", reason.detail);
+
+    // 1. Detach from poller (if user supplied a hook).
+    if (detach_ && stream_) detach_(stream_.get());
+
+    // 2. User-level event.
+    if (on_disconnect_) on_disconnect_(reason);
+
+    // 3. Drop the stream.
+    stream_.reset();
+
+    // 4. Record disconnect time (used to compute duration_ns when the next
+    //    factory call succeeds).
+    disconnect_tsc_ = eph::utils::TSC::now();
+
+    // 5. Schedule the next attempt.
+    enter_backoff_(disconnect_tsc_);
 }
 
 template <Stream S>
 inline void ReconnectOrchestrator<S>::stop() noexcept {
     stopped_ = true;
-    SPDLOG_LOGGER_DEBUG(detail::reconnect_logger(),
-        "ReconnectOrchestrator::stop: stage-1 placeholder");
+    SPDLOG_LOGGER_INFO(detail::reconnect_logger(),
+        "ReconnectOrchestrator::stop: halting further reconnect attempts "
+        "(state={}, count={}, failures={})",
+        to_string(state_),
+        metric(ReconnectMetric::kReconnectCount),
+        metric(ReconnectMetric::kReconnectFailures));
 }
 
 template <Stream S>
-inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t /*now_tsc*/) noexcept {}
+inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
+    auto* log = detail::reconnect_logger();
+    state_ = ReconnectState::Connecting;
+    SPDLOG_LOGGER_DEBUG(log,
+        "ReconnectOrchestrator: factory attempt #{}", policy_.attempts() + 1);
+
+    auto r = factory_();
+    if (!r) {
+        // Factory failure path.
+        metrics_[static_cast<std::size_t>(ReconnectMetric::kReconnectFailures)]
+            .fetch_add(1, std::memory_order_relaxed);
+        SPDLOG_LOGGER_ERROR(log,
+            "ReconnectOrchestrator: factory failed: {}", r.error().detail);
+        if (on_disconnect_) on_disconnect_(r.error());
+        enter_backoff_(now_tsc);
+        return;
+    }
+
+    // Factory produced a Stream. Run the optional attach hook.
+    auto fresh = std::move(*r);
+    if (attach_) {
+        auto ar = attach_(fresh.get());
+        if (!ar) {
+            metrics_[static_cast<std::size_t>(ReconnectMetric::kReconnectFailures)]
+                .fetch_add(1, std::memory_order_relaxed);
+            SPDLOG_LOGGER_ERROR(log,
+                "ReconnectOrchestrator: attach failed: {}", ar.error().detail);
+            if (on_disconnect_) on_disconnect_(ar.error());
+            // Stream gets dropped here (RAII close). Keep going.
+            enter_backoff_(now_tsc);
+            return;
+        }
+    }
+
+    // Success — promote to Connected, record metrics, fire user callback.
+    stream_ = std::move(fresh);
+    state_ = ReconnectState::Connected;
+
+    const uint64_t cycles = (now_tsc >= disconnect_tsc_)
+                               ? (now_tsc - disconnect_tsc_) : 0;
+    const auto ns_opt = eph::utils::TSC::to_ns(cycles);
+    const uint64_t dur_ns = ns_opt
+        ? static_cast<uint64_t>(*ns_opt)
+        : 0;  // Uncalibrated TSC — duration unobservable; metric stays at 0.
+
+    metrics_[static_cast<std::size_t>(ReconnectMetric::kReconnectCount)]
+        .fetch_add(1, std::memory_order_relaxed);
+    metrics_[static_cast<std::size_t>(ReconnectMetric::kReconnectDurationNs)]
+        .fetch_add(dur_ns, std::memory_order_relaxed);
+    metrics_[static_cast<std::size_t>(ReconnectMetric::kLastReconnectDurationNs)]
+        .store(dur_ns, std::memory_order_relaxed);
+
+    const uint32_t attempt = policy_.attempts() + 1;  // +1 so first success is "attempt 1"
+    SPDLOG_LOGGER_INFO(log,
+        "ReconnectOrchestrator: connected on attempt {} (duration {} ns)",
+        attempt, dur_ns);
+
+    if (on_reconnect_) on_reconnect_(attempt, dur_ns);
+    policy_.reset();
+}
 
 template <Stream S>
-inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t /*now_tsc*/) noexcept {}
+inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept {
+    auto* log = detail::reconnect_logger();
+    if (!policy_.should_reconnect()) {
+        state_ = ReconnectState::Failed;
+        SPDLOG_LOGGER_WARN(log,
+            "ReconnectOrchestrator: reconnect budget exhausted after {} attempts; "
+            "transitioning to Failed (terminal)",
+            policy_.attempts());
+        return;
+    }
+    const auto delay = policy_.next_backoff();
+    const auto cycles_opt = eph::utils::TSC::to_cycles(delay);
+    // Fallback when TSC is uncalibrated: assume 3 GHz so we still progress
+    // in tests / unusual setups. Production paths must call TSC::init() per
+    // CLAUDE.md, but we don't crash if they forgot.
+    const uint64_t cycles = cycles_opt
+        ? *cycles_opt
+        : static_cast<uint64_t>(delay.count()) * 3'000'000ULL;
+    next_attempt_tsc_ = now_tsc + cycles;
+    state_ = ReconnectState::Backoff;
+    SPDLOG_LOGGER_DEBUG(log,
+        "ReconnectOrchestrator: scheduled retry in {} ms (attempt {} of policy)",
+        delay.count(), policy_.attempts());
+}
 
 } // namespace eph::net
