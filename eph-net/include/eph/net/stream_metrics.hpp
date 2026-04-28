@@ -240,6 +240,31 @@ enum class StreamMetric : std::size_t {
     /// compression factor (typically 4-10x on JSON market data).
     kWsDeflateBytesOut,
 
+    /// TLS only: TLS 1.3 handshakes that completed as **resumptions**
+    /// (PSK / abbreviated, 1-RTT savings). Incremented once per
+    /// successful `KernelTcpStream` / `DpdkTcpStream` create when
+    /// `SSL_session_reused` returns true. Stays at 0 for non-TLS
+    /// streams and for TLS streams without a `tls_resumption_ticket`
+    /// in the StreamConfig.
+    ///
+    /// Pair with `kTlsHandshakeCount` to compute the resumption hit
+    /// rate (`resume / (resume + full)`) over a window — useful to
+    /// confirm the venue actually accepted the ticket and reconnects
+    /// are saving the +1 RTT cert exchange.
+    kTlsResumeCount,
+
+    /// TLS only: TLS 1.3 handshakes that completed as **full**
+    /// handshakes (cert exchange, +1 RTT). Incremented once per
+    /// successful `KernelTcpStream` / `DpdkTcpStream` create with
+    /// TLS enabled when `SSL_session_reused` returns false (or when
+    /// no ticket was supplied). Stays at 0 for non-TLS streams.
+    ///
+    /// A non-zero `kTlsResumeCount` with `kTlsHandshakeCount == 0`
+    /// after the first session indicates resumption is working as
+    /// intended; `kTlsHandshakeCount > 0` after a deliberate ticket
+    /// rotation or expiry is normal.
+    kTlsHandshakeCount,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -272,6 +297,8 @@ kStreamMetricNames = {
     "net.stream.rx.fragment_rejected",
     "net.stream.ws.deflate_bytes_in",
     "net.stream.ws.deflate_bytes_out",
+    "net.stream.tls.resume_count",
+    "net.stream.tls.handshake_count",
 };
 
 static_assert(kStreamMetricNames.size() ==

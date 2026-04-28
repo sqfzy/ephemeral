@@ -147,6 +147,29 @@ struct TlsConfig {
     /// against this list after TLS handshake.
     std::vector<std::string> pinned_spki_sha256{};
 
+    /// Optional TLS 1.3 session ticket from a prior connection.
+    ///
+    /// Format: opaque DER-encoded `SSL_SESSION` produced by
+    /// `i2d_SSL_SESSION` (aws-lc / OpenSSL). Empty = no resumption attempt
+    /// (default), perform a full handshake.
+    ///
+    /// When non-empty, the ticket is parsed via `d2i_SSL_SESSION` and
+    /// applied with `SSL_set_session` BEFORE `SSL_do_handshake`, which
+    /// turns the next ClientHello into a TLS 1.3 PSK / NewSessionTicket
+    /// resumption attempt — saving the +1 RTT certificate exchange. If
+    /// the ticket is corrupt, expired, or rejected by the server the
+    /// stack falls back to a full handshake (the connection still
+    /// succeeds; it's not a fatal error).
+    ///
+    /// Conservative defaults: this is opt-in. HFT venues like Binance
+    /// (24h forced reconnect), OKX, Bybit issue tickets aggressively;
+    /// pass the bytes from a prior session's `tls_resumption_ticket()`
+    /// getter on the next connect.
+    ///
+    /// 0-RTT (early data) is **out of scope** — only the 1-RTT
+    /// abbreviated handshake is supported here.
+    std::vector<uint8_t> tls_resumption_ticket{};
+
     /// Callback invoked when peer cert SPKI hash doesn't match any pin.
     /// Receives the actual base64-encoded SPKI SHA-256 hash.
     /// Return true to continue connection despite mismatch, false to abort.
@@ -177,7 +200,8 @@ struct TlsConfig {
             && a.handshake_timeout == b.handshake_timeout
             && a.client_cert_path == b.client_cert_path
             && a.client_key_path == b.client_key_path
-            && a.pinned_spki_sha256 == b.pinned_spki_sha256;
+            && a.pinned_spki_sha256 == b.pinned_spki_sha256
+            && a.tls_resumption_ticket == b.tls_resumption_ticket;
     }
 
     /// JSON-formatted config for logging/monitoring.
