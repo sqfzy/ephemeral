@@ -10,6 +10,7 @@
 #include <atomic>
 #include <expected>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,7 @@
 #include <rte_errno.h>
 
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / RegisteredLcoreGuard / register_lcore_pins / build_lcore_argv
 #include "eph/dpdk/proc_type.hpp"   // ProcType + to_eal_string (M3 fix)
 
 namespace eph::dpdk {
@@ -120,7 +122,8 @@ public:
 
     EalGuard(EalGuard&& other) noexcept
         : initialized_{other.initialized_}
-        , args_consumed_{other.args_consumed_} {
+        , args_consumed_{other.args_consumed_}
+        , pin_guard_{std::move(other.pin_guard_)} {
         other.initialized_ = false;
     }
 
@@ -132,6 +135,7 @@ public:
             if (initialized_) [[maybe_unused]] bool ok = eal_cleanup();
             initialized_ = other.initialized_;
             args_consumed_ = other.args_consumed_;
+            pin_guard_ = std::move(other.pin_guard_);
             other.initialized_ = false;
         }
         return *this;
@@ -150,12 +154,65 @@ public:
     /// Usage: if (eal) { /* EAL is initialized */ }
     [[nodiscard]] explicit operator bool() const noexcept { return initialized_; }
 
+    /// @brief Single-call factory: validate lcore pins, register them,
+    ///        build EAL argv, call rte_eal_init, transfer pin ownership
+    ///        into the returned EalGuard.
+    ///
+    /// Sequence (any failure rolls back atomically):
+    ///   1. `register_lcore_pins(pins, policy)` — pre-EAL pin validation +
+    ///      registry write. On failure no `rte_eal_*` API was touched.
+    ///   2. If `pins` is non-empty, append `build_lcore_argv(pins)` as a
+    ///      single `--lcores=...` token to `cfg.extra_args`. **`cfg.lcores`
+    ///      must be empty** when `pins` is non-empty — mixing the typed
+    ///      and raw paths in one call is a configuration bug and is
+    ///      rejected with `unexpected`.
+    ///   3. `build_eal_argv(cfg)` and `eal_init(argc, argv)`. On EAL
+    ///      failure the local `RegisteredLcoreGuard` destructor unregisters
+    ///      every cpu so the registry returns to its pre-call state.
+    ///   4. On success, transfer the `RegisteredLcoreGuard` into the
+    ///      returned `EalGuard` (`pin_guard_` field).
+    ///
+    /// Destruction order in the returned guard: `~EalGuard()` body runs
+    /// `eal_cleanup()` first, then field destruction (in reverse declaration
+    /// order) destroys `pin_guard_`, which unregisters the lcore cpus.
+    ///
+    /// @param cfg     EAL configuration. `cfg.lcores` must be empty when
+    ///                @p pins is non-empty (escape-hatch / typed-path mutual
+    ///                exclusion).
+    /// @param pins    1:1 lcore→cpu spec. Empty span behaves identically
+    ///                to the legacy `init()` path.
+    /// @param policy  validation strictness; default `CpuPinPolicy{}`
+    ///                (relaxed) matches every existing in-repo pin_thread
+    ///                caller's default.
+    [[nodiscard]] static std::expected<EalGuard, std::string>
+    init_with_pins(struct EalConfig          cfg,
+                   std::span<LcorePin const> pins,
+                   eph::utils::CpuPinPolicy  policy = {});
+
 private:
     explicit EalGuard(int args_consumed) noexcept
         : initialized_{true}, args_consumed_{args_consumed} {}
 
-    bool initialized_   = false;
-    int  args_consumed_  = 0;
+    /// Used by `init_with_pins` to transfer pin ownership into the guard.
+    EalGuard(int args_consumed, RegisteredLcoreGuard&& pin_guard) noexcept
+        : initialized_{true}
+        , args_consumed_{args_consumed}
+        , pin_guard_{std::move(pin_guard)} {}
+
+    bool                  initialized_    = false;
+    int                   args_consumed_  = 0;
+    /// Declared LAST so it destructs FIRST in field-destruction order —
+    /// wait, no: field destruction order is REVERSE of declaration. So
+    /// `pin_guard_` declared last destructs FIRST, which would unregister
+    /// cpus BEFORE eal_cleanup. That's not what we want.
+    ///
+    /// What we actually want: ~EalGuard() body runs eal_cleanup() first
+    /// (because the body executes BEFORE field destruction). Then field
+    /// destruction kicks in and pin_guard_ unregisters cpus. So the
+    /// field's destruction order relative to other fields doesn't matter
+    /// — what matters is that the body runs before any field destructs.
+    /// That's guaranteed by C++. ✓
+    RegisteredLcoreGuard  pin_guard_{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,6 +272,63 @@ build_eal_argv(const EalConfig& cfg) {
     }
     for (const auto& e : cfg.extra_args) argv.push_back(e);
     return argv;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EalGuard::init_with_pins out-of-line definition.
+// EalConfig must be visible (declared above), so this lives after EalConfig
+// rather than inside the class body.
+// ─────────────────────────────────────────────────────────────────────────────
+inline std::expected<EalGuard, std::string>
+EalGuard::init_with_pins(EalConfig                 cfg,
+                         std::span<LcorePin const> pins,
+                         eph::utils::CpuPinPolicy  policy) {
+    [[maybe_unused]] auto* log = detail::eal_logger();
+
+    if (!pins.empty() && !cfg.lcores.empty()) {
+        return std::unexpected(
+            "init_with_pins: cfg.lcores must be empty when typed pins "
+            "are supplied (escape hatch and typed path are mutually "
+            "exclusive in one call)");
+    }
+
+    // Step 1: pre-EAL pin registration. This is where SMT / NUMA / IRQ
+    // / duplicate-cpu policy is enforced. Failure here means no DPDK
+    // resources have been touched yet.
+    auto pin_guard = register_lcore_pins(pins, policy);
+    if (!pin_guard) {
+        return std::unexpected(std::format(
+            "init_with_pins: {}", pin_guard.error()));
+    }
+
+    // Step 2: inject --lcores=... into argv (only if user supplied pins).
+    if (!pins.empty()) {
+        cfg.extra_args.push_back(build_lcore_argv(pins));
+    }
+
+    // Step 3: build argv and call rte_eal_init. argv strings must outlive
+    // the rte_eal_init call; we keep them alive in `argv_strings` and pass
+    // `argv_ptrs.data()`.
+    auto argv_strings = build_eal_argv(cfg);
+    std::vector<char*> argv_ptrs;
+    argv_ptrs.reserve(argv_strings.size());
+    for (auto& s : argv_strings) argv_ptrs.push_back(s.data());
+
+    SPDLOG_LOGGER_DEBUG(log,
+        "init_with_pins: calling rte_eal_init (argc={}, lcores={})",
+        argv_ptrs.size(), pins.size());
+
+    auto eal_result = eal_init(static_cast<int>(argv_ptrs.size()),
+                               argv_ptrs.data());
+    if (!eal_result) {
+        // pin_guard destructor (here on stack) will unregister the cpus
+        // automatically as we return. Caller sees a clean slate.
+        return std::unexpected(std::format(
+            "init_with_pins: {}", eal_result.error()));
+    }
+
+    // Step 4: success — transfer pin ownership into the EalGuard.
+    return EalGuard{*eal_result, std::move(*pin_guard)};
 }
 
 } // namespace eph::dpdk

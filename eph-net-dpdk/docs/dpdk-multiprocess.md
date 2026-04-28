@@ -259,3 +259,16 @@ The current implementation deliberately does **not** support:
 * Independent-primary multi-process (N processes each with their own
   `--file-prefix` and no shared mempool) — mempool sharing is the main
   reason to go MP in the first place
+
+## See also: lcore × pin_thread integration
+
+Whether you go single-process or multi-process, EAL's lcore pinning
+needs to coexist with application-thread pinning via
+`eph::utils::pin_thread`. Use `eph::dpdk::LcorePin` +
+`EalGuard::init_with_pins` instead of writing `EalConfig::lcores`
+strings by hand: it pre-validates the pins (SMT siblings / NUMA / IRQ),
+declares the cpus to `g_pinned_cpus` so subsequent `pin_thread` calls
+detect conflicts, and rolls back atomically on any failure.
+
+See [`lcore-pin-integration.md`](lcore-pin-integration.md) for the
+full API and the rationale.
