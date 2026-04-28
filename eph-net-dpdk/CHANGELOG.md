@@ -51,6 +51,19 @@ misconfiguration too.
   configuration matrix (multi-queue probe-or-fail / multi-queue without
   RSS hard-fail / single-queue unchanged). SKIPs cleanly when NIC_B
   isn't bound to vfio-pci.
+- `tests/integration/mock_dispatcher.hpp::run_mock_dispatcher` now
+  self-arms `prctl(PR_SET_PDEATHSIG, SIGTERM)` so an orphaned mock
+  child auto-exits when its parent test process dies abnormally.
+  Fixes a class of orphan-hang infrastructure bugs observed in the
+  autonomous-loop runner: a `test_dpdk_rss_fanout` mock survived 4h+
+  in `sigsuspend` after its parent gtest runner died without firing
+  the existing `ChildReaper` RAII, holding ports 19000-19499 and
+  blocking subsequent integration suite runs with `EADDRINUSE`. The
+  watchdog lives on the child side so all three call sites
+  (`test_dpdk_e2e` via `dpdk_e2e_env.hpp`, `test_dpdk_rss_platform`,
+  `test_dpdk_rss_fanout`) benefit without per-call wiring. Errors
+  from `prctl` are deliberately swallowed — defensive fallback, the
+  existing `ChildReaper` still covers the happy path.
 
 ### Fixed — RSS-pinned stream handshake silently times out (2026-04-28)
 
