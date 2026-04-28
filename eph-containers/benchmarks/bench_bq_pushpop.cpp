@@ -64,10 +64,17 @@ static void BM_BoundedQueue_ZeroCopy_PushPop(benchmark::State& state) {
         });
 
         q.consume([](const T& slot) {
-            if constexpr (PayloadSize == 8)
-                benchmark::DoNotOptimize(slot.v);
-            else
-                benchmark::DoNotOptimize(slot.data[0]);
+            // Local copy then DoNotOptimize(&): the const-ref overload
+            // is deprecated in google/benchmark because the compiler may
+            // elide loads of the underlying storage. A non-const lvalue
+            // forces the value into a register.
+            if constexpr (PayloadSize == 8) {
+                uint64_t v = slot.v;
+                benchmark::DoNotOptimize(v);
+            } else {
+                uint8_t b = slot.data[0];
+                benchmark::DoNotOptimize(b);
+            }
         });
 
         benchmark::ClobberMemory();

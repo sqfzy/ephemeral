@@ -80,12 +80,18 @@ static void BM_BQ_Batch_PushN_ConsumeN(benchmark::State& state) {
         // Batch push via span
         q.push_n(std::span<const T>(items.data(), batch_n));
 
-        // Batch consume via visitor
+        // Batch consume via visitor.
+        // Local copy + non-const & for benchmark::DoNotOptimize: the
+        // const-ref overload is deprecated in google/benchmark because
+        // the compiler can elide loads of the underlying storage; a
+        // non-const reference forces the value into a register and is
+        // the recommended replacement.
         size_t consumed = 0;
         while (consumed < batch_n) {
             consumed += q.try_consume_n(batch_n - consumed,
                 [](const T& slot, [[maybe_unused]] size_t idx) {
-                    benchmark::DoNotOptimize(slot);
+                    T copy = slot;
+                    benchmark::DoNotOptimize(copy);
                 });
         }
         benchmark::ClobberMemory();
@@ -114,12 +120,18 @@ static void BM_BQ_Batch_ProduceN_ConsumeN(benchmark::State& state) {
                 slot.data[0] = static_cast<uint8_t>(idx);
         });
 
-        // Batch consume via visitor
+        // Batch consume via visitor.
+        // Local copy + non-const & for benchmark::DoNotOptimize: the
+        // const-ref overload is deprecated in google/benchmark because
+        // the compiler can elide loads of the underlying storage; a
+        // non-const reference forces the value into a register and is
+        // the recommended replacement.
         size_t consumed = 0;
         while (consumed < batch_n) {
             consumed += q.try_consume_n(batch_n - consumed,
                 [](const T& slot, [[maybe_unused]] size_t idx) {
-                    benchmark::DoNotOptimize(slot);
+                    T copy = slot;
+                    benchmark::DoNotOptimize(copy);
                 });
         }
         benchmark::ClobberMemory();

@@ -27,11 +27,9 @@
 ///   so the two files can be read side-by-side.
 ///
 /// Baseline capture protocol:
-///   xmake f --cxx=/usr/bin/gcc14-g++ --ld=/usr/bin/gcc14-g++ \
-///           --sh=/usr/bin/gcc14-g++ -m release
+///   xmake f --cxx=/usr/bin/gcc14-g++ --ld=/usr/bin/gcc14-g++ --sh=/usr/bin/gcc14-g++ -m release
 ///   xmake build bench_rx_hot_path
-///   xmake run bench_rx_hot_path --benchmark_format=console \
-///       > .artifacts/bench-rx-hot-path-<yyyymmdd>.txt
+///   xmake run bench_rx_hot_path --benchmark_format=console > .artifacts/bench-rx-hot-path-<yyyymmdd>.txt
 
 #include <cstdint>
 #include <cstring>

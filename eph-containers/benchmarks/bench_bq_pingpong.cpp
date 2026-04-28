@@ -106,11 +106,17 @@ static void BM_BoundedQueue_ZeroCopy_PingPong(benchmark::State& state) {
             slot.data[0] = 1;
     };
     // 辅助 Lambda：模拟最小化读取
+    // Local copy + non-const & for benchmark::DoNotOptimize: the
+    // const-ref overload is deprecated in google/benchmark because the
+    // compiler may elide loads; a non-const lvalue forces a real read.
     auto reader = [](const T& slot) {
-        if constexpr (PayloadSize == 8)
-            benchmark::DoNotOptimize(slot.v);
-        else
-            benchmark::DoNotOptimize(slot.data[0]);
+        if constexpr (PayloadSize == 8) {
+            uint64_t v = slot.v;
+            benchmark::DoNotOptimize(v);
+        } else {
+            uint8_t b = slot.data[0];
+            benchmark::DoNotOptimize(b);
+        }
     };
 
     if (state.thread_index() == 0) {
