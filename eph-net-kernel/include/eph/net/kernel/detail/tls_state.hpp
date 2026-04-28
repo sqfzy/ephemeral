@@ -45,6 +45,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -226,6 +227,22 @@ public:
                 "TlsState::handshake: TLS handshake failed"});
         }
 
+        // Snapshot resumption state BEFORE we extract_hot_state (which sets
+        // suppress_close_notify_ — that's harmless but the explicit
+        // ordering keeps `was_resumed_` reflecting the just-completed
+        // handshake's reused/full classification).
+        was_resumed_ = session.was_resumed();
+        // Capture any ticket the server already delivered during the
+        // initial flight (TLS 1.3 typically delivers tickets right
+        // after the Finished — the BIO will have surfaced them through
+        // SSL_do_handshake's record processing). For tickets that
+        // arrive later (asynchronously, after the application starts
+        // exchanging records), see `take_post_handshake_ticket()`.
+        captured_ticket_ = session.take_resumption_ticket();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::handshake: resumed={} captured_ticket={}B fd={}",
+            was_resumed_, captured_ticket_.size(), sock.fd());
+
         // Pull traffic keys + sequence numbers from the SSL session.
         auto state_r = session.extract_hot_state();
         if (!state_r) {
@@ -266,6 +283,28 @@ public:
     }
 
     [[nodiscard]] bool is_established() const noexcept { return established_; }
+
+    /// True if the just-completed handshake was a TLS 1.3 PSK / ticket
+    /// resumption (1-RTT abbreviated). Snapshot taken inside `handshake()`
+    /// before the underlying TlsSession is dropped.
+    [[nodiscard]] bool was_resumed() const noexcept { return was_resumed_; }
+
+    /// Move-out the captured server-issued NewSessionTicket bytes, if any.
+    /// Returned bytes are DER-encoded (`i2d_SSL_SESSION`) and ready to
+    /// feed into a future `TlsConfig::tls_resumption_ticket` for
+    /// abbreviated reconnect. Move-out semantics: a subsequent call
+    /// returns empty until a new ticket is captured.
+    [[nodiscard]] std::vector<uint8_t> take_resumption_ticket() noexcept {
+        return std::move(captured_ticket_);
+    }
+
+    /// Read-only view of the captured ticket without consuming it. Used
+    /// primarily by tests that need to assert capture without disturbing
+    /// the user-facing move-out semantics.
+    [[nodiscard]] std::span<const uint8_t> peek_resumption_ticket() const noexcept {
+        return std::span<const uint8_t>(captured_ticket_.data(),
+                                         captured_ticket_.size());
+    }
 
     /// @brief Decrypt as many complete TLS records as available in
     ///        `[ciphertext_in, ciphertext_in + in_len)`, append plaintext
@@ -386,6 +425,16 @@ private:
     // simpler (no inline 200-byte AEAD struct).
     std::unique_ptr<::eph::net::TlsRecordCrypto> crypto_;
     bool                                          established_ = false;
+    /// Set to true by `handshake()` when `SSL_session_reused` reports
+    /// the TLS 1.3 abbreviated handshake completed instead of a full
+    /// cert exchange. Read-only after handshake.
+    bool                                          was_resumed_ = false;
+    /// Server-issued NewSessionTicket bytes (DER `i2d_SSL_SESSION`)
+    /// captured during the handshake's record-processing window. May
+    /// be empty if the server hasn't issued a ticket yet — typical
+    /// TLS 1.3 servers send one immediately after Finished but some
+    /// defer to post-handshake messages.
+    std::vector<uint8_t>                          captured_ticket_;
 };
 
 } // namespace eph::net::kernel::detail

@@ -51,6 +51,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -107,6 +108,15 @@ public:
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: handshake() failed"});
         }
+        // Snapshot resumption state before extract_hot_state — the
+        // session is dropped at scope exit and the captured ticket /
+        // resumed flag must survive into the stream's metric path.
+        was_resumed_ = sess_r->was_resumed();
+        captured_ticket_ = sess_r->take_resumption_ticket();
+        SPDLOG_LOGGER_DEBUG(tls_state_logger(),
+            "TlsState::handshake: resumed={} captured_ticket={}B",
+            was_resumed_, captured_ticket_.size());
+
         auto state_r = sess_r->extract_hot_state();
         if (!state_r) {
             return std::unexpected(::eph::core::ErrorInfo{
@@ -147,6 +157,22 @@ public:
     }
 
     [[nodiscard]] bool is_established() const noexcept { return established_; }
+
+    /// True if the handshake was a TLS 1.3 abbreviated / PSK resumption.
+    [[nodiscard]] bool was_resumed() const noexcept { return was_resumed_; }
+
+    /// Move-out captured server NewSessionTicket (DER-encoded
+    /// `i2d_SSL_SESSION` bytes). Empty if no ticket arrived. See
+    /// `eph::net::TlsConfig::tls_resumption_ticket` for the consumer side.
+    [[nodiscard]] std::vector<uint8_t> take_resumption_ticket() noexcept {
+        return std::move(captured_ticket_);
+    }
+
+    /// Read-only view (does not consume). Used by tests.
+    [[nodiscard]] std::span<const uint8_t> peek_resumption_ticket() const noexcept {
+        return std::span<const uint8_t>(captured_ticket_.data(),
+                                         captured_ticket_.size());
+    }
 
     /// @brief Decrypt complete TLS records starting at `buf` (mutable!),
     ///        in place. Returns the number of input bytes consumed and
@@ -238,6 +264,12 @@ private:
     std::unique_ptr<::eph::net::detail::TlsInPlaceDecryptor> dec_;
     std::unique_ptr<::eph::net::TlsEncryptor>                 enc_;
     bool                                                       established_ = false;
+    /// TLS 1.3 abbreviated-handshake flag (set inside `handshake()` from
+    /// `SSL_session_reused`). Read-only after handshake.
+    bool                                                       was_resumed_ = false;
+    /// DER-encoded server NewSessionTicket captured during handshake.
+    /// See `take_resumption_ticket()` for move-out semantics.
+    std::vector<uint8_t>                                       captured_ticket_;
 };
 
 } // namespace eph::net::dpdk::detail

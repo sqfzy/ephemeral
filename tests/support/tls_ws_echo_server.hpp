@@ -166,6 +166,17 @@ private:
         // Cert and key are now owned by the SSL_CTX; drop our refs.
         X509_free(cert_); cert_ = nullptr;
         EVP_PKEY_free(pkey_); pkey_ = nullptr;
+
+        // Enable server-side session ticket issuance for TLS 1.3
+        // resumption tests. aws-lc/BoringSSL require an explicit
+        // session_id_context to identify ticket-issuing servers; the
+        // value is opaque and only used to disambiguate cached
+        // sessions across different server roles. A 16-byte literal
+        // is sufficient for in-process tests.
+        static const unsigned char kSidCtx[] = "eph-test-tls-sidctx";
+        SSL_CTX_set_session_id_context(
+            ssl_ctx_, kSidCtx, sizeof(kSidCtx) - 1);
+        SSL_CTX_set_session_cache_mode(ssl_ctx_, SSL_SESS_CACHE_SERVER);
     }
 
     // ─── Listener ───────────────────────────────────────────────────────────

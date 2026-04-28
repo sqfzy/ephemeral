@@ -37,6 +37,13 @@ target("test_transport_tls_ws_e2e")
     add_deps("eph-net-kernel", "eph-codec")
     add_packages("aws-lc")
 
+target("test_tls_resumption")
+    add_rules("eph-test")
+    add_files("test_tls_resumption.cpp")
+    add_includedirs(path.join(os.projectdir(), "tests", "support"))
+    add_deps("eph-net-kernel", "eph-codec")
+    add_packages("aws-lc")
+
 target("test_kernel_udp")
     add_rules("eph-test")
     add_files("test_kernel_udp.cpp")

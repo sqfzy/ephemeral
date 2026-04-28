@@ -19,8 +19,10 @@
 #include <expected>
 #include <format>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -86,10 +88,27 @@ class TlsSession {
     /// @warning Not thread-safe. TlsSession must be used from a single thread.
     /// BIO callbacks access this struct without synchronization; concurrent
     /// use from multiple threads is undefined behavior.
+    ///
+    /// Also doubles as the "session-ticket box": the SSL object's app_data
+    /// points at this struct so `new_session_cb_` (a free C function called
+    /// by aws-lc when the server delivers a NewSessionTicket) can serialize
+    /// the ticket via `i2d_SSL_SESSION` into `captured_ticket` without
+    /// having to chase the owning TlsSession. The TlsSession itself is
+    /// moved by `create()`'s return statement, so its `this` pointer is not
+    /// stable; the heap-allocated BioContext is stable because TlsSession
+    /// owns it via `std::unique_ptr`.
     struct BioContext {
         TcpImpl*             tcp = nullptr;
         std::vector<uint8_t> read_buf;   // Buffered data from TCP rx
         size_t               read_pos = 0;
+
+        /// Serialized session ticket bytes captured by new_session_cb_.
+        /// Empty until the server sends a NewSessionTicket post-handshake;
+        /// some servers send it during the Finished flight, others
+        /// asynchronously after the first application record. Capturing
+        /// is best-effort — if the server never sends a ticket the field
+        /// stays empty and the next reconnect simply does a full handshake.
+        std::vector<uint8_t> captured_ticket{};
 
         /// Timeout for busy-wait polling (used by bio_read).
         /// Set before handshake to match TlsConfig::handshake_timeout.
@@ -216,6 +235,58 @@ class TlsSession {
         }
     }
 
+    /// SSL_CTX session-cache callback: aws-lc invokes this on the client
+    /// once per NewSessionTicket handshake message. We pull the BioContext
+    /// from the SSL's app_data and serialize the ticket into its
+    /// `captured_ticket` field via `i2d_SSL_SESSION`.
+    ///
+    /// Return value contract (OpenSSL/aws-lc): non-zero takes ownership of
+    /// the SSL_SESSION (caller must not free it); 0 leaves ownership with
+    /// the caller (which then frees it on next handshake/SSL_free). We
+    /// return 0 because we serialize the bytes immediately and don't need
+    /// the live `SSL_SESSION` object — letting aws-lc free it keeps memory
+    /// management symmetric with the no-resumption path.
+    static int new_session_cb_(SSL* ssl, SSL_SESSION* sess) noexcept {
+        [[maybe_unused]] auto log = detail::tls_logger();
+        if (!ssl || !sess) return 0;
+
+        auto* ctx = static_cast<BioContext*>(SSL_get_app_data(ssl));
+        if (!ctx) {
+            SPDLOG_LOGGER_WARN(log,
+                "TlsSession::new_session_cb_: app_data is null — "
+                "ticket will be discarded");
+            return 0;
+        }
+
+        // i2d_SSL_SESSION with NULL `out` returns the required buffer
+        // size; with a non-null `*out` it writes into the buffer and
+        // advances the pointer.
+        int needed = i2d_SSL_SESSION(sess, nullptr);
+        if (needed <= 0) {
+            SPDLOG_LOGGER_WARN(log,
+                "TlsSession::new_session_cb_: i2d_SSL_SESSION sizing "
+                "returned {}", needed);
+            return 0;
+        }
+
+        std::vector<uint8_t> buf(static_cast<size_t>(needed));
+        uint8_t* p = buf.data();
+        int written = i2d_SSL_SESSION(sess, &p);
+        if (written <= 0) {
+            SPDLOG_LOGGER_WARN(log,
+                "TlsSession::new_session_cb_: i2d_SSL_SESSION serialize "
+                "returned {}", written);
+            return 0;
+        }
+        buf.resize(static_cast<size_t>(written));
+
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsSession::new_session_cb_: captured TLS ticket ({} bytes)",
+            written);
+        ctx->captured_ticket = std::move(buf);
+        return 0;  // we don't take ownership — aws-lc frees the SSL_SESSION
+    }
+
     /// Create the custom BIO method (singleton per TcpImpl instantiation).
     static const BIO_METHOD* bio_method() {
         static BIO_METHOD* method = [] {
@@ -239,8 +310,9 @@ public:
             return std::unexpected("TCP session not established");
         }
 
-        SPDLOG_LOGGER_DEBUG(log, "Creating TLS session for host: {}",
-                            config.hostname);
+        SPDLOG_LOGGER_DEBUG(log,
+            "Creating TLS session for host: {} (resumption_ticket={}B)",
+            config.hostname, config.tls_resumption_ticket.size());
 
         // Create SSL context
         SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
@@ -249,6 +321,14 @@ public:
             SPDLOG_LOGGER_ERROR(log, "SSL_CTX_new failed: {}", err);
             return std::unexpected(std::format("SSL_CTX_new failed: {}", err));
         }
+
+        // Enable client-side session caching so SSL_CTX_sess_set_new_cb fires
+        // when the server delivers a NewSessionTicket. SSL_SESS_CACHE_CLIENT
+        // is the OpenSSL/aws-lc switch that makes the new_session callback
+        // run on the client side; without it the callback is a no-op.
+        SSL_CTX_set_session_cache_mode(ctx,
+            SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+        SSL_CTX_sess_set_new_cb(ctx, &TlsSession::new_session_cb_);
 
         // Configure TLS 1.3 minimum
         if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION)) {
@@ -387,6 +467,50 @@ public:
 
         // Attach BIO to SSL (SSL takes ownership)
         SSL_set_bio(ssl, bio, bio);
+
+        // Stash the BioContext pointer on the SSL so `new_session_cb_`
+        // can find it when the server sends a NewSessionTicket. The
+        // BioContext is heap-allocated (unique_ptr), so the pointer
+        // stays stable across the TlsSession move at the end of this
+        // function.
+        SSL_set_app_data(ssl, bio_ctx.get());
+
+        // Apply caller-supplied resumption ticket BEFORE SSL_do_handshake
+        // so the next ClientHello carries the pre_shared_key extension.
+        // Failure mode is graceful: if the ticket is corrupt or expired
+        // we log and proceed to a full handshake — connection still
+        // succeeds.
+        if (!config.tls_resumption_ticket.empty()) {
+            const uint8_t* p = config.tls_resumption_ticket.data();
+            SSL_SESSION* restored = d2i_SSL_SESSION(
+                nullptr, &p,
+                static_cast<long>(config.tls_resumption_ticket.size()));
+            if (!restored) {
+                SPDLOG_LOGGER_WARN(log,
+                    "TlsSession::create: d2i_SSL_SESSION failed for "
+                    "resumption ticket ({} bytes) — proceeding with "
+                    "full handshake: {}",
+                    config.tls_resumption_ticket.size(),
+                    detail::ssl_error_string());
+            } else {
+                if (SSL_set_session(ssl, restored) != 1) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "TlsSession::create: SSL_set_session rejected "
+                        "the restored ticket — proceeding with full "
+                        "handshake: {}",
+                        detail::ssl_error_string());
+                } else {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "TlsSession::create: resumption ticket applied "
+                        "({} bytes), abbreviated handshake will be "
+                        "attempted",
+                        config.tls_resumption_ticket.size());
+                }
+                // SSL_set_session bumps the refcount on success, so we
+                // free our local handle either way.
+                SSL_SESSION_free(restored);
+            }
+        }
 
         TlsSession session;
         session.ssl_ = ssl;
@@ -690,6 +814,44 @@ public:
 
     [[nodiscard]] const char* tls_version() const noexcept {
         return ssl_ ? SSL_get_version(ssl_) : "none";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Session resumption
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// True if the just-completed handshake was a TLS 1.3 resumption
+    /// (PSK / abbreviated). Reflects `SSL_session_reused`. Only meaningful
+    /// after `handshake()` returned success.
+    [[nodiscard]] bool was_resumed() const noexcept {
+        return ssl_ && SSL_session_reused(ssl_) == 1;
+    }
+
+    /// Move-out the most recently captured resumption ticket. The bytes
+    /// are produced by `i2d_SSL_SESSION` against the server-issued
+    /// NewSessionTicket; pass them back as
+    /// `TlsConfig::tls_resumption_ticket` on the next connect to attempt
+    /// a 1-RTT abbreviated handshake.
+    ///
+    /// Returns an empty vector if the server never sent a ticket (or
+    /// the handshake hasn't happened yet). Move-out semantics: a
+    /// subsequent call returns empty until the server sends another
+    /// ticket. Servers typically send tickets immediately after the
+    /// handshake completes; HFT venues like Binance also rotate
+    /// tickets every few minutes, so polling this getter periodically
+    /// (e.g. via the reconnect orchestrator) keeps the freshest one.
+    [[nodiscard]] std::vector<uint8_t> take_resumption_ticket() noexcept {
+        if (!bio_ctx_) return {};
+        return std::move(bio_ctx_->captured_ticket);
+    }
+
+    /// Read-only view of the captured ticket (does not move-out).
+    /// Useful for tests / diagnostics where the caller wants to assert
+    /// "a ticket was captured" without consuming it.
+    [[nodiscard]] std::span<const uint8_t> peek_resumption_ticket() const noexcept {
+        if (!bio_ctx_) return {};
+        return std::span<const uint8_t>(bio_ctx_->captured_ticket.data(),
+                                         bio_ctx_->captured_ticket.size());
     }
 
 private:

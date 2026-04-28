@@ -479,9 +479,20 @@ public:
                     h.error().detail);
                 return std::unexpected(h.error());
             }
+            // Classify the handshake as resume vs full so dashboards can
+            // confirm `tls_resumption_ticket` round-trips actually save
+            // the +1 RTT cert exchange. Counters are monotonically
+            // increasing per stream — `publish_metrics` snapshots them
+            // alongside the rest of the StreamMetric set.
+            if (stream->tls_.was_resumed()) {
+                stream->template inc_<::eph::net::StreamMetric::kTlsResumeCount>();
+            } else {
+                stream->template inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
+            }
             SPDLOG_LOGGER_INFO(log,
-                "KernelTcpStream::create: TLS up fd={} remote={}",
-                stream->sock_.fd(), stream->cfg_.remote.to_string());
+                "KernelTcpStream::create: TLS up fd={} remote={} resumed={}",
+                stream->sock_.fd(), stream->cfg_.remote.to_string(),
+                stream->tls_.was_resumed());
         }
 
         // Optional WebSocket HTTP Upgrade. When cfg.ws_path is non-empty,
@@ -848,6 +859,41 @@ public:
     ///        order. The returned counter is monotonically non-decreasing
     ///        — Prometheus-style monotonic counter semantics. Safe for
     ///        any number of concurrent readers.
+    // ── TLS session resumption ───────────────────────────────────────────
+    //
+    // Non-empty when EnableTls=true and the server delivered a TLS 1.3
+    // NewSessionTicket during the handshake. Pass the bytes back as
+    // `StreamConfig::tls.tls_resumption_ticket` on the next reconnect to
+    // attempt the abbreviated 1-RTT handshake. See
+    // `eph/net/detail/tls_constants.hpp` for the ticket lifecycle.
+    //
+    // For non-TLS streams (`EnableTls=false`) these return empty / false.
+
+    /// Move-out the captured server NewSessionTicket bytes. Returns the
+    /// DER-encoded session bytes; empty if no ticket arrived during the
+    /// handshake window or if TLS is disabled. After a move-out a
+    /// subsequent call returns empty until a new ticket is captured —
+    /// since the kernel backend tears down its `SSL_SESSION` after
+    /// `extract_hot_state()`, post-handshake ticket rotations are NOT
+    /// captured. Intended use: call once before reconnect.
+    [[nodiscard]] std::vector<uint8_t> tls_resumption_ticket() noexcept {
+        if constexpr (EnableTls) {
+            return tls_.take_resumption_ticket();
+        } else {
+            return {};
+        }
+    }
+
+    /// True when the just-completed handshake was a TLS 1.3 PSK / ticket
+    /// resumption. Always false for `EnableTls=false`.
+    [[nodiscard]] bool tls_was_resumed() const noexcept {
+        if constexpr (EnableTls) {
+            return tls_.was_resumed();
+        } else {
+            return false;
+        }
+    }
+
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
         // Defensive bounds check — see DpdkTcpStream::metric for rationale.
         if (static_cast<std::size_t>(m) >=

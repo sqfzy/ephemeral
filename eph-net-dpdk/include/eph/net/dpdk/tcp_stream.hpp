@@ -521,8 +521,17 @@ public:
                     h.error().detail);
                 return std::unexpected(h.error());
             }
+            // Mirror KernelTcpStream: classify as resume vs full so
+            // `kTlsResumeCount` / `kTlsHandshakeCount` reflect ticket
+            // round-trip success rate.
+            if (stream->tls_.was_resumed()) {
+                stream->template inc_<::eph::net::StreamMetric::kTlsResumeCount>();
+            } else {
+                stream->template inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
+            }
             SPDLOG_LOGGER_INFO(log,
-                "DpdkTcpStream::create: TLS 1.3 handshake complete");
+                "DpdkTcpStream::create: TLS 1.3 handshake complete (resumed={})",
+                stream->tls_.was_resumed());
         }
 
         // Optional WebSocket HTTP Upgrade. Same contract as
@@ -1138,6 +1147,32 @@ public:
     // See eph/net/stream_metrics.hpp. All 6 metrics are wired on this
     // backend, including the DPDK-only kTlsCrossRecordFrames in the TLS
     // drain_codec_ slow path.
+
+    // ── TLS session resumption ───────────────────────────────────────────
+    //
+    // Symmetric with `KernelTcpStream::tls_resumption_ticket()` — see
+    // `eph/net/detail/tls_constants.hpp` for the lifecycle. DPDK backend
+    // captures tickets identically through the underlying `TlsSession`.
+    //
+    // Returns empty / false when EnableTls=false.
+
+    /// Move-out the captured server NewSessionTicket bytes. DER-encoded.
+    [[nodiscard]] std::vector<uint8_t> tls_resumption_ticket() noexcept {
+        if constexpr (EnableTls) {
+            return tls_.take_resumption_ticket();
+        } else {
+            return {};
+        }
+    }
+
+    /// True if the just-completed handshake was a TLS 1.3 ticket resumption.
+    [[nodiscard]] bool tls_was_resumed() const noexcept {
+        if constexpr (EnableTls) {
+            return tls_.was_resumed();
+        } else {
+            return false;
+        }
+    }
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
         using SM = ::eph::net::StreamMetric;
