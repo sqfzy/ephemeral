@@ -36,6 +36,7 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <csignal>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -76,8 +77,27 @@ public:
     TlsWsEchoServer& operator=(const TlsWsEchoServer&) = delete;
 
     /// Launch the accept thread. Must be called once before clients connect.
+    ///
+    /// Side effect on first call per process: install `SIG_IGN` for
+    /// `SIGPIPE`. Both the accept-loop thread and the per-session worker
+    /// threads call `SSL_write` on TCP sockets that the client may have
+    /// already closed (the venue-adapter tests deliberately tear sessions
+    /// down to exercise reconnect). Without this, the kernel delivers
+    /// `SIGPIPE` to the test process which terminates with exit code 141.
+    /// `xmake run` masks this via its own subprocess wrapper, but running
+    /// the compiled binary directly does not — so the exit-code parity
+    /// across the two invocation paths was broken until this guard. We
+    /// install once per process via a function-local static and use the
+    /// `static_cast<void>` discard to silence -Wunused.
     void start() {
         if (running_.exchange(true)) return;
+        [[maybe_unused]] static const bool kSigpipeIgnored = []() {
+            // POSIX: signal(SIGPIPE, SIG_IGN) is sufficient — we don't
+            // need sigaction here because we don't care about the
+            // previous handler and the disposition is process-wide.
+            std::signal(SIGPIPE, SIG_IGN);
+            return true;
+        }();
         accept_thread_ = std::thread([this] { accept_loop_(); });
     }
 
