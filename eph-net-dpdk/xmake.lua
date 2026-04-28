@@ -109,6 +109,22 @@ target("test_dpdk_rss_platform")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
+-- RSS bring-up failure-path reshape integration test (real-NIC). Constructs
+-- multiple PlatformConfig shapes (multi-queue + enable_rss=true /
+-- multi-queue + enable_rss=false / single-queue) within one EAL session
+-- to verify the probe + hard-fail behaviour. SKIPs when NIC_B is not
+-- bound to vfio-pci.
+target("test_dpdk_rss_bringup")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_rss_bringup.cpp")
+    add_deps("eph-net-dpdk")
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
+        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
+    apply_dpdk_pmd_linkgroups()
+
 -- Multi-process (primary+secondary) e2e test binaries — one per role,
 -- coordinated by tests/integration/dpdk_mp_e2e.sh. Each skips cleanly
 -- when the env vars set by the orchestrator are absent, so `xmake run -g

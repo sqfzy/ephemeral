@@ -160,13 +160,19 @@ public:
         argv.reserve(args.size());
         for (auto& a : args) argv.push_back(a.data());
 
-        // Multi-queue + enable_rss=true with the post-PR-2 invariant
-        // pin AND the RETA-collapse fix: ENA's hash_update unsupported
-        // → rss_active=false → dispatch_mode pinned to Software → RETA
-        // forced to all-queue-0 → single Poller receives all traffic
-        // even though nb_rx_queues=4 is physically allocated.  This
-        // exercises the actual fix and proves single-Poller usage is
-        // safe under multi-queue config.
+        // Multi-queue + enable_rss=true:
+        //   * On non-ENA PMDs (Mellanox/Intel): configure_rss installs
+        //     eph's key, dispatch_mode = RssPartitioned/FlowDirector.
+        //   * On ENA with newer driver: configure_rss is rejected, but
+        //     the post-reshape probe path reads NIC's actual key via
+        //     rte_eth_dev_rss_hash_conf_get → rss_active=true,
+        //     using_probed_key=true; dispatch_mode stays at the
+        //     detected capability (typically RssPartitioned).
+        //   * On ENA with older driver (no probe support): Platform::create
+        //     hard-fails — env never becomes ready, all tests SKIP.
+        // (The legacy "RETA collapse to queue 0 + Software pin" path
+        // was removed by the bring-up reshape; see test_dpdk_rss_bringup
+        // for the failure-path matrix.)
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
@@ -231,7 +237,7 @@ inline uint16_t next_src_port() {
 // ─────────────────────────────────────────────────────────────────────────────
 // PlatformRss.RegistryAndDispatchMode
 //
-// Registry plumbing + dispatch_mode invariant on the single-queue env
+// Registry plumbing + dispatch_mode invariant on the multi-queue env
 // (see SetUp rationale).  Declared FIRST so it runs before the E2E test
 // — registry side-effects on queue 0 here would prevent the E2E test
 // from registering its real Poller, so we only exercise NEGATIVE cases
@@ -242,10 +248,11 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     EPH_RSS_PLATFORM_SKIP_IF_NOT_READY();
     auto& platform = RssPlatformEnv::env().platform;
 
-    // PR-2 invariant: ENA's hash_update unsupported → rss_active=false →
-    // dispatch_mode pinned to Software.  On Mellanox/Intel where
-    // hash_update succeeds, this would stay at the detected mode; here
-    // we just assert the value is one of the known three.
+    // Post-reshape: dispatch_mode stays at the detected capability when
+    // RSS is active (whether installed by configure_rss or resolved via
+    // probe), and pins to Software only in the single-queue / no-RSS
+    // paths. On ENA with probe support this is typically RssPartitioned;
+    // we just assert the value is one of the three known modes.
     const auto mode = platform.dispatch_mode();
     EXPECT_TRUE(mode == ::eph::net::dpdk::RxDispatchMode::Software ||
                 mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned ||
@@ -329,10 +336,12 @@ TEST(PlatformRss, CreateAndAttachSoftwareModeE2E) {
     auto& benv = RssPlatformEnv::env();
     auto& platform = benv.platform;
 
-    // The PR-2 invariant pins dispatch_mode=Software when RSS isn't
-    // active (true on ENA where hash_update fails).  For the FlowDirector
-    // / RssPartitioned variants this would need a hash-update-capable
-    // NIC; not exercised here.
+    // This E2E only exercises the Software path (single-Poller on queue 0).
+    // After the bring-up reshape, dispatch_mode stays at the NIC's detected
+    // capability when RSS is active — so on ENA with probe support this
+    // test SKIPs cleanly. Reachable only on hardware/configs where
+    // dispatch_mode genuinely lands at Software (e.g. nb_rx_queues=1
+    // configs, or NICs without RSS/FlowDirector capability).
     if (platform.dispatch_mode() !=
             ::eph::net::dpdk::RxDispatchMode::Software) {
         GTEST_SKIP() << "dispatch_mode is "
