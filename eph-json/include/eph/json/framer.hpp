@@ -5,8 +5,11 @@
 ///
 /// WebSocket already provides message framing, so JSON payloads arrive
 /// as complete messages. This framer is a semantic pass-through: it
-/// delivers the entire payload as a single frame, matching RawFramer
-/// behavior but with a distinct type for Transport type aliases.
+/// delivers the entire payload as a single frame, matching the
+/// length-prefix / raw-stream framers' behavior but with a distinct
+/// type for use with the legacy `MessageFramer`-based stack
+/// (parser modules still consume this; the v3.3 net layer uses the
+/// `eph::core::StreamCodec` concept directly via `eph-codec/ws_codec`).
 
 #include <cstring>
 
@@ -18,7 +21,8 @@ namespace eph::json {
 ///
 /// Since WebSocket handles message boundaries, each recv callback
 /// delivers exactly one JSON message. This framer simply wraps the
-/// raw bytes as a DecodedFrame for the Transport pipeline.
+/// raw bytes as a `DecodedFrame` for downstream consumers that operate
+/// on the `MessageFramer` contract.
 ///
 /// Satisfies the eph::net::MessageFramer concept with zero framing
 /// overhead -- encode is a plain memcpy, decode wraps the buffer
