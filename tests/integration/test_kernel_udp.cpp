@@ -143,3 +143,70 @@ TEST(KernelUdpV3, JoinLeaveMulticastSurfaces) {
     auto l = sock->leave_multicast(group);
     EXPECT_TRUE(l.has_value()) << (l.has_value() ? "" : l.error().detail);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary tests — poison-pill inputs that exercise error branches.
+// Per feedback_protocol_boundary_test.md: every protocol layer's intake
+// surface needs an "error type legitimate input" case. Happy-path coverage
+// alone hides silent-degrade bugs (DNS port mismatch trapped 2026-04 was
+// the canonical example).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SendBeforeAttach: send_to() must fail-fast when called on a socket that
+// hasn't been added to a Poller. Catches accidental use of bare
+// KernelUdpSocket::create() without the poller->add() step. The error
+// surface is `NotAttached` (distinct from Disconnected — fd is still open;
+// the missing piece is the Poller wiring).
+TEST(KernelUdpV3, SendBeforeAttachReturnsNotAttached) {
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto sock = PlainUdp::create(cfg).value();
+    ASSERT_FALSE(sock->is_attached());
+
+    const uint8_t payload[] = {'x'};
+    auto r = sock->send_to(payload,
+        en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 53});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::NotAttached);
+    // Message must mention "attach" so operators can grep logs.
+    EXPECT_NE(std::string_view{r.error().detail}.find("attach"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
+}
+
+// JoinUnicastFails: join_multicast() with a unicast IP must surface the
+// kernel's EINVAL as InvalidConfig, not silently succeed. Defends against
+// caller passing the wrong leg of an SocketAddr pair.
+TEST(KernelUdpV3, JoinMulticastWithUnicastIpRejected) {
+    auto poller = ek::KernelPoller::create({}).value();
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0};
+    auto sock = PlainUdp::create(cfg).value();
+    ASSERT_TRUE(poller->add(sock.get()).has_value());
+
+    // 8.8.8.8 is unicast — must NOT join.
+    en::SocketAddr unicast{en::Ipv4Addr{8, 8, 8, 8}, 53};
+    auto j = sock->join_multicast(unicast);
+    ASSERT_FALSE(j.has_value())
+        << "join_multicast on unicast IP must surface kernel EINVAL";
+    EXPECT_EQ(j.error().code, eph::core::Error::InvalidConfig);
+}
+
+// LeaveWithoutJoinFails: leave_multicast() of a group never joined must
+// surface EADDRNOTAVAIL as InvalidConfig — observable contract that the
+// kernel's bookkeeping is intact (regression guard against silent-success
+// drift if a future change replaces setsockopt with a no-op path).
+TEST(KernelUdpV3, LeaveMulticastWithoutJoinReturnsError) {
+    auto poller = ek::KernelPoller::create({}).value();
+    ek::UdpConfig cfg{};
+    cfg.bind       = en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0};
+    cfg.reuse_addr = true;
+    auto sock = PlainUdp::create(cfg).value();
+    ASSERT_TRUE(poller->add(sock.get()).has_value());
+
+    en::SocketAddr group{en::Ipv4Addr{239, 0, 0, 99}, 30000};
+    auto l = sock->leave_multicast(group);
+    ASSERT_FALSE(l.has_value())
+        << "leave_multicast without prior join must error";
+    EXPECT_EQ(l.error().code, eph::core::Error::InvalidConfig);
+}
