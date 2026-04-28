@@ -189,8 +189,6 @@ inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     case OrigClOrdID:           return "OrigClOrdID";
     case OrigSendingTime:       return "OrigSendingTime";
     case PossDupFlag:           return "PossDupFlag";
-    // Note: TestReqID added between PossDupFlag and PossResend alphabetically
-    case TestReqID:             return "TestReqID";
     case PossResend:            return "PossResend";
     case Price:                 return "Price";
     case ResetSeqNumFlag:       return "ResetSeqNumFlag";
@@ -206,6 +204,7 @@ inline constexpr std::string_view tag_name(uint32_t t) noexcept {
     case Symbol:                return "Symbol";
     case TargetCompID:          return "TargetCompID";
     case TargetSubID:           return "TargetSubID";
+    case TestReqID:             return "TestReqID";
     case Text:                  return "Text";
     case TimeInForce:           return "TimeInForce";
     case TransactTime:          return "TransactTime";
