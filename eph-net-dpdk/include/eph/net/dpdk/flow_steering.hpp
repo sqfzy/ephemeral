@@ -581,8 +581,10 @@ queue_for_hash(uint32_t hash, std::span<const uint16_t> reta_table) noexcept {
 /// is known constant during the search.
 struct RssState {
     /// Storage for the key bytes returned by `rte_eth_dev_rss_hash_conf_get`.
-    /// `key_len == 0` means readback was unsupported and `key()` falls
-    /// back to `kRssDefaultKey`.
+    /// `key_len == 0` means the readback returned no key (PMD doesn't
+    /// expose its hash key) and `key()` falls back to `kRssDefaultKey`.
+    /// The fallback is only correct when the NIC is actually running
+    /// `kRssDefaultKey` — see `key()` for the full safety contract.
     std::array<uint8_t, 64> key_buf{};
     uint8_t  key_len = 0;
     uint16_t reta_size = 0;
@@ -590,9 +592,22 @@ struct RssState {
     rte_eth_rss_reta_entry64
         reta[RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE]{};
 
-    /// Active RSS key — driver readback if available, else
-    /// `kRssDefaultKey`. The returned span aliases either `key_buf` or
-    /// `kRssDefaultKey`; do not retain past `RssState`'s lifetime.
+    /// Active RSS key — driver readback when `key_len > 0`, else
+    /// `kRssDefaultKey` as a best-effort fallback. The returned span
+    /// aliases either `key_buf` or `kRssDefaultKey`; do not retain past
+    /// `RssState`'s lifetime.
+    ///
+    /// **Fallback safety**: when `key_len == 0`, predictions made
+    /// against this key are only correct if `configure_rss` succeeded
+    /// on this port (and thus installed `kRssDefaultKey`). On PMDs
+    /// where `configure_rss` was rejected (notably some ENA driver
+    /// versions) the NIC is using its OWN internal default key, not
+    /// `kRssDefaultKey`, and predictions are silently wrong.
+    /// `Platform::create` enforces this by hard-failing when both
+    /// `rss_hash_update` AND `rss_hash_conf_get` are unsupported, so a
+    /// `Platform`-managed port never reaches the unsafe fallback path.
+    /// Direct callers of `query_rss_state` outside the `Platform`
+    /// bring-up are responsible for ensuring the same invariant.
     [[nodiscard]] std::span<const uint8_t> key() const noexcept {
         return key_len > 0 ? std::span(key_buf.data(),
                                        static_cast<size_t>(key_len))
@@ -600,13 +615,21 @@ struct RssState {
     }
 };
 
-/// Query a port's RSS state with two NIC syscalls
+/// Query a port's RSS state with three NIC syscalls
 /// (`rte_eth_dev_rss_hash_conf_get` + `rte_eth_dev_info_get` +
-/// `rte_eth_dev_rss_reta_query`). Some PMDs (notably ENA) reject
-/// `rss_hash_conf_get`; in that case `RssState::key_len` stays 0 and
-/// `RssState::key()` falls back to `kRssDefaultKey` — the prediction
-/// remains accurate as long as nobody overwrote the key (default
-/// `configure_rss` installs exactly `kRssDefaultKey`).
+/// `rte_eth_dev_rss_reta_query`).
+///
+/// PMD coverage notes (empirical, DPDK 24.11):
+///   * Mellanox / Intel: `rss_hash_conf_get` returns the installed key
+///     (whatever `configure_rss` set, defaulting to `kRssDefaultKey`).
+///   * ENA (AWS Graviton, current driver): `rss_hash_conf_get` returns
+///     the NIC's actual hash key (64 bytes) even though
+///     `rss_hash_update` is rejected — so the probe path makes
+///     RssPartitioned mode genuinely usable on ENA.
+///   * Older / exotic PMDs: may reject `rss_hash_conf_get` entirely
+///     (`key_len` stays 0). `Platform::create` treats that as a
+///     hard-fail when the caller asked for `nb_rx_queues > 1`; see
+///     the `key()` doc for the safety contract on the fallback path.
 [[nodiscard]] inline std::expected<RssState, std::string>
 query_rss_state(uint16_t port_id) noexcept {
     [[maybe_unused]] auto* log = detail::flow_logger();
