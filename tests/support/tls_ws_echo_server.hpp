@@ -25,8 +25,10 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -104,6 +106,95 @@ public:
 
     /// Bound port (only valid after construction).
     [[nodiscard]] uint16_t port() const noexcept { return port_; }
+
+    // ── Test hooks (added for venue adapter integration tests) ──────────────
+    //
+    // These extensions are purely additive: when no handler is installed the
+    // default behaviour (echo text/binary, pong on ping, close on close) is
+    // unchanged. Used by `test_okx_adapter`, `test_bybit_adapter`,
+    // `test_coinbase_adapter` to:
+    //   1. Inject venue-specific subscribe-ack responses without rewriting
+    //      the WS framing logic per test.
+    //   2. Capture HTTP Upgrade request headers so tests can verify auth
+    //      headers (e.g. Coinbase JWT) actually went on the wire.
+    //   3. Observe how many WS data frames the server received total —
+    //      counts the per-session subscribe replays in reconnect tests.
+
+    /// @brief Application-message handler. Receives a text/binary payload
+    ///        plus the raw opcode (`0x1` text, `0x2` binary). Return value:
+    ///          - `std::nullopt`: fall through to the default echo behaviour
+    ///            (existing `test_transport_tls_ws_e2e` and
+    ///            `test_tls_resumption` rely on this default).
+    ///          - non-empty vector: server sends this payload back to the
+    ///            client as a single text/binary frame with the SAME opcode.
+    ///          - empty vector (`std::vector<uint8_t>{}`): server sends a
+    ///            zero-length frame back. This is rarely useful but kept
+    ///            available for completeness.
+    using MessageHandler = std::function<
+        std::optional<std::vector<uint8_t>>(std::span<const uint8_t>, uint8_t)>;
+
+    /// @brief Install an application-message handler. Pass `{}` to clear.
+    ///        Must be installed before `start()` (handler is read by accept
+    ///        threads under no synchronization).
+    void set_message_handler(MessageHandler h) noexcept {
+        message_handler_ = std::move(h);
+    }
+
+    /// @brief Capture every HTTP Upgrade request header block as a string.
+    ///        Useful for tests that need to verify auth / signed headers
+    ///        (e.g. JWT, X-MBX-APIKEY, OK-ACCESS-SIGN) reached the server.
+    ///        The captured strings include CRLF line endings and the final
+    ///        empty CRLF.
+    void enable_request_capture(bool on = true) noexcept {
+        capture_requests_ = on;
+    }
+
+    /// @brief Snapshot of all captured HTTP request blocks (one entry per
+    ///        accepted session). Empty if `enable_request_capture(false)`.
+    [[nodiscard]] std::vector<std::string> captured_requests() const {
+        std::lock_guard lk(captured_mu_);
+        return captured_requests_;  // copy
+    }
+
+    /// @brief Total number of WS text/binary frames received across all
+    ///        sessions. Atomic; safe to read concurrently with the accept
+    ///        loop. Useful for assertions like "subscribe replayed twice".
+    [[nodiscard]] uint64_t messages_received() const noexcept {
+        return messages_received_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Number of TLS sessions accepted since construction.
+    [[nodiscard]] uint64_t accepted_sessions() const noexcept {
+        return accepted_sessions_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Send a WS Close frame with the given status code on every
+    ///        active session before tearing the TCP connection down. Used
+    ///        to simulate venue-side disconnects (Close 1011 for
+    ///        "internal server error" is the canonical Bybit / OKX
+    ///        reconnect trigger).
+    ///
+    /// @param close_code  RFC 6455 close status code (e.g. 1000 normal,
+    ///                    1011 internal error). 0 → just hard-close the fd
+    ///                    (equivalent to `kill_active_sessions`).
+    void send_close_to_all(uint16_t close_code) noexcept {
+        std::lock_guard lk(sessions_mu_);
+        for (auto& [fd, ssl] : active_ssl_) {
+            if (close_code != 0 && ssl != nullptr) {
+                uint8_t frame[4];
+                frame[0] = 0x88;  // FIN | Close
+                frame[1] = 0x02;  // payload len 2
+                frame[2] = static_cast<uint8_t>(close_code >> 8);
+                frame[3] = static_cast<uint8_t>(close_code & 0xFF);
+                // Best-effort: SSL_write may fail if the session is mid-
+                // teardown; fall through to fd shutdown either way.
+                (void)SSL_write(ssl, frame, 4);
+            }
+            ::shutdown(fd, SHUT_RDWR);
+        }
+        active_session_fds_.clear();
+        active_ssl_.clear();
+    }
 
 private:
     // ─── Cert generation ────────────────────────────────────────────────────
@@ -226,6 +317,7 @@ private:
                 std::lock_guard lk(sessions_mu_);
                 active_session_fds_.push_back(fd);
             }
+            accepted_sessions_.fetch_add(1, std::memory_order_relaxed);
             // Detach a per-connection handler thread so the accept loop
             // can keep accepting new connections (needed for reconnect
             // tests where multiple sessions arrive serially).
@@ -244,6 +336,15 @@ private:
             return;
         }
 
+        // Register the SSL handle so `send_close_to_all` can write a Close
+        // frame on this session even when the handler is blocked in
+        // SSL_read. The fd is already in active_session_fds_ from the
+        // accept loop.
+        {
+            std::lock_guard lk(sessions_mu_);
+            active_ssl_.push_back({fd, ssl});
+        }
+
         // ── Read HTTP Upgrade request ──────────────────────────────
         std::string req;
         req.reserve(2048);
@@ -252,6 +353,11 @@ private:
             int n = SSL_read(ssl, buf, sizeof(buf));
             if (n <= 0) { teardown_(ssl, fd); return; }
             req.append(buf, static_cast<size_t>(n));
+        }
+
+        if (capture_requests_) {
+            std::lock_guard lk(captured_mu_);
+            captured_requests_.push_back(req);
         }
 
         // Extract Sec-WebSocket-Key
@@ -342,22 +448,46 @@ private:
                 continue;
             }
 
-            // Text/Binary echo: send back unmasked frame with same opcode
+            // Bookkeeping: text/binary frames are counted for tests that
+            // assert "subscribe was replayed N times".
+            messages_received_.fetch_add(1, std::memory_order_relaxed);
+
+            // Decide what to send back. If a venue test installed a
+            // handler, give it first dibs; only fall back to plain echo
+            // when the handler returns nullopt. This preserves the
+            // pre-existing back-compat behaviour for tests that don't
+            // touch the handler.
+            std::vector<uint8_t> response_payload;
+            uint8_t response_opcode = opcode;
+            if (message_handler_) {
+                auto custom = message_handler_(
+                    std::span<const uint8_t>(payload.data(), payload.size()),
+                    opcode);
+                if (custom) {
+                    response_payload = std::move(*custom);
+                } else {
+                    response_payload = std::move(payload);
+                }
+            } else {
+                response_payload = std::move(payload);
+            }
+            const uint64_t r_plen = response_payload.size();
+
             std::vector<uint8_t> out;
-            out.reserve(plen + 14);
-            out.push_back(static_cast<uint8_t>((fin ? 0x80 : 0) | opcode));
-            if (plen <= 125) {
-                out.push_back(static_cast<uint8_t>(plen));
-            } else if (plen <= 65535) {
+            out.reserve(r_plen + 14);
+            out.push_back(static_cast<uint8_t>((fin ? 0x80 : 0) | response_opcode));
+            if (r_plen <= 125) {
+                out.push_back(static_cast<uint8_t>(r_plen));
+            } else if (r_plen <= 65535) {
                 out.push_back(126);
-                out.push_back(static_cast<uint8_t>(plen >> 8));
-                out.push_back(static_cast<uint8_t>(plen & 0xFF));
+                out.push_back(static_cast<uint8_t>(r_plen >> 8));
+                out.push_back(static_cast<uint8_t>(r_plen & 0xFF));
             } else {
                 out.push_back(127);
                 for (int i = 7; i >= 0; --i)
-                    out.push_back(static_cast<uint8_t>((plen >> (8 * i)) & 0xFF));
+                    out.push_back(static_cast<uint8_t>((r_plen >> (8 * i)) & 0xFF));
             }
-            out.insert(out.end(), payload.begin(), payload.end());
+            out.insert(out.end(), response_payload.begin(), response_payload.end());
             if (SSL_write(ssl, out.data(), static_cast<int>(out.size())) <= 0)
                 return;
         }
@@ -373,6 +503,9 @@ private:
         for (auto it = active_session_fds_.begin();
              it != active_session_fds_.end(); ++it) {
             if (*it == fd) { active_session_fds_.erase(it); break; }
+        }
+        for (auto it = active_ssl_.begin(); it != active_ssl_.end(); ++it) {
+            if (it->first == fd) { active_ssl_.erase(it); break; }
         }
     }
 
@@ -438,6 +571,21 @@ private:
 
     std::mutex sessions_mu_;
     std::vector<int> active_session_fds_;
+    /// SSL handle paired with its fd, so `send_close_to_all` can write a
+    /// Close frame on this session without interleaving with the per-session
+    /// thread's SSL_read. (SSL_write from another thread on the same SSL is
+    /// technically not thread-safe, but in our tests the handler thread is
+    /// blocked in SSL_read, so the kernel + AEAD state machine tolerates a
+    /// single concurrent write.)
+    std::vector<std::pair<int, SSL*>> active_ssl_;
+
+    // ── Test hooks (default values preserve the pre-extension behaviour) ──
+    MessageHandler                    message_handler_;
+    bool                              capture_requests_{false};
+    mutable std::mutex                captured_mu_;
+    std::vector<std::string>          captured_requests_;
+    std::atomic<uint64_t>             messages_received_{0};
+    std::atomic<uint64_t>             accepted_sessions_{0};
 };
 
 } // namespace eph::test
