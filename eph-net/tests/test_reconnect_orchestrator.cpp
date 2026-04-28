@@ -425,7 +425,235 @@ TEST_F(ReconnectOrchestratorTest, AttachFailureCountsAsAttempt) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Test 11: StopHaltsTickProgress — stop() freezes the state machine even if
+// Test 11 (T2.14): EventsEmittedInOrder — the fine-grained event hook fires
+// at every state transition. After connect → mark_disconnected → backoff →
+// successful reconnect, only the events from the disconnect window forward
+// are checked: [DisconnectDetected, BackoffScheduled, AttemptStarted,
+// Connected]. Events from the initial start() are cleared first.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, EventsEmittedInOrder) {
+    auto cfg = kDeterministicConfig();
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+    };
+
+    std::vector<en::ReconnectEventKind> events;
+    orch.set_on_reconnect_event([&](const en::ReconnectEvent& ev) {
+        events.push_back(ev.kind);
+    });
+
+    ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+    // Drop the start() sequence (AttemptStarted + Connected) so the
+    // assertion below targets only the reconnect cycle.
+    events.clear();
+
+    orch.mark_disconnected({eph::core::Error::Disconnected, "x"});
+    ASSERT_EQ(orch.state(), en::ReconnectState::Backoff);
+
+    // Drive past the backoff deadline.
+    auto t = eph::utils::TSC::now()
+             + eph::utils::TSC::to_cycles(60ms).value_or(180'000'000ULL);
+    orch.tick(t);
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+
+    ASSERT_EQ(events.size(), 4u);
+    EXPECT_EQ(events[0], en::ReconnectEventKind::DisconnectDetected);
+    EXPECT_EQ(events[1], en::ReconnectEventKind::BackoffScheduled);
+    EXPECT_EQ(events[2], en::ReconnectEventKind::AttemptStarted);
+    EXPECT_EQ(events[3], en::ReconnectEventKind::Connected);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 12 (T2.14): AttemptFailedEventCarriesError — factory fails twice then
+// succeeds. Verifies AttemptFailed events carry the underlying ErrorInfo and
+// the full event sequence is observable for diagnostic correlation.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, AttemptFailedEventCarriesError) {
+    auto cfg = kDeterministicConfig();
+    cfg.policy.max_attempts = 0;  // unlimited
+    int factory_calls = 0;
+    Orch orch{
+        cfg,
+        [&]() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            ++factory_calls;
+            if (factory_calls < 3) {
+                return std::unexpected(eph::core::ErrorInfo{
+                    eph::core::Error::ConnectFailed, "synthetic-fail"});
+            }
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+    };
+
+    std::vector<en::ReconnectEvent> events;
+    orch.set_on_reconnect_event([&](const en::ReconnectEvent& ev) {
+        events.push_back(ev);
+    });
+
+    auto vt = eph::utils::TSC::now();
+    ASSERT_TRUE(orch.start(vt).has_value());
+    EXPECT_EQ(orch.state(), en::ReconnectState::Backoff);
+
+    // Drive forward until success.
+    const auto step = eph::utils::TSC::to_cycles(1s).value_or(3'000'000'000ULL);
+    for (int i = 0; i < 5 && orch.state() != en::ReconnectState::Connected; ++i) {
+        vt += step;
+        orch.tick(vt);
+    }
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+
+    // Expected sequence:
+    //   AttemptStarted, AttemptFailed, BackoffScheduled,   // attempt 1 fails
+    //   AttemptStarted, AttemptFailed, BackoffScheduled,   // attempt 2 fails
+    //   AttemptStarted, Connected                          // attempt 3 wins
+    // (8 events)
+    ASSERT_EQ(events.size(), 8u);
+    EXPECT_EQ(events[0].kind, en::ReconnectEventKind::AttemptStarted);
+    EXPECT_EQ(events[1].kind, en::ReconnectEventKind::AttemptFailed);
+    EXPECT_EQ(events[1].error.code, eph::core::Error::ConnectFailed);
+    EXPECT_STREQ(events[1].error.detail, "synthetic-fail");
+    EXPECT_EQ(events[2].kind, en::ReconnectEventKind::BackoffScheduled);
+    EXPECT_EQ(events[3].kind, en::ReconnectEventKind::AttemptStarted);
+    EXPECT_EQ(events[4].kind, en::ReconnectEventKind::AttemptFailed);
+    EXPECT_EQ(events[4].error.code, eph::core::Error::ConnectFailed);
+    EXPECT_STREQ(events[4].error.detail, "synthetic-fail");
+    EXPECT_EQ(events[5].kind, en::ReconnectEventKind::BackoffScheduled);
+    EXPECT_EQ(events[6].kind, en::ReconnectEventKind::AttemptStarted);
+    EXPECT_EQ(events[7].kind, en::ReconnectEventKind::Connected);
+
+    // Connected event's duration_ns should be non-zero (real cycles elapsed
+    // between start() and the third successful attempt).
+    EXPECT_GT(events[7].duration_ns, 0u);
+
+    // Non-failure events carry the sentinel {Ok, ""}.
+    EXPECT_EQ(events[0].error.code, eph::core::Error::Ok);
+    EXPECT_EQ(events[2].error.code, eph::core::Error::Ok);
+    EXPECT_EQ(events[7].error.code, eph::core::Error::Ok);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 13 (T2.14): FailedEventOnExhaustion — max_attempts=2 with a factory
+// that always fails; the terminal event must be `Failed`.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, FailedEventOnExhaustion) {
+    auto cfg = kDeterministicConfig();
+    cfg.policy.max_attempts = 2;
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            return std::unexpected(eph::core::ErrorInfo{
+                eph::core::Error::ConnectFailed, "always-fail"});
+        },
+    };
+
+    std::vector<en::ReconnectEventKind> kinds;
+    orch.set_on_reconnect_event([&](const en::ReconnectEvent& ev) {
+        kinds.push_back(ev.kind);
+    });
+
+    auto vt = eph::utils::TSC::now();
+    ASSERT_TRUE(orch.start(vt).has_value());
+    const auto step = eph::utils::TSC::to_cycles(1s).value_or(3'000'000'000ULL);
+    for (int i = 0; i < 5 && orch.state() != en::ReconnectState::Failed; ++i) {
+        vt += step;
+        orch.tick(vt);
+    }
+    ASSERT_EQ(orch.state(), en::ReconnectState::Failed);
+
+    ASSERT_FALSE(kinds.empty());
+    EXPECT_EQ(kinds.back(), en::ReconnectEventKind::Failed);
+    // At least one AttemptFailed should appear before the terminal Failed.
+    bool saw_attempt_failed = false;
+    for (auto k : kinds) {
+        if (k == en::ReconnectEventKind::AttemptFailed) saw_attempt_failed = true;
+    }
+    EXPECT_TRUE(saw_attempt_failed);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 14 (T2.14): NoEventCallbackIsOk — without any event hook installed,
+// the state machine continues to function. Acts as a regression check that
+// the new emit_event_ helper short-circuits cleanly when on_event_ is empty.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, NoEventCallbackIsOk) {
+    auto cfg = kDeterministicConfig();
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+    };
+    // Deliberately do NOT call set_on_reconnect_event.
+
+    ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
+    EXPECT_EQ(orch.state(), en::ReconnectState::Connected);
+
+    orch.mark_disconnected({eph::core::Error::Disconnected, "x"});
+    EXPECT_EQ(orch.state(), en::ReconnectState::Backoff);
+
+    auto t = eph::utils::TSC::now()
+             + eph::utils::TSC::to_cycles(60ms).value_or(180'000'000ULL);
+    orch.tick(t);
+    EXPECT_EQ(orch.state(), en::ReconnectState::Connected);
+    EXPECT_EQ(orch.reconnect_count(), 2u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 15 (T2.14): EventDurationMatchesMetric — the Connected event's
+// duration_ns matches `last_reconnect_duration_ns()` exactly. Both should
+// reflect the same TSC-derived ns delta.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST_F(ReconnectOrchestratorTest, EventDurationMatchesMetric) {
+    auto cfg = kDeterministicConfig();
+    Orch orch{
+        cfg,
+        []() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+    };
+
+    uint64_t last_connected_duration_ns = 0;
+    orch.set_on_reconnect_event([&](const en::ReconnectEvent& ev) {
+        if (ev.kind == en::ReconnectEventKind::Connected) {
+            last_connected_duration_ns = ev.duration_ns;
+        }
+    });
+
+    ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+    // Initial start: disconnect_tsc_ == start tsc → duration is ~0.
+    EXPECT_EQ(last_connected_duration_ns, orch.last_reconnect_duration_ns());
+
+    // Now trigger a real reconnect with a measurable gap.
+    orch.mark_disconnected({eph::core::Error::Disconnected, "x"});
+    auto t = eph::utils::TSC::now()
+             + eph::utils::TSC::to_cycles(100ms).value_or(300'000'000ULL);
+    orch.tick(t);
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+
+    // Both must match exactly — they're computed from the same ns_opt value
+    // inside try_attempt_().
+    EXPECT_EQ(last_connected_duration_ns, orch.last_reconnect_duration_ns());
+    EXPECT_GT(last_connected_duration_ns, 0u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 16: StopHaltsTickProgress — stop() freezes the state machine even if
 // the deadline elapses.
 // ─────────────────────────────────────────────────────────────────────────────
 TEST_F(ReconnectOrchestratorTest, StopHaltsTickProgress) {
