@@ -239,6 +239,28 @@ TEST(PlatformRssFanout, NStreamsSameQueueSameEndpoint) {
     auto& platform = benv.platform;
     EPH_FANOUT_SKIP_IF_NOT_RSS_PARTITIONED(platform);
 
+    // Diagnostic: dump the RSS key our software predictor will use.
+    // Compare with `ethtool -x ens35` (run before vfio bind) to confirm
+    // whether DPDK PMD really returned the NIC's firmware key (probe
+    // succeeded) vs returned a default-filled buffer (probe is fake).
+    if (auto state_r = ed::query_rss_state(benv.port_id); state_r) {
+        std::string hex;
+        hex.reserve(state_r->key_len * 3);
+        auto key = state_r->key();
+        for (size_t i = 0; i < key.size(); ++i) {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%02x:", key[i]);
+            hex += buf;
+        }
+        if (!hex.empty()) hex.pop_back();
+        spdlog::info("RssFanout: probed RSS key (key_len={}, "
+                     "rss_using_probed_key={}, reta_size={}): {}",
+                     state_r->key_len,
+                     platform.rss_using_probed_key(),
+                     state_r->reta_size,
+                     hex);
+    }
+
     // Production reference is 15 paths; 12 here keeps test runtime under
     // ~5s on dev hosts while still covering the bug surface — pre-fix
     // would fail at stream #2 already.
@@ -371,45 +393,17 @@ TEST(PlatformRssFanout, NStreamsSameQueueSameEndpoint) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PlatformRssFanout.DISABLED_NStreamsDistributedAcrossQueues
+// PlatformRssFanout.NStreamsDistributedAcrossQueues
 //
 // Sanity check that a stream pinned to queue N≠0 actually has its RX
-// SYN-ACK delivered to queue N. **Currently disabled** — on AWS ENA this
-// fails for a reason orthogonal to the fan-out fix:
-//
-//   ENA_DRIVER: ena_rss_hash_conf_get(): Reading hash control from the
-//   device is not supported. .rss_hf will contain a default value.
-//
-// `query_rss_state()` returns rss_key_len=0 → our software prediction
-// falls back to `kRssDefaultKey` (flow_steering.hpp:RssState::key()).
-// The NIC actually uses a different internal key, so
-// `find_src_port_for_queue` picks a port that hashes to queue N in our
-// simulation but to some other queue on the NIC.
-//
-// On queue 0 this is invisible (queue 0 is ENA's catch-all default —
-// any unrouted traffic falls there), which is why
-// NStreamsSameQueueSameEndpoint above still PASSES: all 12 streams
-// pin to queue 0, all SYN-ACKs land on queue 0 regardless of whether
-// our prediction matched the NIC's hash.
-//
-// On queue ≠ 0 the divergence surfaces as SYN-ACK never reaching the
-// caller's queue (it lands on queue 0 instead); the per-queue Poller
-// times out at 10s.
-//
-// Re-enable when one of these is true:
-//   * The NIC / driver exposes RSS key readback so query_rss_state
-//     populates state.key correctly (newer ENA drivers may; check
-//     `Platform::rss_using_probed_key()` returning true at runtime).
-//   * Platform installs eph's RSS key successfully via configure_rss
-//     (most non-ENA PMDs).
-//   * A FlowDirector rule explicitly pins each stream's flow to its
-//     queue, bypassing RSS hash entirely.
-//
-// To run anyway (e.g. on a non-ENA NIC) drop the DISABLED_ prefix or
-// pass `--gtest_also_run_disabled_tests`.
+// SYN-ACK delivered to queue N — exercises the create_and_attach
+// queue-alignment fix (rx_queue_id was previously left at whatever the
+// caller's TcpConfig defaulted to, while the SYN-ACK landed on the
+// hashed-to queue per find_src_port_for_queue's pick — silent 10s
+// handshake timeout for every pin_to_queue!=0 attach).
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(PlatformRssFanout, DISABLED_NStreamsDistributedAcrossQueues) {
+TEST(PlatformRssFanout, NStreamsDistributedAcrossQueues) {
     EPH_RSS_FANOUT_SKIP_IF_NOT_READY();
     auto& benv = RssFanoutEnv::env();
     auto& platform = benv.platform;

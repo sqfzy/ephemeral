@@ -201,6 +201,14 @@ public:
                 }
                 cfg.legacy.src_port = *sp;
                 target_qid = want;
+                // Mirror tcp_stream's queue alignment: the RX queue id in
+                // legacy config must match target_qid so any internal
+                // burst-poll path uses the same queue RSS will route the
+                // first reply to. UDP doesn't have a handshake, so this is
+                // primarily for symmetry and any non-Poller-driven RX path
+                // a future user adds.
+                cfg.legacy.rx_queue_id = want;
+                cfg.legacy.tx_queue_id = want;
                 SPDLOG_LOGGER_INFO(log,
                     "create_and_attach: RSS pin → src_port={} hashes to queue={}",
                     *sp, want);

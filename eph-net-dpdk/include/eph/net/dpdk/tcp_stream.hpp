@@ -711,6 +711,18 @@ public:
                 }
                 cfg.legacy.tuple.src_port = *sp;
                 target_qid = want;
+                // Critical: align cfg.legacy.{rx,tx}_queue_id with target_qid.
+                // TStream::create() drives the SYN/SYN-ACK/ACK handshake by
+                // calling rte_eth_rx_burst(port, cfg.legacy.rx_queue_id, ...).
+                // Without this assignment, rx_queue_id stays at whatever the
+                // caller's TcpConfig defaulted to (0), so the handshake polls
+                // queue 0 while SYN-ACK actually lands on queue=want per the
+                // RSS hash we just engineered for sp. Result: silent
+                // 10-second handshake timeouts on every pin_to_queue!=0
+                // attach, surfaced as the fan-out integration test's Test 2
+                // before this fix.
+                cfg.legacy.rx_queue_id = want;
+                cfg.legacy.tx_queue_id = want;
                 SPDLOG_LOGGER_INFO(log,
                     "create_and_attach: RSS pin → src_port={} hashes to queue={}",
                     *sp, want);
