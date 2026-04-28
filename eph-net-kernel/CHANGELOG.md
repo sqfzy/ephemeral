@@ -51,7 +51,7 @@
 - No source changes to existing API. The four additions above are
   purely additive on the kernel surface.
 
-## [Unreleased] — Doc sync (2026-04-24)
+### Doc sync (2026-04-24)
 
 ### Docs
 - `README.md`, `summary.md`, `docs/ONBOARDING.md` re-aligned with the
@@ -88,7 +88,7 @@
 
 No code, build, or test changes.
 
-## [Unreleased] — Drop dead reconnect field (2026-04-14)
+### Drop dead reconnect field (2026-04-14)
 
 ### Changed — BREAKING
 - Removed `StreamConfig::reconnect` (`ReconnectPolicyConfig`) and the
@@ -112,7 +112,7 @@ No code, build, or test changes.
   `eph::net::ReconnectPolicy` itself (pure backoff math, no I/O) is
   unchanged and is now the recommended caller-side primitive.
 
-## [Unreleased] — Phase 9 Recovery (2026-04-10)
+### Phase 9 Recovery (2026-04-10)
 
 ### Added
 - `StreamConfig` grew four new fields (all optional, defaulted to

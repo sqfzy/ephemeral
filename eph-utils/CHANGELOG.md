@@ -5,7 +5,9 @@ All notable changes to `eph-utils` are documented here. Format based on
 tag `eph-utils` independently, so this log is derived from git history
 on the `dev` branch touching `eph-utils/`.
 
-## [Unreleased] — Phase 9 Recovery (2026-04-10)
+## [Unreleased]
+
+### Phase 9 Recovery (2026-04-10)
 
 ### Added
 
@@ -34,9 +36,7 @@ on the `dev` branch touching `eph-utils/`.
 - Dedicated unit coverage: `test_kill_switch`, `test_rate_limiter`,
   `test_rate_limiter_edge`, `test_phased_timer`, `test_shutdown_signal`.
 
-## [Unreleased]
-
-### Added
+### Later additions (post-Phase-9)
 
 - `spin_for_ns(long ns)` — busy-wait approximately N nanoseconds via
   `TSC::now()` + `cpu_relax`, used by mock servers and tests that need
