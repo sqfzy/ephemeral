@@ -208,7 +208,7 @@ inline uint16_t random_ephemeral_port() noexcept {
 ///                          query; see kDnsPort default in DnsConfig)
 /// @return chosen local src_port (host byte order), or unexpected with
 ///         a string detail (CSPRNG failure / RssHashPredictExhausted).
-inline std::expected<uint16_t, std::string>
+[[nodiscard]] inline std::expected<uint16_t, std::string>
 select_dns_src_port(uint16_t port_id, uint16_t queue_id,
                     uint32_t nameserver_ip, uint32_t local_ip,
                     uint16_t dns_server_port) noexcept {
@@ -265,7 +265,7 @@ select_dns_src_port(uint16_t port_id, uint16_t queue_id,
 /// which uses the auto-incrementing process-global hint for fan-out
 /// distinctness; this test helper preserves the *deterministic* shape
 /// the existing tests assert.
-inline std::expected<uint16_t, std::string>
+[[nodiscard]] inline std::expected<uint16_t, std::string>
 select_dns_src_port_with_state(
     const ::eph::net::dpdk::RssState& state,
     uint16_t queue_id,

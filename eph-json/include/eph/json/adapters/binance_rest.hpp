@@ -68,7 +68,7 @@ inline std::optional<double> parse_double(std::string_view sv) noexcept {
 ///
 /// @param raw  The raw array string from JsonView::get(), e.g. [["0.1","1.0"],...]
 /// @return Vector of DepthLevel on success, error string on parse failure
-inline std::expected<std::vector<DepthLevel>, std::string>
+[[nodiscard]] inline std::expected<std::vector<DepthLevel>, std::string>
 parse_depth_levels(std::string_view raw) noexcept {
     auto* log = binance_rest_logger();
 
