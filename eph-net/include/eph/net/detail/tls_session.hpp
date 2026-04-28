@@ -607,6 +607,126 @@ public:
                     SSL_get_version(ssl_),
                     SSL_CIPHER_get_name(SSL_get_current_cipher(ssl_)));
 
+                // ─── Drain post-handshake records (NewSessionTicket capture) ───
+                //
+                // In TLS 1.3 the server delivers NewSessionTicket (NSE)
+                // messages as separate post-handshake records. Two timing
+                // patterns matter for `new_session_cb_` capture:
+                //
+                //   A) The server packs NSE(s) into the same flight as
+                //      ServerFinished (typical OpenSSL 1.1+/3.x default).
+                //      The NSE bytes are already buffered by `bio_read_cb`
+                //      when `SSL_do_handshake` returns 1; one extra
+                //      `SSL_peek` call drives the record-layer past them
+                //      and fires `new_session_cb_` synchronously.
+                //
+                //   B) The server defers NSE until its next `SSL_write`
+                //      (aws-lc 1.x and BoringSSL default: NSEs are written
+                //      out only when the server's BIO is next driven, e.g.
+                //      during the SSL_write that emits the application-
+                //      level response such as the WS HTTP 101). In this
+                //      case the kernel TLS architecture cannot capture the
+                //      ticket at all: `extract_hot_state()` runs as soon
+                //      as `tls_state::handshake()` returns and dismantles
+                //      the SSL session before the WS upgrade exchange
+                //      surfaces NSE bytes. This is a known structural
+                //      limitation — see the SKIP rationale in
+                //      tests/integration/test_tls_resumption.cpp and the
+                //      `take_post_handshake_ticket` follow-up note in
+                //      `tls_state.hpp`.
+                //
+                // The drain below targets pattern (A). It is also a useful
+                // defensive measure: it reduces the chance of a stray
+                // post-handshake record (NSE, KeyUpdate, alert) sitting
+                // unprocessed in the BIO when `extract_hot_state()` later
+                // hands the connection over to the AEAD-only hot path.
+                //
+                // The drain is intentionally **non-blocking**: it never
+                // waits on the wire. If `bio_ctx_->read_buf` already
+                // contains pending bytes (pattern A) we surface them via
+                // `SSL_peek`; otherwise we exit immediately. Burning
+                // 50-500ms here on every handshake — in the hope that an
+                // aws-lc server might decide to send NSEs early (it
+                // doesn't) — would inflate connect latency without
+                // moving the needle on resumption capture.
+                //
+                // Bound: at most `kDrainMaxRounds` (4) `SSL_peek` calls.
+                // Each round either:
+                //   • returns >0 → real app data already queued (server
+                //     packed NSE + app data into one flight); stop and
+                //     leave the data for the caller's hot-path read,
+                //   • returns WANT_READ with NSE buffer drained → loop,
+                //   • returns WANT_READ with no buffered data → stop,
+                //   • any other error → stop and let the hot path
+                //     resurface the condition naturally.
+                constexpr int kDrainMaxRounds = 4;
+                for (int i = 0; i < kDrainMaxRounds; ++i) {
+                    if (!bio_ctx_) break;
+
+                    // Cheap non-blocking poll: a single recv(MSG_DONTWAIT).
+                    // Picks up any NSE bytes the kernel TCP buffer has
+                    // already received but `bio_read_cb` hasn't yet
+                    // surfaced.
+                    int polled = bio_ctx_->poll_rx();
+                    if (polled < 0) {
+                        // TCP error — let the normal record-layer path
+                        // raise it; do not promote to handshake failure.
+                        SPDLOG_LOGGER_TRACE(log,
+                            "TlsSession::handshake: post-handshake drain "
+                            "saw TCP poll error on round {}, stopping",
+                            i);
+                        break;
+                    }
+                    if (polled == 0 &&
+                        bio_ctx_->read_pos == bio_ctx_->read_buf.size()) {
+                        // Nothing buffered, nothing new on the wire —
+                        // server hasn't packed NSE with Finished. Quit
+                        // without burning further wall-clock time.
+                        SPDLOG_LOGGER_TRACE(log,
+                            "TlsSession::handshake: post-handshake drain "
+                            "round {} found no data, stopping",
+                            i);
+                        break;
+                    }
+
+                    // Drive the SSL record-layer state machine. SSL_peek
+                    // processes pending records — including NSE, which
+                    // fires `new_session_cb_` — without consuming the
+                    // application data behind them.
+                    ERR_clear_error();
+                    char peek_buf[1];
+                    int pr = SSL_peek(ssl_, peek_buf, sizeof(peek_buf));
+                    if (pr > 0) {
+                        // Real app data already buffered (server packed
+                        // NSE + app data into one flight). Stop the
+                        // drain; the caller's hot-path read will pick
+                        // these bytes up through the AEAD context.
+                        SPDLOG_LOGGER_TRACE(log,
+                            "TlsSession::handshake: post-handshake drain "
+                            "round {} surfaced {} byte(s) of app data, "
+                            "leaving for caller",
+                            i, pr);
+                        break;
+                    }
+                    int perr = SSL_get_error(ssl_, pr);
+                    if (perr != SSL_ERROR_WANT_READ &&
+                        perr != SSL_ERROR_WANT_WRITE) {
+                        // Other condition — let the hot path resurface
+                        // it on its first read attempt.
+                        SPDLOG_LOGGER_TRACE(log,
+                            "TlsSession::handshake: post-handshake drain "
+                            "SSL_peek err={} on round {}, stopping",
+                            perr, i);
+                        break;
+                    }
+                    SPDLOG_LOGGER_TRACE(log,
+                        "TlsSession::handshake: post-handshake drain "
+                        "round {} processed {} TCP byte(s), "
+                        "peek=WANT_READ",
+                        i, polled);
+                    // Loop again — TLS 1.3 servers usually emit two NSEs.
+                }
+
                 // SPKI certificate pin verification (soft pinning)
                 if (!config_.pinned_spki_sha256.empty()) {
                     auto pin_result = verify_spki_pin();
