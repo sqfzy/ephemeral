@@ -22,10 +22,32 @@
 ///      handshake doesn't complete on this host (e.g. cert verify policy
 ///      diverges) so the suite stays green on hostile fixtures.
 ///
-/// Why GTEST_SKIP for 4/5: the existing `test_transport_tls_ws_e2e` already
-/// SKIPs its handshake test on this host, indicating the loopback shortcut
-/// for self-signed certs isn't fully wired through the kernel TLS path.
-/// We don't want to gate our resumption coverage on that orthogonal issue.
+/// Why GTEST_SKIP for 4/5: there is a known architectural gap between the
+/// kernel TLS path's hot-state extraction model and aws-lc's NSE delivery
+/// timing. aws-lc 1.x (the version vendored under .xmake/packages/) defers
+/// NewSessionTicket emission until the server's next `SSL_write` (i.e. the
+/// HTTP 101 response in a WebSocket upgrade), which happens AFTER
+/// `extract_hot_state()` has already torn down the SSL session in
+/// `tls_state::handshake()`. The post-handshake drain inside
+/// `TlsSession::handshake()` (added 2026-04-28) is wired to capture NSEs
+/// when they arrive in the same flight as ServerFinished — which is the
+/// OpenSSL 3.x default — but is structurally too early for aws-lc's
+/// "send-on-next-write" pattern.
+///
+/// Capturing aws-lc NSEs would require either (a) keeping the SSL session
+/// alive past the HTTP/WS upgrade exchange so the upgrade SSL_read
+/// surfaces NSE first, or (b) calling SSL_process_quic_post_handshake-
+/// equivalent APIs on the live SSL after the WS upgrade. Both involve
+/// non-trivial refactors of the AEAD-takeover path, and the venues we
+/// currently target rotate tickets aggressively enough that one extra
+/// full handshake on first connect is not load-bearing in practice.
+/// See `.artifacts/feedback_*` for the deferred-architecture rationale.
+///
+/// Tests 4 and 5 stay SKIP for now and document the gap; the drain code
+/// is committed because (i) it serves OpenSSL backends correctly, and
+/// (ii) it leaves fewer post-handshake records sitting in the SSL/BIO
+/// buffer when `extract_hot_state` takes over, which marginally hardens
+/// the AEAD takeover against record-layer surprises.
 
 #include <chrono>
 #include <cstdint>
@@ -197,17 +219,24 @@ TEST(TlsResumption, CaptureTicketAfterHandshake) {
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 1u);
     EXPECT_FALSE(stream->tls_was_resumed());
 
-    // The TLS 1.3 server sends a NewSessionTicket immediately after
-    // Finished — by the time `create()` returns it is normally already
-    // in our captured_ticket buffer. Some aws-lc / OpenSSL combinations
-    // defer the first ticket until the first application record;
-    // in that case we just observe an empty ticket here. Either way,
-    // calling the getter must not crash.
+    // The TLS 1.3 server may pack NewSessionTicket(s) into the same
+    // flight as ServerFinished (OpenSSL default) — in which case the
+    // post-handshake drain inside `TlsSession::handshake()` captures
+    // them and `tls_resumption_ticket()` returns the DER bytes here.
+    // aws-lc 1.x defers NSE emission until the server's next SSL_write
+    // (see the file header comment for the architectural rationale);
+    // the kernel TLS path tears down the SSL session before that point,
+    // so on aws-lc we observe an empty ticket and SKIP — the capture
+    // wiring is verified by `CorruptTicketFallback` (which exercises
+    // the d2i_SSL_SESSION / SSL_set_session / resume_count code path
+    // end-to-end).
     auto ticket = stream->tls_resumption_ticket();
     if (ticket.empty()) {
-        GTEST_SKIP() << "Server did not deliver NewSessionTicket during the "
-                        "initial flight on this aws-lc build — capture path "
-                        "exists but had no input. Not a regression.";
+        GTEST_SKIP() << "Server did not deliver NewSessionTicket in the "
+                        "ServerFinished flight (aws-lc defers NSE to "
+                        "next SSL_write, which is post-extract_hot_state) "
+                        "— capture path exists but has no input on this "
+                        "TLS backend. Not a regression. See file header.";
     }
 
     EXPECT_GT(ticket.size(), 16u)
@@ -238,8 +267,10 @@ TEST(TlsResumption, RestoreTicketCutsOneRtt) {
         EXPECT_FALSE(stream->tls_was_resumed());
         ticket = stream->tls_resumption_ticket();
         if (ticket.empty()) {
-            GTEST_SKIP() << "Server did not deliver NewSessionTicket — "
-                            "cannot exercise resume path";
+            GTEST_SKIP() << "Server did not deliver NewSessionTicket in "
+                            "the ServerFinished flight — cannot exercise "
+                            "resume path on this TLS backend (aws-lc "
+                            "defers NSE to next SSL_write; see file header)";
         }
         EXPECT_TRUE(stream->close_gracefully().has_value());
     }
