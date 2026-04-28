@@ -2,6 +2,20 @@
 
 Error diagnosis reference for ephemeral. Maps error codes to causes and fixes.
 
+> **Pre-v3.3 archive notice** — most of this guide describes the retired
+> `Transport` / `SocketTransport` API and its per-domain error enums
+> (`ConnectionError`, `SendError`). The post-v3.3 surface is
+> `eph::core::Error` (single enum, see `eph-core/include/eph/core/error.hpp`)
+> + `eph::core::ErrorInfo` (enum + free-form `detail` string), returned
+> via `std::expected<T, ErrorInfo>` from every fallible API
+> (`KernelTcpStream::create`, `DpdkTcpStream::create_and_attach`, etc.).
+> The categorical mappings below are still useful as **failure-mode
+> taxonomy** even though the symbol names changed — INVALID_CONFIG /
+> FACTORY_FAILED / TLS_HANDSHAKE_FAILED / WS_UPGRADE_REJECTED all map
+> directly to current `Error` values (`InvalidConfig`, `ConnectFailed`,
+> `TlsHandshakeFailed`, `WsHandshakeFailed`). A focused rewrite tracking
+> the current API is a future followup.
+
 ## Connection Errors (`ConnectionError`)
 
 Returned by `Transport::create()` and reconnection attempts.
