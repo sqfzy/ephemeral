@@ -207,7 +207,7 @@ You don't have to do anything. Counters tick at ~5-10 ns per event in
 the background; if you never call `metric()` or `publish_metrics()`, the
 data simply sits in atomic memory and is reclaimed when the stream is
 destroyed. Total overhead per stream when unused: ~1.5 KiB
-(24 counters × 64-byte cache lines).
+(25 counters × 64-byte cache lines).
 
 ---
 
@@ -286,8 +286,8 @@ in.)
 
 A reader running on a different core from the stream thread will pay one
 cache-line ping per counter it touches when the writer's value is fresh.
-The 64-byte alignment isolates each counter so a snapshot of all 24
-metrics costs at most 24 cache-line transfers, regardless of write rate
+The 64-byte alignment isolates each counter so a snapshot of all 25
+metrics costs at most 25 cache-line transfers, regardless of write rate
 on adjacent counters.
 
 ---
@@ -302,7 +302,7 @@ xmake run observability_demo
 ```
 
 You'll see roughly this output every 250 ms for 3 seconds (`publish_metrics`
-walks the full enum, so all 24 counters are emitted — the kernel TCP
+walks the full enum, so all 25 counters are emitted — the kernel TCP
 stream legitimately bumps only the first three; the rest stay at zero
 for a non-TLS, non-DPDK, non-WebSocket workload):
 
