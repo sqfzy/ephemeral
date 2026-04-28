@@ -448,7 +448,13 @@ TEST(ManagedOrder, DumpContainsAllFields) {
 }
 
 TEST(ManagedOrder, DumpShowsSellSide) {
-    ManagedOrder order{.side = '2', .state = OrderState::New};
+    // Designated initializers must initialize earlier fields too — explicit
+    // empty strings silence -Wmissing-field-initializers without changing
+    // semantics (std::string default-constructs to empty either way).
+    ManagedOrder order{
+        .cl_ord_id = {}, .symbol = {},
+        .side = '2', .state = OrderState::New,
+    };
     auto d = order.dump();
     EXPECT_NE(d.find("Sell"), std::string::npos);
 }
