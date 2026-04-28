@@ -736,15 +736,41 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
-            // Default: round-robin via a static counter. Atomic so concurrent
-            // create_and_attach calls from different threads don't all map to
-            // queue 0. Range-aware so multi-process (primary+secondary) setups
-            // can partition queues via PlatformConfig::rx_queue_range; single-
-            // process default `{0, 0}` resolves to `[0, nb_rx_queues)` which
-            // matches the prior `% nb_q` behavior byte-for-byte. The
-            // `validate_config` step has guaranteed `qlo < qhi` (sentinel
-            // `{0,0}` is normalised by `effective_rx_queue_range`), so no
-            // runtime fallback is needed here.
+            // KNOWN LIMITATION (FlowDirector handshake race):
+            // Unlike the RssPartitioned branch above — which engineers a
+            // src_port that hashes to target_qid via find_src_port_for_queue
+            // and then aligns cfg.legacy.{rx,tx}_queue_id = target_qid so the
+            // SYN/SYN-ACK/ACK loop in TStream::create() polls the right queue
+            // — the FlowDirector branch does NOT touch cfg.legacy.{rx,tx}_
+            // queue_id here. The reason is timing: the rte_flow rule that
+            // would steer this 5-tuple to target_qid is only installed AFTER
+            // create() returns (post-handshake), so during the handshake the
+            // PMD's default RSS routes the SYN-ACK to whichever queue its
+            // hash picks — typically NOT target_qid. Setting rx_queue_id to
+            // target_qid here would make the handshake poll an empty queue.
+            // Today's behaviour: the handshake polls cfg.legacy.rx_queue_id
+            // (caller default, usually 0) and works iff default RSS happens
+            // to route the SYN-ACK to that same queue. On NICs that
+            // round-robin RSS without a steering rule (e.g. Mellanox, some
+            // Intel) this is fragile under multi-stream load. A proper fix
+            // requires either (a) installing a transient "steer-to-rx_queue"
+            // rule before create() and replacing it after, or (b) installing
+            // the final FD rule first and letting create() poll target_qid
+            // directly — both are non-trivial and need an FD-capable NIC
+            // (Mellanox/Intel) to validate. Tracked as followup; see
+            // batch-1 commit d60fe7a2's STATE entry for the RSS-branch
+            // counterpart that was fixed there.
+            //
+            // Default queue selection: round-robin via a static counter.
+            // Atomic so concurrent create_and_attach calls from different
+            // threads don't all map to queue 0. Range-aware so multi-process
+            // (primary+secondary) setups can partition queues via
+            // PlatformConfig::rx_queue_range; single-process default `{0, 0}`
+            // resolves to `[0, nb_rx_queues)` which matches the prior
+            // `% nb_q` behavior byte-for-byte. The `validate_config` step
+            // has guaranteed `qlo < qhi` (sentinel `{0,0}` is normalised by
+            // `effective_rx_queue_range`), so no runtime fallback is needed
+            // here.
             if (cfg.pin_to_queue) {
                 target_qid = *cfg.pin_to_queue;
             } else {

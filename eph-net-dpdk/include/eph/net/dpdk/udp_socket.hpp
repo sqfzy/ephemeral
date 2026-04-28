@@ -237,8 +237,23 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
-            // Default: round-robin via a static counter. Range-aware so
-            // multi-process setups can partition queues via
+            // UDP has no handshake, so the FD-mode handshake-race that
+            // bites tcp_stream.hpp's FD branch (see its KNOWN LIMITATION
+            // comment) is moot here for connection establishment. But the
+            // post-attach steady-state is still subject to the same shape:
+            // the rte_flow rule is installed AFTER create() returns, so any
+            // datagram arriving in the brief window between create() and
+            // install_flow_rule() lands wherever default RSS routes it,
+            // not target_qid. For UDP this manifests as a small initial
+            // burst going to the wrong queue and being silently dropped by
+            // the per-queue Poller's 5-tuple demux. Acceptable for the
+            // typical UDP use case (multicast joins, request/reply) but
+            // pathological for low-latency one-shot datagrams. See the
+            // tcp_stream.hpp comment for the full rationale and proposed
+            // fix shape.
+            //
+            // Default queue selection: round-robin via a static counter.
+            // Range-aware so multi-process setups can partition queues via
             // PlatformConfig::rx_queue_range; single-process default
             // `{0, 0}` resolves to `[0, nb_rx_queues)` which matches the
             // prior `% nb_q` behavior byte-for-byte. `validate_config`
