@@ -21,16 +21,30 @@
 #include <sched.h>
 #include <unistd.h>
 
+#include <spdlog/spdlog.h>
+
 namespace eph::utils::linux_ {
 
 /// Move the calling thread into the network namespace
 /// `/var/run/netns/<name>`.  `name` must not contain '/'.  Returns `{}`
 /// on success, error string on failure.
+///
+/// Both error branches log at WARN with errno context — `enter_netns`
+/// is the kind of helper that is invoked once at fixture / tool init
+/// time and a silent failure manifests later as "the wrong NIC" /
+/// "no packets seen" rather than "namespace switch failed". The
+/// matching errno-bearing string is also returned to the caller so
+/// the unexpected value can be surfaced through whatever upper
+/// diagnostic path exists.
 [[nodiscard]] inline std::expected<void, std::string>
 enter_netns(std::string_view name) {
     std::string path = "/var/run/netns/" + std::string(name);
+    SPDLOG_DEBUG("netns::enter_netns: enter name=\"{}\" path=\"{}\"", name, path);
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
+        SPDLOG_WARN("netns::enter_netns: open(\"{}\") failed errno={} ({}) "
+                    "(netns must exist; create with `ip netns add {}`)",
+                    path, errno, std::strerror(errno), name);
         return std::unexpected(
             std::string("open(") + path + ") failed: " +
             std::strerror(errno) +
@@ -39,12 +53,17 @@ enter_netns(std::string_view name) {
     if (::setns(fd, CLONE_NEWNET) < 0) {
         int err = errno;
         ::close(fd);
+        SPDLOG_WARN("netns::enter_netns: setns(\"{}\", CLONE_NEWNET) failed "
+                    "errno={} ({}) (CAP_SYS_ADMIN required — run as root or "
+                    "setcap cap_sys_admin+ep)",
+                    path, err, std::strerror(err));
         return std::unexpected(
             std::string("setns(") + path + ", CLONE_NEWNET) failed: " +
             std::strerror(err) +
             " (CAP_SYS_ADMIN required)");
     }
     ::close(fd);
+    SPDLOG_DEBUG("netns::enter_netns: ok name=\"{}\"", name);
     return {};
 }
 
