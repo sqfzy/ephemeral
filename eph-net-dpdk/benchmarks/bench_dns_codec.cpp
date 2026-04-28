@@ -65,6 +65,12 @@ std::vector<uint8_t> build_bench_response(uint16_t tx_id_net, uint32_t ip_host) 
     // Simplified DNS response: header + question + 1 answer
     uint8_t query_buf[kMaxDnsPacketLen];
     size_t qlen = build_dns_query(query_buf, tx_id_net, "stream.binance.com");
+    // build_dns_query is contractually bounded by kMaxDnsPacketLen, but
+    // its return type is size_t with no compile-time visible upper bound,
+    // and the subsequent memcpy(resp.data(), query_buf, qlen) leaks a
+    // -Wstringop-overflow into the bench TU. Pin the bound here so GCC's
+    // flow analysis can see it.
+    if (qlen > kMaxDnsPacketLen) qlen = kMaxDnsPacketLen;
 
     std::vector<uint8_t> resp(qlen + 16); // room for answer RR
     std::memcpy(resp.data(), query_buf, qlen);
