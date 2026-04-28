@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+> **Note** — this top-level CHANGELOG predates the post-v3.3 module
+> reshape (`.artifacts/design-eph-v3.3-architecture-20260410.md`).
+> Sections below this line that mention `eph-transport`, `Gateway`,
+> `CircuitBreaker`, or `SocketTransport` describe APIs that have since
+> been retired or absorbed. For up-to-date public-surface history,
+> consult the **per-module CHANGELOG** under `eph-<name>/CHANGELOG.md`
+> — those files are kept current and structurally consistent
+> (single `## [Unreleased]` heading, audit-driven backfills).
+> A future structural rewrite of this top-level file is tracked as a
+> followup; until then it serves only as a historical archive.
+
 ## [Unreleased]
 
 ### Added
