@@ -131,17 +131,24 @@ size_t n = eph::fix::build_new_order(
 ### Run a session
 
 ```cpp
-using Framer    = eph::fix::FixFramer;
-using Transport = eph::transport::Transport<SocketTransport, Framer>;
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
 
-auto tp = Transport::create(factory, cfg);
+auto poller = en::KernelPoller::create().value();
+auto stream = en::KernelTcpStream<ec::RawStreamCodec>::create(cfg).value();
+poller->add(stream.get()).value();
 
 eph::fix::FixSession session(
-    [&](const uint8_t* d, size_t l) { return tp->send(d, l) == SendError::kOk; },
+    [&stream](const uint8_t* d, std::size_t l) {
+        // FixSession's send-fn is a `bool(const uint8_t*, size_t)`; lift
+        // the stream's `expected<size_t>` into that shape.
+        auto r = stream->send({d, l});
+        return r.has_value();
+    },
     {.sender_comp_id = "MY_ALGO", .target_comp_id = "EXCHANGE"});
 
-cfg.on_message = [&](const uint8_t* d, uint16_t l, uint8_t) {
-    if (!session.on_rx(d, l)) {
+stream->on_message = [&](std::span<const uint8_t> bytes) {
+    if (!session.on_rx(bytes.data(), bytes.size())) {
         // application-level message — parse and handle
     }
 };
@@ -149,7 +156,8 @@ cfg.on_message = [&](const uint8_t* d, uint16_t l, uint8_t) {
 if (auto r = session.logon(std::chrono::milliseconds{5000}); !r) {
     // r.error() describes the failure
 }
-// ... trade ...
+// drive the poll loop; FixSession's heartbeats run from on_rx callbacks
+while (running) poller->poll();
 session.logout();
 ```
 

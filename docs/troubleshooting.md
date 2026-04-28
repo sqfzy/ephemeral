@@ -86,13 +86,16 @@ Returned by `Transport::create()` and reconnection attempts.
 | 429 | Rate limited | Add backoff, reduce connection frequency |
 | 503 | Server overloaded | Retry later |
 
-**Access the status code programmatically**:
+**Detect a rejected upgrade programmatically**:
 ```cpp
-auto result = Transport<...>::create(factory, cfg);
-if (!result && result.error().code == ConnectionError::kWsUpgradeRejected) {
-    if (result.error().http_status == 429) {
-        // Rate limited — back off
-    }
+auto result = en::KernelTcpStream<ec::WsCodec>::create(cfg);
+if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
+    // result.error().detail holds a short string literal describing the
+    // wire-side reason (e.g. "ws_handshake: 429 status"). Match on the
+    // detail substring or, for stricter routing, parse the HTTP status
+    // line out of your reconnect logger before reaching this branch —
+    // ErrorInfo intentionally carries no integer http_status field
+    // (kept allocation-free, see eph/core/error.hpp).
 }
 ```
 
