@@ -65,6 +65,29 @@ on the `dev` branch touching `eph-utils/`.
   by a process-wide pinned-CPU registry. The strict pin API lives in
   `cpu.hpp` alongside topology / affinity / real-time helpers; there
   is no separate `cpu_pin.hpp` file.
+- `cpu.hpp::register_external_pin(cpu, role)` /
+  `unregister_external_pin(cpu)` / `is_cpu_externally_pinned(cpu)` —
+  public surface for non-`pin_thread` cpu binders (DPDK EAL lcores
+  bound by `rte_eal_init`, RT frameworks, parent-process bindings
+  inherited via fork) to enter the same process-wide registry that
+  `pin_thread` consults. Subsequent strict `pin_thread` calls then
+  detect SMT / NUMA / IRQ conflicts against the externally bound
+  cpu instead of silently competing for it. The `role` string is
+  surfaced in the conflict error message so the operator can name
+  the culprit. Used by `eph-net-dpdk` `EalGuard::init_with_pins`
+  (the typed entry that lifts `LcorePin` specs into the registry
+  before `rte_eal_init` runs). Test coverage: `tests/test_cpu_pin.cpp`.
+- `pin_thread` now rejects duplicate pins of the same cpu within a
+  process even from `pin_thread` itself — earlier behaviour
+  (silently allowed, last write wins) was a footgun for thread-pool
+  warmup loops that re-pinned a worker after a noisy-neighbor scrub.
+
+### Refactored
+- The internal `validate_pin_policy` predicate (SMT-sibling /
+  NUMA-locality / IRQ-overlap rules) was hoisted into
+  `eph::utils::detail::validate_pin_policy` so the strict-pin path
+  and the external-pin path apply byte-for-byte the same checks.
+  No public-API change; the test suite verifies parity.
 - `ConsoleSink` — `core::MetricsSink` implementation that logs
   counters, gauges, and histograms as structured spdlog lines, for
   development and integration testing.
