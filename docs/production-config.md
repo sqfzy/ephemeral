@@ -2,6 +2,20 @@
 
 Recommended `TransportConfig` settings for common deployment scenarios. All values are tuned for AWS Graviton (ARM64) — adjust for your hardware.
 
+> **Pre-v3.3 archive notice** — the snippets below use the retired
+> `eph::net::TransportConfig` struct. The post-v3.3 surface is
+> `eph::net::kernel::StreamConfig` (kernel backend) and
+> `eph::dpdk::Config` + per-stream config (DPDK backend); see each
+> module's `README.md` and `summary.md` for the current field set.
+> Field names have largely been preserved (`remote`, `tls.hostname`,
+> `tls.verify_peer`, `tcp_nodelay`, `connect_timeout`, `ws_path`,
+> `ws_host`, `ws_timeout`, `ws_permessage_deflate`, …) so the
+> recommended **values** below are still accurate for the new struct
+> shape — just substitute the type name. The numerical guidance
+> (timeouts, queue sizes, MTU, CPU pinning targets) reflects the
+> current production profile and remains the source of truth. A
+> focused rewrite tracking the new struct names is a future followup.
+
 ## Profiles
 
 ### Low-Latency (Single Symbol, Order Execution)
