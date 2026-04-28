@@ -180,6 +180,13 @@ target("async_dns_multi_resolve")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+target("reconnect_orch_demo")
+    set_kind("binary")
+    set_group("examples")
+    set_default(false)
+    add_files("examples/reconnect_orch_demo.cpp")
+    add_deps("eph-net-kernel", "eph-codec")
+
 target("binance_book")
     set_kind("binary")
     set_group("examples")
