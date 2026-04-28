@@ -1176,6 +1176,24 @@ public:
             default:
                 break;
         }
+        // WS permessage-deflate counters live on the codec instance,
+        // not on this stream — pull them lazily so that codecs that
+        // don't implement the contract (RawStreamCodec, LengthPrefix,
+        // etc.) leave the metric at 0 without any per-byte cost.
+        if (m == SM::kWsDeflateBytesIn) {
+            if constexpr (requires (const C& c) { c.ws_deflate_bytes_in(); }) {
+                return codec_.ws_deflate_bytes_in();
+            } else {
+                return 0;
+            }
+        }
+        if (m == SM::kWsDeflateBytesOut) {
+            if constexpr (requires (const C& c) { c.ws_deflate_bytes_out(); }) {
+                return codec_.ws_deflate_bytes_out();
+            } else {
+                return 0;
+            }
+        }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);
     }

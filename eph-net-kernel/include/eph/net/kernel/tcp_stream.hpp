@@ -854,6 +854,25 @@ public:
             static_cast<std::size_t>(::eph::net::StreamMetric::kCount)) {
             return 0;
         }
+        // WS permessage-deflate counters live inside the codec (only
+        // codecs that opt into the contract via `ws_deflate_bytes_in/out`
+        // contribute non-zero values; non-WS codecs leave these at 0).
+        // Lazy-read at observation time mirrors how DPDK pulls
+        // `TcpSession::Stats` for the kTcp* family.
+        if (m == ::eph::net::StreamMetric::kWsDeflateBytesIn) {
+            if constexpr (requires (const C& c) { c.ws_deflate_bytes_in(); }) {
+                return codec_.ws_deflate_bytes_in();
+            } else {
+                return 0;
+            }
+        }
+        if (m == ::eph::net::StreamMetric::kWsDeflateBytesOut) {
+            if constexpr (requires (const C& c) { c.ws_deflate_bytes_out(); }) {
+                return codec_.ws_deflate_bytes_out();
+            } else {
+                return 0;
+            }
+        }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);
     }
