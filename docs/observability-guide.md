@@ -137,6 +137,10 @@ Defined in `eph/net/stream_metrics.hpp` as `enum class StreamMetric`:
 | `kPacketsDropped` | catch-all RX drop (parse fail / 4-tuple mismatch / connect filter) | DPDK UDP + TCP |
 | `kFragmentRejected` | IPv4 fragment detected via `is_ip_fragment` peek | DPDK UDP + TCP |
 | `kTcpDupSegments` | duplicate / past-window data segments | DPDK TCP only |
+| `kWsDeflateBytesIn` | compressed-frame bytes consumed (RFC 7692 inflate) | TCP+TLS+WS only (kernel + DPDK) |
+| `kWsDeflateBytesOut` | inflated plaintext bytes produced; ratio with `In` is the achieved compression | TCP+TLS+WS only (kernel + DPDK) |
+| `kTlsResumeCount` | successful PSK ticket resumption (RFC 8446 0/1-RTT) | TLS only (kernel + DPDK) |
+| `kTlsHandshakeCount` | total handshakes attempted (resumption is a subset) | TLS only (kernel + DPDK) |
 
 **Cross-backend invariant** (by construction, not by test):
 `kRxBadChecksum == kRxIpChecksumBad + kRxL4ChecksumBad`. The aggregate
