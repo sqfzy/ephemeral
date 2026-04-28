@@ -1,69 +1,301 @@
 /// @file test_http_client.cpp
-/// @brief Parser-level tests migrated from the baseline test_http_client.cpp.
+/// @brief End-to-end tests for `eph::net::HttpClient<S>` against an
+///        in-process kernel HTTP server.
 ///
-/// The baseline `HttpClient` class is not part of the current API. However, a large
-/// share of its baseline test suite
-/// actually exercises the underlying parser against crafted byte sequences
-/// rather than any connection state. Those cases carry real regression
-/// value for the new `parse_http_request` / `parse_http_response`
-/// subset, so they are migrated here with adapted assertions against
-/// `expected<optional<ParseResult<T>>>`.
+/// The companion file `test_http_parser.cpp` covers the underlying
+/// `parse_http_request` / `parse_http_response` / `build_http_request`
+/// surface (migrated baseline parser tests). This file targets the
+/// `HttpClient` class itself: send / wait / parse / keep-alive /
+/// timeout / hostile-server defenses.
 ///
-/// Skipped per plan §D-1: chunked / Transfer-Encoding / cookies / redirect /
-/// Expect: 100-continue / multipart. Skipped out-of-scope: `HttpClient`
-/// instance behavior (connect / reconnect / keep-alive), `HttpClient::Config`
-/// URL parsing (9.6 territory).
+/// The server is a deliberately minimal hand-rolled HTTP/1.1 implementation
+/// (~80 lines) running in a worker thread on a `posix::tcp_bind_listen`-
+/// returned ephemeral port. It satisfies just enough of the protocol to
+/// drive each test case — handlers are pluggable via `std::function` so
+/// each test can inject the wire bytes it needs (including malformed
+/// responses for the negative cases).
+///
+/// Per the auto-mode brief: the server lives in this file (rather than a
+/// separate header) so future readers can audit the contract without
+/// chasing imports.
 
-#include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <format>
+#include <functional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
+#include "eph/codec/raw_stream_codec.hpp"
 #include "eph/core/error.hpp"
-#include "eph/net/http.hpp"
+#include "eph/net/http_client.hpp"
+#include "eph/net/kernel/poller.hpp"
+#include "eph/net/kernel/tcp_stream.hpp"
+#include "eph/net/posix_listener.hpp"
+#include "eph/net/socket_addr.hpp"
 
-using eph::core::Error;
-using eph::core::ErrorInfo;
-using eph::net::HttpHeader;
-using eph::net::HttpRequest;
-using eph::net::HttpResponse;
-using eph::net::ParseResult;
-using eph::net::parse_http_request;
-using eph::net::parse_http_response;
-using eph::net::build_http_request;
-using eph::net::build_http_response;
+namespace en  = eph::net;
+namespace enk = eph::net::kernel;
+namespace ec  = eph::codec;
+
+using PlainStream = enk::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
+using Client      = en::HttpClient<PlainStream>;
 
 namespace {
 
-std::span<const uint8_t> as_bytes(std::string_view s) noexcept {
-    return std::span<const uint8_t>{
-        reinterpret_cast<const uint8_t*>(s.data()), s.size()};
-}
+// =============================================================================
+// MiniHttpServer — minimal single-client HTTP/1.1 server for the test fixture.
+//
+// Design notes:
+//   * Binds 127.0.0.1 + ephemeral port so tests are parallel-safe.
+//   * Reads up to MAX_REQ_BYTES bytes from the client, looks for "\r\n\r\n",
+//     parses Content-Length to know when the request body is done, then
+//     hands the request to a `RequestHandler` callback that returns the raw
+//     wire-format response bytes (or empty for "do not respond — used to
+//     drive the timeout test).
+//   * Honours keep-alive: stays in the read-handle-write loop until the
+//     client closes or the handler returns an empty reply.
+//   * No buffering tricks beyond a 64 KiB scratch — REST responses fit.
+// =============================================================================
+class MiniHttpServer {
+public:
+    /// @brief Handler signature: receives the parsed request as raw bytes
+    ///        (full request including CRLF and body), returns wire-format
+    ///        response bytes. An empty return means "do not respond" — the
+    ///        connection will hang until the client times out.
+    using RequestHandler =
+        std::function<std::string(std::string_view request_bytes)>;
 
-using HdrStorage = std::array<HttpHeader, 16>;
+    explicit MiniHttpServer(RequestHandler handler) noexcept
+        : handler_(std::move(handler)) {}
 
-std::string_view body_sv(const HttpResponse& r) noexcept {
-    return std::string_view(
-        reinterpret_cast<const char*>(r.body.data()), r.body.size());
-}
+    ~MiniHttpServer() { stop(); }
 
-std::string_view body_sv(const HttpRequest& r) noexcept {
-    return std::string_view(
-        reinterpret_cast<const char*>(r.body.data()), r.body.size());
-}
+    /// @brief Bind + listen on 127.0.0.1:<auto>, return assigned port.
+    [[nodiscard]] uint16_t start() {
+        auto bind_r = en::posix::tcp_bind_listen("127.0.0.1", 0, /*backlog=*/2);
+        if (!bind_r) {
+            ADD_FAILURE() << "tcp_bind_listen failed: " << bind_r.error();
+            return 0;
+        }
+        listen_fd_ = *bind_r;
+        sockaddr_in addr{};
+        socklen_t   alen = sizeof(addr);
+        ::getsockname(listen_fd_,
+                      reinterpret_cast<sockaddr*>(&addr), &alen);
+        port_ = ::ntohs(addr.sin_port);
+        running_.store(true, std::memory_order_release);
+        worker_ = std::thread([this] { run_(); });
+        return port_;
+    }
 
-std::string_view find_hdr(std::span<const HttpHeader> hs,
-                          std::string_view            name) noexcept {
-    auto ieq = [](std::string_view a, std::string_view b) {
+    void stop() noexcept {
+        if (!running_.exchange(false, std::memory_order_acq_rel)) return;
+        if (listen_fd_ >= 0) {
+            ::shutdown(listen_fd_, SHUT_RDWR);
+            ::close(listen_fd_);
+            listen_fd_ = -1;
+        }
+        if (worker_.joinable()) worker_.join();
+    }
+
+    [[nodiscard]] uint16_t port() const noexcept { return port_; }
+
+private:
+    static constexpr std::size_t MAX_REQ_BYTES = 64 * 1024;
+
+    void run_() {
+        // Accept one client at a time (sequential server is plenty for
+        // single-threaded tests).
+        while (running_.load(std::memory_order_acquire)) {
+            auto fd_r = en::posix::accept_one(listen_fd_, running_);
+            if (!fd_r || *fd_r < 0) return;
+            handle_client_(*fd_r);
+            ::close(*fd_r);
+        }
+    }
+
+    void handle_client_(int client_fd) {
+        // Keep-alive loop: serve as many requests as the client sends until
+        // it closes or the handler signals "no response".
+        std::string buf;
+        buf.reserve(4096);
+        while (running_.load(std::memory_order_acquire)) {
+            // Find the end of the request headers in `buf`.
+            std::size_t req_end = std::string::npos;
+            std::size_t cl      = 0;
+            bool        have_cl = false;
+            while (running_.load(std::memory_order_acquire)) {
+                // Look for "\r\n\r\n" in current buffer.
+                auto hpos = buf.find("\r\n\r\n");
+                if (hpos != std::string::npos) {
+                    // Inspect Content-Length (case-insensitive).
+                    have_cl = parse_content_length_(
+                        std::string_view{buf.data(), hpos + 2}, cl);
+                    if (have_cl) {
+                        if (buf.size() >= hpos + 4 + cl) {
+                            req_end = hpos + 4 + cl;
+                            break;
+                        }
+                    } else {
+                        req_end = hpos + 4;
+                        break;
+                    }
+                }
+                if (buf.size() > MAX_REQ_BYTES) return; // give up, oversized
+                char     chunk[2048];
+                ssize_t  n = ::recv(client_fd, chunk, sizeof(chunk), 0);
+                if (n <= 0) return;        // client closed
+                buf.append(chunk, static_cast<std::size_t>(n));
+            }
+
+            std::string request{buf.data(), req_end};
+            buf.erase(0, req_end);
+            std::string response = handler_(request);
+            if (response.empty()) {
+                // Hang until the client drops — used by the timeout case.
+                while (running_.load(std::memory_order_acquire)) {
+                    char dummy[64];
+                    ssize_t n = ::recv(client_fd, dummy, sizeof(dummy), 0);
+                    if (n <= 0) return;
+                }
+                return;
+            }
+            std::size_t off = 0;
+            while (off < response.size()) {
+                ssize_t n = ::send(client_fd, response.data() + off,
+                                   response.size() - off, 0);
+                if (n <= 0) return;
+                off += static_cast<std::size_t>(n);
+            }
+            // Loop back for the next request (keep-alive). If the response
+            // told the client to close, the next recv will see EOF.
+        }
+    }
+
+    /// @brief Extract Content-Length from a header block (case-insensitive,
+    ///        first occurrence wins). Returns true and sets `out` if found.
+    static bool parse_content_length_(std::string_view headers,
+                                      std::size_t&     out) noexcept {
+        // Walk line by line.
+        std::size_t pos = 0;
+        while (pos < headers.size()) {
+            std::size_t eol = headers.find("\r\n", pos);
+            if (eol == std::string_view::npos) return false;
+            std::string_view line = headers.substr(pos, eol - pos);
+            pos = eol + 2;
+            // Find ':'.
+            auto colon = line.find(':');
+            if (colon == std::string_view::npos) continue;
+            std::string_view name  = line.substr(0, colon);
+            std::string_view value = line.substr(colon + 1);
+            // Trim trailing OWS from name.
+            while (!name.empty() &&
+                   (name.back() == ' ' || name.back() == '\t')) {
+                name.remove_suffix(1);
+            }
+            // Case-insensitive name compare against "Content-Length".
+            constexpr std::string_view kCl = "content-length";
+            if (name.size() != kCl.size()) continue;
+            bool match = true;
+            for (std::size_t i = 0; i < name.size(); ++i) {
+                char c = name[i];
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+                if (c != kCl[i]) { match = false; break; }
+            }
+            if (!match) continue;
+            // Trim leading OWS from value.
+            while (!value.empty() &&
+                   (value.front() == ' ' || value.front() == '\t')) {
+                value.remove_prefix(1);
+            }
+            std::size_t v = 0;
+            for (char c : value) {
+                if (c == ' ' || c == '\t' || c == '\r') break;
+                if (c < '0' || c > '9') return false;
+                v = v * 10 + static_cast<std::size_t>(c - '0');
+            }
+            out = v;
+            return true;
+        }
+        return false;
+    }
+
+    RequestHandler    handler_;
+    std::atomic<bool> running_{false};
+    int               listen_fd_{-1};
+    uint16_t          port_{0};
+    std::thread       worker_;
+};
+
+// -----------------------------------------------------------------------------
+// Test fixture: spins up a poller + connected stream + HttpClient pointing at
+// a MiniHttpServer.
+// -----------------------------------------------------------------------------
+struct ClientFixture : public ::testing::Test {
+    std::unique_ptr<enk::KernelPoller> poller;
+    std::unique_ptr<MiniHttpServer>    server;
+    std::unique_ptr<Client>            client;
+
+    /// @brief Build a fixture with the supplied server handler. The handler
+    ///        is consulted for every request (keep-alive too).
+    void setup_with_handler(MiniHttpServer::RequestHandler handler) {
+        server = std::make_unique<MiniHttpServer>(std::move(handler));
+        const uint16_t port = server->start();
+        ASSERT_GT(port, 0u);
+
+        auto pr = enk::KernelPoller::create();
+        ASSERT_TRUE(pr.has_value()) << pr.error().detail;
+        poller = std::move(*pr);
+
+        enk::StreamConfig cfg{};
+        cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+        cfg.reasm_capacity   = 64 * 1024;
+        cfg.connect_timeout  = std::chrono::milliseconds{1000};
+
+        auto sr = PlainStream::create(cfg);
+        ASSERT_TRUE(sr.has_value()) << sr.error().detail;
+        auto stream = std::move(*sr);
+
+        ASSERT_TRUE(poller->add(stream.get()).has_value());
+        client = std::make_unique<Client>(std::move(stream));
+    }
+
+    void TearDown() override {
+        if (client && client->stream() && poller) {
+            (void)poller->remove(client->stream());
+        }
+        client.reset();
+        poller.reset();
+        if (server) server->stop();
+    }
+
+    /// @brief A poll callback that drives the kernel poller for ~1ms.
+    [[nodiscard]] std::function<void()> poll_fn() noexcept {
+        return [this]() noexcept {
+            (void)poller->poll(std::chrono::milliseconds{1});
+        };
+    }
+};
+
+[[nodiscard]] std::string_view header_lookup(
+    std::span<const en::HttpHeader> hs, std::string_view name) noexcept {
+    auto ieq = [](std::string_view a, std::string_view b) noexcept {
         if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i) {
-            char ca = a[i];
-            char cb = b[i];
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            char ca = a[i]; char cb = b[i];
             if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
             if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
             if (ca != cb) return false;
@@ -76,1019 +308,202 @@ std::string_view find_hdr(std::span<const HttpHeader> hs,
     return {};
 }
 
+[[nodiscard]] std::span<const uint8_t> as_bytes(std::string_view s) noexcept {
+    return {reinterpret_cast<const uint8_t*>(s.data()), s.size()};
+}
+
+[[nodiscard]] std::string body_str(const Client::Response& r) noexcept {
+    return std::string{reinterpret_cast<const char*>(r.body.data()),
+                       r.body.size()};
+}
+
 } // namespace
 
 // =============================================================================
-// build_http_request — GET (migrated from HttpClientRequest baseline)
+// 1. GetRequestRoundTrip — happy-path GET / returning 200 + body.
 // =============================================================================
+TEST_F(ClientFixture, GetRequestRoundTrip) {
+    setup_with_handler([](std::string_view req) -> std::string {
+        // Sanity-check that the client emitted a GET / line.
+        EXPECT_NE(req.find("GET / HTTP/1.1\r\n"), std::string_view::npos);
+        const std::string body = "hello-world";
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Type: text/plain\r\n"
+               "Content-Length: " + std::to_string(body.size()) + "\r\n"
+               "\r\n" + body;
+    });
 
-TEST(HttpClientBuildRequest, GetBasic) {
-    std::array<uint8_t, 512> out{};
-    HttpHeader hdrs[] = {{"Host", "api.binance.com"}, {"Connection", "close"}};
-    auto r = build_http_request(out.data(), out.size(), "GET",
-                                "/api/v3/ticker/price",
-                                std::span<const HttpHeader>(hdrs, 2));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("GET /api/v3/ticker/price HTTP/1.1\r\n"), std::string_view::npos);
-    EXPECT_NE(s.find("Host: api.binance.com\r\n"), std::string_view::npos);
-    EXPECT_NE(s.find("Connection: close\r\n"), std::string_view::npos);
-    EXPECT_TRUE(s.ends_with("\r\n\r\n"));
-}
-
-TEST(HttpClientBuildRequest, GetWithExtraHeaders) {
-    std::array<uint8_t, 512> out{};
-    HttpHeader hdrs[] = {
-        {"Host", "api.exchange.com"},
-        {"Authorization", "Bearer tok123"},
-        {"X-MBX-APIKEY", "key456"},
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
     };
-    auto r = build_http_request(out.data(), out.size(), "GET", "/v1/balance",
-                                std::span<const HttpHeader>(hdrs, 3));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("Authorization: Bearer tok123\r\n"), std::string_view::npos);
-    EXPECT_NE(s.find("X-MBX-APIKEY: key456\r\n"), std::string_view::npos);
+    auto rsp = client->request(req, poll_fn(), std::chrono::milliseconds{500});
+    ASSERT_TRUE(rsp.has_value()) << rsp.error().detail;
+    EXPECT_EQ(rsp->status_code, 200);
+    EXPECT_EQ(body_str(*rsp), "hello-world");
+    EXPECT_EQ(header_lookup(rsp->headers, "Content-Type"), "text/plain");
 }
 
-TEST(HttpClientBuildRequest, GetWithQueryString) {
-    std::array<uint8_t, 512> out{};
-    HttpHeader hdrs[] = {{"Host", "api.binance.com"}};
-    auto r = build_http_request(out.data(), out.size(), "GET",
-                                "/api/v3/depth?symbol=BTCUSDT&limit=5",
-                                std::span<const HttpHeader>(hdrs, 1));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("GET /api/v3/depth?symbol=BTCUSDT&limit=5 HTTP/1.1"),
-              std::string_view::npos);
-}
+// =============================================================================
+// 2. PostRequestWithBody — POST /endpoint, server echoes body back.
+// =============================================================================
+TEST_F(ClientFixture, PostRequestWithBody) {
+    setup_with_handler([](std::string_view req) -> std::string {
+        // Locate the request body — anything after "\r\n\r\n".
+        auto sep = req.find("\r\n\r\n");
+        EXPECT_NE(sep, std::string_view::npos);
+        std::string body{req.substr(sep + 4)};
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Type: application/octet-stream\r\n"
+               "Content-Length: " + std::to_string(body.size()) + "\r\n"
+               "\r\n" + body;
+    });
 
-TEST(HttpClientBuildRequest, PostWithJsonBody) {
-    std::array<uint8_t, 512> out{};
-    std::string body = R"({"symbol":"BTCUSDT","side":"BUY","quantity":"0.01"})";
-    std::string cl = std::to_string(body.size());
-    HttpHeader hdrs[] = {
-        {"Host", "api.exchange.com"},
-        {"Content-Type", "application/json"},
-        {"Content-Length", cl},
+    constexpr std::string_view payload =
+        R"({"symbol":"BTCUSDT","side":"BUY"})";
+    Client::Request req{
+        .method  = "POST",
+        .path    = "/endpoint",
+        .headers = {
+            en::HttpHeader{"Host",         "127.0.0.1"},
+            en::HttpHeader{"Content-Type", "application/json"},
+        },
+        .body    = as_bytes(payload),
     };
-    auto r = build_http_request(out.data(), out.size(), "POST", "/api/v1/order",
-                                std::span<const HttpHeader>(hdrs, 3),
-                                as_bytes(body));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("POST /api/v1/order HTTP/1.1\r\n"), std::string_view::npos);
-    EXPECT_NE(s.find("Content-Type: application/json\r\n"), std::string_view::npos);
-    EXPECT_TRUE(s.ends_with(body));
+    auto rsp = client->request(req, poll_fn(), std::chrono::milliseconds{500});
+    ASSERT_TRUE(rsp.has_value()) << rsp.error().detail;
+    EXPECT_EQ(rsp->status_code, 200);
+    EXPECT_EQ(body_str(*rsp), payload);
 }
 
-TEST(HttpClientBuildRequest, PostWithFormBody) {
-    std::array<uint8_t, 512> out{};
-    std::string body = "symbol=BTCUSDT&side=BUY&quantity=0.01";
-    std::string cl = std::to_string(body.size());
-    HttpHeader hdrs[] = {
-        {"Host", "api.exchange.com"},
-        {"Content-Type", "application/x-www-form-urlencoded"},
-        {"Content-Length", cl},
+// =============================================================================
+// 3. MultipleRequestsOnSameStream — keep-alive, three sequential GETs.
+// =============================================================================
+TEST_F(ClientFixture, MultipleRequestsOnSameStream) {
+    std::atomic<int> calls{0};
+    setup_with_handler([&calls](std::string_view req) -> std::string {
+        EXPECT_NE(req.find("GET "), std::string_view::npos);
+        const int n = ++calls;
+        const std::string body = "reply-" + std::to_string(n);
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Length: " + std::to_string(body.size()) + "\r\n"
+               "\r\n" + body;
+    });
+
+    for (int i = 1; i <= 3; ++i) {
+        Client::Request req{
+            .method  = "GET",
+            .path    = std::string_view{i == 1 ? "/a" : i == 2 ? "/b" : "/c"},
+            .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+            .body    = {},
+        };
+        auto rsp = client->request(req, poll_fn(),
+                                   std::chrono::milliseconds{500});
+        ASSERT_TRUE(rsp.has_value()) << "iter " << i << ": " << rsp.error().detail;
+        EXPECT_EQ(rsp->status_code, 200);
+        EXPECT_EQ(body_str(*rsp), "reply-" + std::to_string(i));
+    }
+    EXPECT_EQ(calls.load(), 3);
+}
+
+// =============================================================================
+// 4. TimeoutOnHangingServer — server accepts, never replies. Client times out.
+// =============================================================================
+TEST_F(ClientFixture, TimeoutOnHangingServer) {
+    setup_with_handler([](std::string_view) -> std::string {
+        // Empty reply tells MiniHttpServer to hang until the client closes.
+        return "";
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/never",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
     };
-    auto r = build_http_request(out.data(), out.size(), "POST", "/order",
-                                std::span<const HttpHeader>(hdrs, 3),
-                                as_bytes(body));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("Content-Type: application/x-www-form-urlencoded\r\n"),
-              std::string_view::npos);
+    const auto t0 = std::chrono::steady_clock::now();
+    auto rsp = client->request(req, poll_fn(), std::chrono::milliseconds{200});
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::Timeout);
+    // Loose lower bound (deadline — slack); upper bound is generous to absorb
+    // CI scheduler jitter.
+    EXPECT_GE(elapsed, std::chrono::milliseconds{180});
+    EXPECT_LE(elapsed, std::chrono::milliseconds{2000});
 }
 
-TEST(HttpClientBuildRequest, EmptyMethodReturnsError) {
-    std::array<uint8_t, 256> out{};
-    auto r = build_http_request(out.data(), out.size(), "", "/path", {});
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
+// =============================================================================
+// 5. ChunkedTransferEncodingRejected — server returns chunked, parser rejects.
+// =============================================================================
+TEST_F(ClientFixture, ChunkedTransferEncodingRejected) {
+    setup_with_handler([](std::string_view) -> std::string {
+        // A chunked response. parse_http_response rejects any
+        // Transfer-Encoding header (smuggling defense, phase-9 §D-1).
+        return "HTTP/1.1 200 OK\r\n"
+               "Transfer-Encoding: chunked\r\n"
+               "\r\n"
+               "5\r\nhello\r\n0\r\n\r\n";
+    });
 
-TEST(HttpClientBuildRequest, EmptyTargetReturnsError) {
-    std::array<uint8_t, 256> out{};
-    auto r = build_http_request(out.data(), out.size(), "GET", "", {});
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientBuildRequest, LargeBodyRoundTrip) {
-    // 10 000-byte body should serialize and re-parse cleanly.
-    std::vector<uint8_t> out(64 * 1024);
-    std::string body(10000, 'x');
-    std::string cl = std::to_string(body.size());
-    HttpHeader hdrs[] = {
-        {"Host", "host.com"},
-        {"Content-Type", "application/octet-stream"},
-        {"Content-Length", cl},
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/chunked",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
     };
-    auto built = build_http_request(out.data(), out.size(), "POST", "/upload",
-                                    std::span<const HttpHeader>(hdrs, 3),
-                                    as_bytes(body));
-    ASSERT_TRUE(built.has_value());
-
-    HdrStorage parsed_hdrs{};
-    auto parsed = parse_http_request(
-        std::span<const uint8_t>(out.data(), *built), parsed_hdrs);
-    ASSERT_TRUE(parsed.has_value());
-    ASSERT_TRUE(parsed->has_value());
-    EXPECT_EQ((*parsed)->value.body.size(), 10000u);
+    auto rsp = client->request(req, poll_fn(), std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::CodecBad);
 }
 
-TEST(HttpClientBuildRequest, DeleteMethod) {
-    std::array<uint8_t, 256> out{};
-    HttpHeader hdrs[] = {{"Host", "api.exchange.com"}};
-    auto r = build_http_request(out.data(), out.size(),
-                                "DELETE", "/api/v1/order/123",
-                                std::span<const HttpHeader>(hdrs, 1));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("DELETE /api/v1/order/123 HTTP/1.1\r\n"),
-              std::string_view::npos);
-}
+// =============================================================================
+// 6. TooLargeBodyRejected — server emits Content-Length larger than the
+//    HttpClient's max_response_bytes cap. Either the parser rejects the
+//    Content-Length up front (Error::CodecOverflow against the parser's
+//    16 MiB hard cap) OR the accumulator hits the client cap mid-stream
+//    (Error::CodecOverflow from HttpClient itself).
+// =============================================================================
+TEST_F(ClientFixture, TooLargeBodyRejected) {
+    setup_with_handler([](std::string_view) -> std::string {
+        // 200 KiB body — much larger than the 64 KiB cap we'll set below.
+        const std::size_t n = 200 * 1024;
+        std::string body(n, 'x');
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Length: " + std::to_string(n) + "\r\n"
+               "\r\n" + body;
+    });
 
-TEST(HttpClientBuildRequest, PutMethodWithBody) {
-    std::array<uint8_t, 512> out{};
-    std::string body = R"({"updated":true})";
-    std::string cl = std::to_string(body.size());
-    HttpHeader hdrs[] = {
-        {"Host", "host.com"},
-        {"Content-Type", "application/json"},
-        {"Content-Length", cl},
+    // Tear down the default fixture client and rebuild with a tighter cap.
+    if (client && client->stream() && poller) {
+        (void)poller->remove(client->stream());
+    }
+    client.reset();
+    {
+        enk::StreamConfig cfg{};
+        cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, server->port()};
+        cfg.reasm_capacity  = 64 * 1024;
+        cfg.connect_timeout = std::chrono::milliseconds{1000};
+
+        auto sr = PlainStream::create(cfg);
+        ASSERT_TRUE(sr.has_value()) << sr.error().detail;
+        auto stream = std::move(*sr);
+        ASSERT_TRUE(poller->add(stream.get()).has_value());
+
+        en::HttpClientConfig hcfg{};
+        hcfg.max_response_bytes = 64 * 1024; // strictly smaller than 200 KiB
+        client = std::make_unique<Client>(std::move(stream), hcfg);
+    }
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/big",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
     };
-    auto r = build_http_request(out.data(), out.size(), "PUT", "/resource",
-                                std::span<const HttpHeader>(hdrs, 3),
-                                as_bytes(body));
-    ASSERT_TRUE(r.has_value());
-    std::string_view s(reinterpret_cast<const char*>(out.data()), *r);
-    EXPECT_NE(s.find("PUT /resource HTTP/1.1\r\n"), std::string_view::npos);
-}
-
-TEST(HttpClientBuildRequest, PatchMethod) {
-    std::array<uint8_t, 256> out{};
-    HttpHeader hdrs[] = {{"Host", "host.com"}};
-    auto r = build_http_request(out.data(), out.size(), "PATCH", "/resource",
-                                std::span<const HttpHeader>(hdrs, 1));
-    ASSERT_TRUE(r.has_value());
-}
-
-TEST(HttpClientBuildRequest, HeadMethod) {
-    std::array<uint8_t, 256> out{};
-    HttpHeader hdrs[] = {{"Host", "host.com"}};
-    auto r = build_http_request(out.data(), out.size(), "HEAD", "/",
-                                std::span<const HttpHeader>(hdrs, 1));
-    ASSERT_TRUE(r.has_value());
-}
-
-TEST(HttpClientBuildRequest, OptionsMethod) {
-    std::array<uint8_t, 256> out{};
-    HttpHeader hdrs[] = {{"Host", "host.com"}};
-    auto r = build_http_request(out.data(), out.size(), "OPTIONS", "*",
-                                std::span<const HttpHeader>(hdrs, 1));
-    ASSERT_TRUE(r.has_value());
-}
-
-// =============================================================================
-// parse_http_response — success paths (migrated from HttpClientResponse)
-// =============================================================================
-
-TEST(HttpClientParseResponse, Parse200Ok) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 28\r\n"
-        "\r\n"
-        R"({"price":"50000.00","qty":1})";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 200u);
-    EXPECT_EQ(body_sv((*r)->value), R"({"price":"50000.00","qty":1})");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Type"), "application/json");
-}
-
-TEST(HttpClientParseResponse, Parse404NotFound) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nNot Found";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 404u);
-    EXPECT_EQ(body_sv((*r)->value), "Not Found");
-}
-
-TEST(HttpClientParseResponse, Parse500InternalServerError) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 500u);
-    EXPECT_TRUE((*r)->value.body.empty());
-}
-
-TEST(HttpClientParseResponse, Parse204EmptyBody) {
-    constexpr std::string_view wire = "HTTP/1.1 204 No Content\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 204u);
-    EXPECT_TRUE((*r)->value.body.empty());
-}
-
-TEST(HttpClientParseResponse, ParseBodyLargerThanContentLengthConsumesCL) {
-    // Parser consumes exactly CL bytes, returning "extra" via shorter consumed.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhelloextra";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "hello");
-    EXPECT_EQ((*r)->consumed, wire.size() - 5); // "extra" stays in buffer
-}
-
-TEST(HttpClientParseResponse, ParseMultipleHeaders) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "X-RateLimit-Remaining: 1199\r\n"
-        "X-RateLimit-Reset: 1640000000\r\n"
-        "Content-Length: 2\r\n\r\n"
-        "{}";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 200u);
-    EXPECT_EQ(body_sv((*r)->value), "{}");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-RateLimit-Remaining"), "1199");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-RateLimit-Reset"), "1640000000");
-}
-
-TEST(HttpClientParseResponse, ParseIncompleteNoHeaderEnd) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value()); // need more
-}
-
-TEST(HttpClientParseResponse, ParseMalformedStatusLine) {
-    constexpr std::string_view wire = "GARBAGE\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseInvalidStatusCode) {
-    constexpr std::string_view wire = "HTTP/1.1 XYZ Bad\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseEmptyInput) {
-    HdrStorage hdrs{};
-    auto r = parse_http_response(std::span<const uint8_t>{}, hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value());
-}
-
-// RFC 7230 §3.1.2 status-code rejection regression cases.
-TEST(HttpClientParseResponse, ParseStatusCodeTrailingGarbageRejected) {
-    constexpr std::string_view wire = "HTTP/1.1 200xyz OK\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseStatusCodeLeadingPlusRejected) {
-    constexpr std::string_view wire = "HTTP/1.1 +200 OK\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseStatusCodeNegativeRejected) {
-    constexpr std::string_view wire = "HTTP/1.1 -1 Bad\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseStatusCodeTwoDigitsRejected) {
-    constexpr std::string_view wire = "HTTP/1.1 20 OK\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ParseStatusCodeFourDigitsRejected) {
-    constexpr std::string_view wire = "HTTP/1.1 2000 OK\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, AllValidThreeDigitCodesAccepted) {
-    for (int code : {100, 101, 200, 201, 204, 301, 302, 400, 401,
-                     403, 404, 500, 502, 503, 599}) {
-        std::string wire = "HTTP/1.1 " + std::to_string(code) + " OK\r\n";
-        if (code >= 200 && code != 204 && code != 304) {
-            wire += "Content-Length: 0\r\n";
-        }
-        wire += "\r\n";
-        HdrStorage hdrs{};
-        auto r = parse_http_response(as_bytes(wire), hdrs);
-        ASSERT_TRUE(r.has_value()) << "code=" << code;
-        ASSERT_TRUE(r->has_value()) << "code=" << code;
-        EXPECT_EQ((*r)->value.status_code, code);
-    }
-}
-
-TEST(HttpClientParseResponse, ParseStatusCodeOnlyNoReason) {
-    // Empty reason phrase permitted per RFC.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 200u);
-    EXPECT_EQ((*r)->value.reason_phrase, "");
-}
-
-TEST(HttpClientParseResponse, ParseBinaryBody) {
-    std::string wire = "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n";
-    wire.append("\x00\x01\x02\x03\x04\x05\x06\x07", 8);
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 8u);
-    EXPECT_EQ((*r)->value.body[0], 0x00);
-    EXPECT_EQ((*r)->value.body[7], 0x07);
-}
-
-TEST(HttpClientParseResponse, ParseLongReasonPhrase) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 503 Service Temporarily Unavailable Due To Maintenance\r\n"
-        "Content-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.status_code, 503u);
-    EXPECT_EQ((*r)->value.reason_phrase,
-              "Service Temporarily Unavailable Due To Maintenance");
-}
-
-TEST(HttpClientParseResponse, ParseReasonPhraseWithSpaces) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 O K\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.reason_phrase, "O K");
-}
-
-TEST(HttpClientParseResponse, RejectReasonPhraseWithBareCr) {
-    std::string wire = "HTTP/1.1 200 B\rOK\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    // Bare CR in the reason phrase splits the start line early — parser
-    // will see either a short line or a codec error; either way no value.
-    ASSERT_FALSE(r.has_value() && r->has_value());
-}
-
-// =============================================================================
-// header lookup — migrated from HttpClientFindHeader
-// =============================================================================
-//
-// The parser returns a span of HttpHeader; the baseline find_header()
-// helper is not part of the public API but the same semantics are tested
-// here against a local helper that mimics it.
-
-TEST(HttpClientFindHeader, BasicLookup) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 3\r\n"
-        "X-Custom: value123\r\n\r\n"
-        "abc";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Type"), "application/json");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Length"), "3");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-Custom"), "value123");
-}
-
-TEST(HttpClientFindHeader, CaseInsensitive) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Type"), "text/html");
-    EXPECT_EQ(find_hdr((*r)->value.headers, "CONTENT-TYPE"), "text/html");
-}
-
-TEST(HttpClientFindHeader, TrimsWhitespace) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Type:   application/json  \r\n"
-        "Content-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Type"), "application/json");
-}
-
-TEST(HttpClientFindHeader, NotFoundReturnsEmpty) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-Missing"), "");
-}
-
-TEST(HttpClientFindHeader, HeaderWithColonInValue) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Location: https://example.com:8080/path\r\n"
-        "Content-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Location"),
-              "https://example.com:8080/path");
-}
-
-TEST(HttpClientFindHeader, EmptyValue) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nX-Empty:\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-Empty"), "");
-}
-
-TEST(HttpClientFindHeader, WhitespaceOnlyValueTrimmedToEmpty) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nX-Blank:   \t  \r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-Blank"), "");
-}
-
-TEST(HttpClientFindHeader, ValueWithLeadingAndTrailingOws) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nX-Val:  \t hello  \r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "X-Val"), "hello");
-}
-
-TEST(HttpClientFindHeader, PartialNameDoesNotFalsePositive) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-        "Content-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(find_hdr((*r)->value.headers, "Content-Typ"), "");
-}
-
-// =============================================================================
-// is_response_complete equivalent — pure parser completion
-// =============================================================================
-//
-// The current API replaces the baseline `is_response_complete(buf)` predicate with the
-// parser's incremental "need more / complete / error" tri-state. Each
-// baseline case maps onto a parse call and checks which of those three
-// outcomes fires.
-
-TEST(HttpClientComplete, CompleteWithContentLength) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->consumed, wire.size());
-}
-
-TEST(HttpClientComplete, IncompleteBody) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value());
-}
-
-TEST(HttpClientComplete, NoContentLengthRejected) {
-    // Without CL and not bodyless, parser rejects — we cannot frame.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nsome data";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientComplete, IncompleteHeaders) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value());
-}
-
-TEST(HttpClientComplete, ZeroContentLength) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 0u);
-}
-
-TEST(HttpClientComplete, LowercaseContentLength) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nabc";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "abc");
-}
-
-TEST(HttpClientComplete, InvalidContentLengthRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: abc\r\n\r\ndata";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientComplete, ExcessBodyBeyondContentLength) {
-    // Parser takes exactly CL bytes from the body; the rest stays in buf.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcdef";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "abc");
-    EXPECT_EQ((*r)->consumed, wire.size() - 3);
-}
-
-TEST(HttpClientComplete, EmptyStringReturnsNone) {
-    HdrStorage hdrs{};
-    auto r = parse_http_response(std::span<const uint8_t>{}, hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value());
-}
-
-TEST(HttpClientComplete, IncompleteWithoutHeaderTerminator) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value());
-}
-
-// =============================================================================
-// Round-trip exchange scenarios (migrated from HttpClientRoundTrip)
-// =============================================================================
-
-TEST(HttpClientRoundTrip, BuildAndParseSimulatedBinance) {
-    std::array<uint8_t, 1024> out{};
-    HttpHeader req_hdrs[] = {{"Host", "api.binance.com"}};
-    auto req = build_http_request(out.data(), out.size(), "GET",
-                                  "/api/v3/ticker/price?symbol=BTCUSDT",
-                                  std::span<const HttpHeader>(req_hdrs, 1));
-    ASSERT_TRUE(req.has_value());
-
-    // Simulated server response.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 39\r\n"
-        "X-MBX-USED-WEIGHT-1M: 1\r\n\r\n"
-        R"({"symbol":"BTCUSDT","price":"50000.00"})";
-    HdrStorage hdrs{};
-    auto resp = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(resp.has_value());
-    ASSERT_TRUE(resp->has_value());
-    EXPECT_EQ((*resp)->value.status_code, 200u);
-    EXPECT_EQ(body_sv((*resp)->value), R"({"symbol":"BTCUSDT","price":"50000.00")" "}");
-    EXPECT_EQ(find_hdr((*resp)->value.headers, "Content-Type"), "application/json");
-    EXPECT_EQ(find_hdr((*resp)->value.headers, "X-MBX-USED-WEIGHT-1M"), "1");
-}
-
-TEST(HttpClientRoundTrip, PostOrderAndParseResponse) {
-    std::array<uint8_t, 1024> out{};
-    std::string body =
-        R"({"symbol":"ETHUSDT","side":"BUY","type":"LIMIT","price":"3000","quantity":"1"})";
-    std::string cl = std::to_string(body.size());
-    HttpHeader req_hdrs[] = {
-        {"Host", "api.exchange.com"},
-        {"Content-Type", "application/json"},
-        {"Content-Length", cl},
-        {"X-API-KEY", "mykey123"},
-    };
-    auto req = build_http_request(out.data(), out.size(), "POST", "/api/v1/order",
-                                  std::span<const HttpHeader>(req_hdrs, 4),
-                                  as_bytes(body));
-    ASSERT_TRUE(req.has_value());
-
-    HdrStorage parse_hdrs{};
-    auto parsed_req = parse_http_request(
-        std::span<const uint8_t>(out.data(), *req), parse_hdrs);
-    ASSERT_TRUE(parsed_req.has_value());
-    ASSERT_TRUE(parsed_req->has_value());
-    EXPECT_EQ((*parsed_req)->value.method, "POST");
-    EXPECT_EQ((*parsed_req)->value.target, "/api/v1/order");
-    EXPECT_EQ(body_sv((*parsed_req)->value), body);
-    EXPECT_EQ(find_hdr((*parsed_req)->value.headers, "X-API-KEY"), "mykey123");
-
-    // Simulated response.
-    constexpr std::string_view resp_wire =
-        "HTTP/1.1 201 Created\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: 26\r\n\r\n"
-        R"({"orderId":"12345","ok":1})";
-    HdrStorage rsp_hdrs{};
-    auto resp = parse_http_response(as_bytes(resp_wire), rsp_hdrs);
-    ASSERT_TRUE(resp.has_value());
-    ASSERT_TRUE(resp->has_value());
-    EXPECT_EQ((*resp)->value.status_code, 201u);
-    EXPECT_EQ(body_sv((*resp)->value), R"({"orderId":"12345","ok":1})");
-}
-
-// =============================================================================
-// Status category predicates (constexpr bit-twiddles, not parser — but
-// mandated by the baseline tests; preserved as plain field checks)
-// =============================================================================
-
-TEST(HttpStatusCategory, Is1xxInformational) {
-    for (int c : {100, 101, 199}) {
-        HttpResponse r{}; r.status_code = static_cast<uint16_t>(c);
-        EXPECT_TRUE(r.status_code >= 100 && r.status_code < 200);
-    }
-}
-
-TEST(HttpStatusCategory, Is2xxSuccess) {
-    for (int c : {200, 201, 299}) {
-        HttpResponse r{}; r.status_code = static_cast<uint16_t>(c);
-        EXPECT_TRUE(r.status_code >= 200 && r.status_code < 300);
-    }
-}
-
-TEST(HttpStatusCategory, Is3xxRedirect) {
-    for (int c : {301, 302, 307, 399}) {
-        HttpResponse r{}; r.status_code = static_cast<uint16_t>(c);
-        EXPECT_TRUE(r.status_code >= 300 && r.status_code < 400);
-    }
-}
-
-TEST(HttpStatusCategory, Is4xxClientError) {
-    for (int c : {400, 404, 499}) {
-        HttpResponse r{}; r.status_code = static_cast<uint16_t>(c);
-        EXPECT_TRUE(r.status_code >= 400 && r.status_code < 500);
-    }
-}
-
-TEST(HttpStatusCategory, Is5xxServerError) {
-    for (int c : {500, 503, 599}) {
-        HttpResponse r{}; r.status_code = static_cast<uint16_t>(c);
-        EXPECT_TRUE(r.status_code >= 500 && r.status_code < 600);
-    }
-}
-
-// =============================================================================
-// Additional Content-Length edge cases (baseline IsCompleteAdv)
-// =============================================================================
-
-TEST(HttpClientParseResponse, ContentLengthZeroEmptyBodyComplete) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-}
-
-TEST(HttpClientParseResponse, ContentLengthZeroExtraBodyConsumesNoExtra) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\nabcd";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 0u);
-    // Four "abcd" bytes remain in buffer beyond the header terminator.
-    EXPECT_EQ((*r)->consumed, wire.size() - 4);
-}
-
-TEST(HttpClientParseResponse, ContentLengthLeadingPlusRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ContentLengthHugeRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 999999999999\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecOverflow);
-}
-
-TEST(HttpClientParseResponse, ContentLengthCaseInsensitive) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "hello");
-}
-
-TEST(HttpClientParseResponse, ContentLengthMixedCase) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nCoNtEnT-LeNgTh: 5\r\n\r\nworld";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "world");
-}
-
-TEST(HttpClientParseResponse, ContentLengthLeadingSpaceAccepted) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length:    5\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "hello");
-}
-
-TEST(HttpClientParseResponse, ContentLengthEmbeddedSpaceRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5 0\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ContentLengthEmbeddedTabRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\t0\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ContentLengthHexValueRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 0x05\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, ContentLengthLeadingZerosAccepted) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length: 005\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 5u);
-}
-
-// =============================================================================
-// Multiple Content-Length headers (smuggling defense)
-// =============================================================================
-
-TEST(HttpClientParseResponse, DuplicateContentLengthDifferentValuesRejected) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Length: 5\r\nContent-Length: 99\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecBad);
-}
-
-TEST(HttpClientParseResponse, DuplicateContentLengthIdenticalValuesAccepted) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Length: 5\r\nContent-Length: 5\r\n\r\nhello";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ(body_sv((*r)->value), "hello");
-}
-
-// =============================================================================
-// Header-name whitespace regression (RFC 7230 §3.2.4 — commit e108fcb)
-// =============================================================================
-
-TEST(HttpClientParseResponse, ContentLengthWithSpaceBeforeColonHonored) {
-    // Baseline IsCompleteAdv.ContentLengthWithSpaceBeforeColonStillHonored.
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length : 5\r\n\r\n12345";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value()) << r.error().detail;
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 5u);
-}
-
-TEST(HttpClientParseResponse, ContentLengthWithSpaceBeforeColonShortBody) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length : 10\r\n\r\nabc";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    EXPECT_FALSE(r->has_value()); // need more
-}
-
-TEST(HttpClientParseResponse, ContentLengthWithTabBeforeColonHonored) {
-    constexpr std::string_view wire =
-        "HTTP/1.1 200 OK\r\nContent-Length\t: 4\r\n\r\nabcd";
-    HdrStorage hdrs{};
-    auto r = parse_http_response(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.body.size(), 4u);
-}
-
-// =============================================================================
-// Status code mutual-exclusivity / boundary cases
-// =============================================================================
-
-TEST(HttpStatusCategory, BoundariesDoNotOverlap) {
-    struct Case { int code; int expect_bucket; };
-    // 1=info, 2=success, 3=redirect, 4=client, 5=server
-    Case cases[] = {
-        {100, 1}, {199, 1}, {200, 2}, {299, 2}, {301, 3},
-        {399, 3}, {400, 4}, {499, 4}, {500, 5}, {599, 5},
-    };
-    for (auto& c : cases) {
-        int got = c.code / 100;
-        EXPECT_EQ(got, c.expect_bucket) << "code=" << c.code;
-    }
-}
-
-// =============================================================================
-// Sanity: the baseline file also covered method / target / version presence
-// =============================================================================
-
-TEST(HttpClientParseRequest, VersionMinor0Returned) {
-    constexpr std::string_view wire = "GET / HTTP/1.0\r\nHost: h\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.version_minor, 0);
-}
-
-TEST(HttpClientParseRequest, VersionMinor1Returned) {
-    constexpr std::string_view wire = "GET / HTTP/1.1\r\nHost: h\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.version_minor, 1);
-}
-
-TEST(HttpClientParseRequest, MultipleEdgeHeaders) {
-    constexpr std::string_view wire =
-        "GET / HTTP/1.1\r\n"
-        "Host: h\r\n"
-        "A: 1\r\n"
-        "B: 2\r\n"
-        "C: 3\r\n"
-        "D: 4\r\n"
-        "E: 5\r\n"
-        "F: 6\r\n"
-        "G: 7\r\n"
-        "H: 8\r\n"
-        "\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.headers.size(), 9u);
-}
-
-TEST(HttpClientParseRequest, ConnectTarget) {
-    constexpr std::string_view wire =
-        "CONNECT api.binance.com:443 HTTP/1.1\r\n"
-        "Host: api.binance.com:443\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.method, "CONNECT");
-    EXPECT_EQ((*r)->value.target, "api.binance.com:443");
-}
-
-TEST(HttpClientParseRequest, HttpVersion10WithBody) {
-    constexpr std::string_view wire =
-        "POST /legacy HTTP/1.0\r\nContent-Length: 4\r\n\r\nbody";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.version_minor, 0);
-    EXPECT_EQ(body_sv((*r)->value), "body");
-}
-
-// =============================================================================
-// Parser overflow / storage boundary cases
-// =============================================================================
-
-TEST(HttpClientParser, ExceedsHeaderStorageCap) {
-    // Build a request with more headers than storage can hold.
-    std::string wire = "GET / HTTP/1.1\r\n";
-    for (int i = 0; i < 20; ++i) {
-        wire += "X-H" + std::to_string(i) + ": v\r\n";
-    }
-    wire += "\r\n";
-    std::array<HttpHeader, 4> small_storage{}; // undersized on purpose
-    auto r = parse_http_request(as_bytes(wire), small_storage);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, Error::CodecOverflow);
-}
-
-TEST(HttpClientParser, ExactlyFillsHeaderStorage) {
-    // 16 headers fits in the default HdrStorage.
-    std::string wire = "GET / HTTP/1.1\r\n";
-    for (int i = 0; i < 16; ++i) {
-        wire += "X-H" + std::to_string(i) + ": v\r\n";
-    }
-    wire += "\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.headers.size(), 16u);
-}
-
-TEST(HttpClientParser, EmptyHeadersRequestAccepted) {
-    // Not strictly valid HTTP (Host is MUST for 1.1) but parser only checks
-    // structure, not semantic constraints.
-    constexpr std::string_view wire = "GET / HTTP/1.1\r\n\r\n";
-    HdrStorage hdrs{};
-    auto r = parse_http_request(as_bytes(wire), hdrs);
-    ASSERT_TRUE(r.has_value());
-    ASSERT_TRUE(r->has_value());
-    EXPECT_EQ((*r)->value.headers.size(), 0u);
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{1500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::CodecOverflow);
 }
