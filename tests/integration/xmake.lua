@@ -54,6 +54,34 @@ target("test_stream_metrics")
     add_files("test_stream_metrics.cpp")
     add_deps("eph-net-kernel", "eph-codec")
 
+-- ============================================================================
+-- Crypto venue adapter integration tests (T2.10).
+-- Each adapter exercises TLS + WS + ReconnectOrchestrator end-to-end against
+-- the in-process TlsWsEchoServer fixture (see tests/support/). No real venue
+-- endpoints are contacted.
+-- ============================================================================
+
+target("test_okx_adapter")
+    add_rules("eph-test")
+    add_files("test_okx_adapter.cpp")
+    add_includedirs(path.join(os.projectdir(), "tests", "support"))
+    add_deps("eph-net-kernel", "eph-codec", "eph-net")
+    add_packages("aws-lc")
+
+target("test_bybit_adapter")
+    add_rules("eph-test")
+    add_files("test_bybit_adapter.cpp")
+    add_includedirs(path.join(os.projectdir(), "tests", "support"))
+    add_deps("eph-net-kernel", "eph-codec", "eph-net")
+    add_packages("aws-lc")
+
+target("test_coinbase_adapter")
+    add_rules("eph-test")
+    add_files("test_coinbase_adapter.cpp")
+    add_includedirs(path.join(os.projectdir(), "tests", "support"))
+    add_deps("eph-net-kernel", "eph-codec", "eph-net")
+    add_packages("aws-lc")
+
 target("bench_e2e_latency")
     add_rules("eph-bench")
     add_files("bench_e2e_latency.cpp")
