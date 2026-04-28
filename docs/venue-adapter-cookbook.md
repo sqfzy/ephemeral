@@ -137,10 +137,14 @@ matches your venue's encoding most closely and adjust.
 
 > **Important caveat.** `SignedRequest<Traits>` is **HMAC-SHA256 only**.
 > Venues using HMAC-SHA512 (Kraken, Bitfinex) or asymmetric signatures
-> (Coinbase ATX uses ES256 JWT, dYdX uses Ed25519) need a separate primitive.
-> `test_coinbase_adapter.cpp:26-30` documents the gap explicitly: ES256 JWT
-> is a Tier 3 future feature; the adapter today round-trips a caller-built
-> JWT through TLS+WS and asserts the bytes arrived intact.
+> (dYdX uses Ed25519) need a separate primitive.
+> Coinbase ATX (ES256 JWT) is covered by the dedicated
+> `eph::net::build_coinbase_jwt` helper in
+> `eph-net/include/eph/net/jwt_signed_request.hpp` —
+> `Es256PrivateKey::from_pem` to load the EC P-256 key, then build the
+> JWT and splice it into the subscribe payload. See
+> `tests/integration/test_coinbase_adapter.cpp` for a working example
+> with end-to-end signature verification on the server side.
 
 ### When the venue authenticates **in-band** (OKX, Bybit V5)
 
@@ -493,9 +497,9 @@ glob in `tests/integration/xmake.lua` picks it up automatically.
 
 - **WS endpoint**: `wss://advanced-trade-ws.coinbase.com/`
 - **Auth**: ES256 **JWT** carried in the subscribe payload (`{"type":"subscribe","channel":"user","jwt":"…"}`), NOT in headers and NOT HMAC.
-- **Why no `SignedRequest<Traits>`**: ES256 over a P-256 EC private key is asymmetric crypto; `SignedRequest` is HMAC-SHA256-only. JWT signing primitive is not yet in the library — see `test_coinbase_adapter.cpp:26-30`. Until it lands, build the JWT externally (e.g. using aws-lc directly) and pass it as a `std::string` into your subscribe message.
-- **Token rotation**: per-connect JWT issuance is the canonical pattern (Coinbase tokens are short-lived). The reconnect test at `test_coinbase_adapter.cpp:299-306` demonstrates: capture a fresh JWT inside `on_reconnect`, splice it into the subscribe payload, send.
-- **Reference**: `tests/integration/test_coinbase_adapter.cpp`.
+- **Why no `SignedRequest<Traits>`**: ES256 over a P-256 EC private key is asymmetric crypto; `SignedRequest` is HMAC-SHA256-only. JWT signing is provided by the dedicated `eph::net::build_coinbase_jwt` helper in `eph-net/include/eph/net/jwt_signed_request.hpp` — load the PEM-encoded key via `Es256PrivateKey::from_pem`, populate `CoinbaseJwtParams`, call `build_coinbase_jwt(key, params)`, and splice the resulting `header.payload.signature` string into the subscribe payload.
+- **Token rotation**: per-connect JWT issuance is the canonical pattern (Coinbase tokens are short-lived; the helper takes `now_unix_secs` and a 120s TTL by default). The reconnect test in `test_coinbase_adapter.cpp` demonstrates: build a fresh JWT inside `on_reconnect`, splice it into the subscribe payload, send. The test also performs `EVP_DigestVerify` on the server-side capture, so the entire path is exercised end-to-end.
+- **Reference**: `tests/integration/test_coinbase_adapter.cpp` (adapter), `eph-net/tests/test_jwt_signed_request.cpp` (JWT primitive).
 
 ---
 
