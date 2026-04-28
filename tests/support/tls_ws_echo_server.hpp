@@ -381,14 +381,16 @@ private:
         // From this point on, every record on the wire is a hot-path
         // application record. If the client's hot-path crypto seq is
         // out of sync with SSL's, SSL_read here will fail to decrypt.
-        echo_loop_(ssl, fd);
+        echo_loop_(ssl);
 
         teardown_(ssl, fd);
     }
 
     // Minimal WebSocket frame echo. Supports unfragmented client→server
     // frames with payloads up to 65535 bytes (extended length 16-bit).
-    void echo_loop_(SSL* ssl, int fd) {
+    // The owning fd is tracked separately for shutdown bookkeeping; the
+    // echo loop itself only needs the SSL handle for read/write.
+    void echo_loop_(SSL* ssl) {
         uint8_t hdr[2];
         while (running_.load(std::memory_order_acquire)) {
             // Read 2-byte minimal header
