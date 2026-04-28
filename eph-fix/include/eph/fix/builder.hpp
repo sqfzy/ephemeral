@@ -58,7 +58,13 @@ public:
         // kHeaderReserve (32 bytes) is needed for BeginString + BodyLength prefix,
         // plus at least ~20 bytes for a minimal field + checksum trailer.
         if (buf == nullptr || capacity < kHeaderReserve) [[unlikely]] {
-            log_invalid_construction(buf, capacity);
+            // Pass `buf == nullptr` rather than `buf` itself: when the caller
+            // hands in an uninitialized small stack array (e.g. test path
+            // exercising the overflow branch), GCC -Wmaybe-uninitialized
+            // would otherwise flag the inlined argument here even though
+            // the cold helper only reports it via fmt::ptr(). The boolean
+            // carries the only information that matters for the diagnostic.
+            log_invalid_construction(buf == nullptr, capacity);
             overflow_ = true;
             return;
         }
@@ -761,10 +767,10 @@ private:
     // -- Cold logging helpers (noinline to keep hot paths small) ---------------
 
     [[gnu::noinline, gnu::cold]]
-    static void log_invalid_construction(const uint8_t* buf, size_t capacity) noexcept {
+    static void log_invalid_construction(bool null_buf, size_t capacity) noexcept {
         SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
-            "FIX builder: invalid construction, buf={}, capacity={} (min {})",
-            fmt::ptr(buf), capacity, kHeaderReserve);
+            "FIX builder: invalid construction, null_buf={}, capacity={} (min {})",
+            null_buf, capacity, kHeaderReserve);
     }
 
     [[gnu::noinline, gnu::cold]]
