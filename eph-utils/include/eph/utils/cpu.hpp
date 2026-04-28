@@ -22,6 +22,7 @@
 #include <expected>
 #include <format>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -74,8 +75,16 @@ inline const std::shared_ptr<spdlog::logger>& cpu_logger() {
 
 /// Process-wide registry of pinned cpus — lets `pin_thread` detect
 /// SMT-sibling / NUMA conflicts across threads. Thread-safe.
+///
+/// `g_pinned_owner_role` carries a short diagnostic label per cpu (the
+/// pthread name passed to `pin_thread`, or the role string passed to
+/// `register_external_pin`) so conflict messages can name the culprit
+/// instead of just printing the cpu id. Always written / read under
+/// `g_pin_mutex`; absence in the map is fine — error formatters render
+/// "(by ?)" or omit the suffix.
 inline std::mutex g_pin_mutex;
 inline std::set<int> g_pinned_cpus;
+inline std::map<int, std::string> g_pinned_owner_role;
 
 /// Parse a `/sys` cpu list file (e.g. `isolated`, `thread_siblings_list`),
 /// expanding comma-separated ranges like `1-3,5` into individual ids.
@@ -696,11 +705,92 @@ pin_thread(int cpu) noexcept {
     return pin_thread(cpu, std::string_view{}, CpuPinPolicy{});
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// External-pin registration (DPDK lcore / RT framework integration)
+// ──────────────────────────────────────────────────────────────────────
+//
+// Surfaces the process-wide pin registry that `pin_thread` already maintains
+// so external mechanisms — DPDK EAL lcores in particular — can declare which
+// cpus they are about to bind. With the cpu in the registry, subsequent
+// `pin_thread(.., {require_no_sibling_conflict=true})` calls see the
+// occupation and fail fast on SMT / NUMA conflicts instead of silently
+// fighting the lcore for cycles.
+//
+// `pin_thread` itself does not call `register_external_pin` — its successful
+// path inserts straight into `detail::g_pinned_cpus` (see stage 3 for
+// duplicate-pin tightening). External registrars must use these APIs.
+
+/// @brief Mark @p cpu as already-pinned by an external mechanism.
+///
+/// Use when a non-`pin_thread` mechanism (DPDK EAL lcore, an RT framework,
+/// a binding done by a parent process before fork) has bound a thread to
+/// @p cpu. The cpu enters the same process-wide registry that `pin_thread`
+/// consults, so subsequent strict pins detect SMT / NUMA conflicts.
+///
+/// @param cpu   logical cpu id (must be >= 0)
+/// @param role  short diagnostic label (e.g. "lcore-0(rx-worker)"); shown
+///              in conflict error messages from `pin_thread` /
+///              `register_external_pin`. Empty string is allowed but
+///              produces less useful error output.
+/// @return `{}` on success; `unexpected` if @p cpu < 0 or already
+///         registered (the existing role is included in the message).
+///
+/// @note Thread-safe; serializes on `g_pin_mutex` together with
+///       `pin_thread`. Idempotent only via explicit
+///       `unregister_external_pin` — re-registering the same cpu fails.
+[[nodiscard]] inline std::expected<void, std::string>
+register_external_pin(int cpu, std::string role) {
+    if (cpu < 0) {
+        return std::unexpected("register_external_pin: cpu must be >= 0");
+    }
+    std::lock_guard g(detail::g_pin_mutex);
+    if (detail::g_pinned_cpus.contains(cpu)) {
+        auto it = detail::g_pinned_owner_role.find(cpu);
+        std::string by = (it != detail::g_pinned_owner_role.end() && !it->second.empty())
+                             ? std::format(" by {}", it->second)
+                             : std::string{};
+        spdlog::warn("register_external_pin: cpu {} already occupied{}", cpu, by);
+        return std::unexpected(std::format(
+            "register_external_pin: cpu {} already occupied{}", cpu, by));
+    }
+    detail::g_pinned_cpus.insert(cpu);
+    detail::g_pinned_owner_role[cpu] = std::move(role);
+    spdlog::info("register_external_pin: cpu {} registered as '{}'",
+                 cpu, detail::g_pinned_owner_role[cpu]);
+    return {};
+}
+
+/// @brief Release a cpu previously registered via `register_external_pin`.
+///
+/// Idempotent: calling on a cpu that is not in the registry is a no-op.
+/// Will also erase a cpu that was added via `pin_thread`; callers should
+/// not unregister cpus they did not register themselves (mixing ownership
+/// like that is a bug).
+///
+/// @param cpu  logical cpu id; negative values are silently ignored.
+inline void unregister_external_pin(int cpu) noexcept {
+    if (cpu < 0) return;
+    std::lock_guard g(detail::g_pin_mutex);
+    detail::g_pinned_cpus.erase(cpu);
+    detail::g_pinned_owner_role.erase(cpu);
+}
+
+/// @brief Query whether @p cpu is in the process-wide pin registry.
+///
+/// Returns true if any mechanism (`pin_thread` or `register_external_pin`)
+/// has marked the cpu as occupied. Negative cpu values return false.
+[[nodiscard]] inline bool is_cpu_externally_pinned(int cpu) noexcept {
+    if (cpu < 0) return false;
+    std::lock_guard g(detail::g_pin_mutex);
+    return detail::g_pinned_cpus.contains(cpu);
+}
+
 /// @brief Test-only: clear the pinned-cpu registry so independent test
 /// cases don't collide. Never call from production code.
 inline void reset_pin_registry_for_tests() noexcept {
     std::lock_guard g(detail::g_pin_mutex);
     detail::g_pinned_cpus.clear();
+    detail::g_pinned_owner_role.clear();
 }
 
 } // namespace eph::utils
