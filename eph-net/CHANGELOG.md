@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added (2026-04-26 .. 2026-04-28)
+- `include/eph/net/reconnect_orchestrator.hpp` — `ReconnectOrchestrator
+  <Stream>` (~830 LOC, header-only). Owns the connect → connected →
+  disconnected → backoff loop driven by `ReconnectPolicy`. Per-instance
+  `alignas(64) std::atomic<uint64_t>` array exposes five
+  `ReconnectMetric` counters/gauges
+  (`net.reconnect.{count, failures, duration_ns, duration_ns.last,
+  subscribe_replay_count}`) read either via `metric(ReconnectMetric)`
+  or pushed in bulk via `publish_reconnect_metrics(orch, sink, tags)`
+  — same shape as `publish_metrics` for streams. Optional richer event
+  hook `on_reconnect_event(ReconnectEventKind, …)` (T2.14) emits typed
+  state-transition events alongside the legacy `on_state_change`. The
+  `note_subscribe_replay()` accessor (T2.11) is the user-asserted
+  signal that a session has finished re-subscribing — pair with
+  `kReconnectCount` to detect "reconnects without replay" drift.
+  Test coverage: 18 cases in `tests/test_reconnect_orchestrator.cpp`
+  (state machine, backoff progression, factory failure paths,
+  publish_reconnect_metrics fan-out, event hook ordering, idempotent
+  stop).
+- `include/eph/net/signed_request.hpp` — `SignedRequest<Traits>` HMAC
+  sign-into-header helper. Zero-heap, allocation-free; consumes a
+  `HmacSha256Key` and writes the signature header into a
+  caller-supplied buffer. The `Traits` parameter pins the venue's
+  exact signing string layout (Bybit / OKX / Coinbase header
+  positioning). Test coverage: `tests/test_signed_request.cpp`.
+- `include/eph/net/jwt_signed_request.hpp` — `build_coinbase_jwt(...)`
+  ES256 JWT builder (RFC 7519 + RFC 7515 `ES256` over P-256). Used by
+  the Coinbase venue adapter for the new "Sign In With X" auth flow
+  that replaced HMAC for retail exchange API access. Returns a
+  `std::expected<std::string, ErrorInfo>`; aws-lc backs the EC sign +
+  IEEE-P1363 → ASN.1 conversion. Tests verify against an in-process
+  ES256 verifier; integration test exercises the full produced JWT
+  against a mock Coinbase server (`tests/integration/test_coinbase_adapter.cpp`).
+
 ### Documentation
 - Re-synced `README.md`, `summary.md`, `docs/ONBOARDING.md` against the
   actual header set under `include/eph/net/` (2026-04-24). Previous
