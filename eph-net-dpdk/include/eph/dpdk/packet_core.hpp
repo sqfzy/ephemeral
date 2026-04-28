@@ -63,6 +63,34 @@ struct UdpHeader {
 
 static_assert(sizeof(UdpHeader) == kUdpHeaderLen);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DPDK-vs-eph header-length agreement
+//
+// `kIpv4HeaderLen` / `kTcpHeaderLen` / `kEtherHeaderLen` are typed by hand
+// to match the DPDK structs' wire-byte layouts; if a future DPDK ever
+// changes one of these (extra padding, trailing reserved bytes, etc.)
+// the cast-pointer arithmetic in `PacketTemplate::build_packet` /
+// `parse_*` would silently corrupt frames. Catch the drift at compile
+// time so an ABI surprise is a build error, not a runtime checksum
+// failure.
+//
+// Note: rte_ether_hdr / rte_ipv4_hdr / rte_tcp_hdr are __attribute__((packed))
+// in DPDK; the equality is exact, not "at least".
+// ─────────────────────────────────────────────────────────────────────────────
+static_assert(sizeof(rte_ether_hdr) == kEtherHeaderLen,
+              "DPDK rte_ether_hdr no longer matches kEtherHeaderLen — "
+              "header builder offsets would corrupt frames");
+static_assert(sizeof(rte_ipv4_hdr)  == kIpv4HeaderLen,
+              "DPDK rte_ipv4_hdr no longer matches kIpv4HeaderLen — "
+              "header builder offsets would corrupt frames");
+static_assert(sizeof(rte_tcp_hdr)   == kTcpHeaderLen,
+              "DPDK rte_tcp_hdr no longer matches kTcpHeaderLen — "
+              "header builder offsets would corrupt frames");
+static_assert(kAllHeadersLen ==
+              kEtherHeaderLen + kIpv4HeaderLen + kTcpHeaderLen);
+static_assert(kUdpAllHeadersLen ==
+              kEtherHeaderLen + kIpv4HeaderLen + kUdpHeaderLen);
+
 /// @name TCP flag bitmasks (RFC 793 section 3.1)
 /// @{
 inline constexpr uint8_t kTcpFin = 0x01;  ///< No more data from sender
@@ -99,6 +127,14 @@ inline constexpr uint16_t kSynOptionsLen = 12;
 
 /// @brief TCP header length for SYN packets (standard header + SYN options = 32 bytes).
 inline constexpr uint16_t kSynTcpHeaderLen = kTcpHeaderLen + kSynOptionsLen;
+
+// SYN options length must be a multiple of 4 (TCP data offset granularity).
+// PacketTemplate::build_packet sets `tcp->data_off = (tcp_hdr_len / 4) << 4`
+// — a non-multiple would silently truncate the offset and corrupt the frame.
+static_assert(kSynOptionsLen % 4 == 0,
+              "kSynOptionsLen must be a multiple of 4 for TCP data_off");
+static_assert(kSynTcpHeaderLen % 4 == 0,
+              "kSynTcpHeaderLen must be a multiple of 4 for TCP data_off");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Byte order helpers
