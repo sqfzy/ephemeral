@@ -25,7 +25,7 @@
 | 来源 | 缺口 | 触发条件 / 工作量 |
 |------|------|-----------------|
 | T2.4 + T2.4-FU | TLS resumption 2 个测试 SKIP | aws-lc-specific 架构性限制 — 需 aws-lc 行为变化或项目切 OpenSSL（见 ADR D22） |
-| T2.10 | 真 JWT 接 venue mock | T2.10-FU 已实现 `eph-net/include/eph/net/jwt_signed_request.hpp`，但未 wire 进 `test_coinbase_adapter`；~30 行改动把 fake-JWT 替换为真 `build_coinbase_jwt` 调用 |
+| ~~T2.10~~ | ~~真 JWT 接 venue mock~~ | **已 ship**（2026-04-28）— `tests/integration/test_coinbase_adapter.cpp` 现使用 `build_coinbase_jwt` + 服务端 `EVP_DigestVerify` 端到端校验签名 |
 | T2.10 | OKX/Bybit 私有频道 `op:login` 集成测试 | scope-narrow 决议（D24）— 不写 helper class，但可补一个测试演示 in-band login pattern |
 
 ---
