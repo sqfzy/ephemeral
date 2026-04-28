@@ -350,8 +350,8 @@ int main(int argc, char** argv) {
                      "(expected on a smoke-boot without ARP-resolved peer): {}",
                      sock_r.error().detail);
         spdlog::info("simple_hft_dpdk_mp: skeleton path — populate "
-                     "src_mac / dst_mac (e.g. via arp_resolve()) to drive "
-                     "real traffic.");
+                     "src_mac / dst_mac (e.g. via eph::dpdk::arp::resolve) "
+                     "to drive real traffic.");
         // Fall through to the poll loop anyway so the cleanup branches
         // are exercised end-to-end on every run.
     }
