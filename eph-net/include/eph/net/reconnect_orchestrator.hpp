@@ -443,7 +443,10 @@ public:
     /// Mirrors `policy_.attempts()`.
     [[nodiscard]] uint32_t attempts() const noexcept { return policy_.attempts(); }
 
-    /// @brief Read one of the four orchestrator metrics.
+    /// @brief Read one of the five orchestrator metrics (see
+    ///        `ReconnectMetric` enum for the full list — count,
+    ///        failures, duration_ns sum, last duration_ns,
+    ///        subscribe_replay_count).
     /// Out-of-range `m` returns 0 (mirrors `Stream::metric` contract).
     [[nodiscard]] uint64_t metric(ReconnectMetric m) const noexcept {
         const auto i = static_cast<std::size_t>(m);
