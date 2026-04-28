@@ -470,6 +470,146 @@ TEST(FindSrcPortForQueue, RejectsInvertedRange) {
     EXPECT_NE(r.error().find("port_range_start"), std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// find_src_port_for_queue_with_state — fan-out distinctness regression.
+//
+// Pre-fix bug: `find_src_port_for_queue` was a deterministic linear scan
+// from `port_range_start`, returning the first match. N concurrent stream
+// attaches with identical (remote, local, target_queue) — the production
+// pattern of an N-path producer connecting to a single exchange endpoint
+// — would all receive the SAME src_port. Each queue's first stream worked;
+// every subsequent stream collided on the 5-tuple (kernel EADDRINUSE on
+// kernel sockets, or silent RX trampling on DPDK sockets).
+//
+// Integration tests didn't catch this because they exercise single-stream
+// paths only — the fan-out N-to-one-endpoint pattern is exotic for tests
+// but canonical for HFT producers.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Construct a valid 4-queue RssState fixture (matches the DNS test
+// fixture pattern in test_dns_rss_aware.cpp).
+RssState make_state_4q() {
+    RssState s;
+    s.key_len = 0;  // → state.key() returns kRssDefaultKey
+    s.reta_size = 4;
+    s.reta[0].mask = ~uint64_t{0};
+    s.reta[0].reta[0] = 0;
+    s.reta[0].reta[1] = 1;
+    s.reta[0].reta[2] = 2;
+    s.reta[0].reta[3] = 3;
+    return s;
+}
+
+constexpr uint32_t kRemoteIp   = 0x0DC01BAF; // arbitrary "binance"-ish
+constexpr uint16_t kRemotePort = 443;
+constexpr uint32_t kLocalIp    = 0xAC1F2031;    // 172.31.32.49
+
+}  // namespace
+
+TEST(FindSrcPortForQueue, ExplicitHintIsDeterministic) {
+    auto state = make_state_4q();
+    auto r1 = find_src_port_for_queue_with_state(
+        state, /*target_queue=*/0,
+        kRemoteIp, kRemotePort, kLocalIp,
+        /*port_range_start=*/32768, /*port_range_end=*/60999,
+        /*start_hint=*/0);
+    auto r2 = find_src_port_for_queue_with_state(
+        state, /*target_queue=*/0,
+        kRemoteIp, kRemotePort, kLocalIp,
+        /*port_range_start=*/32768, /*port_range_end=*/60999,
+        /*start_hint=*/0);
+    ASSERT_TRUE(r1.has_value() && r2.has_value());
+    EXPECT_EQ(*r1, *r2)
+        << "same start_hint must produce same src_port (deterministic for tests)";
+}
+
+TEST(FindSrcPortForQueue, FanOutDistinctnessAcrossHints) {
+    // Simulate a 15-path producer pinning every path to the same RSS
+    // queue. Each path advances the hint by 1; results must be 15
+    // distinct src_ports — pre-fix this returned the same port every
+    // time. All 15 ports must hash to the requested queue.
+    auto state = make_state_4q();
+    constexpr uint16_t kTargetQ = 0;
+    std::set<uint16_t> ports;
+    for (uint32_t hint = 0; hint < 15; ++hint) {
+        auto sp = find_src_port_for_queue_with_state(
+            state, kTargetQ,
+            kRemoteIp, kRemotePort, kLocalIp,
+            /*port_range_start=*/32768, /*port_range_end=*/60999,
+            /*start_hint=*/hint);
+        ASSERT_TRUE(sp.has_value())
+            << "fan-out path " << hint << ": " << (sp ? "" : sp.error());
+        // Every chosen sp hashes to the requested queue.
+        EXPECT_EQ(queue_for_tuple(state, kRemoteIp, kRemotePort,
+                                   kLocalIp, *sp),
+                  kTargetQ);
+        ports.insert(*sp);
+    }
+    EXPECT_EQ(ports.size(), 15u)
+        << "15 fan-out paths must receive 15 distinct src_ports — "
+        << "got " << ports.size() << " (pre-fix bug: all the same value)";
+}
+
+TEST(FindSrcPortForQueue, AutoHintAdvancesProcessGlobal) {
+    // Caller passes nullopt → the helper consumes the process-global
+    // atomic counter. Successive calls must produce distinct ports.
+    auto state = make_state_4q();
+    constexpr uint16_t kTargetQ = 1;
+    std::set<uint16_t> ports;
+    for (int i = 0; i < 8; ++i) {
+        auto sp = find_src_port_for_queue_with_state(
+            state, kTargetQ,
+            kRemoteIp, kRemotePort, kLocalIp);
+        ASSERT_TRUE(sp.has_value());
+        EXPECT_EQ(queue_for_tuple(state, kRemoteIp, kRemotePort,
+                                   kLocalIp, *sp),
+                  kTargetQ);
+        ports.insert(*sp);
+    }
+    EXPECT_EQ(ports.size(), 8u)
+        << "auto-hint path must produce distinct ports across 8 calls";
+}
+
+TEST(FindSrcPortForQueue, WrapAroundCoversWholeRange) {
+    // With a tight range and an exhausted hint, the wrap-around scan must
+    // still find a match (i.e. not stop at port_range_end without trying
+    // the [start, wrap_start) tail).
+    auto state = make_state_4q();
+    constexpr uint16_t kStart = 32768;
+    constexpr uint16_t kEnd   = 32792;   // 25-port range
+    constexpr uint32_t kHint  = 20;       // wrap_start = 32788; loop spills past 32792
+    for (uint16_t q = 0; q < 4; ++q) {
+        auto sp = find_src_port_for_queue_with_state(
+            state, q, kRemoteIp, kRemotePort, kLocalIp,
+            kStart, kEnd, kHint);
+        ASSERT_TRUE(sp.has_value())
+            << "queue " << q << " not found in tight range with hint=" << kHint
+            << ": " << (sp ? "" : sp.error());
+        EXPECT_GE(*sp, kStart);
+        EXPECT_LE(*sp, kEnd);
+    }
+}
+
+TEST(FindSrcPortForQueue, ExhaustionStillReportsExhausted) {
+    // Degenerate state where every port maps to queue 0; searching for
+    // queue 1 must visit the entire range (via wrap) then return
+    // RssHashPredictExhausted.
+    RssState state;
+    state.key_len = 0;
+    state.reta_size = 1;
+    state.reta[0].mask = ~uint64_t{0};
+    state.reta[0].reta[0] = 0;
+    auto r = find_src_port_for_queue_with_state(
+        state, /*target_queue=*/1,
+        kRemoteIp, kRemotePort, kLocalIp,
+        /*port_range_start=*/32768, /*port_range_end=*/32790,
+        /*start_hint=*/10);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("RssHashPredictExhausted"), std::string::npos);
+}
+
 // NOTE: any test that calls predict_rss_queue / find_src_port_for_queue
 // against a real port_id requires DPDK EAL + a configured NIC. Those
 // paths are exercised by the integration test in stage 3
