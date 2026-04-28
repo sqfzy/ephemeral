@@ -20,6 +20,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -447,6 +448,11 @@ TEST(DnsE2E, ResolveTwoDifferentHostnamesInSequence) {
     EXPECT_EQ(*r2, kDnsMockResolvedIp);
 }
 
+// resolve() returns std::expected<uint32_t, eph::core::ErrorInfo> after
+// T3.18 alignment. Pre-flight failures map to Error::InvalidConfig with a
+// static-literal detail string; we substring-match on .detail and assert
+// on .code. The ErrorInfo formats as "CODE: detail" via operator<<
+// so the gtest diagnostic stream still prints something useful.
 TEST(DnsE2E, EmptyHostnameReturnsError) {
     EPH_DPDK_E2E_SKIP_IF_NOT_READY();
     auto& env = DpdkE2ETestEnv::env();
@@ -457,7 +463,9 @@ TEST(DnsE2E, EmptyHostnameReturnsError) {
         env.src_mac, env.gw_mac, env.src_ip, "", cfg);
 
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("hostname is empty"), std::string::npos)
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("hostname is empty"),
+              std::string_view::npos)
         << "expected 'hostname is empty' diagnostic, got: " << r.error();
 }
 
@@ -471,7 +479,9 @@ TEST(DnsE2E, NullPoolReturnsError) {
         env.src_mac, env.gw_mac, env.src_ip, "example.com", cfg);
 
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("mempool is null"), std::string::npos)
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("mempool is null"),
+              std::string_view::npos)
         << "expected 'mempool is null' diagnostic, got: " << r.error();
 }
 
@@ -487,10 +497,14 @@ TEST(DnsE2E, InvalidConfigZeroNameserverReturnsError) {
         env.src_mac, env.gw_mac, env.src_ip, "example.com", bad);
 
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("Invalid DNS config"), std::string::npos)
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Detail string is a static literal "Invalid DNS config"; the
+    // per-field diagnostic ("nameserver_ip must not be 0") moved to the
+    // spdlog ERROR line (the prior std::string error embedded both).
+    // We assert on the static literal here.
+    EXPECT_NE(std::string_view{r.error().detail}.find("Invalid DNS config"),
+              std::string_view::npos)
         << "expected validation error, got: " << r.error();
-    EXPECT_NE(r.error().find("nameserver_ip"), std::string::npos)
-        << "expected nameserver_ip in error, got: " << r.error();
 }
 
 TEST(DnsE2E, TimeoutOnUnreachableNameserver) {
@@ -514,7 +528,9 @@ TEST(DnsE2E, TimeoutOnUnreachableNameserver) {
     auto elapsed = std::chrono::steady_clock::now() - t0;
 
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("timeout"), std::string::npos)
+    EXPECT_EQ(r.error().code, eph::core::Error::Timeout);
+    EXPECT_NE(std::string_view{r.error().detail}.find("timeout"),
+              std::string_view::npos)
         << "expected timeout diagnostic, got: " << r.error();
     // Sanity check: did we actually wait the configured budget?  We
     // give the upper bound generous slack for scheduler jitter.
