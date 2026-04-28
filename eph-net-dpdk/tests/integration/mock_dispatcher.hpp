@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+#include <sys/prctl.h>
+
 #include <spdlog/spdlog.h>
 
 #include "echo_mocks.hpp"
@@ -75,6 +77,23 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     sigemptyset(&sa.sa_mask);
     ::sigaction(SIGTERM, &sa, nullptr);
     ::sigaction(SIGINT,  &sa, nullptr);
+
+    // Parent-death watchdog: if the parent test process exits abnormally
+    // (crash / SIGKILL / forgotten ChildReaper), the kernel automatically
+    // delivers SIGTERM to us, which our handler converts into a clean
+    // shutdown via g_dispatcher_running. Without this, an orphaned mock
+    // process can survive for hours holding ports 19000-19499 (observed
+    // in the ephemeral_dev autonomous-loop infrastructure: a stuck
+    // test_dpdk_rss_fanout child sat in sigsuspend for 4+ hours after
+    // its parent died, blocking subsequent integration runs).
+    //
+    // PR_SET_PDEATHSIG is per-thread on Linux; we set it on the main
+    // thread before spawning workers so the workers inherit nothing —
+    // only the main thread (which calls sigsuspend below) needs the
+    // signal. Errors are swallowed: this is a defensive watchdog, not
+    // a hard requirement, and the existing ChildReaper still covers
+    // the happy path.
+    (void)::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
 
     spdlog::info("dispatcher: starting mocks on {}", server_ip);
 
