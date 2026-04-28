@@ -1229,6 +1229,17 @@ public:
             // on the RxDispatcher path). Clearing keepalive_misses_ also
             // resets the "N probes unanswered → Closed" counter, so a
             // single live reply undoes prior uncertainty.
+            //
+            // Memory order: relaxed is correct here because every store of
+            // last_rx_burst_tsc_ that this load can possibly observe happens
+            // earlier in program order on the SAME thread (poll_rx publishes
+            // it at line ~1668 before invoking process_rx; the RxDispatcher
+            // path calls set_last_rx_burst_tsc at tcp_stream.hpp:1634 which
+            // is also followed by sess_.process_rx in the same lcore).
+            // Cross-thread observers go through the public last_rx_burst_tsc()
+            // getter, which uses memory_order_acquire to pair with the
+            // release stores. Audit-20260413 #16 noted the relaxed/acquire
+            // mix as a stylistic concern; the asymmetry is load-bearing.
             last_rx_tsc_ = last_rx_burst_tsc_.load(std::memory_order_relaxed);
             keepalive_misses_ = 0;
 
