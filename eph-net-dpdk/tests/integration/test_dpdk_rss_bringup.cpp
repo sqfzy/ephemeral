@@ -70,6 +70,16 @@ bool nic_on_vfio_pci(const std::string& pci_bdf) {
     return ::access(sys.c_str(), F_OK) == 0;
 }
 
+/// Check that the running process has write access to `/dev/hugepages/`.
+/// Without it, EAL init succeeds far enough to produce log spam but then
+/// every per-test child fails with "Couldn't get fd on hugepage file" and
+/// the parent reports the failures as test failures rather than
+/// environment skips. Most distros ship hugetlbfs root-owned, so on a
+/// rootless run this returns false and we skip the suite cleanly.
+bool hugepages_writable() noexcept {
+    return ::access("/dev/hugepages", W_OK) == 0;
+}
+
 /// Env-level shared state: the vfio-pci-bound NIC's PCI BDF. EAL is
 /// NOT initialised here — each TEST forks and the child runs its own
 /// EAL session, scoped to a single Platform construction.
@@ -111,6 +121,18 @@ public:
         if (!nic_on_vfio_pci(pci)) {
             reason_ = "NIC_B (" + pci + ") is not bound to vfio-pci — "
                       "skipping RSS bring-up tests";
+            return;
+        }
+
+        // Without write access to /dev/hugepages every per-test EAL child
+        // fails on `get_seg_fd: open '<...>map_*' failed: Permission denied`
+        // and the parent surfaces those as test failures. Skip cleanly so
+        // a developer running the suite without sudo/membership in
+        // hugepages' group sees the right diagnostic instead of red Xs.
+        if (!hugepages_writable()) {
+            reason_ = "no write access to /dev/hugepages (typical when "
+                      "running rootless without hugetlbfs group membership) "
+                      "— skipping RSS bring-up tests";
             return;
         }
 

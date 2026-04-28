@@ -84,6 +84,14 @@ bool nic_on_vfio_pci(const std::string& pci_bdf) {
     return ::access(("/sys/bus/pci/drivers/vfio-pci/" + pci_bdf).c_str(), F_OK) == 0;
 }
 
+/// Same rationale as in test_dpdk_rss_bringup.cpp — without write access
+/// to /dev/hugepages each EAL init aborts with permission errors and the
+/// test surfaces as failed instead of skipped. Skip cleanly so a rootless
+/// developer sees a clear diagnostic.
+bool hugepages_writable() noexcept {
+    return ::access("/dev/hugepages", W_OK) == 0;
+}
+
 class RssKeyEnv : public ::testing::Environment {
 public:
     static bool ready() noexcept { return ready_; }
@@ -119,6 +127,12 @@ public:
         if (!nic_on_vfio_pci(pci)) {
             reason_ = "NIC_B (" + pci + ") not bound to vfio-pci — "
                       "skipping RSS key correctness test";
+            return;
+        }
+        if (!hugepages_writable()) {
+            reason_ = "no write access to /dev/hugepages (typical when "
+                      "running rootless without hugetlbfs group membership) "
+                      "— skipping RSS key correctness test";
             return;
         }
         pci_bdf_ = pci;
