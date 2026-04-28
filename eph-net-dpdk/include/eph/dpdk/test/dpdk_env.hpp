@@ -134,7 +134,7 @@ struct DpdkBenchEnv {
 
         // ── 6. ARP resolve gateway MAC ────────────────────────────
         auto gw_mac_result = eph::dpdk::arp::resolve(
-            port_id, /*rx_queue=*/0, pool,
+            port_id, pool,
             src_mac, *src_ip, *gw_ip,
             std::chrono::seconds{3});
         if (!gw_mac_result) {

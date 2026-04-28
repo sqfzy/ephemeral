@@ -407,6 +407,16 @@ resolve_with_io(uint16_t port_id,
 /// Must be called BEFORE TCP connection establishment — this function will
 /// discard any non-ARP packets received during the poll.
 ///
+/// **RX queue is hardcoded to 0**. ARP packets carry EtherType 0x0806
+/// which is NOT in any RSS hash set the project enables (see
+/// `platform.hpp:1113-1115` — `RTE_ETH_RSS_NONFRAG_IPV4_TCP/UDP/IPV4`
+/// only). Non-IP traffic falls to the NIC's default RX queue, which is
+/// queue 0 on every PMD currently supported (notably AWS ENA). Allowing
+/// callers to pass a non-zero `queue_id` (the pre-fix API) led to silent
+/// timeouts on RSS-active multi-queue Platforms because the reply
+/// landed on queue 0 while the caller polled queue N≠0. The parameter
+/// was removed to make that mistake unrepresentable.
+///
 /// @note Pass `expected_mac` to enable anti-spoof: replies from any MAC
 ///       other than the configured gateway MAC are rejected. In HFT colo
 ///       deployments the gateway MAC is static and known in advance —
@@ -414,7 +424,6 @@ resolve_with_io(uint16_t port_id,
 ///       with a matching sender IP wins (legacy behaviour).
 ///
 /// @param port_id       DPDK port to send/receive on
-/// @param queue_id      TX/RX queue to use (default 0)
 /// @param pool          Mempool for mbuf allocation
 /// @param src_mac       Our NIC's MAC address
 /// @param src_ip        Our IPv4 address (host byte order)
@@ -425,12 +434,12 @@ resolve_with_io(uint16_t port_id,
 ///                      behaviour (accept any sender MAC for target_ip).
 /// @return Resolved MAC address, or error string on timeout/failure
 ///
-/// @note Thin wrapper around `resolve_with_io<RealNicIoArp>`. The split
-///       exists for testability; production callers should keep using
-///       this overload.
+/// @note Thin wrapper around `resolve_with_io<RealNicIoArp>` with
+///       queue=0. The testability split keeps `resolve_with_io`
+///       parametric on queue_id so unit tests can exercise both queues
+///       through a fake Io shim.
 [[nodiscard]] inline std::expected<rte_ether_addr, std::string>
 resolve(uint16_t port_id,
-        uint16_t queue_id,
         rte_mempool* pool,
         const rte_ether_addr& src_mac,
         uint32_t src_ip,
@@ -438,7 +447,7 @@ resolve(uint16_t port_id,
         std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
         std::optional<rte_ether_addr> expected_mac = std::nullopt) {
     return resolve_with_io<RealNicIoArp>(
-        port_id, queue_id, pool, src_mac, src_ip, target_ip,
+        port_id, /*queue_id=*/0, pool, src_mac, src_ip, target_ip,
         timeout, expected_mac);
 }
 

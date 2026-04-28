@@ -381,7 +381,7 @@ TEST(ArpE2E, ResolveGateway) {
     // proving the kernel ARP responder on the upstream hop is consistent
     // and the parser logic is deterministic.
     auto r = eph::dpdk::arp::resolve(
-        env.port_id, /*rx_queue=*/0, env.pool,
+        env.port_id, env.pool,
         env.src_mac, env.src_ip, env.gw_ip,
         std::chrono::seconds{3});
     ASSERT_TRUE(r.has_value()) << "second ARP resolve failed: " << r.error();

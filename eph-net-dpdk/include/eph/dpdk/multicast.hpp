@@ -198,6 +198,26 @@ struct MulticastConfig {
     int      rx_cpu       = -1;      ///< CPU affinity for RX thread (-1 = no pin)
     uint16_t rx_burst     = 32;      ///< Max packets per rte_eth_rx_burst call
 
+    /// Set to `Platform::is_rss_active()` when this MulticastReceiver runs
+    /// on a Platform that has RSS multi-queue dispatch enabled. When true,
+    /// `start()` fail-fasts unless the caller has *also* installed
+    /// FlowDirector rules pinning each multicast group's traffic to
+    /// `rx_queue_id` (in which case set this back to false to acknowledge
+    /// the explicit pin).
+    ///
+    /// Why fail-fast: multicast UDP is in the project's RSS hash set
+    /// (`platform.hpp:1113-1115` — `RTE_ETH_RSS_NONFRAG_IPV4_UDP`), so
+    /// the NIC hashes inbound packets across queues using the 5-tuple
+    /// `(sender_ip, sender_port, group_ip, group_port)`. The receiver
+    /// only polls one `rx_queue_id`, so packets hashed to other queues
+    /// are silently dropped. There is no `src_port`-style trick (cf. DNS
+    /// `select_dns_src_port`) because the receiver does not control the
+    /// sender's 5-tuple. Caller must either:
+    ///   * disable RSS / use single queue (Platform single-queue config), or
+    ///   * install a FlowDirector rule pinning the group's traffic to
+    ///     `rx_queue_id` before `start()`, and set this flag false.
+    bool rss_active_multi_queue = false;
+
     [[nodiscard]] friend bool operator==(const MulticastConfig&,
                                           const MulticastConfig&) = default;
 
@@ -512,6 +532,30 @@ public:
             SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
                 "Invalid config: {}", err);
             return std::unexpected(std::format("Invalid config: {}", err));
+        }
+
+        // RSS multi-queue safety check (stage 5 of the DPDK control-plane
+        // RSS blind-spot fix). When the underlying Platform has RSS active
+        // across multiple queues, every multicast UDP packet's 5-tuple
+        // gets hashed across queues — there's no caller-controllable input
+        // to steer all of them to `rx_queue_id`. Fail-fast forces the
+        // caller to either single-queue the Platform or pin via
+        // FlowDirector first (then clear this flag to acknowledge).
+        if (config_.rss_active_multi_queue) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "MulticastReceiver: rss_active_multi_queue=true with "
+                "rx_queue_id={} — RSS hashes inbound multicast across "
+                "all queues; the receiver cannot guarantee delivery to "
+                "a single queue without an explicit per-group FlowDirector "
+                "pin. Either: (a) disable RSS / use single-queue Platform; "
+                "(b) install FlowDirector rule pinning each joined group "
+                "to rx_queue_id, then pass rss_active_multi_queue=false "
+                "to acknowledge.",
+                config_.rx_queue_id);
+            return std::unexpected(std::format(
+                "MulticastReceiver: rss_active_multi_queue=true unsafe "
+                "(rx_queue_id={}); see ERROR log for resolution",
+                config_.rx_queue_id));
         }
 
         if (active_group_count() == 0) {

@@ -655,6 +655,18 @@ public:
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
 
+    /// @brief True iff RSS hashing is active on this Platform (multi-queue
+    /// dispatch is in effect). Returns true iff `configure_rss` succeeded
+    /// or the probe-based fallback is in use; returns false for
+    /// single-queue Platforms, moved-from Platforms, or when both RSS
+    /// configuration paths failed.
+    ///
+    /// Read this from cold-path control-plane code (`dns::resolve`,
+    /// `MulticastRx::create`) to decide whether to reverse-pick a src_port
+    /// via `find_src_port_for_queue` (RSS active) or fall back to a
+    /// random ephemeral port (single-queue / no-RSS).
+    [[nodiscard]] bool is_rss_active() const noexcept;
+
     /// @brief True iff RSS is active and the prediction key was *probed*
     /// from the NIC (via `rte_eth_dev_rss_hash_conf_get`) rather than
     /// installed by `configure_rss`. Selected automatically when the PMD
@@ -1711,6 +1723,10 @@ Platform::dispatch_mode() const noexcept {
 
 inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
+}
+
+inline bool Platform::is_rss_active() const noexcept {
+    return impl_ && impl_->rss_active;
 }
 
 inline bool Platform::rss_using_probed_key() const noexcept {
