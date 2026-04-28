@@ -509,3 +509,45 @@ TEST(WsCodecDeflate, FragmentedCompressedMessage) {
     EXPECT_EQ(std::string(reinterpret_cast<const char*>(f.data()), f.size()),
               plaintext);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Boundary poison-pill: malformed deflate payload with the right WS frame
+// shape. This is the protocol-boundary case from the project's
+// "every protocol layer needs a wrong-type-valid-input test" rule —
+// the WS framing layer accepts the bytes, the inflate layer must
+// reject them with `Error::CodecBad` (not silently emit garbage,
+// not crash).
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(WsCodecDeflate, MalformedDeflatePayloadRejected) {
+    // 32 bytes of random-looking junk that does NOT decode as raw
+    // deflate. Deliberately patterned bytes (mostly 0xFF) so zlib's
+    // internal block-type / length-validity checks reject early —
+    // representative of a buggy / hostile server, or a wire bit-flip
+    // that the WS frame layer didn't catch.
+    const std::vector<uint8_t> junk = {
+        0xFF, 0xFE, 0xFD, 0xFC, 0xAA, 0x55, 0xAA, 0x55,
+        0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    };
+    auto wire = mk_compressed_frame(kOpBinary, /*fin=*/true,
+                                     /*rsv1=*/true, junk);
+
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[16];
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    WsCodec codec;
+    codec.enable_permessage_deflate(/*server_no_ctx_takeover=*/false);
+
+    auto r = codec.decode(view, out);
+    // The frame is well-formed at the WS layer, so the codec should
+    // dispatch to inflate. Inflate must surface a CodecBad error
+    // rather than producing partial output or hanging.
+    ASSERT_FALSE(r.has_value())
+        << "malformed deflate payload was accepted as valid";
+    EXPECT_EQ(r.error().code, Error::CodecBad)
+        << "malformed deflate must surface CodecBad, got: "
+        << r.error().detail;
+}
