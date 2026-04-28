@@ -431,6 +431,13 @@ inline void generate_mask_key(uint8_t mask[4]) noexcept {
 struct DecodedFrame {
     uint8_t        opcode       = 0;       ///< Frame opcode (text, binary, ping, pong, close, continuation)
     bool           fin          = false;    ///< FIN bit: true if this is the final fragment
+    /// RSV1 bit. Per RFC 6455 §5.2 must be 0 unless an extension was
+    /// negotiated; the only extension we currently support is RFC 7692
+    /// permessage-deflate, which sets RSV1=1 on the first frame of every
+    /// compressed message. `decode_frame` only ever populates this when
+    /// invoked with `allow_rsv1=true`; otherwise an RSV1=1 frame is
+    /// rejected outright with `kReservedBits`.
+    bool           rsv1         = false;
     bool           masked       = false;    ///< True if payload is masked (client-to-server frames)
     uint64_t       payload_len  = 0;       ///< Payload length in bytes
     const uint8_t* payload      = nullptr; ///< Pointer into source buffer (zero-copy)
@@ -512,8 +519,16 @@ struct DecodedFrame {
 /// @param len          Available bytes in `wire_bytes`.
 /// @return Decoded frame, or error if incomplete/malformed.
 ///         "incomplete" error means more data is needed.
+/// @param allow_rsv1   If true, RSV1=1 (the only RSV bit RFC 7692
+///                     permessage-deflate uses) is accepted and surfaced
+///                     via `DecodedFrame::rsv1`. RSV2/RSV3 stay rejected
+///                     unconditionally — we do not implement any
+///                     extension that uses them. Default false preserves
+///                     pre-RFC-7692 strict behaviour for callers that
+///                     have not negotiated deflate.
 [[nodiscard]] inline std::expected<DecodedFrame, DecodeError>
-decode_frame(const uint8_t* wire_bytes, size_t len) {
+decode_frame(const uint8_t* wire_bytes, size_t len,
+             bool allow_rsv1 = false) {
     if (len < 2) {
         return std::unexpected(DecodeError::kIncomplete);
     }
@@ -528,12 +543,25 @@ decode_frame(const uint8_t* wire_bytes, size_t len) {
     // RFC 6455 §5.2: RSV1-3 must be 0 unless an extension is negotiated.
     // Check here — before any length parsing — so malformed frames are
     // rejected early without consuming variable-length fields.
-    if (wire_bytes[pos] & 0x70) {
-        SPDLOG_LOGGER_WARN(detail::ws_logger(),
-            "decode_frame: non-zero RSV bits 0x{:02X} in byte0=0x{:02X} "
-            "(no extensions negotiated)",
-            wire_bytes[pos] & 0x70, wire_bytes[pos]);
-        return std::unexpected(DecodeError::kReservedBits);
+    //
+    // RFC 7692 permessage-deflate uses RSV1 to mark a compressed message.
+    // Only the first frame of a message carries RSV1 (subsequent
+    // continuation frames inherit the compression bit). When the caller
+    // has negotiated deflate, surface RSV1 to the codec and let it drive
+    // the inflate path. RSV2/RSV3 stay reserved for future extensions —
+    // any non-zero value still triggers `kReservedBits`.
+    const uint8_t rsv_bits = wire_bytes[pos] & 0x70;
+    if (rsv_bits != 0) {
+        const uint8_t allowed_mask = allow_rsv1 ? 0x40 : 0x00;
+        if ((rsv_bits & ~allowed_mask) != 0) {
+            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+                "decode_frame: non-zero RSV bits 0x{:02X} in byte0=0x{:02X} "
+                "(allow_rsv1={})",
+                rsv_bits, wire_bytes[pos], allow_rsv1);
+            return std::unexpected(DecodeError::kReservedBits);
+        }
+        // Only RSV1 set, and the caller said it's expected — record it.
+        frame.rsv1 = true;
     }
     pos++;
 
