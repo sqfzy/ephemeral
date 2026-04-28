@@ -655,6 +655,17 @@ public:
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
 
+    /// @brief True iff RSS is active and the prediction key was *probed*
+    /// from the NIC (via `rte_eth_dev_rss_hash_conf_get`) rather than
+    /// installed by `configure_rss`. Selected automatically when the PMD
+    /// rejects `rte_eth_dev_rss_hash_update` but exposes the hash key via
+    /// readback (notably newer ENA). Returns false when RSS is inactive
+    /// (single-queue Platforms, moved-from), and false on Platforms where
+    /// `configure_rss` installed eph's own key in the normal path.
+    /// Diagnostic only — does not change hot-path behaviour; predict_rss_queue
+    /// / query_rss_state already use whichever key is in effect.
+    [[nodiscard]] bool rss_using_probed_key() const noexcept;
+
     /// @brief Resolved RX-queue range `[lo, hi)` this Platform process owns.
     ///
     /// Cold getter — read once at `create_and_attach` time to drive
@@ -781,6 +792,14 @@ struct Platform::Impl {
 
     // RSS / multi-queue dispatch state (stage 3).
     bool           rss_active{false};   ///< True if configure_rss() succeeded
+                                        ///< OR probe-based bring-up resolved.
+    /// True iff `rss_active` was set via the probe path
+    /// (rte_eth_dev_rss_hash_conf_get) rather than via configure_rss
+    /// installing eph's own key. Selected automatically on PMDs that
+    /// reject rss_hash_update but expose hash_conf_get (notably newer
+    /// ENA). predict_rss_queue / query_rss_state pick up the actual
+    /// NIC key transparently in this mode.
+    bool           rss_using_probed_key{false};
     ::eph::net::dpdk::RxDispatchMode dispatch_mode{
         ::eph::net::dpdk::RxDispatchMode::Software};
     /// Per-queue Poller registry. Populated by Stream::create_and_attach
@@ -1366,18 +1385,31 @@ Platform::create(const PlatformConfig& config) {
     // RSS hash key + RETA must be installed BEFORE rte_eth_dev_start.
     // configure_port already set mq_mode=RTE_ETH_MQ_RX_RSS in eth_conf when
     // enable_rss && nb_rx_queues > 1; here we wire up the actual hash params.
-    // Failure is non-fatal: we log + degrade to single-queue Software fallback
-    // so a NIC that doesn't fully support RSS doesn't bring the whole port down.
+    //
+    // Failure is NOT silently absorbed any more (commit BREAKING CHANGE):
+    //   * If configure_rss succeeds: rss_active=true (eph's own key
+    //     installed). Common path for non-ENA PMDs.
+    //   * If configure_rss fails: we record the error and try a
+    //     probe-based bring-up after `start_port` (some PMDs — notably
+    //     ENA — reject `rte_eth_dev_rss_hash_update` but expose the
+    //     in-use hash key via `rte_eth_dev_rss_hash_conf_get`, which we
+    //     can use for `predict_rss_queue` predictions).
+    //   * If both fail and the user asked for `nb_rx_queues > 1`,
+    //     `Platform::create` returns an error rather than silently
+    //     collapsing to single-queue (the previous behaviour, which hid
+    //     a real configuration mismatch behind an INFO log).
+    std::string configure_rss_error;
     if (config.enable_rss && impl->config.nb_rx_queues > 1) {
         auto rss_r = ::eph::net::dpdk::configure_rss(
             config.port_id, impl->config.nb_rx_queues);
         if (rss_r) {
             impl->rss_active = true;
         } else {
+            configure_rss_error = rss_r.error();
             SPDLOG_LOGGER_WARN(log,
                 "configure_rss(port={}, queues={}) failed: {} -- "
-                "continuing in single-queue Software fallback",
-                config.port_id, impl->config.nb_rx_queues, rss_r.error());
+                "will attempt probe-based bring-up after port start",
+                config.port_id, impl->config.nb_rx_queues, configure_rss_error);
         }
     }
 
@@ -1390,12 +1422,58 @@ Platform::create(const PlatformConfig& config) {
     impl->dispatch_mode =
         ::eph::net::dpdk::detect_rx_dispatch_mode(config.port_id);
 
+    // ── Probe-based RSS bring-up (post-start) ────────────────────────────
+    //
+    // configure_rss earlier may have failed because the PMD rejects
+    // rte_eth_dev_rss_hash_update (notably ENA, regardless of the
+    // rss_key argument). Many such PMDs still expose their in-use hash
+    // key via rte_eth_dev_rss_hash_conf_get; if so, predict_rss_queue
+    // can use the probed key transparently and multi-queue RSS is
+    // genuinely usable. We probe AFTER port start because some PMDs
+    // only return meaningful RSS state once the device is running.
+    if (config.enable_rss && impl->config.nb_rx_queues > 1
+        && !impl->rss_active) {
+        SPDLOG_LOGGER_WARN(log,
+            "Platform: configure_rss failed earlier on port={} ('{}'); "
+            "attempting probe-based bring-up via "
+            "rte_eth_dev_rss_hash_conf_get",
+            config.port_id, configure_rss_error);
+        auto probed = ::eph::net::dpdk::query_rss_state(config.port_id);
+        if (probed && probed->key_len > 0) {
+            SPDLOG_LOGGER_INFO(log,
+                "Platform: probe succeeded on port={} (key_len={}, "
+                "reta_size={}); RSS active via probed key — multi-queue "
+                "RssPartitioned usable",
+                config.port_id, probed->key_len, probed->reta_size);
+            impl->rss_active           = true;
+            impl->rss_using_probed_key = true;
+        } else {
+            const std::string probe_err = probed
+                ? std::string{"rss_hash_conf_get returned key_len=0 (PMD "
+                              "won't expose its hash key)"}
+                : probed.error();
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform: RSS bring-up failed on port={}: configure_rss "
+                "rejected ('{}') AND probe also failed ('{}'); cannot "
+                "safely route packets to nb_rx_queues={}",
+                config.port_id, configure_rss_error, probe_err,
+                impl->config.nb_rx_queues);
+            return std::unexpected(std::format(
+                "Multi-queue RSS bring-up failed on port={}: "
+                "configure_rss rejected ('{}') AND rss_hash_conf_get "
+                "probe also failed ('{}'). Cannot safely route packets "
+                "to nb_rx_queues={}. Recovery: set "
+                "PlatformConfig::nb_rx_queues=1.",
+                config.port_id, configure_rss_error, probe_err,
+                impl->config.nb_rx_queues));
+        }
+    }
+
     // Reflect what THIS Platform is actually doing, not just NIC capability.
     // detect_rx_dispatch_mode reports the NIC's intrinsic capabilities;
-    // if we didn't successfully bring up multi-queue RSS (single-queue
-    // config OR configure_rss failed on a PMD that rejects hash_update),
+    // if we didn't bring up RSS (single-queue config OR enable_rss=false),
     // dispatch_mode is effectively Software for the purposes of stream
-    // attach decisions.  Without this pin, Stream::create_and_attach would
+    // attach decisions. Without this pin, Stream::create_and_attach would
     // walk the RssPartitioned branch and call predict_rss_queue + attach
     // to a non-existent target Poller.
     if (impl->config.nb_rx_queues <= 1 || !impl->rss_active) {
@@ -1410,86 +1488,36 @@ Platform::create(const PlatformConfig& config) {
                 impl->rss_active ? "true" : "false");
             impl->dispatch_mode = ::eph::net::dpdk::RxDispatchMode::Software;
         }
+    }
 
-        // ── Real fix for the "single-Poller misses SYN-ACK in
-        // non-zero queue" bug ──────────────────────────────────────────
-        //
-        // Even when dispatch_mode is pinned to Software, the NIC still
-        // physically has nb_rx_queues > 1 queues active and its
-        // intrinsic default RSS would scatter incoming packets across
-        // them. A single-Poller user (which is the only valid topology
-        // in Software mode) would silently miss every packet that
-        // hashes to a non-zero queue — most visibly: TCP SYN-ACK lost
-        // → connect timeout.
-        //
-        // Collapse the RETA: write a uniform indirection table where
-        // every entry maps to queue 0. After this, the NIC's hash
-        // calculation still happens but every result indexes to 0. The
-        // other queues stay allocated (descriptor rings, mbuf cache)
-        // but receive 0 packets. Trivial extra memory cost; correctness
-        // win is total (no more silent drops).
-        //
-        // RETA update is supported on PMDs that reject hash_update
-        // (notably ENA), so this works in the exact case that
-        // motivated the fix. If it fails we log WARN and the original
-        // bug returns — but at least it's surfaced.
-        if (impl->config.nb_rx_queues > 1) {
-            rte_eth_dev_info dinfo{};
-            if (rte_eth_dev_info_get(config.port_id, &dinfo) == 0) {
-                uint16_t reta_size = dinfo.reta_size;
-                if (reta_size == 0) reta_size = 128;
-                reta_size = std::min(
-                    reta_size,
-                    static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
-                rte_eth_rss_reta_entry64
-                    reta[RTE_ETH_RSS_RETA_SIZE_512 /
-                         RTE_ETH_RETA_GROUP_SIZE]{};
-                const uint16_t groups =
-                    reta_size / RTE_ETH_RETA_GROUP_SIZE;
-                for (uint16_t i = 0; i < groups; ++i) {
-                    reta[i].mask = ~uint64_t(0);
-                    // entries[] zero-initialised → all map to queue 0
-                }
-                int rc = rte_eth_dev_rss_reta_update(
-                    config.port_id, reta, reta_size);
-                if (rc == 0) {
-                    SPDLOG_LOGGER_INFO(log,
-                        "Platform: collapsed RETA → queue 0 "
-                        "(nb_rx_queues={} active, but Software mode → "
-                        "single-Poller; all RX traffic routes to queue 0)",
-                        impl->config.nb_rx_queues);
-                } else {
-                    // RETA update failed too.  Without it, the NIC's
-                    // intrinsic default RSS will scatter packets across
-                    // all N queues; a single-Poller user would silently
-                    // drop everything that doesn't hash to queue 0
-                    // (the original SYN-ACK-loss bug). Refuse to bring
-                    // up the Platform rather than let the caller hit
-                    // that bug undetected. Caller's recovery path: set
-                    // nb_rx_queues=1 in PlatformConfig.
-                    SPDLOG_LOGGER_ERROR(log,
-                        "Platform: RETA collapse failed (ret={}, {}) on PMD "
-                        "that doesn't support rss_reta_update; "
-                        "single-Poller would drop non-zero-queue packets. "
-                        "Refusing to bring up multi-queue port. "
-                        "Workaround: set nb_rx_queues=1 in PlatformConfig.",
-                        rc, rte_strerror(-rc));
-                    return std::unexpected(std::format(
-                        "RETA collapse failed (ret={}, {}); refusing to start "
-                        "Platform with nb_rx_queues={} on PMD that supports "
-                        "neither rss_hash_update nor rss_reta_update. Set "
-                        "PlatformConfig::nb_rx_queues=1 to recover.",
-                        rc, rte_strerror(-rc), impl->config.nb_rx_queues));
-                }
-            }
-        }
+    // ── Hard-fail the legitimate-but-unsafe combination "nb_rx_queues>1
+    //    with no functional RSS path" — happens when the caller set
+    //    enable_rss=false but nb_rx_queues>1. The previous behaviour
+    //    silently collapsed the RETA to queue 0, which masked the
+    //    misconfiguration; we now refuse so the caller makes an explicit
+    //    decision. (The configure_rss-failed-but-probe-succeeded path
+    //    has set rss_active=true above and is exempt; the both-failed
+    //    path returned earlier and never reaches here.)
+    if (impl->config.nb_rx_queues > 1 && !impl->rss_active) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform: nb_rx_queues={} but rss_active=false on port={}; "
+            "cannot route packets to multiple queues without functional RSS",
+            impl->config.nb_rx_queues, config.port_id);
+        return std::unexpected(std::format(
+            "PlatformConfig has nb_rx_queues={} but enable_rss=false (or "
+            "RSS bring-up was skipped); eph cannot route packets to "
+            "multiple queues without a functional RSS path. Recovery: "
+            "set enable_rss=true (and ensure your PMD supports "
+            "rss_hash_update or rss_hash_conf_get) OR set nb_rx_queues=1.",
+            impl->config.nb_rx_queues));
     }
 
     SPDLOG_LOGGER_INFO(log,
         "Platform ready (port={}, nb_rx_queues={}, rss_active={}, "
-        "dispatch_mode={})",
+        "using_probed_key={}, dispatch_mode={})",
         config.port_id, impl->config.nb_rx_queues,
         impl->rss_active ? "true" : "false",
+        impl->rss_using_probed_key ? "true" : "false",
         ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
     return Platform(std::move(impl));
 }
@@ -1683,6 +1711,10 @@ Platform::dispatch_mode() const noexcept {
 
 inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
+}
+
+inline bool Platform::rss_using_probed_key() const noexcept {
+    return impl_ && impl_->rss_using_probed_key;
 }
 
 inline std::pair<uint16_t, uint16_t>
