@@ -3,9 +3,14 @@
 /// @file error_traits.hpp
 /// ErrorEnum concept and generic formatter — shared error infrastructure.
 ///
-/// All error enums in the library (FrameError, SendError, ConnectionError,
-/// ParseError, etc.) satisfy the ErrorEnum concept by providing an ADL-visible
-/// error_name() function returning string_view.
+/// All surviving parser-domain error enums in the library (FrameError +
+/// the per-module ParseError variants in eph-fix / eph-itch / eph-json)
+/// satisfy the ErrorEnum concept by providing an ADL-visible
+/// error_name() function returning string_view. The networking-side
+/// SendError / ConnectionError / TcpError / WsError enums were retired
+/// during v3.3 in favor of the unified `eph::core::Error` enum (see
+/// `error.hpp`); this concept remains for parser modules whose
+/// domain-specific error sets are still the right shape.
 ///
 /// ErrorEnumFormatter eliminates per-enum std::formatter boilerplate:
 ///   template <> struct std::formatter<MyError> : eph::core::ErrorEnumFormatter<MyError> {};
