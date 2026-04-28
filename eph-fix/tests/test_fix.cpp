@@ -2494,9 +2494,12 @@ TEST(FixParserStats, error_captures_offset_and_type) {
     ASSERT_GT(len, 0u);
 
     // Append malformed data: "X=..." (not a valid FIX message — first tag is not 8)
-    std::vector<uint8_t> combined(len + 20);
+    // Literal length: "X=badval\x01" (9) + "10=000\x01" (7) = 16 bytes, no NUL.
+    static constexpr char kBad[] = "X=badval\x01" "10=000\x01";
+    static constexpr size_t kBadLen = sizeof(kBad) - 1;  // strip NUL
+    std::vector<uint8_t> combined(len + kBadLen);
     std::memcpy(combined.data(), buf, len);
-    std::memcpy(combined.data() + len, "X=badval\x01" "10=000\x01", 20);
+    std::memcpy(combined.data() + len, kBad, kBadLen);
 
     ParserStats stats;
     size_t consumed = parse_all(combined.data(), combined.size(),
