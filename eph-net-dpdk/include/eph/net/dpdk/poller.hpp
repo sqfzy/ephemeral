@@ -18,10 +18,17 @@
 ///     returns. There is no `poll(timeout)` overload (the design doc
 ///     explicitly excludes it).
 ///
-///   - **Routing table**: uses a flat linear scan over the registered
-///     entries. For typical HFT deployments with 2-4 connections a
-///     cache-friendly linear scan beats a hash map; can be swapped for
-///     a real 5-tuple hash if the connection count is large enough to matter.
+///   - **Routing table**: O(1) open-addressed hash table keyed on the
+///     5-tuple `(src_ip, dst_ip, src_port, dst_port, proto)`. The storage
+///     is sized at compile time to `kRouteTableSize` (= 2 × `kMaxConnHard`,
+///     a power of two so the modulo is a single bitmask), keeping the
+///     load factor at or below 50% — linear-probe chains stay short and
+///     hot-path lookups compile to a hash-then-memcmp on a single cache
+///     line. Tombstones preserve probe chains across remove/add cycles.
+///     The compile-time storage costs ~4 KiB per Poller; legitimate for
+///     a single-instance HFT lcore. The previous flat linear scan
+///     (kMaxConn=16) is gone — the new design is strictly cheaper from
+///     N=2 upward and identical-or-better at N=1.
 ///
 ///   - **Pollable notification hooks**: every `Pollable` in the DPDK
 ///     backend (`DpdkTcpStream`, `DpdkUdpSocket`) exposes
@@ -85,7 +92,9 @@ inline spdlog::logger* poller_logger() {
     mix(static_cast<uint64_t>(src_port) + dst_port);
     mix(static_cast<uint64_t>(proto));
     // Fold to 32 bits — 32 is plenty for the routing-table key space
-    // (max kMaxConn registered entries).
+    // (capped at kMaxConnHard registered entries with a 2x-sized open-
+    // addressed table; collision rate is dominated by the table size,
+    // not the hash range).
     return static_cast<uint32_t>(h ^ (h >> 32));
 }
 
@@ -135,10 +144,32 @@ concept DpdkPollable = requires(P& p, rte_mbuf** mbufs, uint16_t n,
 template <>
 class DpdkPoller<void> {
 public:
-    /// @brief Maximum registered Pollables. Fixed bound avoids a heap
-    ///        allocation on the hot path and keeps the routing table
-    ///        friendly for linear scan (typical N ≤ 8 in HFT).
+    /// @brief Default runtime cap on registered Pollables when the caller
+    ///        does not set `PollerConfig::max_connections`. Kept at 16 for
+    ///        backwards compatibility — the underlying storage is the
+    ///        larger `kMaxConnHard`, so raising this is a no-op cost.
     static constexpr std::size_t kMaxConn = 16;
+
+    /// @brief Hard upper bound on registered Pollables — the compile-time
+    ///        storage size of `entries_` and the basis for the open-
+    ///        addressed routing table. Bumped from the historical 16 so
+    ///        callers can opt-in via `PollerConfig::max_connections` to
+    ///        single-lcore fan-outs that previously needed a second
+    ///        Poller. Memory cost: ~4 KiB per Poller (entries_ + route
+    ///        table), cheap relative to a Poller's lifetime.
+    static constexpr std::size_t kMaxConnHard = 64;
+
+    /// @brief Size of the open-addressed routing hash table. Power of two
+    ///        so `hash & kRouteTableMask` is a single bitmask. Sized to
+    ///        `2 × kMaxConnHard` to cap load factor at 50% — average
+    ///        linear-probe chain stays ≤ 2 lookups even at full
+    ///        capacity, well within a single 64B cache line.
+    static constexpr std::size_t kRouteTableSize = 128;
+    static_assert((kRouteTableSize & (kRouteTableSize - 1)) == 0,
+                  "kRouteTableSize must be a power of two");
+    static_assert(kRouteTableSize >= 2 * kMaxConnHard,
+                  "kRouteTableSize must keep load factor <= 50%");
+    static constexpr std::size_t kRouteTableMask = kRouteTableSize - 1;
 
     /// @brief DPDK burst size — matches the canonical 32-mbuf burst used
     ///        across the codebase (TcpSession::poll_rx, microbenchmarks).
@@ -149,9 +180,21 @@ public:
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkPoller>, core::ErrorInfo>
     create(PollerConfig cfg = {}) noexcept {
         [[maybe_unused]] auto* log = detail::poller_logger();
+        // Clamp / validate the policy knob before we allocate. Out-of-range
+        // values are a config bug — surface immediately rather than letting
+        // them lurk until the Nth `add` call.
+        if (cfg.max_connections == 0 ||
+            cfg.max_connections > kMaxConnHard) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkPoller::create: max_connections={} out of range [1, {}]",
+                cfg.max_connections, kMaxConnHard);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkPoller::create: max_connections out of range"});
+        }
         SPDLOG_LOGGER_DEBUG(log,
-            "DpdkPoller::create: port={} queue={}",
-            cfg.port_id, cfg.rx_queue_id);
+            "DpdkPoller::create: port={} queue={} max_connections={}",
+            cfg.port_id, cfg.rx_queue_id, cfg.max_connections);
         auto p = std::unique_ptr<DpdkPoller>(new DpdkPoller(cfg));
         return p;
     }
@@ -192,21 +235,17 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkPoller::add: nullptr"});
         }
-        if (n_entries_ >= kMaxConn) {
+        if (n_entries_ >= cfg_.max_connections) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
                 "DpdkPoller::add: entries table full"});
         }
-        // Retrieve the incoming 5-tuple up front so the duplicate scan can
-        // check both obj-pointer duplicates AND 5-tuple duplicates in the
-        // same linear pass. Reject either: obj-duplicate makes no sense
-        // and 5-tuple duplicate makes routing ambiguous (silent data
-        // corruption on the hot path, which is catastrophic in HFT).
-        //
-        // Note: TCP and UDP Pollables sharing the exact same (src_ip,
-        // dst_ip, src_port, dst_port) are legitimate — they live in
-        // independent L4 namespaces. Protocol is part of the key so both
-        // can coexist without ambiguity.
+        // Retrieve the incoming 5-tuple up front so the duplicate check
+        // (against route_table_) and the route-table insertion both reuse
+        // the same field reads. 5-tuple duplicate makes routing ambiguous
+        // (silent data corruption on the hot path, which is catastrophic
+        // in HFT). TCP and UDP Pollables sharing the exact same 4-tuple
+        // are legitimate — protocol is part of the key.
         uint32_t new_src_ip = 0, new_dst_ip = 0;
         uint16_t new_src_port = 0, new_dst_port = 0;
         uint8_t  new_proto = 0;
@@ -216,32 +255,34 @@ public:
         const uint32_t new_hash = detail::hash_tuple(
             new_src_ip, new_dst_ip, new_src_port, new_dst_port, new_proto);
 
+        // Pointer-duplicate check is rare and bounded by max_connections;
+        // a linear scan over the packed entries_ slice is cheaper than
+        // threading obj-pointer through the route table key.
         for (std::size_t i = 0; i < n_entries_; ++i) {
-            const auto& e = entries_[i];
-            if (e.obj == static_cast<void*>(obj)) {
+            if (entries_[i].obj == static_cast<void*>(obj)) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "DpdkPoller::add: already registered"});
             }
-            // Fast filter on hash; full 5-field compare only on hash hit.
-            if (e.conn_hash == new_hash &&
-                e.src_ip    == new_src_ip &&
-                e.dst_ip    == new_dst_ip &&
-                e.src_port  == new_src_port &&
-                e.dst_port  == new_dst_port &&
-                e.proto     == new_proto) {
-                SPDLOG_LOGGER_WARN(log,
-                    "DpdkPoller::add: 5-tuple already registered "
-                    "proto={} src=0x{:08x}:{} dst=0x{:08x}:{}",
-                    new_proto, new_src_ip, new_src_port,
-                    new_dst_ip, new_dst_port);
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::InvalidConfig,
-                    "DpdkPoller::add: 5-tuple already registered"});
-            }
         }
 
-        PollableEntry& entry = entries_[n_entries_];
+        // 5-tuple duplicate check via the routing hash table — same probe
+        // path the hot lookup uses.
+        if (find_route_slot_(new_hash, new_src_ip, new_dst_ip,
+                              new_src_port, new_dst_port, new_proto)
+                != kInvalidSlot) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkPoller::add: 5-tuple already registered "
+                "proto={} src=0x{:08x}:{} dst=0x{:08x}:{}",
+                new_proto, new_src_ip, new_src_port,
+                new_dst_ip, new_dst_port);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "DpdkPoller::add: 5-tuple already registered"});
+        }
+
+        const std::size_t entry_idx = n_entries_;
+        PollableEntry& entry = entries_[entry_idx];
         entry.obj             = static_cast<void*>(obj);
         entry.process_burst_fn = +[](void* p, rte_mbuf** mbufs, uint16_t n,
                                       uint64_t rx_tsc) noexcept {
@@ -267,10 +308,17 @@ public:
         entry.conn_hash = new_hash;
         ++n_entries_;
 
+        // Insert into the routing hash table. Linear probe with tombstone
+        // reuse — invariant maintained: load factor ≤ 50%, so a free
+        // (Empty or Tombstone) slot exists within the kRouteTableSize
+        // probe budget.
+        insert_route_(new_hash, new_src_ip, new_dst_ip, new_src_port,
+                       new_dst_port, new_proto, entry_idx);
+
         obj->notify_attached_(this);
         SPDLOG_LOGGER_DEBUG(log,
-            "DpdkPoller::add: obj={} tuple_hash=0x{:08x} entries={}",
-            static_cast<void*>(obj), entry.conn_hash, n_entries_);
+            "DpdkPoller::add: obj={} tuple_hash=0x{:08x} entries={} idx={}",
+            static_cast<void*>(obj), entry.conn_hash, n_entries_, entry_idx);
         return {};
     }
 
@@ -287,13 +335,34 @@ public:
         }
         for (std::size_t i = 0; i < n_entries_; ++i) {
             if (entries_[i].obj != static_cast<void*>(obj)) continue;
-            // Shift-left the tail to preserve insertion order; entries_
-            // is small (kMaxConn) so the memmove cost is negligible.
+
+            // Step 1: tombstone the route_table_ slot pointing at this
+            // entry (snapshot the key from entries_[i] before it gets
+            // overwritten by the shift-left).
+            tombstone_route_(entries_[i].conn_hash,
+                              entries_[i].src_ip, entries_[i].dst_ip,
+                              entries_[i].src_port, entries_[i].dst_port,
+                              entries_[i].proto);
+
+            // Step 2: shift-left the tail of entries_ to preserve the
+            // packed-array invariant. entries_ is small (kMaxConnHard)
+            // so the copy cost stays in cache. Each shifted entry's
+            // index in route_table_ must be decremented to track its
+            // new position — Step 3.
             for (std::size_t j = i + 1; j < n_entries_; ++j) {
                 entries_[j - 1] = entries_[j];
             }
             --n_entries_;
             entries_[n_entries_] = PollableEntry{};
+
+            // Step 3: walk the route table once and rewrite any slot
+            // whose entry_idx pointed to a position > i. This is O(table
+            // size) once per remove — amortised over the connection's
+            // lifetime, the bookkeeping is well below noise.
+            if (i < n_entries_) {  // tail shifted only if i was not last
+                shift_down_route_indices_above_(static_cast<uint8_t>(i));
+            }
+
             obj->notify_detached_();
             SPDLOG_LOGGER_DEBUG(log,
                 "DpdkPoller::remove: obj={} entries={}",
@@ -449,6 +518,21 @@ public:
     /// with the lcore's writes).
     [[nodiscard]] uint64_t hash_collision_drops() const noexcept {
         return hash_collision_drops_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Test seam — feed a forged mbuf through the routing path
+    ///        without going via `rte_eth_rx_burst`. Returns the dispatch
+    ///        target's opaque `void*` (matches the registered Pollable's
+    ///        `obj` slot) on hit, or nullptr on miss. The mbuf is NOT
+    ///        consumed: the caller retains ownership and must free it.
+    ///
+    /// This intentionally bypasses the production poll loop's mbuf-free
+    /// + ICMP fallback so a unit test can assert "this packet routed to
+    /// stream X" deterministically. Production callers should not use
+    /// this — `_for_test_` suffix follows the codebase convention.
+    [[nodiscard]] void* route_for_test_(rte_mbuf* mbuf) noexcept {
+        PollableEntry* e = lookup_by_5tuple_(mbuf);
+        return e ? e->obj : nullptr;
     }
 
     // ── Source port selection (client-side helper) ───────────────────────
@@ -615,13 +699,182 @@ private:
     static_assert(sizeof(PollableEntry) <= 64,
                   "PollableEntry must fit in one 64B cacheline");
 
+    /// @brief One open-addressed routing-table slot.
+    ///
+    /// State machine: `Empty` (probe terminator on miss) → `Occupied`
+    /// (after `add`) → `Tombstone` (after `remove`; probe continues past
+    /// it on lookup, but `add` can reuse it). All key fields are inline
+    /// so a successful lookup hits the slot's cache line and a single
+    /// 13-byte memcmp completes routing.
+    struct RouteSlot {
+        // Layout-constants for the state byte. Plain enum (not enum class)
+        // so the byte fits naturally and we don't need static_cast in
+        // memcmp helpers.
+        static constexpr uint8_t kEmpty     = 0;
+        static constexpr uint8_t kOccupied  = 1;
+        static constexpr uint8_t kTombstone = 2;
+
+        uint8_t  state       = kEmpty;
+        uint8_t  entry_idx   = kInvalidSlot;  ///< index into entries_
+        uint8_t  proto       = 0;
+        uint8_t  _pad0       = 0;
+        uint16_t src_port    = 0;
+        uint16_t dst_port    = 0;
+        uint32_t src_ip      = 0;
+        uint32_t dst_ip      = 0;
+        uint32_t conn_hash   = 0;             ///< cached for cheap rehash on probe
+    };
+    static_assert(sizeof(RouteSlot) <= 32,
+                  "RouteSlot should fit in half a cacheline so two slots "
+                  "share one line on the typical-probe path");
+
+    /// @brief Sentinel for "no entry" / "no slot found". We use 0xFF in
+    ///        a uint8_t which keeps `entry_idx` packing tight — kMaxConnHard
+    ///        is 64, so legitimate indices live in [0, 63].
+    static constexpr uint8_t kInvalidSlot = 0xFFu;
+
     explicit DpdkPoller(PollerConfig cfg) noexcept : cfg_(cfg) {}
+
+    // ── Routing hash table helpers ───────────────────────────────────────
+
+    /// @brief Probe the routing table for the given key. Returns the
+    ///        `entries_` index if found, or `kInvalidSlot` on miss.
+    ///        Sets `last_lookup_had_collision_` so the lookup hot path
+    ///        can fire the WARN diagnostic.
+    [[nodiscard]] uint8_t find_route_slot_(uint32_t hash,
+                                            uint32_t src_ip,
+                                            uint32_t dst_ip,
+                                            uint16_t src_port,
+                                            uint16_t dst_port,
+                                            uint8_t  proto) const noexcept {
+        last_lookup_had_collision_ = false;
+        // Probe up to kRouteTableSize slots. Linear probing is the
+        // simplest collision strategy and works well at our < 50% load
+        // factor — the average miss completes in O(1.5) probes.
+        std::size_t idx = static_cast<std::size_t>(hash) & kRouteTableMask;
+        for (std::size_t step = 0; step < kRouteTableSize; ++step) {
+            const RouteSlot& s = route_table_[idx];
+            if (s.state == RouteSlot::kEmpty) {
+                // Probe terminator: with no Empty in the chain, no later
+                // slot can hold this key.
+                return kInvalidSlot;
+            }
+            if (s.state == RouteSlot::kOccupied) {
+                if (s.conn_hash == hash &&
+                    s.src_ip   == src_ip &&
+                    s.dst_ip   == dst_ip &&
+                    s.src_port == src_port &&
+                    s.dst_port == dst_port &&
+                    s.proto    == proto) {
+                    return s.entry_idx;
+                }
+                // Hash matched (or chain continues); record collision so
+                // the caller can decide whether to log. Collision is real
+                // only when hash matched but tuple did not.
+                if (s.conn_hash == hash) {
+                    last_lookup_had_collision_ = true;
+                }
+            }
+            // Tombstone: keep probing — this slot used to hold a key
+            // before remove(). Skipping past a Tombstone preserves the
+            // chain invariant.
+            idx = (idx + 1) & kRouteTableMask;
+        }
+        // Probe budget exhausted with no Empty terminator. Should be
+        // impossible at < 50% load factor — the only way this fires is
+        // if every slot is Occupied or Tombstone. We treat it as
+        // "not found" — the caller will fall through to drop.
+        return kInvalidSlot;
+    }
+
+    /// @brief Insert a (key → entry_idx) mapping into the routing table.
+    ///        Caller has already verified the key is not present (via the
+    ///        `find_route_slot_` call in `add`). Tombstones are reused.
+    void insert_route_(uint32_t hash,
+                        uint32_t src_ip,
+                        uint32_t dst_ip,
+                        uint16_t src_port,
+                        uint16_t dst_port,
+                        uint8_t  proto,
+                        std::size_t entry_idx) noexcept {
+        std::size_t idx = static_cast<std::size_t>(hash) & kRouteTableMask;
+        for (std::size_t step = 0; step < kRouteTableSize; ++step) {
+            RouteSlot& s = route_table_[idx];
+            if (s.state == RouteSlot::kEmpty ||
+                s.state == RouteSlot::kTombstone) {
+                s.state     = RouteSlot::kOccupied;
+                s.entry_idx = static_cast<uint8_t>(entry_idx);
+                s.proto     = proto;
+                s.src_port  = src_port;
+                s.dst_port  = dst_port;
+                s.src_ip    = src_ip;
+                s.dst_ip    = dst_ip;
+                s.conn_hash = hash;
+                return;
+            }
+            idx = (idx + 1) & kRouteTableMask;
+        }
+        // The capacity invariant (n_entries_ < max_connections, plus
+        // kRouteTableSize ≥ 2 × kMaxConnHard) makes this branch
+        // unreachable. Logging it loudly is the right defensive action
+        // for an invariant violation.
+        SPDLOG_LOGGER_ERROR(detail::poller_logger(),
+            "DpdkPoller::insert_route_: routing table full at n_entries_={}",
+            n_entries_);
+    }
+
+    /// @brief Mark the slot for the given key as Tombstone. Used by
+    ///        `remove()`. Idempotent — silently returns if the key is
+    ///        already gone (defensive).
+    void tombstone_route_(uint32_t hash,
+                           uint32_t src_ip,
+                           uint32_t dst_ip,
+                           uint16_t src_port,
+                           uint16_t dst_port,
+                           uint8_t  proto) noexcept {
+        std::size_t idx = static_cast<std::size_t>(hash) & kRouteTableMask;
+        for (std::size_t step = 0; step < kRouteTableSize; ++step) {
+            RouteSlot& s = route_table_[idx];
+            if (s.state == RouteSlot::kEmpty) return;
+            if (s.state == RouteSlot::kOccupied &&
+                s.conn_hash == hash &&
+                s.src_ip   == src_ip &&
+                s.dst_ip   == dst_ip &&
+                s.src_port == src_port &&
+                s.dst_port == dst_port &&
+                s.proto    == proto) {
+                s.state     = RouteSlot::kTombstone;
+                s.entry_idx = kInvalidSlot;
+                return;
+            }
+            idx = (idx + 1) & kRouteTableMask;
+        }
+    }
+
+    /// @brief After shifting `entries_[i+1..n_entries_]` left by one to
+    ///        fill index `removed_idx`, every Occupied route slot whose
+    ///        `entry_idx > removed_idx` must be decremented to track the
+    ///        new entry position. Single linear pass over the route
+    ///        table; called only by `remove()`.
+    void shift_down_route_indices_above_(uint8_t removed_idx) noexcept {
+        for (auto& s : route_table_) {
+            if (s.state == RouteSlot::kOccupied &&
+                s.entry_idx > removed_idx &&
+                s.entry_idx != kInvalidSlot) {
+                --s.entry_idx;
+            }
+        }
+    }
 
     /// @brief Route an incoming mbuf to the matching PollableEntry by
     ///        5-tuple. Handles both TCP and UDP; protocol is part of the
     ///        key so a TCP packet cannot be misrouted to a UDP Pollable
     ///        that happens to share the same (src_ip, dst_ip, src_port,
     ///        dst_port) — and vice versa.
+    ///
+    /// Hot path: hash → bitmask → linear probe (≤ 2 slots avg) → memcmp
+    /// → return entries_[idx]. No allocation, no vtable, no
+    /// `std::function`. Counts hash-collision drops for diagnostics.
     PollableEntry* lookup_by_5tuple_(rte_mbuf* mbuf) noexcept {
         // L2+L3 parse first so we can dispatch by protocol without doing
         // the TCP or UDP parse twice in the collision / miss path.
@@ -653,42 +906,35 @@ private:
         // Incoming packets carry swapped src/dst relative to the registered
         // tuple (the registered tuple is the *local view* — "this is my
         // local 5-tuple"). The hash function is direction-symmetric on the
-        // 4 address fields; protocol is a single byte and is the same
-        // regardless of direction, so the resulting hash fits both
-        // directions. The equality check afterwards verifies the swap
-        // and the protocol match.
+        // 4 address fields; protocol is the same regardless of direction.
+        // We probe the table with the swapped key.
+        const uint32_t local_src_ip   = pkt_dst_ip;
+        const uint32_t local_dst_ip   = pkt_src_ip;
+        const uint16_t local_src_port = pkt_dst_port;
+        const uint16_t local_dst_port = pkt_src_port;
         const uint32_t pkt_hash = detail::hash_tuple(
-            pkt_src_ip, pkt_dst_ip, pkt_src_port, pkt_dst_port, pkt_proto);
-        bool had_hash_collision = false;
-        for (std::size_t i = 0; i < n_entries_; ++i) {
-            auto& e = entries_[i];
-            if (e.conn_hash != pkt_hash) continue;
-            // Full 5-tuple compare with src/dst swap — reject hash collisions
-            // AND cross-protocol collisions.
-            if (pkt_src_ip   == e.dst_ip   && pkt_dst_ip   == e.src_ip   &&
-                pkt_src_port == e.dst_port && pkt_dst_port == e.src_port &&
-                pkt_proto    == e.proto) {
-                return &e;
-            }
-            // Hash matched but tuple didn't — mark this packet as a
-            // collision victim. Count once *per packet* after the loop
-            // (not per colliding entry) so multiple entries sharing the
-            // same hash do not inflate the metric by the fan-out.
-            had_hash_collision = true;
+            local_src_ip, local_dst_ip, local_src_port, local_dst_port,
+            pkt_proto);
+
+        const uint8_t idx = find_route_slot_(
+            pkt_hash, local_src_ip, local_dst_ip,
+            local_src_port, local_dst_port, pkt_proto);
+        if (idx != kInvalidSlot) {
+            return &entries_[idx];
         }
-        if (had_hash_collision) {
+
+        // Probe ran past at least one Occupied slot whose key did not match
+        // (hash collision). The probe-internal counter set by find_route_slot_
+        // tells us whether to fire the diagnostic — the function can't return
+        // both data and a collision flag, so we use a member set during probe.
+        if (last_lookup_had_collision_) {
             // Sustained collision scenarios (adversarial traffic or a
             // pathological hash distribution) must stay observable beyond
             // the first event. Log at WARN on the first collision drop and
-            // then every Nth so log volume is bounded but not silent —
-            // a once-per-Poller guard would hide prolonged attacks.
+            // then every Nth so log volume is bounded but not silent.
             // Must be (power of two) - 1 so the bitmask test is equivalent
             // to `count % interval == 0`.
             static constexpr uint64_t kHashCollisionLogMask = 0x3ffULL;  // 1 / 1024
-            // Relaxed-load the current value once — the lcore is the only
-            // writer, so a torn read is impossible on platforms where 64-bit
-            // loads are atomic, and we'd accept a stale value in the unlikely
-            // race anyway (logging is best-effort).
             const uint64_t cur =
                 hash_collision_drops_.load(std::memory_order_relaxed);
             if (cur == 0 || (cur & kHashCollisionLogMask) == 0) {
@@ -727,9 +973,25 @@ private:
         icmp_frag_needed_dispatched_.fetch_add(1, std::memory_order_relaxed);
     }
 
-    PollerConfig                       cfg_{};
-    std::array<PollableEntry, kMaxConn> entries_{};
-    std::size_t                         n_entries_{0};
+    PollerConfig                            cfg_{};
+    /// @brief Packed entry storage. Sized at compile time to the hard
+    ///        upper bound; the runtime cap is enforced via
+    ///        `cfg_.max_connections` so callers staying at the default
+    ///        of 16 see no behavioural change.
+    std::array<PollableEntry, kMaxConnHard> entries_{};
+    std::size_t                              n_entries_{0};
+
+    /// @brief Open-addressed routing-table storage. `kRouteTableSize`
+    ///        slots, indexed by `hash & kRouteTableMask`. Loaded factor
+    ///        capped at 50% by static_assert above.
+    std::array<RouteSlot, kRouteTableSize>   route_table_{};
+
+    /// @brief Cross-call signal from `find_route_slot_` to the lookup
+    ///        hot path: did the probe pass over an Occupied slot whose
+    ///        hash matched but tuple did not? Used solely for the
+    ///        `hash_collision_drops_` diagnostic counter. Mutable so
+    ///        the const probe path can set it.
+    mutable bool                             last_lookup_had_collision_{false};
     // Diagnostic counters — atomic to allow safe cross-thread scrape from
     // a monitoring thread while the lcore is in poll(). The lcore is
     // still the only writer, so contention is a non-issue.
@@ -794,6 +1056,9 @@ public:
     ///        already exposed.
     [[nodiscard]] uint64_t hash_collision_drops() const noexcept {
         return impl_->hash_collision_drops();
+    }
+    [[nodiscard]] void* route_for_test_(rte_mbuf* mbuf) noexcept {
+        return impl_->route_for_test_(mbuf);
     }
 
     [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
