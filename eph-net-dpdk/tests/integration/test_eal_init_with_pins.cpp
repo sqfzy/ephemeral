@@ -9,11 +9,21 @@
 /// other test in the same binary to inherit the EAL lifecycle.
 ///
 /// Run conditions:
-///   * Hugepages must be available (≥ 64MB free 2M hugepages).
-///   * EAL is run in `--no-pci --no-shconf` mode so no NIC binding /
-///     /var/run scratch is required.
-///   * Suitable for any host with hugepages enabled; if hugepages are
-///     not configured, every test SKIPs cleanly.
+///   * **Must run as root** (or with `CAP_IPC_LOCK` + `/dev/hugepages`
+///     write access). EAL needs to mlock huge pages and create the
+///     IPC socket under `/var/run/dpdk/<file_prefix>/`. NIC binding
+///     is NOT required — the test runs `--no-pci`, so a vfio-pci
+///     binding is irrelevant.
+///   * Hugepages must be available (test allocates 64MB of 2MB pages).
+///   * Uses a unique `--file-prefix=eph_test_<pid>` so it does not
+///     collide with any other DPDK process running on the same host
+///     (e.g. a production producer using the default `rte` prefix).
+///
+/// SKIPS cleanly when EAL init fails for any reason (no root / no
+/// hugepages / unrelated DPDK init failure). Run with:
+///   sudo $(xmake show -t test_eal_init_with_pins | grep targetfile | awk '{print $2}')
+/// or:
+///   sudo xmake run -P <project> test_eal_init_with_pins
 ///
 /// What it covers (only adds value beyond test_lcore_pin's pre-EAL paths):
 ///   * EAL succeeds and pin_guard is alive — registry has the cpus.
@@ -26,6 +36,7 @@
 
 #include <fstream>
 #include <string>
+#include <unistd.h>  // getpid()
 
 #include <gtest/gtest.h>
 
@@ -39,7 +50,11 @@ namespace {
 
 /// Best-effort check: do we have at least one free 2MB hugepage on any
 /// numa node? If not, rte_eal_init will fail with `Cannot allocate memory`
-/// and the test is meaningless.
+/// and the test is meaningless. Note: EAL init can also fail with the
+/// same errno when run as a non-root user (no permission to mlock pages
+/// or write to /var/run/dpdk), so this check is necessary but not
+/// sufficient — `init_with_pins()` returning unexpected → SKIP covers
+/// the rest.
 bool hugepages_available() {
     std::ifstream f("/proc/meminfo");
     std::string line;
@@ -75,16 +90,27 @@ TEST(InitWithPinsIntegration, SuccessPathRegistersAndCleansUp) {
 
     EalConfig cfg;
     cfg.program_name = "test_eal_init_with_pins";
-    // Run without PCI / shared-config so this test doesn't fight any
-    // other DPDK process or require root to re-bind a NIC.
+    // Per-pid file_prefix so this test never collides with another DPDK
+    // process on the same host (production producer / second test run
+    // / leftover from a crashed run). rte_eal_init creates a directory
+    // under /var/run/dpdk/<prefix>/ for its IPC sockets; the default
+    // prefix `rte` is shared by every DPDK process unless overridden.
+    std::string file_prefix = "eph_test_" + std::to_string(::getpid());
+    cfg.file_prefix = file_prefix;
+    // Run without PCI / shared-config so this test doesn't depend on a
+    // vfio-pci NIC binding. We're verifying the lcore-pin × EAL plumbing,
+    // not real NIC traffic.
     cfg.extra_args = {"--no-pci", "--no-shconf", "-m", "64"};
 
     {
         auto eal = EalGuard::init_with_pins(
             cfg, std::span<LcorePin const>{pins});
         if (!eal) {
-            GTEST_SKIP() << "rte_eal_init failed (likely a permission / "
-                            "hugepage / EAL-already-init constraint): "
+            GTEST_SKIP() << "rte_eal_init failed — most often this means the "
+                            "test is running without root (EAL needs CAP_IPC_LOCK "
+                            "to mlock hugepages and write access to /var/run/dpdk/). "
+                            "Re-run with `sudo xmake run test_eal_init_with_pins`. "
+                            "EAL detail: "
                          << eal.error();
         }
 
