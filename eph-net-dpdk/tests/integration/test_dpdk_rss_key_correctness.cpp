@@ -327,8 +327,12 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         rte_ether_addr local_mac{};
         ASSERT_EQ(rte_eth_macaddr_get(plat.port_id(), &local_mac), 0);
 
+        // Post commit 5c623044: arp::resolve no longer takes a queue_id
+        // (RX is hardcoded to queue 0 for ARP because gratuitous-ARP
+        // replies don't follow RSS hashing — the kernel control plane
+        // uses queue 0 catch-all).
         auto gw_mac_r = eph::dpdk::arp::resolve(
-            plat.port_id(), /*rx_queue=*/0, plat.mempool(),
+            plat.port_id(), plat.mempool(),
             local_mac, client_ip_h, gateway_h,
             std::chrono::seconds{3});
         ASSERT_TRUE(gw_mac_r.has_value())
@@ -524,7 +528,7 @@ TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
         ASSERT_EQ(rte_eth_macaddr_get(plat.port_id(), &local_mac), 0);
 
         auto gw_mac_r = eph::dpdk::arp::resolve(
-            plat.port_id(), /*rx_queue=*/0, plat.mempool(),
+            plat.port_id(), plat.mempool(),
             local_mac, client_ip_h, gateway_h, std::chrono::seconds{3});
         ASSERT_TRUE(gw_mac_r.has_value())
             << "ARP gateway: " << gw_mac_r.error();
