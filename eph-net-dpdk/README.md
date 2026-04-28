@@ -26,6 +26,15 @@ proc_type` / `file_prefix` / `rx_queue_range` fields default to single-
 process / primary so existing code is byte-for-byte compatible. Full
 contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
 
+For **multi-port** deployments inside a single process (separate MD vs
+OE NICs, AWS multi-ENI, redundant feeds), `eph::dpdk::MultiPortPlatform`
+in `eph/dpdk/multi_port_platform.hpp` owns N independent `Platform`
+instances and exposes them by index. Strictly additive — single-port
+semantics are unchanged. ICMP registries and Pollers stay per-port
+(cross-port routing would be a bug, not a feature). See the header
+docstring and `tests/test_dpdk_multi_port_platform.cpp` for the full
+contract.
+
 For lcore × application-thread cpu pinning (so `pin_thread` can detect
 SMT / NUMA conflicts against running EAL lcores), use the typed
 `eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
