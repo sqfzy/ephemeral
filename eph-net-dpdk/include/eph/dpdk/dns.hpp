@@ -34,6 +34,7 @@
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/net_header.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"  // query_rss_state / queue_for_tuple — RSS-aware src_port selection
 #include "eph/utils/time.hpp"  // TSC::now() — canonical timer per CLAUDE.md
 
 namespace eph::dpdk::dns {
@@ -176,6 +177,102 @@ inline uint16_t random_ephemeral_port() noexcept {
     if (::getrandom(&rnd, sizeof(rnd), GRND_NONBLOCK) != sizeof(rnd))
         return 0;
     return net::kEphemeralPortMin + (rnd % net::kEphemeralPortRange);
+}
+
+/// Select a src_port for an outbound DNS query so that the resulting
+/// reply's 5-tuple RSS-hashes back to the caller's RX queue.
+///
+/// On non-RSS / single-queue NICs, falls back to a random ephemeral
+/// port (the pre-RSS behavior — preserves entropy for cache-poisoning
+/// resistance when RSS routing is irrelevant).
+///
+/// On RSS-active NICs, snapshots the RSS state once and walks the
+/// ephemeral port range varying the *local* port (which sits in the
+/// `dst_port` position of the inbound-reply 5-tuple, per the
+/// `queue_for_tuple` contract documented at flow_steering.hpp:686-692).
+/// The first candidate that hashes to @p queue_id is returned.
+///
+/// Why a custom loop instead of `find_src_port_for_queue`: that helper
+/// varies the `src_port` position of the hash, which for an inbound
+/// reply corresponds to the *remote sender's* application port (e.g. 53
+/// for a DNS server) — a value we cannot control. The DNS reply's only
+/// caller-controllable position is the `dst_port` (= our outbound src_port).
+///
+/// @param port_id           NIC port id
+/// @param queue_id          RX queue caller will poll for the reply
+/// @param nameserver_ip     DNS server IP (host byte order)
+/// @param local_ip          Local IP (host byte order)
+/// @param dns_server_port   DNS server's source port for the reply
+///                          (typically 53 — the value the resolver also
+///                          places into `udp->dst_port` of the outbound
+///                          query; see kDnsPort default in DnsConfig)
+/// @return chosen local src_port (host byte order), or unexpected with
+///         a string detail (CSPRNG failure / RssHashPredictExhausted /
+///         RSS-state-query error).
+/// Pure variant of `select_dns_src_port` parametrized by an explicit
+/// `RssState` snapshot — exposes the search loop for unit testing without
+/// needing a real NIC. Production code calls the wrapper below.
+inline std::expected<uint16_t, std::string>
+select_dns_src_port_with_state(
+    const ::eph::net::dpdk::RssState& state,
+    uint16_t queue_id,
+    uint32_t nameserver_ip, uint32_t local_ip,
+    uint16_t dns_server_port,
+    uint16_t port_range_start = 32768,
+    uint16_t port_range_end   = 60999) noexcept {
+    if (port_range_start > port_range_end) {
+        return std::unexpected(std::format(
+            "select_dns_src_port: inverted range [{},{}]",
+            port_range_start, port_range_end));
+    }
+    for (uint32_t cand = port_range_start; cand <= port_range_end; ++cand) {
+        if (::eph::net::dpdk::queue_for_tuple(
+                state, nameserver_ip, dns_server_port,
+                local_ip, static_cast<uint16_t>(cand)) == queue_id) {
+            return static_cast<uint16_t>(cand);
+        }
+    }
+    return std::unexpected(std::format(
+        "RssHashPredictExhausted: no DNS src_port in [{},{}] hashes to queue {}",
+        port_range_start, port_range_end, queue_id));
+}
+
+inline std::expected<uint16_t, std::string>
+select_dns_src_port(uint16_t port_id, uint16_t queue_id,
+                    uint32_t nameserver_ip, uint32_t local_ip,
+                    uint16_t dns_server_port) noexcept {
+    [[maybe_unused]] auto* log = dns_logger();
+
+    // Probe RSS state. If query fails (RSS not configured / NIC missing),
+    // fall back to random ephemeral port — single-queue NICs deliver every
+    // reply to the caller's queue regardless of src_port.
+    auto state_r = ::eph::net::dpdk::query_rss_state(port_id);
+    if (!state_r) {
+        SPDLOG_LOGGER_DEBUG(log,
+            "select_dns_src_port: RSS state unavailable on port {} ({}); "
+            "using random ephemeral port",
+            port_id, state_r.error());
+        uint16_t p = random_ephemeral_port();
+        if (p == 0) {
+            return std::unexpected(
+                "select_dns_src_port: CSPRNG failure for ephemeral port");
+        }
+        return p;
+    }
+
+    // RSS-active path: defer to the pure helper.
+    auto sp = select_dns_src_port_with_state(
+        *state_r, queue_id, nameserver_ip, local_ip, dns_server_port);
+    if (sp) {
+        SPDLOG_LOGGER_DEBUG(log,
+            "select_dns_src_port: chose src_port={} for queue={} "
+            "(nameserver={}, local={}, server_port={})",
+            *sp, queue_id,
+            net::format_ipv4(nameserver_ip).data(),
+            net::format_ipv4(local_ip).data(),
+            dns_server_port);
+    }
+    return sp;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -747,9 +844,21 @@ public:
             return set_error_("CSPRNG failure for transaction ID",
                               eph::core::Error::InvalidConfig);
         }
-        src_port_ = detail::random_ephemeral_port();
-        if (src_port_ == 0) {
-            return set_error_("CSPRNG failure for ephemeral port",
+        // RSS-aware src_port selection — see detail::select_dns_src_port.
+        // On RSS-active multi-queue NICs the reply must hash back to
+        // queue_id_; on single-queue NICs we fall back to random_ephemeral_port.
+        // The full diagnostic (with port / queue / IPs) is logged by the
+        // helper itself; ErrorInfo carries a static-lifetime literal so the
+        // caller can branch on the kind without depending on heap detail.
+        if (auto sp = detail::select_dns_src_port(
+                port_id_, queue_id_, cfg_.nameserver_ip, src_ip_, cfg_.port);
+            sp) {
+            src_port_ = *sp;
+        } else {
+            SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+                "AsyncDnsResolver: src_port selection failed: {}", sp.error());
+            return set_error_("DNS src_port selection failed (RSS hash exhausted "
+                              "or CSPRNG failure; see ERROR log for detail)",
                               eph::core::Error::InvalidConfig);
         }
         tx_id_net_ = net::hton16(tx_id_);
@@ -1139,12 +1248,20 @@ resolve(uint16_t port_id,
             eph::core::Error::InvalidConfig,
             "DNS resolve: CSPRNG failure for transaction ID"});
     }
-    uint16_t src_port = detail::random_ephemeral_port();
-    if (src_port == 0) {
+    // RSS-aware src_port selection: ensure the reply lands back on the
+    // caller's queue. detail::select_dns_src_port() probes the NIC's RSS
+    // state and either reverse-picks a hash-aligned port (RSS active) or
+    // falls back to random_ephemeral_port (single-queue / no RSS).
+    auto src_port_r = detail::select_dns_src_port(
+        port_id, queue_id, cfg.nameserver_ip, src_ip, cfg.port);
+    if (!src_port_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "DNS resolve: src_port selection failed: {}", src_port_r.error());
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
-            "DNS resolve: CSPRNG failure for ephemeral port"});
+            "DNS resolve: src_port selection failed (see log for detail)"});
     }
+    const uint16_t src_port = *src_port_r;
 
     // Build DNS query payload
     uint8_t dns_buf[kMaxDnsPacketLen];
