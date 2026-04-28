@@ -354,7 +354,9 @@ enum class StreamMetric : std::size_t {
     kRxSessionResets,
     kRxBadChecksum, kRxIpChecksumBad, kRxL4ChecksumBad,
     kPacketsDropped, kFragmentRejected,
-    kCount
+    kWsDeflateBytesIn, kWsDeflateBytesOut,            // RFC 7692
+    kTlsResumeCount, kTlsHandshakeCount,              // RFC 8446 §4.6.1
+    kCount   // sentinel — current value: 24
 };
 
 inline constexpr std::array<std::string_view,
