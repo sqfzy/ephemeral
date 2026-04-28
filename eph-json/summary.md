@@ -22,7 +22,7 @@
 
 `eph-json` is a focused JSON library for one job: turning cryptocurrency-exchange WebSocket and REST messages into zero-copy typed views with as little CPU work as possible. It is NOT a general-purpose JSON library — it handles only the flat key-value shape used by the Binance / OKX / Bybit market-data feeds: a single outer object with string, number, boolean, and null scalars, plus nested objects or arrays captured as opaque substrings to be re-parsed on demand.
 
-Inside the `ephemeral` HFT stack, `eph-json` sits between the transport layer (`eph-net` / `eph-transport` / `eph-dpdk`, which deliver framed WebSocket messages) and application logic (`eph-book`, trading strategies). The module provides four things:
+Inside the `ephemeral` HFT stack, `eph-json` sits between the transport layer (`eph-net-kernel` / `eph-net-dpdk`, which deliver framed WebSocket messages via the `Stream<C>` concept defined in `eph-net`) and application logic (`eph-book`, trading strategies). The module provides four things:
 
 1. A **core parser** (`parse()` → `JsonView`) that walks the bytes once, populating a fixed-size `std::array<Field, 32>` of `string_view` pairs. No heap allocation. Field lookup is O(n) linear scan with a first-char + length pre-filter, which outperforms hash maps for the 5–15 field messages typical in exchange payloads thanks to cache locality.
 2. **Typed exchange adapters** — `binance::BookTicker` / `CombinedStream`, `okx::OkxPushMessage` / `OkxBookTicker`, `bybit::BybitPushMessage` / `BybitBookTicker` — each with a static `from(JsonView)` factory returning `optional<Struct>` when all required fields are present. Binance's `BookTicker` additionally exposes a fused single-pass `parse(data, len)` fast path that skips the generic `JsonView` intermediate (~2-3× faster on `@bookTicker` hot paths).
@@ -120,13 +120,13 @@ Two typical flows: a **WebSocket hot path** and a **REST recovery path**.
 
 ### WebSocket hot path
 
-Raw bytes arrive from `eph-transport` (via either POSIX sockets in `eph-net` or DPDK user-space TCP in `eph-dpdk`). WebSocket framing has already delineated message boundaries, so each callback invocation hands `eph-json` exactly one complete JSON payload.
+Raw bytes arrive from a `Stream<WsCodec>` (kernel via POSIX sockets in `eph-net-kernel`, or DPDK user-space TCP in `eph-net-dpdk`). The `WsCodec` from `eph-codec` has already delineated message boundaries, so each `on_message` callback invocation hands `eph-json` exactly one complete JSON payload.
 
 ```
   [NIC / kernel socket]
           |
           v
-   eph-transport (WS frame reassembly, control handling)
+   eph-net-{kernel,dpdk} + eph-codec::WsCodec (WS frame reassembly, control handling)
           |   raw JSON bytes (const uint8_t*, size_t)
           |
           |-- fast-path: symbol_hash(data, len) --> Transport two-phase

@@ -8,7 +8,7 @@ Part of the **eph** monorepo. Builds as an `xmake` header-only target with a sin
 
 - **Zero-copy parser** — FIX `tag=value\x01` messages are parsed into a stack-allocated `BasicMessageView<MaxFields>` whose `std::string_view` values point directly into the caller's buffer. No heap allocation on the hot path.
 - **Zero-allocation builder** — `MessageBuilder` writes fields directly into a caller-owned buffer, prepending `8=/9=` header and appending `10=` checksum on `finish()`.
-- **Framer** — `BasicFixFramer` satisfies `eph::net::MessageFramer`, so FIX can be dropped into `eph-transport` with one using-alias.
+- **Framer** — `BasicFixFramer` satisfies `eph::net::MessageFramer`, so FIX plugs directly into `eph-net-kernel` / `eph-net-dpdk` `TcpStream`s with one using-alias.
 - **Typed FIX 4.4 session** — Logon/Logout handshake, automatic Heartbeat, TestRequest probing, bidirectional `MsgSeqNum` gap detection, `SequenceReset`/`GapFill`, and optional `ResendRequest`. Thread-safe state via `std::atomic`.
 - **Typed order entry** — `build_new_order`, `build_cancel_order`, `build_replace_order` with `Side`, `OrdType`, `TimeInForce` enums.
 - **Execution report view** — `ExecutionReportView` with `cl_ord_id()`, `exec_type()`, `ord_status()`, `last_px()`, `is_fill()`, `is_terminal()`, plus a one-call `try_parse_execution_report()` convenience.

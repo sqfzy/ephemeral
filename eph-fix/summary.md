@@ -37,9 +37,11 @@ The library is designed to plug into the sibling subprojects:
 - `eph-core` provides `eph::net::MessageFramer` (the concept `FixFramer`
   implements) and `eph::core::parse_int` / `parse_number` (the numeric
   primitives behind the typed accessors).
-- `eph-transport` owns the socket/DPDK transport that feeds raw bytes into
-  `FixFramer::decode()` and receives `MessageBuilder::as_span()` for send.
-- `eph-net` contributes the socket + event loop that drives the transport.
+- `eph-net-kernel` / `eph-net-dpdk` own the socket / DPDK transport that
+  feeds raw bytes into `FixFramer::decode()` and receives
+  `MessageBuilder::as_span()` for send.
+- `eph-net` contributes the `Stream` / `Datagram` / `Poller` concepts
+  the kernel and DPDK backends both satisfy.
 
 Consumers interact with `eph-fix` via the aggregation header
 `include/eph/fix.hpp`, which includes every module in the correct dependency
