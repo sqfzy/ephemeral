@@ -3,12 +3,18 @@
 /// reshape: probe-based bring-up + hard-fail when multi-queue is asked
 /// for without a functional RSS path.
 ///
-/// These tests are independent of `test_dpdk_rss_platform.cpp`'s
-/// `RssPlatformEnv` because they need to construct `Platform` instances
-/// with several different `PlatformConfig` shapes within a single
-/// process, which the env's single-Platform model doesn't support.
-/// Instead we do EAL init once in `RssBringupEnv::SetUp` and let each
-/// TEST own its own short-lived Platform.
+/// **Architecture — process-per-test isolation**: each TEST forks a
+/// child process that does its own `rte_eal_init` + `Platform::create`
+/// with the test's specific config + assertions, then exits. The parent
+/// waits and checks the child's exit code. This is necessary because
+/// `Platform::~Platform` calls `rte_eth_dev_close`, which removes the
+/// port from `rte_eth_dev_count_avail` for the rest of the EAL session
+/// — without process isolation, the second test in a single process
+/// would see "No DPDK ports available" before reaching the assertions
+/// it cares about. Forking gives each test a fresh EAL view.
+///
+/// The env-level setup is intentionally minimal (just verify NIC_B is
+/// bound to vfio-pci); EAL init happens per-child.
 ///
 /// All cases SKIP cleanly if NIC_B isn't bound to vfio-pci.
 ///
@@ -32,7 +38,7 @@
 ///   │                                      │ pointing at enable_rss /
 ///   │                                      │ nb_rx_queues=1.
 ///   ├──────────────────────────────────────┼─────────────────────────┤
-///   │ nb_rx_queues=1 enable_rss=true|false │ Platform::create succeeds,
+///   │ nb_rx_queues=1                       │ Platform::create succeeds,
 ///   │                                      │ rss_using_probed_key() ==
 ///   │                                      │ false (probe path never
 ///   │                                      │ runs in single-queue mode).
@@ -40,16 +46,15 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <memory>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
-
-#include <rte_ethdev.h>
 
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/platform.hpp"
@@ -65,16 +70,14 @@ bool nic_on_vfio_pci(const std::string& pci_bdf) {
     return ::access(sys.c_str(), F_OK) == 0;
 }
 
-/// Process-wide environment: just brings up EAL pinned to NIC_B. Does
-/// NOT create a Platform — each TEST does that with its own config.
+/// Env-level shared state: the vfio-pci-bound NIC's PCI BDF. EAL is
+/// NOT initialised here — each TEST forks and the child runs its own
+/// EAL session, scoped to a single Platform construction.
 class RssBringupEnv : public ::testing::Environment {
 public:
     static bool ready() noexcept { return ready_; }
     static const std::string& reason() noexcept { return reason_; }
-    /// EAL-resolved DPDK port id for NIC_B (always 0 in our --allow-pinned
-    /// EAL bring-up). Provided as a getter so test bodies stay decoupled
-    /// from the constant.
-    static uint16_t port_id() noexcept { return port_id_; }
+    static const std::string& pci_bdf() noexcept { return pci_bdf_; }
 
     void SetUp() override {
         std::string conf_path;
@@ -111,58 +114,20 @@ public:
             return;
         }
 
-        std::string allow_arg = "--allow=" + pci;
-        std::vector<std::string> args = {
-            "test_dpdk_rss_bringup",
-            "-l", "0-3",
-            "-n", "4",
-            "--in-memory",
-            allow_arg,
-        };
-        std::vector<char*> argv;
-        argv.reserve(args.size());
-        for (auto& a : args) argv.push_back(a.data());
-
-        auto eal = ::eph::dpdk::EalGuard::init(
-            static_cast<int>(argv.size()), argv.data());
-        if (!eal) {
-            reason_ = "EAL init failed: " + eal.error();
-            return;
-        }
-        eal_ = std::make_unique<::eph::dpdk::EalGuard>(std::move(*eal));
-
-        // EAL init can succeed but PCI bus probe still fail (e.g. when
-        // /dev/vfio/<group> can't be opened — common on hosts where the
-        // device is bound to vfio-pci but the runtime user lacks access
-        // to the group device node, or on noiommu hosts without
-        // appropriate capabilities). Surface this as a SKIP rather than
-        // letting every TEST below trip on "Platform::create returned
-        // error" assertions when the failure is environmental.
-        const uint16_t avail = rte_eth_dev_count_avail();
-        if (avail == 0) {
-            reason_ = "EAL inited but rte_eth_dev_count_avail()=0 — VFIO "
-                      "group device probably inaccessible (try running "
-                      "via sudo, or check /dev/vfio/<group> permissions)";
-            // Hold onto eal_ so EAL stays inited for the lifetime of
-            // the env (otherwise dtor will hit rte_eal_cleanup which
-            // partially works on noiommu hosts).
-            return;
-        }
+        pci_bdf_ = pci;
         ready_ = true;
-        spdlog::info("RssBringupEnv: ready (PCI={}, port_id={}, ports={})",
-                     pci, port_id_, avail);
+        spdlog::info("RssBringupEnv: ready (NIC_B PCI={})", pci_bdf_);
     }
 
     void TearDown() override {
-        eal_.reset();
         ready_ = false;
+        pci_bdf_.clear();
     }
 
 private:
     static inline bool        ready_ = false;
     static inline std::string reason_;
-    static inline uint16_t    port_id_ = 0;
-    static inline std::unique_ptr<::eph::dpdk::EalGuard> eal_;
+    static inline std::string pci_bdf_;
 };
 
 #define EPH_RSS_BRINGUP_SKIP_IF_NOT_READY()                              \
@@ -177,12 +142,62 @@ private:
 /// fields (`nb_rx_queues`, `enable_rss`) to exercise the bring-up matrix.
 ::eph::dpdk::PlatformConfig make_pcfg() noexcept {
     ::eph::dpdk::PlatformConfig p{};
-    p.port_id         = RssBringupEnv::port_id();
+    p.port_id         = 0;  // EAL allow-listed only NIC_B → port_id 0
     p.nb_rx_queues    = 1;
     p.nb_tx_queues    = 1;
     p.enable_rss      = false;
     p.link_timeout_ms = 0;
     return p;
+}
+
+/// Spin up an EAL session pinned to NIC_B. Returns the EalGuard for the
+/// caller to keep alive over the Platform lifetime.
+std::expected<::eph::dpdk::EalGuard, std::string> init_eal_for_nic_b() {
+    std::string allow_arg = "--allow=" + RssBringupEnv::pci_bdf();
+    std::vector<std::string> args = {
+        "test_dpdk_rss_bringup",
+        "-l", "0-3",
+        "-n", "4",
+        "--in-memory",
+        allow_arg,
+    };
+    std::vector<char*> argv;
+    argv.reserve(args.size());
+    for (auto& a : args) argv.push_back(a.data());
+    return ::eph::dpdk::EalGuard::init(
+        static_cast<int>(argv.size()), argv.data());
+}
+
+/// Run `body` in a forked child. Child runs `body` (which is expected
+/// to use gtest EXPECT_*/ASSERT_* macros writing to stderr); on any
+/// gtest failure the child exits with status 1, otherwise 0. Parent
+/// waits and propagates failure into the calling TEST.
+///
+/// Rationale: `Platform::~Platform` calls `rte_eth_dev_close`, which
+/// removes the port from `rte_eth_dev_count_avail` — running multiple
+/// tests in one process means the second sees "No DPDK ports
+/// available". Per-test fork gives each test a fresh EAL view.
+void run_in_subprocess(std::function<void()> body) {
+    pid_t pid = ::fork();
+    ASSERT_GT(pid, -1) << "fork() failed: " << ::strerror(errno);
+    if (pid == 0) {
+        // Child. Run the body and report failure via exit code.
+        body();
+        // gtest assertion failures write to stderr automatically; here
+        // we just translate the in-process failure flag to an exit code.
+        const bool failed = ::testing::Test::HasFailure();
+        // _exit avoids triggering atexit handlers (notably DPDK's
+        // hugepage cleanup on the parent's mmaps).
+        ::_exit(failed ? 1 : 0);
+    }
+    int status = 0;
+    pid_t r = ::waitpid(pid, &status, 0);
+    ASSERT_EQ(r, pid) << "waitpid failed: " << ::strerror(errno);
+    ASSERT_TRUE(WIFEXITED(status))
+        << "child died abnormally (signal="
+        << (WIFSIGNALED(status) ? WTERMSIG(status) : -1) << ")";
+    EXPECT_EQ(WEXITSTATUS(status), 0)
+        << "child reported gtest failure — see stderr above for details";
 }
 
 } // anonymous namespace
@@ -201,45 +216,47 @@ private:
 
 TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
+    run_in_subprocess([] {
+        auto eal = init_eal_for_nic_b();
+        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
 
-    auto pcfg = make_pcfg();
-    pcfg.nb_rx_queues = 4;
-    pcfg.nb_tx_queues = 4;
-    pcfg.enable_rss   = true;
+        auto pcfg = make_pcfg();
+        pcfg.nb_rx_queues = 4;
+        pcfg.nb_tx_queues = 4;
+        pcfg.enable_rss   = true;
 
-    auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-    if (plat_r) {
-        // Path (a): probe-based bring-up succeeded — multi-queue
-        // RssPartitioned is genuinely usable on this PMD.
-        const auto& plat = *plat_r;
-        EXPECT_TRUE(plat.rss_using_probed_key())
-            << "configure_rss must have failed and probe must have "
-               "succeeded for this Platform to exist with multi-queue + "
-               "enable_rss=true on ENA — but rss_using_probed_key() is "
-               "false. Either the PMD now accepts hash_update (in which "
-               "case this assertion is too strong; relax to allow false) "
-               "or the bring-up logic regressed.";
-        EXPECT_NE(plat.dispatch_mode(),
-                  ::eph::net::dpdk::RxDispatchMode::Software)
-            << "probe-based RSS bring-up should leave dispatch_mode at "
-               "the NIC's native capability, not pin to Software.";
-        spdlog::info(
-            "RssBringup: probe path succeeded "
-            "(dispatch_mode={}, rss_using_probed_key=true)",
-            ::eph::net::dpdk::rx_dispatch_mode_name(plat.dispatch_mode()));
-    } else {
-        // Path (b): both configure_rss and probe failed → hard-fail.
-        // The error message must surface BOTH PMD failures + recovery.
-        const std::string& err = plat_r.error();
-        spdlog::info("RssBringup: hard-fail path triggered: {}", err);
-        EXPECT_NE(err.find("probe also failed"), std::string::npos)
-            << "error message must mention 'probe also failed' so "
-               "operators can distinguish this from configure_rss-only "
-               "failure: " << err;
-        EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
-            << "error message must include the recovery hint "
-               "'nb_rx_queues=1': " << err;
-    }
+        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
+        if (plat_r) {
+            // Path (a): probe-based bring-up succeeded — multi-queue
+            // RssPartitioned is genuinely usable on this PMD.
+            const auto& plat = *plat_r;
+            EXPECT_TRUE(plat.rss_using_probed_key())
+                << "configure_rss must have failed AND probe must have "
+                   "succeeded for this Platform to exist with multi-queue + "
+                   "enable_rss=true on ENA — but rss_using_probed_key() is "
+                   "false. Either the PMD now accepts hash_update (relax to "
+                   "allow false in that case) or bring-up logic regressed.";
+            EXPECT_NE(plat.dispatch_mode(),
+                      ::eph::net::dpdk::RxDispatchMode::Software)
+                << "probe-based RSS bring-up should leave dispatch_mode at "
+                   "the NIC's native capability, not pin to Software.";
+            spdlog::info(
+                "RssBringup: probe path succeeded "
+                "(dispatch_mode={}, rss_using_probed_key=true)",
+                ::eph::net::dpdk::rx_dispatch_mode_name(plat.dispatch_mode()));
+        } else {
+            // Path (b): both configure_rss and probe failed → hard-fail.
+            const std::string& err = plat_r.error();
+            spdlog::info("RssBringup: hard-fail path triggered: {}", err);
+            EXPECT_NE(err.find("probe also failed"), std::string::npos)
+                << "error message must mention 'probe also failed' so "
+                   "operators can distinguish this from configure_rss-only "
+                   "failure: " << err;
+            EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
+                << "error message must include the recovery hint "
+                   "'nb_rx_queues=1': " << err;
+        }
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,67 +269,86 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
 
 TEST(RssBringup, MultiQueue_NoRss_HardFails) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
+    run_in_subprocess([] {
+        auto eal = init_eal_for_nic_b();
+        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
 
-    auto pcfg = make_pcfg();
-    pcfg.nb_rx_queues = 4;
-    pcfg.nb_tx_queues = 4;
-    pcfg.enable_rss   = false;
+        auto pcfg = make_pcfg();
+        pcfg.nb_rx_queues = 4;
+        pcfg.nb_tx_queues = 4;
+        pcfg.enable_rss   = false;
 
-    auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_FALSE(plat_r.has_value())
-        << "Platform::create must hard-fail when nb_rx_queues>1 is paired "
-           "with enable_rss=false — the silent-collapse path was removed.";
+        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
+        ASSERT_FALSE(plat_r.has_value())
+            << "Platform::create must hard-fail when nb_rx_queues>1 is paired "
+               "with enable_rss=false — the silent-collapse path was removed.";
 
-    const std::string& err = plat_r.error();
-    spdlog::info("RssBringup: enable_rss=false multi-queue rejection: {}",
-                 err);
-    // Recovery hint: must mention BOTH paths the caller can take.
-    EXPECT_NE(err.find("enable_rss=true"), std::string::npos)
-        << "recovery message must mention 'enable_rss=true': " << err;
-    EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
-        << "recovery message must mention 'nb_rx_queues=1': " << err;
+        const std::string& err = plat_r.error();
+        spdlog::info("RssBringup: enable_rss=false multi-queue rejection: {}",
+                     err);
+        EXPECT_NE(err.find("enable_rss=true"), std::string::npos)
+            << "recovery message must mention 'enable_rss=true': " << err;
+        EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
+            << "recovery message must mention 'nb_rx_queues=1': " << err;
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SingleQueue_Unchanged
+// SingleQueue_RssEnabled_Unchanged
 //
-// `nb_rx_queues=1` paths must be byte-for-byte unchanged by the reshape:
-// no probe runs, dispatch_mode pins to Software, rss_using_probed_key
-// stays false. Exercises both enable_rss=true and enable_rss=false.
+// `nb_rx_queues=1 + enable_rss=true`: must build, dispatch_mode pinned
+// to Software, rss_using_probed_key=false (probe never runs in
+// single-queue mode). Sanity check that the reshape didn't disturb the
+// single-queue path.
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(RssBringup, SingleQueue_RssEnabled_Unchanged) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
+    run_in_subprocess([] {
+        auto eal = init_eal_for_nic_b();
+        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
 
-    auto pcfg = make_pcfg();
-    pcfg.nb_rx_queues = 1;
-    pcfg.nb_tx_queues = 1;
-    pcfg.enable_rss   = true;  // honored only when nb_rx_queues > 1
+        auto pcfg = make_pcfg();
+        pcfg.nb_rx_queues = 1;
+        pcfg.nb_tx_queues = 1;
+        pcfg.enable_rss   = true;  // honored only when nb_rx_queues > 1
 
-    auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat_r.has_value())
-        << "single-queue Platform must still build: " << plat_r.error();
-    EXPECT_FALSE(plat_r->rss_using_probed_key())
-        << "probe path must not run in single-queue mode";
-    EXPECT_EQ(plat_r->dispatch_mode(),
-              ::eph::net::dpdk::RxDispatchMode::Software)
-        << "single-queue dispatch_mode must remain pinned to Software";
+        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
+        ASSERT_TRUE(plat_r.has_value())
+            << "single-queue Platform must still build: " << plat_r.error();
+        EXPECT_FALSE(plat_r->rss_using_probed_key())
+            << "probe path must not run in single-queue mode";
+        EXPECT_EQ(plat_r->dispatch_mode(),
+                  ::eph::net::dpdk::RxDispatchMode::Software)
+            << "single-queue dispatch_mode must remain pinned to Software";
+    });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SingleQueue_RssDisabled_Unchanged
+//
+// `nb_rx_queues=1 + enable_rss=false`: same as above, but with RSS
+// disabled. Both single-queue paths are unchanged by the reshape.
+// ─────────────────────────────────────────────────────────────────────────────
 
 TEST(RssBringup, SingleQueue_RssDisabled_Unchanged) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
+    run_in_subprocess([] {
+        auto eal = init_eal_for_nic_b();
+        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
 
-    auto pcfg = make_pcfg();
-    pcfg.nb_rx_queues = 1;
-    pcfg.nb_tx_queues = 1;
-    pcfg.enable_rss   = false;
+        auto pcfg = make_pcfg();
+        pcfg.nb_rx_queues = 1;
+        pcfg.nb_tx_queues = 1;
+        pcfg.enable_rss   = false;
 
-    auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-    ASSERT_TRUE(plat_r.has_value())
-        << "single-queue Platform must still build: " << plat_r.error();
-    EXPECT_FALSE(plat_r->rss_using_probed_key());
-    EXPECT_EQ(plat_r->dispatch_mode(),
-              ::eph::net::dpdk::RxDispatchMode::Software);
+        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
+        ASSERT_TRUE(plat_r.has_value())
+            << "single-queue Platform must still build: " << plat_r.error();
+        EXPECT_FALSE(plat_r->rss_using_probed_key());
+        EXPECT_EQ(plat_r->dispatch_mode(),
+                  ::eph::net::dpdk::RxDispatchMode::Software);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
