@@ -74,8 +74,10 @@ inline spdlog::logger* ws_codec_logger() {
 /// @brief Configuration for `WsCodec`.
 struct WsCodecConfig {
     /// Maximum per-message payload after reassembly. Oversized fragmented
-    /// messages are dropped with `CodecOverflow`. Default matches what the
-    /// old FrameProcessor used for production WS clients.
+    /// messages are dropped with `CodecOverflow`. 1 MiB is the historical
+    /// production default — it covers every frame size HFT venues actually
+    /// emit (Binance bookTicker / depth / agg-trades all max out at well
+    /// under 64 KiB) with comfortable headroom.
     std::size_t max_message_size = 1u << 20;  // 1 MiB
 
     /// If true, automatically append a pong frame to the OutputBuffer on
@@ -170,8 +172,7 @@ public:
 
     /// @brief Incrementally decode one WebSocket frame from `view`.
     ///
-    /// Semantics (mirroring the old FrameProcessor but exposed via the
-    /// StreamCodec concept):
+    /// Semantics (StreamCodec concept):
     ///
     ///   - Not enough bytes for a complete frame → Ok(None), view is
     ///     unchanged so the caller can retry after more RX.
@@ -274,8 +275,7 @@ public:
             if (cfg_.auto_close_ack) {
                 // RFC 6455 §7.4.1: if the peer's code is reserved/invalid
                 // (0-999, 1004-1006, 1015, 1016-2999 etc.) we MUST NOT echo
-                // it back — respond with kProtocolError instead. This
-                // mirrors the old FrameProcessor's close handling.
+                // it back — respond with kProtocolError instead.
                 uint16_t ack_code = code;
                 if (frame.payload_len == 0) {
                     ack_code = ws::close_code::kNormal;
