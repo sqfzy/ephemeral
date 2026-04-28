@@ -81,7 +81,7 @@
 #include "eph/net/dpdk/tcp_stream.hpp"
 #include "eph/net/reconnect_policy.hpp"
 
-#include "eph/utils/cpu_pin.hpp"
+#include "eph/utils/cpu.hpp"
 #include "eph/utils/recorder.hpp"
 #include "eph/utils/time.hpp"
 
@@ -283,9 +283,9 @@ int main(int argc, char** argv) {
     pin_policy.require_same_numa = false;
     pin_policy.warn_irq_overlap = true;
     if (auto r =
-            eph::utils::pin_thread_strict(app_cfg.pin_cpu, "ws-latency", pin_policy);
+            eph::utils::pin_thread(app_cfg.pin_cpu, "ws-latency", pin_policy);
         !r) {
-        spdlog::error("pin_thread_strict(cpu={}) failed: {}", app_cfg.pin_cpu,
+        spdlog::error("pin_thread(cpu={}) failed: {}", app_cfg.pin_cpu,
                       r.error());
         return 3;
     }
