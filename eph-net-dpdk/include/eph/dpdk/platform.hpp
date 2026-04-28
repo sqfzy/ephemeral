@@ -275,6 +275,40 @@ struct PlatformConfig {
     /// then spreads across every queue, as before.
     std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};
 
+    // ── Per-lcore / NUMA-aware mempools (T2.9) ──────────────────────────
+    //
+    // Default = 0 (single shared pool, byte-for-byte compat with the
+    // pre-T2.9 layout). When > 0, Platform creates N additional pools,
+    // one per lcore id `[0, per_lcore_pools)`. Each pool is allocated on
+    // the socket local to its lcore (via `rte_lcore_to_socket_id()` and
+    // `rte_pktmbuf_pool_create(... socket_id)`), so multi-NUMA hosts
+    // avoid the +50–100 ns cross-NUMA mbuf alloc penalty when an lcore
+    // draws from its own pool. Per-lcore separation also eliminates the
+    // mempool ring contention that shows up under several lcores hammering
+    // a single shared pool.
+    //
+    // Caller picks which pool to use when allocating via
+    // `Platform::pool_for_lcore(lcore_id)`. `DpdkTcpStream::create_and_attach`
+    // / `DpdkUdpSocket::create_and_attach` honour the optional
+    // `StreamConfig::pool_lcore_hint` / `UdpConfig::pool_lcore_hint` —
+    // when set, they override `cfg.pool` with `platform.pool_for_lcore(*hint)`
+    // so user code only needs to populate the hint instead of looking up
+    // the pool by hand.
+    //
+    // Sized to fit `RTE_MAX_LCORE` (256), which exceeds any realistic HFT
+    // box. The first `per_lcore_pools` slots are populated; pool sizing is
+    // `mbuf_pool_size` per pool (so memory footprint scales linearly with
+    // `per_lcore_pools`). All pools share the existing `mbuf_pool_size /
+    // mbuf_cache_size` configuration — make them larger if needed when
+    // opting in.
+    //
+    // Backwards-compat: at `per_lcore_pools == 0`, NO extra pools are
+    // created. `pool_for_lcore(any)` returns the single shared pool, and
+    // the legacy `mempool()` accessor is unchanged. Setting `> 0` is the
+    // opt-in switch — existing call sites that don't touch
+    // `pool_lcore_hint` keep using the shared pool.
+    uint16_t per_lcore_pools = 0;
+
     // NOTE on source-port partitioning across MP processes:
     //
     // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
@@ -298,7 +332,8 @@ struct PlatformConfig {
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
             "  rx_cksum_offload: {}, strict_rx_cksum: {}\n"
-            "  proc_type: {}, file_prefix: '{}', rx_queue_range: [{},{})",
+            "  proc_type: {}, file_prefix: '{}', rx_queue_range: [{},{})\n"
+            "  per_lcore_pools: {}",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms,
@@ -306,7 +341,8 @@ struct PlatformConfig {
             enable_strict_rx_checksum  ? "true" : "false",
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
-            rx_queue_range.first, rx_queue_range.second);
+            rx_queue_range.first, rx_queue_range.second,
+            per_lcore_pools);
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -366,7 +402,8 @@ struct PlatformConfig {
             "\"enable_strict_rx_checksum\":{},"
             "\"link_timeout_ms\":{},"
             "\"proc_type\":\"{}\",\"file_prefix\":\"{}\","
-            "\"rx_queue_range\":[{},{}]}}",
+            "\"rx_queue_range\":[{},{}],"
+            "\"per_lcore_pools\":{}}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
@@ -377,7 +414,8 @@ struct PlatformConfig {
             link_timeout_ms,
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
-            rx_queue_range.first, rx_queue_range.second);
+            rx_queue_range.first, rx_queue_range.second,
+            per_lcore_pools);
     }
 };
 
@@ -409,6 +447,13 @@ struct PlatformConfig {
         if (cfg.rx_queue_range.second > cfg.nb_rx_queues)
             return "rx_queue_range.hi must not exceed nb_rx_queues";
     }
+    // Per-lcore pools: 0 = disabled (legacy single-shared-pool layout).
+    // Upper bound matches RTE_MAX_LCORE so the on-Platform fixed array
+    // can hold every populated slot. We don't enforce
+    // `per_lcore_pools <= rte_lcore_count()` here because the active lcore
+    // mask is an EAL-runtime value, not a config-time constant.
+    if (cfg.per_lcore_pools > 256)
+        return "per_lcore_pools must be <= RTE_MAX_LCORE (256)";
     return {};
 }
 
@@ -549,7 +594,35 @@ public:
 
     /// @brief Get the packet mbuf mempool for this port.
     /// @return Mempool pointer, or nullptr if moved-from.
+    ///
+    /// In single-shared-pool mode (`per_lcore_pools == 0`) this returns
+    /// the one and only pool — same as the pre-T2.9 behavior.
+    /// In per-lcore-pool mode (`per_lcore_pools > 0`) this returns the
+    /// canonical pool (`pool_for_lcore(0)`) — the one used to back the
+    /// port's RX descriptor rings. It is a stable, non-null reference
+    /// to one of the per-lcore pools, kept here so legacy callers that
+    /// don't know about the new accessor continue to work without
+    /// changes.
     [[nodiscard]] rte_mempool* mempool()          const noexcept;
+
+    /// @brief Look up the mempool reserved for a given lcore id.
+    ///
+    /// Hot-path-safe: O(1) array index, no locks, no allocations.
+    ///
+    /// Behavior:
+    ///   * `per_lcore_pools == 0` (default, backwards-compat) — returns
+    ///     the single shared pool regardless of `lcore_id`. Equivalent
+    ///     to `mempool()`. Existing call sites that pass an arbitrary
+    ///     lcore id keep working without code changes.
+    ///   * `per_lcore_pools > 0` — returns the pool created for
+    ///     `lcore_id` if `lcore_id < per_lcore_pools`, else `nullptr`
+    ///     (out-of-range is a programming error and the hot-path caller
+    ///     should fall back / abort accordingly).
+    ///   * Moved-from Platform — returns `nullptr` for any lcore_id.
+    ///
+    /// @param lcore_id  DPDK lcore id (typically `rte_lcore_id()`).
+    /// @return Per-lcore mempool, or nullptr if out of range / moved-from.
+    [[nodiscard]] rte_mempool* pool_for_lcore(uint16_t lcore_id) const noexcept;
 
     /// @brief Get the DPDK port ID.
     /// @return Port ID, or 0 if moved-from.
@@ -684,8 +757,25 @@ private:
 /// Owns the mempool and port lifecycle. Destructor calls cleanup() which
 /// stops the port and frees the mempool.
 struct Platform::Impl {
+    /// Hard upper bound on per-lcore pools — matches DPDK's
+    /// `RTE_MAX_LCORE` (256). Storing the array inline keeps lookup
+    /// branch-free at the hot path's expense of ~2 KiB per Platform,
+    /// which is negligible compared to the mempools themselves.
+    static constexpr std::size_t kMaxPools = 256;
+
     PlatformConfig config;
+    /// Canonical pool — points at the single shared pool when
+    /// `per_lcore_pools == 0`, or at `pools_[0]` when
+    /// `per_lcore_pools > 0`. Used unchanged by all the existing
+    /// `mempool()`-driven call sites (RX queue setup, secondary
+    /// attach mirror, etc.).
     rte_mempool*   mempool{nullptr};
+    /// Per-lcore mempool slots. Slots `[0, per_lcore_pools)` are
+    /// populated when the feature is opt-in; all other slots stay
+    /// `nullptr`. In default mode (`per_lcore_pools == 0`) the array
+    /// is left empty and lookup falls back to `mempool` so the legacy
+    /// "any lcore → shared pool" semantics holds.
+    std::array<rte_mempool*, kMaxPools> per_lcore_pool{};
     bool           port_started{false};
     bool           promiscuous_active{false};
 
@@ -737,27 +827,106 @@ struct Platform::Impl {
     [[nodiscard]] std::expected<void, std::string> create_mempool() {
         [[maybe_unused]] auto log = detail::platform_logger();
         SPDLOG_LOGGER_DEBUG(log,
-            "Creating mbuf pool: size={}, cache={}, data_room={}",
+            "Creating mbuf pool: size={}, cache={}, data_room={}, per_lcore_pools={}",
             config.mbuf_pool_size, config.mbuf_cache_size,
-            RTE_MBUF_DEFAULT_BUF_SIZE);
+            RTE_MBUF_DEFAULT_BUF_SIZE, config.per_lcore_pools);
 
-        // Use a per-port pool name so that multiple Platform instances (one per
-        // port) can coexist without EEXIST failure from rte_pktmbuf_pool_create.
-        auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
-        mempool = rte_pktmbuf_pool_create(
-            pool_name.c_str(), config.mbuf_pool_size, config.mbuf_cache_size,
-            0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+        // ── Default path: single shared pool ─────────────────────────────
+        // Byte-for-byte identical to the pre-T2.9 layout. `per_lcore_pool`
+        // stays empty; `pool_for_lcore()` falls back to `mempool` for any
+        // lcore id.
+        if (config.per_lcore_pools == 0) {
+            // Use a per-port pool name so that multiple Platform instances
+            // (one per port) can coexist without EEXIST failure from
+            // rte_pktmbuf_pool_create.
+            auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
+            mempool = rte_pktmbuf_pool_create(
+                pool_name.c_str(), config.mbuf_pool_size, config.mbuf_cache_size,
+                0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
 
-        if (mempool == nullptr) {
-            SPDLOG_LOGGER_ERROR(log,
-                "rte_pktmbuf_pool_create failed: pool_size={}, rte_errno={}: {}",
-                config.mbuf_pool_size, rte_errno, rte_strerror(rte_errno));
-            return std::unexpected(std::format(
-                "Failed to create mbuf pool (rte_errno={}): {}",
-                rte_errno, rte_strerror(rte_errno)));
+            if (mempool == nullptr) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "rte_pktmbuf_pool_create failed: pool_size={}, rte_errno={}: {}",
+                    config.mbuf_pool_size, rte_errno, rte_strerror(rte_errno));
+                return std::unexpected(std::format(
+                    "Failed to create mbuf pool (rte_errno={}): {}",
+                    rte_errno, rte_strerror(rte_errno)));
+            }
+            SPDLOG_LOGGER_DEBUG(log, "mbuf pool created at {:p}",
+                                static_cast<void*>(mempool));
+            return {};
         }
-        SPDLOG_LOGGER_DEBUG(log, "mbuf pool created at {:p}",
-                            static_cast<void*>(mempool));
+
+        // ── Per-lcore / NUMA-aware path (T2.9) ──────────────────────────
+        //
+        // For each lcore id `[0, per_lcore_pools)`, create a dedicated
+        // pool on the lcore's local NUMA socket. Pool naming includes the
+        // lcore id so multiple per-lcore pools across one or more
+        // Platforms coexist without name clashes.
+        //
+        // Failure mode: if any pool fails to create, we free the ones we
+        // already built and surface a structured error. Partial state is
+        // never visible to the public accessors.
+        const std::size_t n_pools =
+            std::min<std::size_t>(config.per_lcore_pools, Impl::kMaxPools);
+        for (std::size_t i = 0; i < n_pools; ++i) {
+            // Resolve the lcore's local NUMA socket. `rte_lcore_to_socket_id`
+            // returns 0 on hosts without NUMA awareness or for inactive
+            // lcore slots — that's fine: all pools land on socket 0
+            // and the layout is functionally a regular shared-pool array.
+            // If the EAL didn't enable this lcore, fall back to
+            // `SOCKET_ID_ANY` so DPDK picks any socket rather than fail.
+            int socket_id = SOCKET_ID_ANY;
+            if (rte_lcore_is_enabled(static_cast<unsigned>(i))) {
+                socket_id = static_cast<int>(
+                    rte_lcore_to_socket_id(static_cast<unsigned>(i)));
+            }
+
+            auto pool_name = std::format("eph_mbuf_p{}_l{}",
+                                          config.port_id, i);
+            rte_mempool* p = rte_pktmbuf_pool_create(
+                pool_name.c_str(),
+                config.mbuf_pool_size, config.mbuf_cache_size,
+                /*priv_size=*/0,
+                RTE_MBUF_DEFAULT_BUF_SIZE,
+                socket_id);
+            if (p == nullptr) {
+                const int err = rte_errno;
+                SPDLOG_LOGGER_ERROR(log,
+                    "rte_pktmbuf_pool_create('{}', socket={}) failed: "
+                    "pool_size={}, rte_errno={}: {} — rolling back partial "
+                    "per-lcore pool init",
+                    pool_name, socket_id, config.mbuf_pool_size,
+                    err, rte_strerror(err));
+                // Roll back: free any pools we already created so the
+                // Platform never holds half-populated state.
+                for (std::size_t j = 0; j < i; ++j) {
+                    if (per_lcore_pool[j] != nullptr) {
+                        rte_mempool_free(per_lcore_pool[j]);
+                        per_lcore_pool[j] = nullptr;
+                    }
+                }
+                return std::unexpected(std::format(
+                    "Failed to create per-lcore mbuf pool '{}' "
+                    "(socket={}, rte_errno={}): {}",
+                    pool_name, socket_id, err, rte_strerror(err)));
+            }
+            per_lcore_pool[i] = p;
+            SPDLOG_LOGGER_DEBUG(log,
+                "per-lcore pool created: lcore={}, socket={}, pool='{}', ptr={:p}",
+                i, socket_id, pool_name, static_cast<void*>(p));
+        }
+
+        // Pin `mempool` (the legacy accessor) at slot 0 so RX queue setup
+        // and any non-lcore-aware caller (e.g. existing stream creation
+        // call sites that haven't migrated to `pool_lcore_hint`) draw from
+        // a real, live pool. Slot 0 is always populated when n_pools > 0.
+        mempool = per_lcore_pool[0];
+        SPDLOG_LOGGER_INFO(log,
+            "per-lcore mempool layout active: pools={}, pool_size={}, "
+            "cache={}, canonical (lcore=0) at {:p}",
+            n_pools, config.mbuf_pool_size, config.mbuf_cache_size,
+            static_cast<void*>(mempool));
         return {};
     }
 
@@ -765,36 +934,75 @@ struct Platform::Impl {
     /// already created under the well-known name `eph_mbuf_p<port>`. A
     /// miss means the primary is not running *or* the EAL file-prefix
     /// doesn't match — both surface as the same `ENOENT`-shaped error.
+    ///
+    /// When `per_lcore_pools > 0`, also attaches each per-lcore pool the
+    /// primary created (`eph_mbuf_p<port>_l<lcore>`). Callers in the
+    /// secondary process must pass the same `per_lcore_pools` value the
+    /// primary used; mismatched configs surface as ENOENT on the first
+    /// missing slot.
     [[nodiscard]] std::expected<void, std::string> lookup_mempool_secondary() {
         [[maybe_unused]] auto log = detail::platform_logger();
-        auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
-        mempool = rte_mempool_lookup(pool_name.c_str());
-        if (mempool == nullptr) {
-            const int err = rte_errno;
-            SPDLOG_LOGGER_ERROR(log,
-                "rte_mempool_lookup('{}') failed — primary not running or "
-                "file_prefix mismatch (expected runtime dir "
-                "/var/run/dpdk/{}/, rte_errno={}): {}",
-                pool_name,
-                config.file_prefix.empty() ? std::string{"<default>"}
-                                           : std::string{config.file_prefix},
-                err, rte_strerror(err));
-            // Mirror the rte_errno into std::unexpected so callers
-            // (Platform::create_secondary, EalGuard test harnesses)
-            // surface the same ENOENT/EACCES signal, not just a
-            // generic "not running" hint.
-            return std::unexpected(std::format(
-                "rte_mempool_lookup('{}') failed — primary not running or "
-                "file_prefix mismatch (looked for runtime dir /var/run/dpdk/{}/, "
-                "rte_errno={} ({}))",
-                pool_name,
-                config.file_prefix.empty() ? std::string{"<default>"}
-                                           : std::string{config.file_prefix},
-                err, rte_strerror(err)));
+
+        // ── Default path: single shared pool (legacy layout) ───────────
+        if (config.per_lcore_pools == 0) {
+            auto pool_name = std::format("eph_mbuf_p{}", config.port_id);
+            mempool = rte_mempool_lookup(pool_name.c_str());
+            if (mempool == nullptr) {
+                const int err = rte_errno;
+                SPDLOG_LOGGER_ERROR(log,
+                    "rte_mempool_lookup('{}') failed — primary not running or "
+                    "file_prefix mismatch (expected runtime dir "
+                    "/var/run/dpdk/{}/, rte_errno={}): {}",
+                    pool_name,
+                    config.file_prefix.empty() ? std::string{"<default>"}
+                                               : std::string{config.file_prefix},
+                    err, rte_strerror(err));
+                return std::unexpected(std::format(
+                    "rte_mempool_lookup('{}') failed — primary not running or "
+                    "file_prefix mismatch (looked for runtime dir /var/run/dpdk/{}/, "
+                    "rte_errno={} ({}))",
+                    pool_name,
+                    config.file_prefix.empty() ? std::string{"<default>"}
+                                               : std::string{config.file_prefix},
+                    err, rte_strerror(err)));
+            }
+            SPDLOG_LOGGER_INFO(log,
+                "Secondary attached to mempool '{}' at {:p} (shared from primary)",
+                pool_name, static_cast<void*>(mempool));
+            return {};
         }
+
+        // ── Per-lcore path: attach every primary-created per-lcore pool ─
+        const std::size_t n_pools =
+            std::min<std::size_t>(config.per_lcore_pools, Impl::kMaxPools);
+        for (std::size_t i = 0; i < n_pools; ++i) {
+            auto pool_name = std::format("eph_mbuf_p{}_l{}",
+                                          config.port_id, i);
+            rte_mempool* p = rte_mempool_lookup(pool_name.c_str());
+            if (p == nullptr) {
+                const int err = rte_errno;
+                SPDLOG_LOGGER_ERROR(log,
+                    "rte_mempool_lookup('{}') failed in secondary "
+                    "(per_lcore_pools={}; expected primary to have created "
+                    "all {} pools, rte_errno={}): {}",
+                    pool_name, config.per_lcore_pools, n_pools,
+                    err, rte_strerror(err));
+                // Don't free per_lcore_pool entries — secondary never owns
+                // the underlying pool memory; we just zero our view so the
+                // Platform isn't half-attached.
+                for (std::size_t j = 0; j < i; ++j) per_lcore_pool[j] = nullptr;
+                return std::unexpected(std::format(
+                    "rte_mempool_lookup('{}') failed in secondary "
+                    "(per_lcore_pools={}, rte_errno={}: {})",
+                    pool_name, config.per_lcore_pools, err, rte_strerror(err)));
+            }
+            per_lcore_pool[i] = p;
+        }
+        mempool = per_lcore_pool[0];
         SPDLOG_LOGGER_INFO(log,
-            "Secondary attached to mempool '{}' at {:p} (shared from primary)",
-            pool_name, static_cast<void*>(mempool));
+            "Secondary attached to per-lcore mempool layout: pools={}, "
+            "canonical (lcore=0) at {:p}",
+            n_pools, static_cast<void*>(mempool));
         return {};
     }
 
@@ -1062,6 +1270,8 @@ struct Platform::Impl {
             port_started = false;
             // Zero the pointer view — we never owned the underlying pool.
             mempool = nullptr;
+            // Per-lcore views are also primary-owned; just zero the slots.
+            for (auto& slot : per_lcore_pool) slot = nullptr;
             // Clear the per-queue Poller registry so any late lookup
             // misses cleanly rather than returning a stale Poller*.
             for (auto& slot : pollers) slot = nullptr;
@@ -1074,7 +1284,26 @@ struct Platform::Impl {
             rte_eth_dev_close(config.port_id);
             port_started = false;
         }
-        if (mempool != nullptr) {
+        // Per-lcore pools (if any) own the mbuf memory in primary mode.
+        // Free each populated slot. When `per_lcore_pools == 0`, the
+        // canonical `mempool` is the single shared pool and gets freed
+        // by the fallback branch below; in per-lcore mode `mempool`
+        // aliases `per_lcore_pool[0]`, so we must NOT double-free it.
+        bool freed_via_per_lcore = false;
+        for (auto& slot : per_lcore_pool) {
+            if (slot != nullptr) {
+                SPDLOG_LOGGER_DEBUG(log, "Freeing per-lcore mbuf pool {:p}",
+                                    static_cast<void*>(slot));
+                rte_mempool_free(slot);
+                slot = nullptr;
+                freed_via_per_lcore = true;
+            }
+        }
+        if (freed_via_per_lcore) {
+            // `mempool` was an alias to per_lcore_pool[0] — it's already
+            // freed. Zero the alias so accessors return nullptr.
+            mempool = nullptr;
+        } else if (mempool != nullptr) {
             SPDLOG_LOGGER_DEBUG(log, "Freeing mbuf pool {:p}",
                                 static_cast<void*>(mempool));
             rte_mempool_free(mempool);
@@ -1413,6 +1642,29 @@ Platform::create_secondary(PlatformConfig config) {
 // Null guards on all impl_-accessing methods protect against use on a
 // moved-from Platform (move leaves impl_ == nullptr).
 inline rte_mempool* Platform::mempool()          const noexcept { return impl_ ? impl_->mempool              : nullptr; }
+
+inline rte_mempool* Platform::pool_for_lcore(uint16_t lcore_id) const noexcept {
+    // Hot path: O(1) array index, no locks. The branching here is on a
+    // cold field (`per_lcore_pools`) and trivially predictable per
+    // Platform — modern branch predictors lock onto it after the first
+    // call.
+    if (impl_ == nullptr) return nullptr;
+    // Per-lcore feature off → backwards-compat: every lcore sees the
+    // same single shared pool. This keeps existing call sites
+    // (which never knew about lcores) working unchanged when they use
+    // `pool_for_lcore(rte_lcore_id())` instead of `mempool()`.
+    if (impl_->config.per_lcore_pools == 0) {
+        return impl_->mempool;
+    }
+    // Out-of-range lcore id → nullptr. Caller policy: log + fall back to
+    // `mempool()` if a soft failure is preferable to abort.
+    if (lcore_id >= impl_->config.per_lcore_pools ||
+        lcore_id >= Impl::kMaxPools) {
+        return nullptr;
+    }
+    return impl_->per_lcore_pool[lcore_id];
+}
+
 inline uint16_t     Platform::port_id()          const noexcept { return impl_ ? impl_->config.port_id       : 0; }
 inline bool         Platform::is_running()       const noexcept { return impl_ && impl_->port_started; }
 inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }

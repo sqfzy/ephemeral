@@ -159,6 +159,36 @@ struct StreamConfig {
     ///     to `pin_to_queue`.
     ///   * Software mode      → must be 0 (or nullopt); otherwise QueueOutOfRange.
     std::optional<uint16_t> pin_to_queue{};
+
+    /// @brief Per-lcore mempool hint for `create_and_attach`.
+    ///
+    /// When set, the helper resolves `cfg.pool` via
+    /// `platform.pool_for_lcore(*pool_lcore_hint)` before constructing
+    /// the stream. This lets callers stay within their lcore's
+    /// NUMA-local pool when `PlatformConfig::per_lcore_pools > 0`,
+    /// avoiding the +50–100 ns cross-NUMA mbuf alloc penalty.
+    ///
+    /// Default = -1 (not set):
+    ///   * The helper does NOT touch `cfg.pool`. If the caller already
+    ///     populated `cfg.pool` (e.g. with `platform.mempool()` or a
+    ///     pool of their own), it is used verbatim. This is the
+    ///     backwards-compat path — no existing call sites break.
+    ///
+    /// `>= 0` (set):
+    ///   * The helper overrides `cfg.pool` with
+    ///     `platform.pool_for_lcore(uint16_t(*pool_lcore_hint))`. If
+    ///     the lookup returns nullptr (lcore id out of range when
+    ///     `per_lcore_pools > 0`), `create_and_attach` returns
+    ///     `Error::InvalidConfig`.
+    ///
+    /// In default-mode Platforms (`per_lcore_pools == 0`),
+    /// `pool_for_lcore` always returns the shared pool, so setting this
+    /// hint is a harmless no-op.
+    ///
+    /// Encoded as `int` (not `uint16_t`) so the canonical "not set"
+    /// sentinel `-1` is representable; values `>= 0` are clamped to a
+    /// `uint16_t` lcore id at the call site.
+    int pool_lcore_hint{-1};
 };
 
 // ---------------------------------------------------------------------------
@@ -181,6 +211,16 @@ struct UdpConfig {
     /// to the desired queue under RSS, or the helper installs an rte_flow
     /// rule under FlowDirector. nullopt = auto.
     std::optional<uint16_t> pin_to_queue{};
+
+    /// @brief Per-lcore mempool hint for `create_and_attach`. See
+    /// `StreamConfig::pool_lcore_hint` for full semantics.
+    ///
+    /// Default `-1` (not set) preserves existing behavior: the helper
+    /// uses `legacy.pool` as the caller populated it. When set
+    /// `>= 0`, the helper overrides `legacy.pool` with
+    /// `platform.pool_for_lcore(uint16_t(*pool_lcore_hint))` before
+    /// sender construction.
+    int pool_lcore_hint{-1};
 };
 
 // ---------------------------------------------------------------------------
