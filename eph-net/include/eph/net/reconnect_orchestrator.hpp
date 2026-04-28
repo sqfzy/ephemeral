@@ -157,15 +157,32 @@ enum class ReconnectState : uint8_t {
 /// holds only the most recent cycle (gauge-style). Together with `kCount`,
 /// dashboards can derive `avg = total / count` and `max ≈ last` (last is
 /// not a true maximum, but in HFT reconnect noise it's a reasonable proxy).
+///
+/// `kSubscribeReplayCount` (T2.11) counts how many times the application
+/// successfully completed a subscribe-replay after a reconnect. The
+/// orchestrator can never observe replay completion itself — payloads /
+/// ACKs are venue-specific — so the user calls `note_subscribe_replay()`
+/// from inside their `OnReconnect` (or `OnReconnectEvent::Connected`)
+/// callback once they have re-sent (and, for ACK-bearing venues,
+/// confirmed) the subscription. The metric is therefore an *application-
+/// asserted* counter, not a transport-observed one. Pair with
+/// `kReconnectCount` to compute the replay success rate
+/// (`replay / count`); a sustained drift means the app is reconnecting
+/// but failing to re-subscribe.
 enum class ReconnectMetric : std::size_t {
     kReconnectCount          = 0,  ///< Successful reconnects (counter).
     kReconnectFailures       = 1,  ///< Factory invocation failures (counter).
     kReconnectDurationNs     = 2,  ///< Sum of per-cycle ns durations (counter).
     kLastReconnectDurationNs = 3,  ///< Most recent cycle ns (gauge-style).
-    kCount                   = 4,  ///< Sentinel — always last.
+    kSubscribeReplayCount    = 4,  ///< User-asserted subscribe-replay completions (counter).
+    kCount                   = 5,  ///< Sentinel — always last.
 };
 
 /// @brief OTel-style hierarchical names. Index MUST match `ReconnectMetric`.
+///
+/// New entries MUST be appended before `kCount` and the matching name
+/// added to the same index here — the `static_assert` below catches any
+/// drift at compile time.
 inline constexpr std::array<std::string_view,
                             static_cast<std::size_t>(ReconnectMetric::kCount)>
 kReconnectMetricNames = {
@@ -173,6 +190,7 @@ kReconnectMetricNames = {
     "net.reconnect.failures",
     "net.reconnect.duration_ns",
     "net.reconnect.duration_ns.last",
+    "net.reconnect.subscribe_replay_count",
 };
 
 static_assert(kReconnectMetricNames.size() ==
@@ -449,6 +467,43 @@ public:
     [[nodiscard]] uint64_t last_reconnect_duration_ns() const noexcept {
         return metric(ReconnectMetric::kLastReconnectDurationNs);
     }
+    /// @brief Convenience accessor for `kSubscribeReplayCount` (counter).
+    [[nodiscard]] uint64_t subscribe_replay_count() const noexcept {
+        return metric(ReconnectMetric::kSubscribeReplayCount);
+    }
+
+    /// @brief Acknowledge that a subscribe-replay completed successfully
+    ///        for the current session. Bumps `kSubscribeReplayCount` by 1.
+    ///
+    /// Intended call site: inside the user's `OnReconnect` callback (or
+    /// the `OnReconnectEvent::Connected` event handler) once they have
+    /// finished re-sending the venue-specific subscribe payload — and,
+    /// for ACK-bearing protocols, confirmed the venue accepted it. The
+    /// orchestrator deliberately does NOT auto-bump from `try_attempt_`
+    /// because "stream connected" and "subscriptions restored" are
+    /// distinct events: a venue can close the socket on a malformed
+    /// subscribe even though the TCP/TLS/WS stack is happy.
+    ///
+    /// Callable from any state — the metric is purely additive and we
+    /// don't gate on `state_` so a caller that bumps from a custom
+    /// follow-up callback (e.g. settle-ack handler) doesn't have to
+    /// race the state machine. Use `subscribe_replay_count()` to read.
+    void note_subscribe_replay() noexcept {
+        // Memory order: relaxed mirrors every other metric increment in
+        // this header. Reader thread (publisher) tolerates slightly stale
+        // reads in exchange for zero contention with the driver thread.
+        const auto idx = static_cast<std::size_t>(
+            ReconnectMetric::kSubscribeReplayCount);
+        const auto v = metrics_[idx].fetch_add(1, std::memory_order_relaxed) + 1;
+        SPDLOG_LOGGER_TRACE(detail::reconnect_logger(),
+            "ReconnectOrchestrator::note_subscribe_replay: count={} state={}",
+            v, to_string(state_));
+        // Avoid -Wunused-variable when SPDLOG_ACTIVE_LEVEL > TRACE strips
+        // the macro: `v` is captured into the format args list which the
+        // preprocessor erases, so cast-to-void keeps both compile modes
+        // warning-clean.
+        (void)v;
+    }
 
 private:
     ReconnectConfig    cfg_;
@@ -518,14 +573,24 @@ template <class Orch, eph::core::MetricsSink Sink>
 void publish_reconnect_metrics(const Orch& orch, Sink& sink,
                                std::span<const eph::core::MetricTag> tags = {}) noexcept {
     using M = ReconnectMetric;
-    sink.push_counter(kReconnectMetricNames[static_cast<std::size_t>(M::kReconnectCount)],
-                      static_cast<int64_t>(orch.metric(M::kReconnectCount)), tags);
-    sink.push_counter(kReconnectMetricNames[static_cast<std::size_t>(M::kReconnectFailures)],
-                      static_cast<int64_t>(orch.metric(M::kReconnectFailures)), tags);
-    sink.push_counter(kReconnectMetricNames[static_cast<std::size_t>(M::kReconnectDurationNs)],
-                      static_cast<int64_t>(orch.metric(M::kReconnectDurationNs)), tags);
-    sink.push_gauge(kReconnectMetricNames[static_cast<std::size_t>(M::kLastReconnectDurationNs)],
-                    static_cast<double>(orch.metric(M::kLastReconnectDurationNs)), tags);
+    // Data-driven loop so newly added enum entries flow through without
+    // touching this function. The single gauge entry
+    // (`kLastReconnectDurationNs`) is treated as the special case: every
+    // other metric is a monotonic counter. If a future metric is also
+    // gauge-shaped, extend this branch — keeping the dispatch policy
+    // explicit (rather than e.g. a bool[] table) since gauge vs counter
+    // is a semantic decision the maintainer should consciously make.
+    for (std::size_t i = 0;
+         i < static_cast<std::size_t>(M::kCount); ++i) {
+        const auto m  = static_cast<M>(i);
+        const auto v  = orch.metric(m);
+        const auto nm = kReconnectMetricNames[i];
+        if (m == M::kLastReconnectDurationNs) {
+            sink.push_gauge(nm, static_cast<double>(v), tags);
+        } else {
+            sink.push_counter(nm, static_cast<int64_t>(v), tags);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
