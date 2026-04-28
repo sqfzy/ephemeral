@@ -5,8 +5,10 @@
 /// The pre-existing test_dns.cpp covers happy-path parsing and a few
 /// pointer-loop edge cases, but does NOT exercise:
 ///   * deep compression-pointer chains (the audit-flagged D2 issue —
-///     up to kMaxIterations × an_count = 8192 iterations of CPU work
-///     per malicious response)
+///     up to kMaxIterations × an_count iterations of CPU work
+///     per malicious response; kMaxIterations was narrowed 128 → 32
+///     per audit-20260413 #11 so the budget is now bounded at 32 × 64
+///     = 2048 hops, still far above any legitimate FQDN depth)
 ///   * RDATA length-claim vs. buffer boundary
 ///   * try_parse_dns_packet's IP/UDP layer attack surface (truncated
 ///     packets, IHL extremes, wrong proto, wrong source IP)
@@ -79,7 +81,9 @@ size_t append_a_answer(uint8_t* buf, size_t off, uint32_t ip_be) {
 
 TEST(DnsAdversarial, PointerChainHittingIterationLimitReturnsZero) {
     // Construct a chain of 200 pointers, each pointing to the next.
-    // The parser must detect after kMaxIterations=128 hops and bail.
+    // The parser must detect after kMaxIterations=32 hops and bail.
+    // (Was 128 pre-audit-20260413 #11; tightened to 32 as defence-
+    // in-depth — 200 still trips it with margin to spare.)
     constexpr size_t kChainLen = 200;
     constexpr size_t kBufSize  = kChainLen * 2 + 16;
     std::vector<uint8_t> buf(kBufSize, 0);

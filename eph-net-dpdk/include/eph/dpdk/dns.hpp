@@ -379,9 +379,13 @@ select_dns_src_port_with_state(
     size_t end_offset = 0;
 
     // Max iterations guards against pointer loops in malicious packets.
-    // A valid DNS name has at most 127 labels (253 chars / 2 chars min per label),
-    // so 128 iterations is generous.
-    constexpr int kMaxIterations = 128;
+    // A valid DNS name has at most 127 labels (253 chars / 2 chars min per
+    // label), but realistic FQDNs have well under 32 labels and the parser
+    // also follows compression pointers — each pointer hop costs one
+    // iteration. Tightening from 128 → 32 narrows the attacker work budget
+    // while still leaving 2-3× headroom for the deepest pathologically-deep
+    // legal name (per audit-20260413-eph-net-dpdk.md item #11).
+    constexpr int kMaxIterations = 32;
     int iterations = 0;
 
     while (offset < len && iterations++ < kMaxIterations) {
