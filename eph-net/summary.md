@@ -116,6 +116,115 @@ raised to `initial_backoff`). Thread-local RNG keeps jitter decorrelated
 across threads. Not internally synchronised — one policy per connection.
 Used by both `KernelTcpStream` and `DpdkTcpStream`.
 
+### ReconnectOrchestrator (`eph/net/reconnect_orchestrator.hpp`)
+
+State machine that drives `ReconnectPolicy` and a user-supplied stream
+factory through the connect → connected → disconnected → backoff loop.
+Header-only; one orchestrator per logical connection.
+
+```cpp
+struct ReconnectConfig {
+    ReconnectPolicyConfig policy;
+    bool auto_detect_via_state = true;   // tick() polls current()->state()
+};
+
+template <Stream S>
+class ReconnectOrchestrator {
+public:
+    using StreamPtr        = std::unique_ptr<S>;
+    using Factory          = std::function<std::expected<StreamPtr, ErrorInfo>()>;
+    using OnDisconnect     = std::function<void(const ErrorInfo&)>;
+    using OnReconnect      = std::function<void(uint32_t attempt, uint64_t duration_ns)>;
+    using AttachFn         = std::function<std::expected<void, ErrorInfo>(S*)>;
+    using DetachFn         = std::function<void(S*)>;
+    using OnReconnectEvent = std::function<void(const ReconnectEvent&)>;  // T2.14
+
+    ReconnectOrchestrator(ReconnectConfig, Factory,
+                          OnDisconnect = {}, OnReconnect = {},
+                          AttachFn = {}, DetachFn = {}) noexcept;
+
+    void set_event_hook(OnReconnectEvent) noexcept;     // T2.14 — optional
+
+    std::expected<void, ErrorInfo> start(uint64_t now_tsc) noexcept;
+    void                           stop()                 noexcept;
+    void                           tick(uint64_t now_tsc) noexcept;
+    void                           mark_disconnected(const ErrorInfo&) noexcept;
+
+    ReconnectState  state()    const noexcept;
+    uint32_t        attempts() const noexcept;
+    S*              current()  const noexcept;
+    void            note_subscribe_replay() noexcept;    // T2.11 user signal
+
+    // Atomic counters / gauges; kCount sentinel guards the table.
+    uint64_t metric(ReconnectMetric) const noexcept;
+};
+
+template <class Orch, MetricsSink Sink>
+void publish_reconnect_metrics(const Orch&, Sink&,
+                               std::span<const MetricTag> = {}) noexcept;
+```
+
+Observability surface — five entries indexed by `ReconnectMetric`:
+
+| Metric                          | Kind     | OTel name                              |
+|---------------------------------|----------|----------------------------------------|
+| `kReconnectCount`               | counter  | `net.reconnect.count`                  |
+| `kReconnectFailures`            | counter  | `net.reconnect.failures`               |
+| `kReconnectDurationNs`          | counter  | `net.reconnect.duration_ns`            |
+| `kLastReconnectDurationNs`      | gauge    | `net.reconnect.duration_ns.last`       |
+| `kSubscribeReplayCount`         | counter  | `net.reconnect.subscribe_replay_count` |
+
+The optional `EventHook` (`on_reconnect_event`) emits typed
+`ReconnectEventKind` transitions alongside the legacy `on_state_change`,
+useful for venues that need to differentiate "first connect", "user
+initiated stop", "factory failure" without polling `state()`. Pair
+`kReconnectCount` with `note_subscribe_replay()` calls to detect
+"reconnects that did not finish re-subscribing" drift on the app side.
+
+### Auth helpers (`eph/net/signed_request.hpp`, `eph/net/jwt_signed_request.hpp`)
+
+```cpp
+// HMAC signing for venue REST/WS auth (Binance / Bybit / OKX). Owns the
+// HmacSha256Key by RAII (auto-zeroes on destruction); per-venue Traits
+// gates per-venue helpers (e.g. BinanceSignTraits → `headers_for_query`
+// / `headers_for_body`; OkxSignTraits → `headers_for_request`).
+template <class Traits>
+class SignedRequest {
+    explicit SignedRequest(HmacSha256Key) noexcept;
+    const HmacSha256Key& key() const noexcept;
+    // venue-specific `headers_for_*` overloads — `requires`-gated by Traits.
+};
+
+// ES256 (RFC 7515) JWT for Coinbase Cloud's modern auth path.
+struct CoinbaseJwtParams {
+    std::string_view key_id;          // "kid" header claim
+    std::string_view api_key_name;    // "sub" payload claim
+    std::string_view method;          // HTTP method
+    std::string_view uri;             // "host/path"
+    uint64_t         now_unix_secs;
+    uint64_t         ttl_secs = 120;  // Coinbase default
+    std::span<const uint8_t> nonce_override = {};   // empty → CSPRNG
+};
+
+class Es256PrivateKey {                // RAII over aws-lc EVP_PKEY*
+    static std::expected<Es256PrivateKey, ErrorInfo>
+        from_pem(std::string_view) noexcept;
+};
+
+[[nodiscard]] std::expected<std::string, ErrorInfo>
+build_coinbase_jwt(const Es256PrivateKey&, const CoinbaseJwtParams&) noexcept;
+```
+
+`SignedRequest<Traits>` is a zero-heap, allocation-free HMAC helper:
+the `Traits` parameter pins each venue's exact "string-to-sign"
+layout. `build_coinbase_jwt` produces an RFC 7519 JWT signed with
+ES256 over P-256 (RFC 7515), backed by aws-lc — the EC sign result
+is converted from IEEE P1363 (`r||s` 64-byte) to ASN.1 `INTEGER`
+DER inside the helper. Used by the Coinbase venue adapter for the
+JWT auth flow that supplanted the legacy HMAC path. Returned token
+is heap-allocated (the only allocation in the auth chain) and
+expected to live for one request.
+
 ### HTTP/1.1 parser + builder (`eph/net/http.hpp`)
 
 Incremental, zero-heap HTTP/1.1 subset for exchange REST and WS-upgrade
