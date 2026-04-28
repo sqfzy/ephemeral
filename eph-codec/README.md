@@ -11,7 +11,7 @@ Codecs are independent of any networking backend — they operate on a templated
 
 | Codec | Kind | Notes |
 |---|---|---|
-| `eph::codec::WsCodec` | `StreamCodec` | RFC 6455 WebSocket. Owns reassembly + ping/close FSM. Auto-responds ping/close via `OutputBuffer`. |
+| `eph::codec::WsCodec` | `StreamCodec` | RFC 6455 WebSocket + RFC 7692 permessage-deflate. Owns reassembly + ping/close FSM, optional zlib inflater (lazy-init, zero cost when disabled). Auto-responds ping/close via `OutputBuffer`; deflate enable is plumbed through `enable_permessage_deflate()` (the kernel + DPDK backends call it for you when `StreamConfig::ws_permessage_deflate` is true and the server accepts the offer). |
 | `eph::codec::RawStreamCodec` | `StreamCodec` | Passthrough — frames are whole receive buffers. |
 | `eph::codec::LengthPrefixCodec` | `StreamCodec` | 4-byte big-endian length prefix, payloads up to 16 MiB (`kMaxFrameLen`). |
 | `eph::codec::RawDatagramCodec` | `DatagramCodec` | One frame per datagram. Empty datagrams rejected with `CodecBad`. |
@@ -63,6 +63,12 @@ walkthrough.
 
 - `eph-core` — the `StreamCodec` / `DatagramCodec` concepts, `Error`, `ErrorInfo`,
   `OutputBuffer`, `PacketView`.
+- `zlib` — system package, used by `WsCodec`'s RFC 7692 permessage-deflate
+  inflater. Available out of the box on every modern Linux distro
+  (`pacman -S zlib` / `apt install zlib1g-dev` / etc.). The inflater is
+  lazy-initialized only when `enable_permessage_deflate()` is called and
+  a compressed frame arrives, so non-deflate consumers pay nothing at
+  runtime.
 
 No dependency on any networking module. Application code links `eph-codec` plus
 whichever backend it needs (`eph-net-kernel` or `eph-net-dpdk`).
