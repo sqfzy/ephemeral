@@ -2393,6 +2393,12 @@ TEST(FixParserStats, incomplete_trailing_data_is_not_counted_as_error) {
     b.set(tag::MsgType, "0");
     size_t len = b.finish();
     ASSERT_GT(len, 0u);
+    // Pin upper bound for GCC -Wstringop-overflow flow analysis.
+    // b.finish() is contractually bounded by sizeof(buf) but the
+    // return type is size_t and the compiler can't see that — without
+    // this clamp the subsequent memcpy(combined.data(), buf, len)
+    // generates a stringop-overflow false positive.
+    if (len > sizeof(buf)) len = sizeof(buf);
 
     // Append incomplete data "8=FI" (starts valid but is truncated)
     std::vector<uint8_t> combined(len + 4);
@@ -2492,6 +2498,9 @@ TEST(FixParserStats, error_captures_offset_and_type) {
     b.set(tag::MsgType, "0");
     size_t len = b.finish();
     ASSERT_GT(len, 0u);
+    // Same -Wstringop-overflow flow-analysis hint as the incomplete-trailing
+    // test above — clamp the bound so GCC sees `len <= sizeof(buf)`.
+    if (len > sizeof(buf)) len = sizeof(buf);
 
     // Append malformed data: "X=..." (not a valid FIX message — first tag is not 8)
     // Literal length: "X=badval\x01" (9) + "10=000\x01" (7) = 16 bytes, no NUL.
