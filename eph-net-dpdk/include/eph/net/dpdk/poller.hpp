@@ -15,8 +15,11 @@
 ///   - **No epoll equivalent**: DPDK lcore polling is always non-blocking
 ///     — `poll()` calls `rte_eth_rx_burst` once, dispatches each mbuf to
 ///     the matching Pollable based on the 5-tuple / native handle, and
-///     returns. There is no `poll(timeout)` overload (the design doc
-///     explicitly excludes it).
+///     returns. The `poll(std::chrono::nanoseconds)` overload is a
+///     debugging / development convenience: it does one immediate burst
+///     then spins on `rte_pause()` for ~10 µs before falling back to
+///     `std::this_thread::yield()` until the timeout fires. Production
+///     HFT colo deployments should keep using the no-arg form.
 ///
 ///   - **Routing table**: O(1) open-addressed hash table keyed on the
 ///     5-tuple `(src_ip, dst_ip, src_port, dst_port, proto)`. The storage
@@ -40,17 +43,20 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <utility>
 
 #include <sys/random.h>   // getrandom(2) — random start for pick_src_port
 
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
+#include <rte_pause.h>    // rte_pause() — short busy-wait yield for poll(timeout)
 
 #include <spdlog/spdlog.h>
 
@@ -436,6 +442,152 @@ public:
         return dispatched;
     }
 
+    /// @brief CPU-yielding burst poll for **debugging / development**
+    ///        environments. Production HFT colo deployments should keep
+    ///        calling the no-arg `poll()` in a tight busy loop; this
+    ///        overload trades latency for CPU cooperation so a developer
+    ///        loop doesn't peg a core while waiting for the occasional
+    ///        packet.
+    ///
+    /// Strategy (conservative, three-phase):
+    ///   1. **Burst** — call `poll()` once. If any packets dispatched,
+    ///      return immediately. The fastest path matches the no-arg
+    ///      hot path exactly.
+    ///   2. **Spin** — for the first `kSpinBudgetNs` (~10 µs) of the
+    ///      timeout window, retry the burst inside an `rte_pause()`
+    ///      loop. This is the lowest-latency yield available on x86
+    ///      (`PAUSE` instruction) / aarch64 (`yield` hint) and keeps
+    ///      packet wakeup well under a microsecond when traffic
+    ///      arrives during the spin.
+    ///   3. **Yield** — once the spin budget is exhausted, swap to
+    ///      `std::this_thread::yield()` so the kernel can schedule
+    ///      other work. Continues retrying the burst between yields
+    ///      until the total elapsed time exceeds `timeout`.
+    ///
+    /// Returns the total number of packets processed across all bursts
+    /// (could be 0 if the timeout fires with no traffic).
+    ///
+    /// `timeout` ≤ 0 collapses to a single burst, equivalent to the
+    /// no-arg `poll()`. Negative values are treated as 0 so a stale
+    /// `now() - deadline` calculation can't hang the caller.
+    ///
+    /// **Hot path is not affected**: the no-arg `poll()` overload above
+    /// stays byte-for-byte unchanged; this overload is opt-in.
+    ///
+    /// **Thread safety**: same as `poll()` — single-thread driver.
+    [[nodiscard]] std::size_t poll(std::chrono::nanoseconds timeout) noexcept {
+        [[maybe_unused]] auto* log = detail::poller_logger();
+        SPDLOG_LOGGER_TRACE(log,
+            "DpdkPoller::poll(timeout): entry timeout={} ns",
+            timeout.count());
+
+        // Phase 1: always do at least one burst. If anything came back —
+        // including from the test-injection seam — return immediately
+        // without waiting. Matches the "if a packet arrived, return
+        // immediately" requirement.
+        std::size_t total = drain_injected_for_test_() + poll();
+        if (total > 0 || timeout.count() <= 0) {
+            SPDLOG_LOGGER_TRACE(log,
+                "DpdkPoller::poll(timeout): exit fast (n={}, timeout={} ns)",
+                total, timeout.count());
+            return total;
+        }
+
+        // Phase 2 + 3 require a wall-clock measure. Prefer TSC for sub-
+        // microsecond resolution; fall back to steady_clock when
+        // uncalibrated (matches ReconnectOrchestrator's precedent in
+        // eph-net/include/eph/net/reconnect_orchestrator.hpp). The
+        // fallback path is a few ns more expensive per loop iteration
+        // — acceptable because this overload is opt-in for non-hot
+        // codepaths.
+        const bool use_tsc = eph::utils::TSC::is_initialized();
+
+        // Spin budget: small enough that a developer loop doesn't burn
+        // measurable CPU, large enough that the spin path catches the
+        // common "packet arrived in the next few µs" case before falling
+        // back to the OS scheduler. 10 µs matches the order-of-magnitude
+        // packet inter-arrival in a moderate market data feed.
+        constexpr auto kSpinBudget = std::chrono::microseconds(10);
+        const auto spin_budget =
+            (timeout < kSpinBudget) ? timeout : std::chrono::nanoseconds(kSpinBudget);
+
+        if (use_tsc) {
+            // TSC path — preferred. `to_cycles` returns nullopt if a race
+            // somehow uninitialised the calibration between the
+            // is_initialized() check and here; treat that as a fallback.
+            const uint64_t start_tsc = eph::utils::TSC::now();
+            const auto spin_cycles_opt = eph::utils::TSC::to_cycles(spin_budget);
+            const auto total_cycles_opt = eph::utils::TSC::to_cycles(timeout);
+            if (spin_cycles_opt && total_cycles_opt) {
+                const uint64_t spin_deadline  = start_tsc + *spin_cycles_opt;
+                const uint64_t total_deadline = start_tsc + *total_cycles_opt;
+
+                // Spin phase — rte_pause() is the cheapest yield available
+                // and keeps the wakeup latency in the tens of nanoseconds
+                // when a packet shows up.
+                while (eph::utils::TSC::now() < spin_deadline) {
+                    rte_pause();
+                    const std::size_t n = drain_injected_for_test_() + poll();
+                    if (n > 0) {
+                        total += n;
+                        SPDLOG_LOGGER_TRACE(log,
+                            "DpdkPoller::poll(timeout): exit spin (n={})", total);
+                        return total;
+                    }
+                }
+
+                // Yield phase — kernel-cooperative. Each wakeup retries
+                // the burst; we drain the deadline on no-traffic, no-tick
+                // pollers without burning a core.
+                while (eph::utils::TSC::now() < total_deadline) {
+                    std::this_thread::yield();
+                    const std::size_t n = drain_injected_for_test_() + poll();
+                    if (n > 0) {
+                        total += n;
+                        SPDLOG_LOGGER_TRACE(log,
+                            "DpdkPoller::poll(timeout): exit yield (n={})", total);
+                        return total;
+                    }
+                }
+                SPDLOG_LOGGER_TRACE(log,
+                    "DpdkPoller::poll(timeout): exit deadline (n={})", total);
+                return total;
+            }
+            // Fall through to steady_clock path if to_cycles failed.
+        }
+
+        // steady_clock fallback — used when TSC was never calibrated
+        // (typical in unit tests that skip TSC::init()). Slightly more
+        // expensive per iteration but correct.
+        const auto wall_start = std::chrono::steady_clock::now();
+        const auto spin_deadline  = wall_start + spin_budget;
+        const auto total_deadline = wall_start + timeout;
+
+        while (std::chrono::steady_clock::now() < spin_deadline) {
+            rte_pause();
+            const std::size_t n = drain_injected_for_test_() + poll();
+            if (n > 0) {
+                total += n;
+                SPDLOG_LOGGER_TRACE(log,
+                    "DpdkPoller::poll(timeout): exit spin/wall (n={})", total);
+                return total;
+            }
+        }
+        while (std::chrono::steady_clock::now() < total_deadline) {
+            std::this_thread::yield();
+            const std::size_t n = drain_injected_for_test_() + poll();
+            if (n > 0) {
+                total += n;
+                SPDLOG_LOGGER_TRACE(log,
+                    "DpdkPoller::poll(timeout): exit yield/wall (n={})", total);
+                return total;
+            }
+        }
+        SPDLOG_LOGGER_TRACE(log,
+            "DpdkPoller::poll(timeout): exit deadline/wall (n={})", total);
+        return total;
+    }
+
     // ── ICMP Frag Needed feedback (PMTU discovery) ───────────────────────
 
     /// @brief Callback invoked for every ICMP Type 3 Code 4 message the
@@ -533,6 +685,24 @@ public:
     [[nodiscard]] void* route_for_test_(rte_mbuf* mbuf) noexcept {
         PollableEntry* e = lookup_by_5tuple_(mbuf);
         return e ? e->obj : nullptr;
+    }
+
+    /// @brief Test seam — queue a forged mbuf so the next `poll(timeout)`
+    ///        spin / yield iteration picks it up as if it had arrived
+    ///        from `rte_eth_rx_burst`. The mbuf is NOT freed by the
+    ///        Poller: the test owns the storage and must keep it alive
+    ///        until the dispatch returns.
+    ///
+    /// Capacity = 1 (single slot). A second inject before the first is
+    /// drained silently overwrites — tests should drain via `poll(timeout)`
+    /// before re-injecting. Production callers must never touch this:
+    /// the `_for_test_` suffix and the explicit "single-slot, lossy"
+    /// semantics make that obvious.
+    ///
+    /// The injection is consumed only by the `poll(timeout)` path —
+    /// the no-arg `poll()` hot path stays byte-for-byte unchanged.
+    void inject_mbuf_for_test_(rte_mbuf* mbuf) noexcept {
+        injected_mbuf_for_test_ = mbuf;
     }
 
     // ── Source port selection (client-side helper) ───────────────────────
@@ -951,6 +1121,35 @@ private:
         return nullptr;
     }
 
+    /// @brief Drain the single-slot test-injection seam.
+    ///
+    /// Called from the `poll(timeout)` overload between burst attempts.
+    /// Returns 1 if an injected mbuf was dispatched (or freed via the
+    /// ICMP fallback path) and the slot was consumed; 0 if the slot was
+    /// empty. The no-arg `poll()` hot path never touches this — keeping
+    /// production polling free of any test-only branch.
+    ///
+    /// Mirrors the dispatch logic in `poll()`: route by 5-tuple → hand
+    /// to the matching Pollable; on miss try the ICMP fallback. Unlike
+    /// `poll()` we do NOT call `rte_pktmbuf_free` on a miss because the
+    /// test owns the mbuf storage.
+    std::size_t drain_injected_for_test_() noexcept {
+        rte_mbuf* mbuf = injected_mbuf_for_test_;
+        if (mbuf == nullptr) return 0;
+        injected_mbuf_for_test_ = nullptr;
+
+        const uint64_t cycle_tsc = eph::utils::TSC::now();
+        PollableEntry* entry = lookup_by_5tuple_(mbuf);
+        if (entry != nullptr) {
+            entry->process_burst_fn(entry->obj, &mbuf, 1, cycle_tsc);
+            return 1;
+        }
+        // Routing miss — try ICMP. Either way we consumed the injection,
+        // so the test sees the slot drained.
+        maybe_dispatch_icmp_(mbuf);
+        return 1;
+    }
+
     /// @brief Inspect an un-routed mbuf; if it is an ICMP Frag Needed
     ///        message carrying a valid embedded 4-tuple, fire the
     ///        registered ICMP callback. Silently returns otherwise —
@@ -1019,6 +1218,12 @@ private:
     // registry lifetime independence from Platform.
     IcmpFragNeededCallback              icmp_cb_{};
     std::atomic<uint64_t>               icmp_frag_needed_dispatched_{0};
+
+    /// @brief Single-slot test-injection seam, drained only by
+    ///        `poll(timeout)`. Production `poll()` ignores it. nullptr
+    ///        in normal operation; populated by `inject_mbuf_for_test_`
+    ///        from the test fixture.
+    rte_mbuf*                           injected_mbuf_for_test_{nullptr};
 };
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1249,12 @@ public:
     }
     std::size_t poll() noexcept { return impl_->poll(); }
 
+    /// @brief Forwards to `DpdkPoller<void>::poll(timeout)` —
+    ///        the CPU-yielding debugging form.
+    [[nodiscard]] std::size_t poll(std::chrono::nanoseconds timeout) noexcept {
+        return impl_->poll(timeout);
+    }
+
     [[nodiscard]] std::size_t size() const noexcept { return impl_->size(); }
     [[nodiscard]] uint16_t port_id() const noexcept { return impl_->port_id(); }
     [[nodiscard]] uint16_t rx_queue_id() const noexcept { return impl_->rx_queue_id(); }
@@ -1059,6 +1270,9 @@ public:
     }
     [[nodiscard]] void* route_for_test_(rte_mbuf* mbuf) noexcept {
         return impl_->route_for_test_(mbuf);
+    }
+    void inject_mbuf_for_test_(rte_mbuf* mbuf) noexcept {
+        impl_->inject_mbuf_for_test_(mbuf);
     }
 
     [[nodiscard]] std::expected<uint16_t, core::ErrorInfo>
