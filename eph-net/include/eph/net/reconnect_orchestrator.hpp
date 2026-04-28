@@ -180,6 +180,79 @@ static_assert(kReconnectMetricNames.size() ==
               "kReconnectMetricNames out of sync with ReconnectMetric enum");
 
 // ---------------------------------------------------------------------------
+// ReconnectEvent (T2.14 — richer event hook)
+// ---------------------------------------------------------------------------
+
+/// @brief Fine-grained kinds of state transitions emitted by
+///        `ReconnectOrchestrator`. One enum value per distinguishable point
+///        in the reconnect lifecycle, so observers can differentiate between
+///        e.g. a factory failure vs an attach failure without a parallel
+///        side-channel.
+///
+/// The legacy `OnDisconnect` / `OnReconnect` callbacks remain in place; this
+/// hook is purely additive.
+///
+/// Coverage map (orchestrator → kind):
+///   - Detected disconnect (auto via state, or `mark_disconnected`) →
+///     `DisconnectDetected`
+///   - About to invoke `factory_fn`                               → `AttemptStarted`
+///   - `factory_fn` returned an error                              → `AttemptFailed`
+///   - `factory_fn` succeeded; about to invoke `attach_fn`         → (no event;
+///     see Connected if the whole pipeline succeeds)
+///   - `attach_fn` returned an error                               → `AttachFailed`
+///   - Stream is live                                              → `Connected`
+///   - Backoff scheduled (after any failure path)                  → `BackoffScheduled`
+///   - Policy budget exhausted; terminal state                     → `Failed`
+enum class ReconnectEventKind : uint8_t {
+    DisconnectDetected = 0,  ///< tick() saw stream.state() != Established (or mark_disconnected).
+    AttemptStarted,          ///< factory_fn() about to be called.
+    AttemptFailed,           ///< factory_fn() returned error.
+    AttachFailed,            ///< attach_fn(stream) returned error.
+    Connected,               ///< factory + attach succeeded; stream live.
+    BackoffScheduled,        ///< policy.next_backoff returned; will retry at next_attempt_tsc.
+    Failed,                  ///< policy exhausted; terminal Failed state.
+};
+
+/// @brief Stable string for a `ReconnectEventKind`. Useful for logging.
+[[nodiscard]] constexpr const char* to_string(ReconnectEventKind k) noexcept {
+    switch (k) {
+        case ReconnectEventKind::DisconnectDetected: return "DisconnectDetected";
+        case ReconnectEventKind::AttemptStarted:     return "AttemptStarted";
+        case ReconnectEventKind::AttemptFailed:      return "AttemptFailed";
+        case ReconnectEventKind::AttachFailed:       return "AttachFailed";
+        case ReconnectEventKind::Connected:          return "Connected";
+        case ReconnectEventKind::BackoffScheduled:   return "BackoffScheduled";
+        case ReconnectEventKind::Failed:             return "Failed";
+    }
+    return "UNKNOWN";
+}
+
+/// @brief Structured event payload delivered to `OnReconnectEvent`.
+///
+/// Fields are populated only when meaningful for the kind:
+///   - `attempt`     — `policy_.attempts()` value at event emission. For
+///                     `Connected` this is the 1-based attempt number that
+///                     succeeded (matches the legacy `OnReconnect` arg).
+///   - `event_tsc`   — TSC at the moment the orchestrator emitted the event.
+///   - `duration_ns` — only `Connected` populates this with the cycle delta
+///                     from the most recent disconnect (or `start()`) to
+///                     the just-completed factory+attach. Other kinds set 0.
+///   - `error`       — only `AttemptFailed` and `AttachFailed` carry the
+///                     underlying `ErrorInfo`. Others set `{Error::Ok, ""}`.
+///
+/// Deliberately omitted: `was_resumed`. The orchestrator cannot observe
+/// whether the user's `factory_fn` reused a TLS session ticket; correlate
+/// `Connected` events with the TLS layer's `tls.resume_count` metric (see
+/// `eph::net::StreamMetric`) externally.
+struct ReconnectEvent {
+    ReconnectEventKind     kind;
+    uint32_t               attempt;
+    uint64_t               event_tsc;
+    uint64_t               duration_ns;
+    eph::core::ErrorInfo   error;
+};
+
+// ---------------------------------------------------------------------------
 // ReconnectConfig
 // ---------------------------------------------------------------------------
 
@@ -223,11 +296,18 @@ public:
     // std::function's primary template doesn't model it). Concrete callbacks
     // are still allowed to be noexcept lambdas; the type alias just can't
     // carry the qualifier.
-    using Factory      = std::function<std::expected<StreamPtr, eph::core::ErrorInfo>()>;
-    using OnDisconnect = std::function<void(const eph::core::ErrorInfo&)>;
-    using OnReconnect  = std::function<void(uint32_t attempt, uint64_t duration_ns)>;
-    using AttachFn     = std::function<std::expected<void, eph::core::ErrorInfo>(S*)>;
-    using DetachFn     = std::function<void(S*)>;
+    using Factory          = std::function<std::expected<StreamPtr, eph::core::ErrorInfo>()>;
+    using OnDisconnect     = std::function<void(const eph::core::ErrorInfo&)>;
+    using OnReconnect      = std::function<void(uint32_t attempt, uint64_t duration_ns)>;
+    using AttachFn         = std::function<std::expected<void, eph::core::ErrorInfo>(S*)>;
+    using DetachFn         = std::function<void(S*)>;
+    /// @brief Optional fine-grained event hook (see `ReconnectEvent`). The
+    ///        callback runs synchronously on the driver thread that called
+    ///        `start()` / `tick()` / `mark_disconnected()`. It MUST NOT
+    ///        propagate exceptions — the orchestrator's transition path is
+    ///        `noexcept` and an escaping exception will terminate via the
+    ///        project's noexcept boundary (`std::terminate`).
+    using OnReconnectEvent = std::function<void(const ReconnectEvent&)>;
 
     // ── Construction ────────────────────────────────────────────────────────
 
@@ -314,6 +394,24 @@ public:
     /// is user-initiated and explicit; `Failed` is policy exhaustion.
     void stop() noexcept;
 
+    /// @brief Install (or replace) the fine-grained event hook.
+    ///
+    /// Backwards-compatible addition: pre-existing `OnDisconnect` /
+    /// `OnReconnect` callbacks continue to fire as before. The event hook
+    /// is supplementary — it is invoked at every state transition with a
+    /// `ReconnectEvent` carrying kind / attempt / timing / error context.
+    ///
+    /// Mutator (rather than ctor arg) because `ReconnectOrchestrator` is
+    /// non-movable and we don't want to grow the ctor parameter list every
+    /// time a new optional hook lands. Pass `{}` to clear.
+    ///
+    /// Thread safety: install before `start()` (or while quiescent). The
+    /// orchestrator does not internally synchronize callback storage —
+    /// installing concurrently with a live `tick()` is undefined.
+    void set_on_reconnect_event(OnReconnectEvent fn) noexcept {
+        on_event_ = std::move(fn);
+    }
+
     // ── Accessors ───────────────────────────────────────────────────────────
 
     /// @brief Current Stream pointer. Non-null only in `Connected` state.
@@ -360,6 +458,7 @@ private:
     OnReconnect        on_reconnect_;
     AttachFn           attach_;
     DetachFn           detach_;
+    OnReconnectEvent   on_event_;             ///< T2.14 fine-grained event hook (optional).
 
     StreamPtr          stream_;
     ReconnectState     state_;
@@ -374,9 +473,34 @@ private:
                            static_cast<std::size_t>(ReconnectMetric::kCount)>
         metrics_{};
 
-    // Stage 2 fills these in.
     void try_attempt_(uint64_t now_tsc) noexcept;
     void enter_backoff_(uint64_t now_tsc) noexcept;
+
+    /// @brief Emit a `ReconnectEvent` to the user-supplied hook (if any).
+    ///        No-op when `on_event_` is empty. Centralised so call sites
+    ///        stay one-liners and the structured-payload composition is
+    ///        kept in one place.
+    /// @param kind         Which transition fired.
+    /// @param now_tsc      Caller-provided TSC (passed through verbatim so
+    ///                     the event timestamp matches the same reference
+    ///                     as the surrounding state mutation).
+    /// @param duration_ns  Populated for `Connected` only; else 0.
+    /// @param err          Populated for `AttemptFailed` / `AttachFailed`
+    ///                     only; else `{Ok, ""}`.
+    void emit_event_(ReconnectEventKind kind,
+                     uint64_t now_tsc,
+                     uint64_t duration_ns = 0,
+                     eph::core::ErrorInfo err =
+                         eph::core::ErrorInfo{eph::core::Error::Ok, ""}) noexcept {
+        if (!on_event_) return;
+        on_event_(ReconnectEvent{
+            .kind        = kind,
+            .attempt     = policy_.attempts(),
+            .event_tsc   = now_tsc,
+            .duration_ns = duration_ns,
+            .error       = err,
+        });
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -497,7 +621,15 @@ ReconnectOrchestrator<S>::mark_disconnected(eph::core::ErrorInfo reason) noexcep
     //    factory call succeeds).
     disconnect_tsc_ = eph::utils::TSC::now();
 
-    // 5. Schedule the next attempt.
+    // 5. Emit the structured event BEFORE entering backoff so subscribers
+    //    see ordering: DisconnectDetected then BackoffScheduled (or Failed).
+    //    Pre-existing OnDisconnect callback already fired above; the event
+    //    hook is purely additive and fires regardless of which path
+    //    (auto-detect vs manual) tripped this entry.
+    emit_event_(ReconnectEventKind::DisconnectDetected, disconnect_tsc_,
+                /*duration_ns=*/0, reason);
+
+    // 6. Schedule the next attempt.
     enter_backoff_(disconnect_tsc_);
 }
 
@@ -519,6 +651,10 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
     SPDLOG_LOGGER_DEBUG(log,
         "ReconnectOrchestrator: factory attempt #{}", policy_.attempts() + 1);
 
+    // Emit AttemptStarted *before* the factory call so observers can timestamp
+    // the latency floor (factory entry → Connected) externally if they wish.
+    emit_event_(ReconnectEventKind::AttemptStarted, now_tsc);
+
     auto r = factory_();
     if (!r) {
         // Factory failure path.
@@ -527,6 +663,10 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
         SPDLOG_LOGGER_ERROR(log,
             "ReconnectOrchestrator: factory failed: {}", r.error().detail);
         if (on_disconnect_) on_disconnect_(r.error());
+        // Emit AttemptFailed before transitioning to Backoff/Failed so the
+        // event order matches the conceptual flow: failure THEN scheduling.
+        emit_event_(ReconnectEventKind::AttemptFailed, now_tsc,
+                    /*duration_ns=*/0, r.error());
         enter_backoff_(now_tsc);
         return;
     }
@@ -541,7 +681,13 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
             SPDLOG_LOGGER_ERROR(log,
                 "ReconnectOrchestrator: attach failed: {}", ar.error().detail);
             if (on_disconnect_) on_disconnect_(ar.error());
-            // Stream gets dropped here (RAII close). Keep going.
+            // Stream gets dropped here (RAII close). Emit a distinct
+            // AttachFailed kind so observers can tell apart "couldn't even
+            // build a Stream" (AttemptFailed) from "Stream built but Poller
+            // rejected it" (AttachFailed) — they typically need different
+            // operator response.
+            emit_event_(ReconnectEventKind::AttachFailed, now_tsc,
+                        /*duration_ns=*/0, ar.error());
             enter_backoff_(now_tsc);
             return;
         }
@@ -571,6 +717,16 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
         attempt, dur_ns);
 
     if (on_reconnect_) on_reconnect_(attempt, dur_ns);
+
+    // Emit Connected with the full duration_ns payload (matches the
+    // legacy on_reconnect_ second arg and the `last_reconnect_duration_ns`
+    // metric — see EventDurationMatchesMetric test). We deliberately use
+    // policy_.attempts()+1 in the legacy callback above (so first success
+    // is "attempt 1"); the event's `attempt` field is filled by
+    // emit_event_ from `policy_.attempts()` and snapshots the value
+    // BEFORE policy_.reset() — i.e. it carries the same number.
+    emit_event_(ReconnectEventKind::Connected, now_tsc, dur_ns);
+
     policy_.reset();
 }
 
@@ -583,6 +739,9 @@ inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept 
             "ReconnectOrchestrator: reconnect budget exhausted after {} attempts; "
             "transitioning to Failed (terminal)",
             policy_.attempts());
+        // Terminal Failed kind — observers should treat this as the end of
+        // the reconnect lifecycle for this orchestrator instance.
+        emit_event_(ReconnectEventKind::Failed, now_tsc);
         return;
     }
     const auto delay = policy_.next_backoff();
@@ -598,6 +757,9 @@ inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept 
     SPDLOG_LOGGER_DEBUG(log,
         "ReconnectOrchestrator: scheduled retry in {} ms (attempt {} of policy)",
         delay.count(), policy_.attempts());
+    // Emit AFTER state_ and next_attempt_tsc_ are committed so an observer
+    // that immediately reads orch.state() inside the callback sees Backoff.
+    emit_event_(ReconnectEventKind::BackoffScheduled, now_tsc);
 }
 
 } // namespace eph::net
