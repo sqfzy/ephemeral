@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -152,6 +153,37 @@ TEST(KernelUdpSocket, RoundTripThroughPeerSocketViaPoller) {
 
     (void)poller->remove(sock.get());
     ::close(peer);
+}
+
+// Boundary: oversized payload classification.
+// IPv4/UDP wire-level limit is 65507 bytes (65535 IP total - 20 IPv4 hdr -
+// 8 UDP hdr); the kernel responds with EMSGSIZE for anything larger than
+// the configured wmem_max / interface MTU. The send_to error-classification
+// path (see udp_socket.hpp:223-227) maps EMSGSIZE → InvalidConfig with a
+// distinct payload-rejected detail string, separating "bad caller payload"
+// from generic Disconnected. Without this test, a future refactor could
+// silently re-collapse the EMSGSIZE branch into the catch-all and operators
+// would lose the actionable signal.
+TEST(KernelUdpSocket, SendToOversizedPayloadIsInvalidConfig) {
+    auto poller = ek::KernelPoller::create().value();
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto s = RawUdp::create(cfg).value();
+    ASSERT_TRUE(poller->add(s.get()).has_value());
+
+    // 70000 bytes is unambiguously past the 65507-byte UDP/IPv4 ceiling and
+    // also past every common wmem_max (2 MiB default) so the kernel returns
+    // EMSGSIZE before the packet ever leaves the socket layer.
+    std::vector<uint8_t> too_big(70000, 0xAB);
+    auto r = s->send_to(too_big,
+        en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 12345});
+    ASSERT_FALSE(r.has_value())
+        << "70000-byte UDP send must surface EMSGSIZE";
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // detail string must mention EMSGSIZE/EINVAL so log greps still work.
+    EXPECT_NE(std::string_view{r.error().detail}.find("EMSGSIZE"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
 }
 
 TEST(KernelUdpSocket, ConnectToSucceedsOnOpenSocket) {
