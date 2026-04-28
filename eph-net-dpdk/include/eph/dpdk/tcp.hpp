@@ -2036,7 +2036,7 @@ private:
     /// `getrandom(2)` (decoupled from OpenSSL to avoid vcpkg-openssl vs.
     /// aws-lc conflicts). Returns an error if the syscall fails — propagate
     /// to caller rather than masking failure with a sentinel value like 0 or 1.
-    static std::expected<uint32_t, core::ErrorInfo> generate_isn() noexcept {
+    [[nodiscard]] static std::expected<uint32_t, core::ErrorInfo> generate_isn() noexcept {
         uint32_t isn = 0;
         // GRND_NONBLOCK: do not block if the urandom pool is not yet
         // initialised. On any post-boot Linux ≥ 3.17 this returns immediately.
