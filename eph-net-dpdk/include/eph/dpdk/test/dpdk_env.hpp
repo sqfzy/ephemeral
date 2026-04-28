@@ -101,7 +101,6 @@ struct DpdkBenchEnv {
         // ── 3. Platform (caller-supplied config) ──────────────────
         auto plat = eph::dpdk::Platform::create(pcfg_template);
         if (!plat) return std::unexpected("Platform: " + plat.error());
-        const uint16_t dpdk_port_id = pcfg_template.port_id;
 
         uint16_t port_id = plat->port_id();
         rte_mempool* pool = plat->mempool();

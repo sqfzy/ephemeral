@@ -370,7 +370,10 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                 size_t out_len = bench::ws_framing::build_server_frame(
                     out, bench::ws_framing::kOpClose, payload,
                     static_cast<size_t>(f.payload_len));
-                eph::net::posix::send_all(cfd, out, out_len);
+                // Best-effort close-ack: connection is being torn down on
+                // this iteration regardless, so a partial/failed send is
+                // immaterial — we just want to be polite to the peer.
+                (void)eph::net::posix::send_all(cfd, out, out_len);
                 conn_alive = false;
                 break;
             }
