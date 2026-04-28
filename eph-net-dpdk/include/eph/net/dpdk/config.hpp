@@ -202,6 +202,20 @@ struct PollerConfig {
 
     /// @brief DPDK RX queue index on the above port.
     uint16_t rx_queue_id{0};
+
+    /// @brief Maximum simultaneously-registered Pollables.
+    ///
+    /// Default 16 preserves the historical capacity for backwards compat;
+    /// raise up to `DpdkPoller<void>::kMaxConnHard` (currently 64) when a
+    /// deployment fans out more streams onto a single lcore. The storage
+    /// (`entries_` + open-addressed route table) is sized at compile time
+    /// to `kMaxConnHard`, so raising this knob is a free policy decision —
+    /// no allocation, no per-instance memory regression for callers who
+    /// stay at the default.
+    ///
+    /// Values outside `[1, kMaxConnHard]` are rejected by `create()` with
+    /// `Error::InvalidConfig`.
+    std::size_t max_connections{16};
 };
 
 } // namespace eph::net::dpdk
