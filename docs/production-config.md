@@ -1,188 +1,239 @@
 # Production Configuration Guide
 
-Recommended `TransportConfig` settings for common deployment scenarios. All values are tuned for AWS Graviton (ARM64) — adjust for your hardware.
+Recommended config-struct values for common deployment scenarios. Values are
+tuned for AWS Graviton (ARM64); adjust for your hardware.
 
-> **Pre-v3.3 archive notice** — the snippets below use the retired
-> `eph::net::TransportConfig` struct. The post-v3.3 surface is
-> `eph::net::kernel::StreamConfig` (kernel backend) and
-> `eph::dpdk::Config` + per-stream config (DPDK backend); see each
-> module's `README.md` and `summary.md` for the current field set.
-> Field names have largely been preserved (`remote`, `tls.hostname`,
-> `tls.verify_peer`, `tcp_nodelay`, `connect_timeout`, `ws_path`,
-> `ws_host`, `ws_timeout`, `ws_permessage_deflate`, …) so the
-> recommended **values** below are still accurate for the new struct
-> shape — just substitute the type name. The numerical guidance
-> (timeouts, queue sizes, MTU, CPU pinning targets) reflects the
-> current production profile and remains the source of truth. A
-> focused rewrite tracking the new struct names is a future followup.
+The post-v3.3 type names are:
+
+- **Kernel backend**: `eph::net::kernel::StreamConfig` /
+  `eph::net::kernel::UdpConfig` /
+  `eph::net::kernel::PollerConfig`
+  (see `eph-net-kernel/include/eph/net/kernel/config.hpp`)
+- **DPDK backend**: `eph::dpdk::PlatformConfig` (NIC bring-up) +
+  `eph::dpdk::TcpConfig` (per-session) +
+  `eph::dpdk::DpdkTcpStreamConfig` (turnkey factory args)
+  (see `eph-net-dpdk/include/eph/dpdk/{platform,tcp}.hpp`)
+
+All fallible APIs return `std::expected<T, eph::core::ErrorInfo>`; see
+[`troubleshooting.md`](troubleshooting.md) for the error taxonomy.
+
+---
 
 ## Profiles
 
-### Low-Latency (Single Symbol, Order Execution)
+### Low-latency single-symbol (kernel TCP + WS + TLS)
 
-Optimized for minimum per-message latency. Typical use: FIX order gateway, single-symbol market data.
-
-```cpp
-eph::net::TransportConfig cfg{
-    .remote_host = "fix-gateway.exchange.com",
-    .remote_port = 443,
-    .ws_path     = "/ws",
-
-    // TLS: verify in production, skip UTF-8 for speed
-    .use_tls     = true,
-    .verify_peer = true,
-    .skip_utf8_validation = true,
-
-    // Tight timeouts — fail fast on stale connections
-    .tcp_timeout = std::chrono::milliseconds{1000},
-    .tls_timeout = std::chrono::milliseconds{2000},
-    .ws_timeout  = std::chrono::milliseconds{1000},
-
-    // Small burst size reduces per-batch latency at cost of throughput
-    .tx_burst_size = 8,
-    .rx_burst_size = 8,
-
-    // Fast reconnect with limited retries
-    .reconnect_interval    = std::chrono::milliseconds{50},
-    .max_reconnect_backoff = std::chrono::milliseconds{500},
-    .max_reconnect_attempts = 5,
-
-    // Aggressive keepalive — detect dead connections quickly
-    .ping_interval = std::chrono::seconds{5},
-    .pong_timeout  = std::chrono::seconds{3},
-
-    // Pin TX/RX to isolated cores (use perf_tuning_basics to find good cores)
-    .tx_cpu = 2,
-    .rx_cpu = 3,
-};
-```
-
-**Key decisions:**
-- `tx/rx_burst_size = 8`: Smaller batches mean the TX thread wakes up more often but each wake processes fewer messages, reducing tail latency.
-- `pong_timeout = 3s`: Detects dead connections within 8s (5s ping interval + 3s wait). Without this, a silently dead connection wastes minutes.
-- `skip_utf8_validation = true`: Saves ~50ns per text frame. Only safe if you control the payload format.
-
-### High-Throughput (Multi-Symbol, Market Data)
-
-Optimized for maximum messages/second. Typical use: consolidated ticker feed, 50+ symbols on one connection.
+Order entry / FIX gateway / single-symbol market data. Optimised for
+minimum per-message latency.
 
 ```cpp
-eph::net::TransportConfig cfg{
-    .remote_host = "stream.exchange.com",
-    .remote_port = 443,
-    .ws_path     = "/stream",
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
 
-    .use_tls     = true,
-    .verify_peer = true,
-    .skip_utf8_validation = true,
+en::StreamConfig cfg{
+    .remote = en::SocketAddr::resolve("fix-gateway.exchange.com", 443).value(),
 
-    // Relaxed timeouts — server may be slow during market open
-    .tcp_timeout = std::chrono::milliseconds{5000},
-    .tls_timeout = std::chrono::milliseconds{10000},
-    .ws_timeout  = std::chrono::milliseconds{5000},
+    // Tight handshake budget — local-DC venues complete in <50ms
+    .connect_timeout = std::chrono::milliseconds{1000},
 
-    // Large burst size maximizes throughput per wake cycle
-    .tx_burst_size = 64,
-    .rx_burst_size = 64,
-
-    // Patient reconnect — don't hammer the server
-    .reconnect_interval    = std::chrono::milliseconds{500},
-    .max_reconnect_backoff = std::chrono::milliseconds{5000},
-    .max_reconnect_attempts = 20,
-
-    // Moderate keepalive
-    .ping_interval = std::chrono::seconds{30},
-    .pong_timeout  = std::chrono::seconds{10},
-
-    // Pin to cores, but RX is more critical than TX for market data
-    .tx_cpu = 4,
-    .rx_cpu = 5,
-
-    // Throttle drop logging — at high throughput, per-drop logs would flood
-    .drop_log_interval = 10000,
-};
-
-// Use frame filter for latest-per-symbol delivery (drops stale updates)
-cfg.on_frame_filter = eph::net::make_twophase_filter(my_symbol_hash);
-```
-
-**Key decisions:**
-- `tx/rx_burst_size = 64`: Amortizes syscall/atomic overhead across more messages per batch.
-- `drop_log_interval = 10000`: At 100K msg/s, logging every drop would generate 1000+ log lines/sec if the consumer can't keep up.
-- `on_frame_filter`: Essential for multi-symbol feeds — delivers only the latest update per symbol, discarding stale intermediate frames.
-
-### DPDK Kernel-Bypass
-
-For sub-microsecond latency. Requires DPDK-capable NIC (Intel X710, AWS ENA, etc.).
-
-```cpp
-// DPDK endpoint configuration
-eph::dpdk::DpdkEndpoint ep{
-    .local_ip  = "10.0.0.2",
-    .gateway   = "10.0.0.1",
-    .port_id   = 0,
-};
-
-// Transport config (same structure, DPDK-specific tuning)
-eph::net::TransportConfig cfg{
-    .remote_host = "exchange.com",
-    .remote_port = 443,
-
-    .use_tls     = true,
-    .verify_peer = true,
-    .skip_utf8_validation = true,
-
-    .tcp_timeout = std::chrono::milliseconds{500},
-    .tls_timeout = std::chrono::milliseconds{1000},
-    .ws_timeout  = std::chrono::milliseconds{500},
-
-    .tx_burst_size = 32,
-    .rx_burst_size = 32,
-
-    .reconnect_interval     = std::chrono::milliseconds{10},
-    .max_reconnect_backoff  = std::chrono::milliseconds{100},
-    .max_reconnect_attempts = 3,  // DPDK reconnect is fast, fewer retries needed
-
-    .ping_interval = std::chrono::seconds{5},
-    .pong_timeout  = std::chrono::seconds{2},
-
-    // DPDK: pin to NUMA-local cores adjacent to the NIC
-    .tx_cpu = 2,
-    .rx_cpu = 3,
-};
-
-auto result = eph::dpdk::connect(ep, cfg);
-```
-
-**Key decisions:**
-- Tighter timeouts across the board — DPDK connections establish faster.
-- Fewer reconnect attempts — if the path is broken, retry won't help; escalate to monitoring.
-- NUMA-local CPU pinning is critical — cross-NUMA memory access adds ~100ns per cache miss.
-
-## Socket Tuning (SocketConfig)
-
-```cpp
-eph::net::SocketConfig sock_cfg{
-    .host = "exchange.com",
-    .port = 443,
-
-    // TCP_NODELAY: disable Nagle's algorithm (mandatory for low-latency)
+    // TCP_NODELAY mandatory for low-latency
     .tcp_nodelay = true,
 
-    // Buffer sizes: larger = more kernel buffering = higher throughput
-    // but also higher memory and potentially higher latency
-    .send_buf_size = 65536,   // 64KB (default is OS-dependent, often 128KB)
-    .recv_buf_size = 262144,  // 256KB for market data bursts
+    // 64KB reassembly is enough for FIX / JSON order acks
+    .reasm_capacity = 64 * 1024,
+
+    // TLS 1.3 (only consulted when EnableTls=true template param is set)
+    .tls = {
+        .hostname     = "fix-gateway.exchange.com",
+        .verify_peer  = true,
+        .ca_cert_path = "/etc/ssl/certs/ca-bundle.crt",
+    },
+
+    // WS upgrade (transparent: handshake happens inside create())
+    .ws_path     = "/ws",
+    .ws_host     = "fix-gateway.exchange.com",
+    .ws_timeout  = std::chrono::milliseconds{1000},
+    .ws_permessage_deflate = false,  // disable for order ack RTT
+};
+
+auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create(cfg);
+```
+
+Pin the polling thread to an isolated, NUMA-local core via
+`pthread_setaffinity_np` before calling `Poller::poll()` in a loop. The
+kernel backend has no internal `tx_cpu` / `rx_cpu` knob — pinning is the
+caller's responsibility (see CLAUDE rule "Bench 每个线程必须绑独立 CPU").
+
+**Key decisions:**
+- `connect_timeout=1000ms` — fail fast; reconnect via `ReconnectPolicy`.
+- `ws_permessage_deflate=false` — order acks are tiny; deflate adds
+  decode CPU without saving bytes.
+- `verify_peer=true` always in production. Only flip to `false` for
+  isolated dev/staging.
+
+### High-throughput multi-symbol (kernel TCP + WS + TLS)
+
+Consolidated bookTicker / aggTrade across many symbols, single
+connection. Throughput-biased.
+
+```cpp
+en::StreamConfig cfg{
+    .remote          = en::SocketAddr::resolve("stream.exchange.com", 443).value(),
+    .connect_timeout = std::chrono::milliseconds{5000},
+
+    // Larger reassembly — bookTicker bursts can exceed 32KB
+    .reasm_capacity  = 256 * 1024,
+
+    .tls = {
+        .hostname     = "stream.exchange.com",
+        .verify_peer  = true,
+    },
+
+    .ws_path     = "/stream?streams=btcusdt@bookTicker/...",
+    .ws_host     = "stream.exchange.com",
+    .ws_timeout  = std::chrono::milliseconds{5000},
+
+    // Enable deflate — multi-symbol JSON compresses well
+    .ws_permessage_deflate = true,
 };
 ```
+
+**Key decisions:**
+- `ws_permessage_deflate=true` — multi-symbol JSON compresses 3–5×;
+  CPU savings from less TLS-decrypt work usually outweigh inflate cost.
+- Larger `reasm_capacity` so a slow consumer doesn't stall reassembly
+  on a deflate-expanded burst.
+
+### DPDK kernel-bypass (sub-microsecond TCP)
+
+For sub-µs latency on DPDK-capable NICs (Intel X710, AWS ENA, …). Bring-up
+is a two-step pattern: build the platform once, then create-and-attach
+streams against it.
+
+```cpp
+namespace ed = eph::dpdk;
+
+// 1. NIC bring-up (once per process) — handles RSS / mempools / queues
+ed::PlatformConfig pcfg{
+    .port_id        = 0,
+    .nb_rx_queues   = 4,
+    .nb_tx_queues   = 4,
+    .enable_rss     = true,
+    .local_ip       = ed::Ipv4{10, 0, 0, 2},
+    .gateway_ip     = ed::Ipv4{10, 0, 0, 1},
+    .netmask        = ed::Ipv4{255, 255, 255, 0},
+    // mempool sizing: nb_mbufs >= 2 * (nb_rx_queues * rx_desc + nb_tx_queues * tx_desc)
+    .nb_mbufs       = 16384,
+};
+auto plat = ed::Platform::create(pcfg).value();  // Hard-fails on RSS
+                                                  // bring-up failure (no
+                                                  // silent collapse to q0).
+
+// 2. Per-stream config
+ed::DpdkTcpStreamConfig scfg{
+    .remote          = en::SocketAddr::resolve("exchange.com", 443).value(),
+    .connect_timeout = std::chrono::milliseconds{500},
+    .tcp = {
+        .mss                  = 1460,
+        .keepalive_interval   = std::chrono::seconds{5},   // optional
+        .keepalive_probes     = 3,                          // optional
+        // Software / RSS-pinned / FlowDirector queue selection happens
+        // here; see eph-net-dpdk/docs/poller-guide.md.
+    },
+    .tls = { .hostname = "exchange.com", .verify_peer = true },
+    // ws_path / ws_host / ws_timeout same as kernel surface
+};
+
+// 3. Turnkey: handles src_port allocation, RSS hash rebinding, TCP / TLS / WS
+//    handshakes, Poller attach, FlowDirector rule install, and ICMP
+//    registration.
+auto stream = ed::DpdkTcpStream<ec::WsCodec, true>::create_and_attach(scfg, *plat);
+```
+
+**Key decisions:**
+- `connect_timeout=500ms` — DPDK SYN/SYN-ACK is much faster than the
+  kernel path; tighter timeout fails over to backup faster.
+- `nb_rx_queues>1` requires `enable_rss=true`. The pair `enable_rss=false
+  && nb_rx_queues>1` hard-fails with a recovery hint (see CLAUDE.md, RSS
+  bring-up section).
+- `keepalive_interval` is optional; the tick fires inside `DpdkPoller::poll`
+  via the `on_poll_tick_` hook, so single-stream users driving
+  `poll_once_` directly must `tick_keepalive(now_tsc)` themselves.
+- For multi-process (primary + secondary) deployments, see
+  `eph-net-dpdk/docs/dpdk-multiprocess.md` — partitioning src_port across
+  processes is the **caller's** responsibility.
+
+### Plain UDP (kernel)
+
+Multicast market data feeds (MoldUDP64) or order send-only paths.
+
+```cpp
+en::UdpConfig cfg{
+    .bind       = en::SocketAddr{en::Ipv4Addr{0,0,0,0}, 13000},
+    .reuse_addr = true,                  // mandatory for multicast
+    .rcv_buf    = 16 * 1024 * 1024,      // 16 MB — burst absorption
+};
+auto sock = en::KernelUdpSocket<ec::Mold64Codec>::create(cfg);
+```
+
+For DPDK UDP, `eph::net::dpdk::DpdkUdpSocket<Codec>::create_and_attach`
+mirrors the TCP pattern — handles queue selection and Poller attach in
+one call.
+
+---
+
+## Socket / NIC Buffer Tuning
+
+| Knob                          | Field                                | Recommended           |
+|-------------------------------|--------------------------------------|-----------------------|
+| TCP_NODELAY                   | `StreamConfig::tcp_nodelay`          | `true` always         |
+| Reassembly buffer (kernel)    | `StreamConfig::reasm_capacity`       | 64KB low-lat, 256KB throughput |
+| UDP recv buffer (kernel)      | `UdpConfig::rcv_buf`                 | 16 MB for multicast bursts |
+| Mempool size (DPDK)           | `PlatformConfig::nb_mbufs`           | ≥ 2 × (rx_q × 1024 + tx_q × 1024) |
+| RSS queues (DPDK)             | `PlatformConfig::nb_rx_queues`       | 1 for single-symbol; 4–8 for fan-out |
+| TCP MSS (DPDK)                | `TcpConfig::mss`                     | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
+| epoll burst (kernel)          | `PollerConfig::max_events_per_wait`  | 64 (default)          |
+
+The previous `tx_burst_size` / `rx_burst_size` / `tx_cpu` / `rx_cpu`
+fields from the retired `TransportConfig` no longer exist — burst sizing
+in DPDK is implicit (each `DpdkPoller::poll()` cycle drains up to
+`RTE_ETH_RX_BURST_DEF` packets per queue), and CPU pinning is the
+caller's responsibility.
+
+---
 
 ## Common Pitfalls
 
 | Pitfall | Symptom | Fix |
 |---------|---------|-----|
-| `pong_timeout = 0` (default) | Dead connections persist for minutes | Set `pong_timeout` to 2-3x ping_interval |
-| `skip_utf8_validation = false` with binary data | ~50ns overhead per message for no benefit | Set `true` if payload is binary/JSON |
-| `tx_cpu = rx_cpu` (same core) | TX and RX threads contend for L1 cache | Use adjacent cores on same NUMA node |
-| `drop_log_interval = 0` | No visibility into queue drops | Set to 1000-10000 for production |
-| Missing `on_state_change` callback | Silent disconnects | Always register for monitoring |
-| `verify_peer = false` in production | MITM vulnerability | Only disable for local testing |
+| `verify_peer=false` shipped to prod | MITM exposure | Hard-set `true` in deployment config |
+| `enable_rss=false` with `nb_rx_queues>1` | `Platform::create` hard-fails | Either enable RSS or set `nb_rx_queues=1` |
+| `proxy.host` set on DPDK backend | `Error::InvalidConfig: proxy on DPDK backend` | Kernel only — drop proxy on DPDK path |
+| `ws_path` set without `ws_host` and without TLS | Falls back to numeric `Host:` | Set `ws_host` explicitly |
+| `connect_timeout=0` | Stream stalls indefinitely | Always set a positive deadline |
+| Polling thread not pinned | p99 spike from cross-core migration | `pthread_setaffinity_np` before poll loop |
+| DPDK secondary started before primary | `rte_mempool_lookup` returns nullptr | Order primary-first; see `dpdk-multiprocess.md` |
+| Same `src_port` across DPDK MP processes | Connection state collision | Caller partitions src_port range |
+| `keepalive_interval` set but `poll_once_` driven directly | Idle timeouts never fire | Call `tick_keepalive(now_tsc)` per cycle |
+
+---
+
+## Validation Checklist Before Production
+
+1. `xmake -m release` builds clean (no warnings)
+2. All tests covering modified config paths pass
+3. `verify_peer=true` in deployment config (grep the deploy artifact)
+4. CPU pinning verified via `taskset -p <pid>` after start
+5. NUMA locality verified: `cat /sys/class/net/<iface>/device/numa_node`
+   matches the pinned core's NUMA node
+6. For DPDK: `dpdk-devbind.py --status` shows NIC bound to vfio-pci before
+   process start
+7. Hugepages reserved: `cat /proc/meminfo | grep HugePages_Free` ≥ what
+   the process needs
+8. For DPDK MP: src_port ranges in `EalConfig` are disjoint across
+   processes
+9. Idempotent setup script (`eph-net-dpdk/scripts/dpdk-setup.sh`) runs
+   green on a fresh host
+
+For deeper operational guidance see `docs/operations-runbook.md`,
+`eph-net-dpdk/docs/dpdk-setup.md`, and `eph-net-dpdk/docs/dpdk-multiprocess.md`.
