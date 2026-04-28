@@ -402,6 +402,89 @@ TEST(StreamMetrics, MetricAcceptsEveryValidStreamMetricWithoutCrash) {
     SUCCEED();
 }
 
+// ─── T2.11: derived ws.deflate_ratio gauge ────────────────────────────────
+
+namespace {
+
+/// @brief Minimal duck-typed Stream stand-in for the
+/// `publish_ws_deflate_ratio` helper — we don't need a real Stream because
+/// the helper only exercises `metric()`. Keeps the test independent of any
+/// backend's send/recv plumbing and avoids the cost of spinning up a TCP
+/// loopback for a pure publisher-side function.
+struct MockStreamForRatio {
+    std::uint64_t bytes_in{0};
+    std::uint64_t bytes_out{0};
+
+    [[nodiscard]] std::uint64_t
+    metric(en::StreamMetric m) const noexcept {
+        switch (m) {
+            case en::StreamMetric::kWsDeflateBytesIn:  return bytes_in;
+            case en::StreamMetric::kWsDeflateBytesOut: return bytes_out;
+            default: return 0;
+        }
+    }
+};
+
+} // namespace
+
+TEST(StreamMetricsWsDeflateRatio, ComputesRatioFromCounters) {
+    // 6.66x compression — a typical ratio on JSON market data
+    // (bytes_out is the *plaintext* output, so smaller bytes_out vs
+    // bytes_in means MORE compression on the wire).
+    MockStreamForRatio s{.bytes_in = 100, .bytes_out = 666};
+    RecordingSink sink;
+    en::publish_ws_deflate_ratio(s, sink);
+
+    ASSERT_EQ(sink.records.size(), 1u);
+    EXPECT_EQ(sink.records[0].kind, RecordingSink::Record::Kind::Gauge);
+    EXPECT_EQ(sink.records[0].name, "net.stream.ws.deflate_ratio");
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 6.66);
+}
+
+TEST(StreamMetricsWsDeflateRatio, ZeroBytesInEmitsZeroNotNan) {
+    // Divide-by-zero guard: most TSDBs treat NaN samples as missing-data
+    // markers and would alert spuriously on a freshly-created stream.
+    // The helper deliberately emits 0.0 instead.
+    MockStreamForRatio s{.bytes_in = 0, .bytes_out = 0};
+    RecordingSink sink;
+    en::publish_ws_deflate_ratio(s, sink);
+
+    ASSERT_EQ(sink.records.size(), 1u);
+    EXPECT_EQ(sink.records[0].kind, RecordingSink::Record::Kind::Gauge);
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 0.0);
+}
+
+TEST(StreamMetricsWsDeflateRatio, ZeroBytesInWithNonZeroOutEmitsZero) {
+    // Pathological: bytes_out got bumped before bytes_in (atomic snapshot
+    // race window). Helper still must not divide by zero.
+    MockStreamForRatio s{.bytes_in = 0, .bytes_out = 999};
+    RecordingSink sink;
+    en::publish_ws_deflate_ratio(s, sink);
+
+    ASSERT_EQ(sink.records.size(), 1u);
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 0.0);
+}
+
+TEST(StreamMetricsWsDeflateRatio, RatioForwardsTags) {
+    // Tags are forwarded verbatim — this matches the existing publisher
+    // helpers and lets the caller annotate per-stream context (venue,
+    // symbol, etc).
+    MockStreamForRatio s{.bytes_in = 200, .bytes_out = 50};
+    RecordingSink sink;
+    std::array tags{ecore::MetricTag{"venue", "binance"},
+                    ecore::MetricTag{"symbol", "BTCUSDT"}};
+    en::publish_ws_deflate_ratio(s, sink, tags);
+    ASSERT_EQ(sink.records.size(), 1u);
+    // 50/200 = 0.25 (4x compression).
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 0.25);
+}
+
+TEST(StreamMetricsWsDeflateRatio, MetricNameConstantMatchesDocumented) {
+    // The task spec calls for the stable name `net.stream.ws.deflate_ratio`
+    // so dashboards can hard-code it. Lock that in here.
+    EXPECT_EQ(en::kWsDeflateRatioMetricName, "net.stream.ws.deflate_ratio");
+}
+
 TEST(StreamMetrics, MetricReturnsZeroForOutOfRangeEnumValue) {
     // Simulate ABI drift: a caller passing an enumerator value that is
     // past the current `kCount`. The bounds check in each backend's

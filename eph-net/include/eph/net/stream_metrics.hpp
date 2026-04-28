@@ -340,4 +340,55 @@ void publish_metrics(const Stream& source, Sink& sink,
     }
 }
 
+/// @brief Stable metric name for the derived WS deflate compression ratio.
+///        Surfaced as a separate constant so dashboards can reference it
+///        without depending on the helper that publishes it (T2.11).
+inline constexpr std::string_view kWsDeflateRatioMetricName =
+    "net.stream.ws.deflate_ratio";
+
+/// @brief Push the *derived* WebSocket permessage-deflate compression ratio
+///        `bytes_out / bytes_in` to `sink` as a gauge with the stable name
+///        `net.stream.ws.deflate_ratio`.
+///
+/// The ratio is **derived**, not stored: we read the two atomic counters
+/// `kWsDeflateBytesIn` / `kWsDeflateBytesOut` and divide on the publisher
+/// thread. This avoids a third hot-path counter (and the float math that
+/// would imply) while still giving dashboards a stable, easily-aggregable
+/// time-series.
+///
+/// Semantics:
+///   * `bytes_in == 0` → gauge value 0.0. We deliberately do NOT emit
+///     NaN: most TSDBs (Prometheus, OTel SDK) treat NaN samples as
+///     missing-data markers and will alert spuriously when a new stream
+///     is reported before its first deflate frame arrives. Zero is
+///     unambiguously "no compressed data observed yet" and integrates
+///     cleanly with `rate(...)` queries.
+///   * `bytes_out > bytes_in` → ratio > 1, emitted verbatim. This is
+///     legal in pathological cases (very small payloads where deflate
+///     overhead exceeds savings) and useful as a signal that the
+///     upstream's compression strategy is degrading.
+///   * `bytes_out < bytes_in` → ratio in (0, 1) — the typical operating
+///     point (e.g. 0.15 for JSON market data ≈ 6.7x compression).
+///
+/// Read order: bytes_in first, then bytes_out. Under concurrent updates
+/// the two counters may snapshot at slightly different points; that's
+/// fine for a 100ms-1s publish cadence — the next sample corrects any
+/// transient skew.
+///
+/// `Stream` is duck-typed and must expose
+///   `[[nodiscard]] std::uint64_t metric(StreamMetric) const noexcept`.
+template <typename Stream, ::eph::core::MetricsSink Sink>
+void publish_ws_deflate_ratio(const Stream& source, Sink& sink,
+                              std::span<const ::eph::core::MetricTag> tags = {}) noexcept {
+    const auto bytes_in  = source.metric(StreamMetric::kWsDeflateBytesIn);
+    const auto bytes_out = source.metric(StreamMetric::kWsDeflateBytesOut);
+    // Divide-by-zero guard: emit 0.0 (NOT NaN) so dashboards with naive
+    // "is this stream healthy" checks don't trip on uninitialised data.
+    const double ratio =
+        (bytes_in == 0)
+            ? 0.0
+            : static_cast<double>(bytes_out) / static_cast<double>(bytes_in);
+    sink.push_gauge(kWsDeflateRatioMetricName, ratio, tags);
+}
+
 } // namespace eph::net
