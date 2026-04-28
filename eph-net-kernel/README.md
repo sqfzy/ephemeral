@@ -57,6 +57,14 @@ handshake (when `EnableTls=true`), and finally the optional WebSocket RFC 6455
 upgrade (when `cfg.ws_path` is non-empty). Any of those may return an error
 inside the `std::expected`; there is no half-initialised stream.
 
+When `cfg.ws_permessage_deflate` is true (the default), the WS upgrade
+offers RFC 7692 `permessage-deflate`. If the server accepts, the
+`WsCodec` instance attached to this stream is configured to inflate
+inbound RSV1 frames automatically — application code sees the
+plaintext and only the `kWsDeflateBytesIn`/`kWsDeflateBytesOut`
+metrics reveal the compressed-bytes ratio. Set the flag false to
+suppress the offer for venues that mis-implement the extension.
+
 ## What's in each file
 
 - `include/eph/net/kernel/config.hpp` — `StreamConfig`, `UdpConfig`,
