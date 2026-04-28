@@ -41,13 +41,25 @@
 ///   sudo ./simple_hft_dpdk_mp --role primary --
 ///                             --file-prefix eph_mp_demo
 ///                             --pci 0000:28:00.0
-///                             --lcores 0,1
+///                             --pin 0=0:rx --pin 1=1:tx
 ///
 ///   # Terminal B — once primary logs "ready", secondary attaches
 ///   sudo ./simple_hft_dpdk_mp --role secondary --
 ///                             --file-prefix eph_mp_demo
 ///                             --pci 0000:28:00.0
-///                             --lcores 2,3
+///                             --pin 0=2:rx --pin 1=3:tx
+///
+/// `--pin lcore_id=cpu_id[:role]` (repeatable) is the typed entry point —
+/// goes through `EalGuard::init_with_pins`, which validates each pin
+/// (cpu >= 0, no SMT/NUMA conflict per policy) and registers the cpus
+/// into the process-wide pin registry BEFORE `rte_eal_init` fires. Any
+/// later `eph::utils::pin_thread` on a colliding cpu is detected loudly
+/// instead of silently fighting EAL.
+///
+/// Escape hatch: `--lcores '<raw EAL spec>'` (e.g. `--lcores '(0-1)@(4,5)'`
+/// for set-of-sets) bypasses the typed path and goes through the legacy
+/// `EalGuard::init` — useful when you need DPDK syntax beyond the 1:1
+/// mapping `LcorePin` covers. Mutually exclusive with `--pin` in one call.
 ///
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
 /// See `eph-net-dpdk/scripts/dpdk-setup.sh`. Both processes must use the
@@ -67,9 +79,11 @@
 
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
 #include "eph/dpdk/platform.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
+#include "eph/utils/cpu.hpp"        // CpuPinPolicy
 
 namespace edpdk = eph::net::dpdk;
 namespace ed    = eph::dpdk;
@@ -85,11 +99,45 @@ struct AppArgs {
     ed::ProcType            role         = ed::ProcType::Primary;
     std::string             file_prefix  = "eph_mp_demo";
     std::string             pci          = "";   // -a passthrough; empty = all
-    std::string             lcores       = "0,1";
+    /// Typed lcore→cpu pin specs (preferred path, populated from --pin).
+    /// Mutually exclusive with `lcores` raw escape hatch.
+    std::vector<ed::LcorePin> pins;
+    /// Raw `--lcores` string, passed verbatim through EalConfig::lcores
+    /// to DPDK. Empty by default — set only when the demo needs DPDK
+    /// syntax `LcorePin` cannot express (set-of-sets etc).
+    std::string             lcores       = "";
     uint16_t                port_id      = 0;
     uint16_t                nb_rx_queues = 4;    // total queues primary configures
     std::chrono::seconds    run_seconds  = 5s;   // how long to drive poll()
 };
+
+/// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
+/// `lcore` and `cpu` must be non-negative integers; `role` is free-form
+/// (empty allowed). Whitespace is not stripped — keep the spec compact.
+std::expected<ed::LcorePin, std::string>
+parse_pin_spec(std::string_view s) {
+    auto eq = s.find('=');
+    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
+        return std::unexpected(std::string{
+            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
+    }
+    auto col = s.find(':', eq + 1);
+    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
+
+    auto lcore_str = std::string(s.substr(0, eq));
+    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
+    int  lcore     = std::atoi(lcore_str.c_str());
+    int  cpu       = std::atoi(cpu_str.c_str());
+    if (lcore < 0 || cpu < 0) {
+        return std::unexpected(std::string{
+            "--pin: lcore_id and cpu_id must be non-negative, got '"}
+            + std::string{s} + "'");
+    }
+    std::string role = (col == std::string_view::npos)
+                           ? std::string{}
+                           : std::string(s.substr(col + 1));
+    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
+}
 
 // Split argv at the first "--" — same convention as simple_hft_dpdk.cpp.
 // Anything before "--" is consumed by the wrapper that selects --role; the
@@ -119,6 +167,14 @@ AppArgs parse_args(int argc, char** argv) {
         if      (a == "--file-prefix" && i + 1 < argc) out.file_prefix  = argv[++i];
         else if (a == "--pci"         && i + 1 < argc) out.pci          = argv[++i];
         else if (a == "--lcores"      && i + 1 < argc) out.lcores       = argv[++i];
+        else if (a == "--pin"         && i + 1 < argc) {
+            auto p = parse_pin_spec(argv[++i]);
+            if (!p) {
+                spdlog::error("simple_hft_dpdk_mp: {}", p.error());
+                std::exit(1);
+            }
+            out.pins.push_back(std::move(*p));
+        }
         else if (a == "--port-id"     && i + 1 < argc) out.port_id      = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--nb-queues"   && i + 1 < argc) out.nb_rx_queues = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--seconds"     && i + 1 < argc) out.run_seconds  = std::chrono::seconds(std::atoi(argv[++i]));
@@ -164,7 +220,29 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL init via EalConfig ─────────────────────────────────────────
+    // ── Validate --pin / --lcores exclusivity ─────────────────────────────
+    // The two paths are mutually exclusive in one EalGuard call — see
+    // init_with_pins's contract. We surface the choice here so the
+    // diagnostic is application-level (file/flag-aware), not deep in
+    // eph-net-dpdk's expected-error string.
+    const bool typed_pins = !args.pins.empty();
+    const bool raw_lcores = !args.lcores.empty();
+    if (typed_pins && raw_lcores) {
+        spdlog::error("simple_hft_dpdk_mp: --pin and --lcores are mutually "
+                      "exclusive (typed and raw EAL paths); pick one");
+        return 1;
+    }
+    if (!typed_pins && !raw_lcores) {
+        spdlog::error("simple_hft_dpdk_mp: provide either --pin lcore=cpu[:role] "
+                      "(preferred typed path) or --lcores '<raw EAL spec>' "
+                      "(escape hatch for set-of-sets / coremask syntax)");
+        return 1;
+    }
+
+    // ── 1) EAL init ───────────────────────────────────────────────────────
+    // Two paths share the same EalConfig scaffolding; the difference is
+    // whether we go through `init_with_pins` (typed) or the legacy
+    // `init` after `build_eal_argv` (raw).
     ed::EalConfig eal_cfg{};
     eal_cfg.program_name  = (args.role == ed::ProcType::Primary)
                                 ? "simple_hft_dpdk_mp.primary"
@@ -172,16 +250,37 @@ int main(int argc, char** argv) {
     eal_cfg.proc_type     = args.role;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = args.file_prefix;
-    eal_cfg.lcores        = {args.lcores};
+    if (raw_lcores) eal_cfg.lcores = {args.lcores};
     if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
-    auto argv_owned = ed::build_eal_argv(eal_cfg);
-    std::vector<char*> argv_ptrs;
-    argv_ptrs.reserve(argv_owned.size());
-    for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-
-    auto eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                  argv_ptrs.data());
+    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
+    if (typed_pins) {
+        // Typed path: pins go through pre-EAL validation + registry write
+        // before rte_eal_init runs. SMT/NUMA/IRQ checks default to relaxed
+        // (CpuPinPolicy{}) — production deployments may want to flip
+        // require_no_sibling_conflict / require_same_numa to true after
+        // confirming their cpu layout.
+        spdlog::info("simple_hft_dpdk_mp[{}]: EAL init via init_with_pins "
+                     "({} pin(s))",
+                     args.role == ed::ProcType::Primary ? "primary" : "secondary",
+                     args.pins.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
+                                           eph::utils::CpuPinPolicy{});
+    } else {
+        // Raw path: legacy EalConfig::lcores → build_eal_argv → init.
+        // No pin registry interaction here; downstream pin_thread calls
+        // will not see EAL's lcore cpus and may collide silently.
+        spdlog::info("simple_hft_dpdk_mp[{}]: EAL init via raw lcores='{}' "
+                     "(legacy path; consider --pin for typed validation)",
+                     args.role == ed::ProcType::Primary ? "primary" : "secondary",
+                     args.lcores);
+        auto argv_owned = ed::build_eal_argv(eal_cfg);
+        std::vector<char*> argv_ptrs;
+        argv_ptrs.reserve(argv_owned.size());
+        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
+        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
+                                 argv_ptrs.data());
+    }
     if (!eal) {
         spdlog::error("simple_hft_dpdk_mp: EAL init failed: {}", eal.error());
         return 2;
