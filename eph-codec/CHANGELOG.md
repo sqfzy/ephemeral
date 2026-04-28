@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Added (2026-04-28)
+- `WsCodec` gains RFC 7692 `permessage-deflate` inflate support for
+  inbound data frames:
+  - `WsCodecConfig::permessage_deflate` (bool, default false) and
+    `WsCodecConfig::server_no_context_takeover` (bool, default false)
+    — typically left at default and toggled by
+    `WsCodec::enable_permessage_deflate(server_no_ctx_takeover)`,
+    which the WS-aware `KernelTcpStream` / `DpdkTcpStream` factories
+    invoke after the HTTP upgrade response confirms the extension was
+    negotiated.
+  - Backed by a private `eph::codec::detail::WsInflater` thin RAII
+    wrapper over zlib (`raw inflate`, no zlib stream wrapper). The
+    inflater is constructed lazily on the first compressed frame and
+    reused (with optional per-message reset under
+    `server_no_context_takeover`).
+  - Decompression-bomb cap: inflated payload is bounded by
+    `WsCodecConfig::max_message_size`; exceeding it returns
+    `CodecOverflow` mid-message instead of inflating to RAM
+    exhaustion.
+  - Spec compliance: `RSV1=1` on a control frame or on a non-leading
+    continuation (RFC 7692 §6.1) is rejected with `WsFrameBad`.
+    Mixed compressed / uncompressed messages on a single connection
+    are supported — each message's deflate state is decided by its
+    first frame's `RSV1` bit.
+  - Outbound deflate (compressing client → server) is intentionally
+    NOT implemented — crypto venues never require client-side
+    compression and adding it would double the codec's surface.
+- `tests/test_ws_codec_deflate.cpp` — 10-case suite covering basic
+  deflate inflate, the `RSV1` rejection rules, the bomb cap,
+  fragmented compressed messages, mixed compressed/uncompressed,
+  and a malformed-deflate poison-pill regression added in batch 1.
+
+### Build
+- New public `add_syslinks("z", { public = true })` in `xmake.lua`
+  for the zlib dependency. System zlib chosen over libdeflate
+  because it is universally available on Linux (kernel + util-linux
+  already pull it in) and the hot path inflates a few KB/s of
+  bookticker JSON, well below libdeflate's regime of advantage.
+
 ### Docs
 - Corrected `LengthPrefixCodec` description across README / CHANGELOG / summary
   from "2-byte BE length prefix, ≤65 535 byte payloads" to the actual
