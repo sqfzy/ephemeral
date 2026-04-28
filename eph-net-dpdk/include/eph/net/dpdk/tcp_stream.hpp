@@ -554,6 +554,11 @@ public:
             }
 
             std::vector<uint8_t> leftover;
+            ::eph::net::detail::WsHandshakeDeflate deflate_state{
+                .request                      = stream->cfg_.ws_permessage_deflate,
+                .negotiated                   = false,
+                .server_no_context_takeover   = false,
+            };
             std::expected<void, core::ErrorInfo> hs_result;
             if constexpr (EnableTls) {
                 detail::TlsDpdkWsSink sink(&stream->sess_, &stream->tls_);
@@ -562,7 +567,7 @@ public:
                     std::span<const ::eph::net::HttpHeader>(
                         stream->cfg_.ws_extra_headers),
                     stream->cfg_.ws_timeout,
-                    &leftover);
+                    &leftover, &deflate_state);
             } else {
                 detail::PlainDpdkWsSink sink(&stream->sess_);
                 hs_result = ::eph::net::detail::perform_ws_handshake(
@@ -570,13 +575,31 @@ public:
                     std::span<const ::eph::net::HttpHeader>(
                         stream->cfg_.ws_extra_headers),
                     stream->cfg_.ws_timeout,
-                    &leftover);
+                    &leftover, &deflate_state);
             }
             if (!hs_result) {
                 SPDLOG_LOGGER_WARN(log,
                     "DpdkTcpStream::create: WS handshake failed: {}",
                     hs_result.error().detail);
                 return std::unexpected(hs_result.error());
+            }
+            // Mirror KernelTcpStream's deflate hookup. Only codecs
+            // that opted in (e.g. `WsCodec`) expose the method; the
+            // `requires` clause prevents instantiating it for other
+            // StreamCodecs.
+            if (deflate_state.negotiated) {
+                if constexpr (requires (C& c) {
+                    c.enable_permessage_deflate(false);
+                }) {
+                    stream->codec_.enable_permessage_deflate(
+                        deflate_state.server_no_context_takeover);
+                } else {
+                    SPDLOG_LOGGER_WARN(log,
+                        "DpdkTcpStream::create: server accepted "
+                        "permessage-deflate but the configured codec "
+                        "does not implement enable_permessage_deflate "
+                        "— inflate will be unavailable");
+                }
             }
             if (!leftover.empty()) {
                 if (!stream->reasm_.append(leftover.data(), leftover.size())) {

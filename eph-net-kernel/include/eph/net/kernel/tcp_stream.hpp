@@ -509,6 +509,14 @@ public:
             }
 
             std::vector<uint8_t> leftover;
+            // Per-handshake permessage-deflate state. `request` is
+            // taken from cfg, `negotiated` / `server_no_context_takeover`
+            // come back populated if the server accepted.
+            ::eph::net::detail::WsHandshakeDeflate deflate_state{
+                .request                      = stream->cfg_.ws_permessage_deflate,
+                .negotiated                   = false,
+                .server_no_context_takeover   = false,
+            };
             std::expected<void, core::ErrorInfo> hs_result;
             if constexpr (EnableTls) {
                 detail::TlsWsSink sink{&stream->sock_, &stream->tls_};
@@ -517,7 +525,7 @@ public:
                     std::span<const ::eph::net::HttpHeader>(
                         stream->cfg_.ws_extra_headers),
                     stream->cfg_.ws_timeout,
-                    &leftover);
+                    &leftover, &deflate_state);
             } else {
                 detail::PlainWsSink sink{&stream->sock_};
                 hs_result = ::eph::net::detail::perform_ws_handshake(
@@ -525,13 +533,33 @@ public:
                     std::span<const ::eph::net::HttpHeader>(
                         stream->cfg_.ws_extra_headers),
                     stream->cfg_.ws_timeout,
-                    &leftover);
+                    &leftover, &deflate_state);
             }
             if (!hs_result) {
                 SPDLOG_LOGGER_WARN(log,
                     "KernelTcpStream::create: WS handshake failed: {}",
                     hs_result.error().detail);
                 return std::unexpected(hs_result.error());
+            }
+            // Hook the codec into the negotiated state, but only for
+            // codecs that actually opted into the contract (e.g.
+            // `WsCodec`). Other StreamCodec implementations
+            // (`RawStreamCodec`, `LengthPrefixCodec`) do not provide
+            // the method and the `requires` clause keeps the call out
+            // of their template instantiation entirely.
+            if (deflate_state.negotiated) {
+                if constexpr (requires (C& c) {
+                    c.enable_permessage_deflate(false);
+                }) {
+                    stream->codec_.enable_permessage_deflate(
+                        deflate_state.server_no_context_takeover);
+                } else {
+                    SPDLOG_LOGGER_WARN(log,
+                        "KernelTcpStream::create: server accepted "
+                        "permessage-deflate but the configured codec "
+                        "does not implement enable_permessage_deflate "
+                        "— inflate will be unavailable");
+                }
             }
 
             // Seed any post-handshake over-read into rx_bytes_ so the
