@@ -58,6 +58,7 @@
 #include "eph/utils/time.hpp"
 
 #include "tls_ws_echo_server.hpp"
+#include "venue_adapter_test_kit.hpp"
 
 namespace ek = eph::net::kernel;
 namespace en = eph::net;
@@ -121,35 +122,10 @@ eph::test::TlsWsEchoServer::MessageHandler okx_handler() {
     };
 }
 
-/// Drive `poller->poll()` + `orch.tick()` until `pred` is true or `deadline`
-/// elapses. Returns whether `pred` flipped true. Centralised so the three
-/// adapter tests don't each reinvent this loop.
-template <class Pred>
-bool drive_until(ek::KernelPoller& poller, Orch& orch, Pred pred,
-                 std::chrono::milliseconds budget = 5s) {
-    const auto end = std::chrono::steady_clock::now() + budget;
-    while (std::chrono::steady_clock::now() < end) {
-        (void)poller.poll(10ms);
-        orch.tick(eph::utils::TSC::now());
-        if (pred()) return true;
-    }
-    return false;
-}
-
-/// Encode a complete WS text frame (with masking + payload) into a fresh
-/// vector. We don't reuse the WsCodec's encode helper here because the
-/// codec's encode path is intentionally low-level and the test only cares
-/// that *something* well-formed went on the wire.
-std::vector<uint8_t> encode_ws_text(std::string_view payload) {
-    std::vector<uint8_t> out;
-    out.resize(payload.size() + 14);
-    auto n = en::ws::encode_frame(
-        out.data(), en::ws::opcode::kText,
-        reinterpret_cast<const uint8_t*>(payload.data()),
-        payload.size(), /*fin=*/true);
-    out.resize(n);
-    return out;
-}
+// `drive_until` and `encode_ws_text` come from the shared
+// venue_adapter_test_kit.hpp — see the include above.
+using eph::test::drive_until;
+using eph::test::encode_ws_text;
 
 } // namespace
 
