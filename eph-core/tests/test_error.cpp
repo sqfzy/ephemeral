@@ -65,6 +65,11 @@ TEST(ErrorName, CoversEveryEnumValue) {
     EXPECT_NAMED(ProxyConnectFailed,  "PROXY_CONNECT_FAILED");
     EXPECT_NAMED(ProxyHandshakeFailed,"PROXY_HANDSHAKE_FAILED");
     EXPECT_NAMED(ProxyAuthRequired,   "PROXY_AUTH_REQUIRED");
+    // Registry / lookup lifecycle. Distinct from InvalidConfig: signals
+    // a recoverable state mismatch (key not registered / already removed),
+    // not a programming error. DpdkPoller::remove() is the canonical
+    // emitter today.
+    EXPECT_NAMED(NotFound,             "NOT_FOUND");
 }
 
 // ============================================================================
@@ -82,6 +87,15 @@ TEST(ErrorNameProxy, ProxyHandshakeFailedHasStableName) {
 
 TEST(ErrorNameProxy, ProxyAuthRequiredHasStableName) {
     EXPECT_STREQ(error_name(Error::ProxyAuthRequired), "PROXY_AUTH_REQUIRED");
+}
+
+// ============================================================================
+// Registry / lookup lifecycle — gets its own TEST so coverage counters
+// see the most recently added enum value distinctly.
+// ============================================================================
+
+TEST(ErrorNameRegistry, NotFoundHasStableName) {
+    EXPECT_STREQ(error_name(Error::NotFound), "NOT_FOUND");
 }
 
 #undef EXPECT_NAMED
