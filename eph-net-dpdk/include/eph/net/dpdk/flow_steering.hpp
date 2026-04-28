@@ -738,25 +738,37 @@ predict_rss_queue(uint16_t port_id,
     return queue_for_tuple(*state, src_ip, src_port, dst_ip, dst_port);
 }
 
-/// Find a `src_port` in the given range so that the resulting 5-tuple
-/// (with `src_ip` / `dst_ip` / `dst_port` fixed) RSS-hashes to
-/// `target_queue`. Linear scan; returns the first match.
+/// Find a local ephemeral source port `sp` in the given range so that
+/// the inbound packet `(remote_ip:remote_port → local_ip:sp)`
+/// RSS-hashes to `target_queue`. Linear scan; returns the first match.
 ///
 /// Used by `Stream::create_and_attach` in `RssPartitioned` mode when
 /// the user explicitly pinned the connection to a specific queue: we
 /// rebind the socket's local port until RSS lands the connection where
 /// the user asked.
 ///
+/// **Argument convention**: parameters describe the *inbound* 5-tuple
+/// the NIC sees on the SYN-ACK / first response — i.e. the REMOTE end
+/// is the packet's source and our local end is the destination. This
+/// matches `queue_for_tuple` / `predict_rss_queue` and the underlying
+/// Toeplitz spec, which is **not symmetric in argument order**: putting
+/// the local port in the src_port slot produces a different hash than
+/// putting it in the dst_port slot.
+///
 /// Default range matches the Linux ephemeral-port window
 /// `/proc/sys/net/ipv4/ip_local_port_range` (32768..60999).
 ///
-/// @return the chosen src_port, or an error string starting with
-/// "RssHashPredictExhausted" if no port in the range hashes to the
-/// target queue.
+/// @param remote_ip   Peer IPv4 (host byte order) — RSS input "src" IP.
+/// @param remote_port Peer L4 port (host byte order) — RSS input "src" port.
+/// @param local_ip    Our IPv4 (host byte order) — RSS input "dst" IP;
+///                    the searched `sp` lands in the dst_port slot.
+/// @return the chosen src_port (== inbound dst_port), or an error string
+/// starting with "RssHashPredictExhausted" if no port in the range hashes
+/// to the target queue.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
-                        uint32_t src_ip,
-                        uint32_t dst_ip, uint16_t dst_port,
+                        uint32_t remote_ip, uint16_t remote_port,
+                        uint32_t local_ip,
                         uint16_t port_range_start = 32768,
                         uint16_t port_range_end   = 60999) noexcept {
     if (port_range_start > port_range_end) {
@@ -777,8 +789,15 @@ find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
     if (!state_r) return std::unexpected(state_r.error());
     const auto& state = *state_r;
     for (uint32_t sp = port_range_start; sp <= port_range_end; ++sp) {
-        if (queue_for_tuple(state, src_ip, static_cast<uint16_t>(sp),
-                            dst_ip, dst_port) == target_queue) {
+        // The searched `sp` is our LOCAL port; on the inbound SYN-ACK
+        // it lands in the dst_port slot of the RSS hash input. The
+        // pre-fix code put `sp` in the src_port slot, which computes a
+        // hash with two arguments transposed — Toeplitz is not symmetric
+        // so the predicted queue did not match what the NIC actually
+        // chose for the reply.
+        if (queue_for_tuple(state, remote_ip, remote_port,
+                            local_ip,  static_cast<uint16_t>(sp))
+            == target_queue) {
             return static_cast<uint16_t>(sp);
         }
     }

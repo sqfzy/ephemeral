@@ -182,11 +182,15 @@ public:
                         core::Error::InvalidConfig,
                         "create_and_attach: pin_to_queue >= nb_rx_queues"});
                 }
+                // RSS input "src" is the REMOTE end on the inbound
+                // reply (peer→local direction). See the matching note
+                // in tcp_stream.hpp's create_and_attach for the full
+                // rationale on the pre-fix Toeplitz transposition bug.
                 auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                     platform.port_id(), want,
-                    /*src_ip=*/cfg.legacy.dst_ip,
-                    /*dst_ip=*/cfg.legacy.src_ip,
-                    /*dst_port=*/cfg.legacy.src_port);
+                    /*remote_ip=*/  cfg.legacy.dst_ip,
+                    /*remote_port=*/cfg.legacy.dst_port,
+                    /*local_ip=*/   cfg.legacy.src_ip);
                 if (!sp) {
                     SPDLOG_LOGGER_WARN(log,
                         "create_and_attach: find_src_port_for_queue({}) failed: {}",

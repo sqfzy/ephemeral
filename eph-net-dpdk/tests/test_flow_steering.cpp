@@ -461,8 +461,9 @@ TEST(QueueForHash, RoundRobin8Queues) {
 
 TEST(FindSrcPortForQueue, RejectsInvertedRange) {
     auto r = find_src_port_for_queue(/*port_id=*/0, /*target=*/0,
-                                     /*src_ip=*/0x0a000001,
-                                     /*dst_ip=*/0x0a000002, /*dst_port=*/443,
+                                     /*remote_ip=*/0x0a000002,
+                                     /*remote_port=*/443,
+                                     /*local_ip=*/0x0a000001,
                                      /*range_start=*/40000,
                                      /*range_end=*/30000);
     ASSERT_FALSE(r.has_value());

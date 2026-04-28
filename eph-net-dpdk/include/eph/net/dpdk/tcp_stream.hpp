@@ -688,15 +688,19 @@ public:
                         core::Error::InvalidConfig,
                         "create_and_attach: pin_to_queue >= nb_rx_queues"});
                 }
-                // RSS input "src" is the REMOTE end (incoming packets have
-                // peer→local direction), so we feed the helper with
-                // (remote_ip=dst_ip, local_ip=src_ip, local_port=src_port).
+                // RSS input "src" is the REMOTE end on the inbound
+                // SYN-ACK (peer→local direction). The helper now takes
+                // (remote_ip, remote_port, local_ip) explicitly and
+                // searches the local sp in the dst_port slot. Pre-fix
+                // (b67b1ef4 and earlier) the helper put sp in the
+                // src_port slot, transposing two Toeplitz inputs and
+                // producing a wrong-queue prediction ~75% of the time.
                 const auto& t = cfg.legacy.tuple;
                 auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                     platform.port_id(), want,
-                    /*src_ip=*/t.dst_ip,
-                    /*dst_ip=*/t.src_ip,
-                    /*dst_port=*/t.src_port);
+                    /*remote_ip=*/  t.dst_ip,
+                    /*remote_port=*/t.dst_port,
+                    /*local_ip=*/   t.src_ip);
                 if (!sp) {
                     SPDLOG_LOGGER_WARN(log,
                         "create_and_attach: find_src_port_for_queue({}) failed: {}",
