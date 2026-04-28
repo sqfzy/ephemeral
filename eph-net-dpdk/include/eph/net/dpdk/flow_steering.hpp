@@ -15,6 +15,33 @@
 ///       auto rule = install_flow_rule(port_id, queue_id, tuple);
 ///       // session polls from a dedicated queue — zero dispatcher overhead
 ///   }
+///
+/// ## Error type policy
+///
+/// The fallible APIs in this header return `std::expected<T, std::string>`
+/// rather than the project-wide `std::expected<T, eph::core::ErrorInfo>`
+/// used elsewhere (Stream / Datagram / Poller). This is intentional:
+///
+///   1. flow_steering is a *control-plane* helper invoked once per
+///      Platform bring-up. There is no hot path here — the cost of
+///      heap-allocating a small string is irrelevant on a path that
+///      already calls `rte_eth_dev_rss_hash_update` and friends.
+///   2. The errors are inherently free-form ("RETA collapse rejected
+///      by PMD: rc=-95 (ENOTSUP)" / "configure_rss already installed
+///      key 0x{:08x} but query reports 0x{:08x}") — the string is
+///      the diagnostic. ErrorInfo's enum + const-char* doesn't reduce
+///      to a small set of named conditions here without losing fidelity.
+///   3. The boundary where these errors meet the rest of the codebase
+///      is `Platform::create()`, which converts the std::string into
+///      an ErrorInfo with `core::Error::InvalidConfig` + the `.what()`
+///      string interned as a static const char* — see platform.hpp.
+///
+/// If a future refactor surfaces enough flow_steering call-sites in
+/// hot paths to make string allocation a measurable cost, migrating
+/// to ErrorInfo is mechanical (the strings already serve as the
+/// `.detail` field). Until then the dual-track is the path of least
+/// surprise: each layer's error type matches its own callers' needs.
+/// (Tracked by audit-rss-rollout-20260421-065000.md "可关注点 #1".)
 
 #include <algorithm>
 #include <array>
