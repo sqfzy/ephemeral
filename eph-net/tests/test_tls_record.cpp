@@ -745,6 +745,65 @@ TEST(TlsRecord, MoveAssign) {
     EXPECT_EQ(result1->read_seq(), 0u);
 }
 
+// MoveAssign overwriting a live (non-zero seq) crypto: validates that the
+// pre-existing EVP_AEAD_CTX in the destination is properly cleaned up
+// rather than leaked, and that the moved-from source can be destroyed
+// without double-free. Audit-2026-04-01 #34 flagged this — fix relies on
+// `if (init_) EVP_AEAD_CTX_cleanup(&ctx_);` BEFORE bitwise-copy and
+// `OPENSSL_cleanse(&other.ctx_); other.init_ = false;` after.
+TEST(TlsRecord, MoveAssignOverLiveCryptoIsSafe) {
+    // Step 1: build a live crypto, advance its sequence counters by
+    // running a roundtrip so it's clearly not in default-constructed
+    // state. Then build a fresh one to move-assign in.
+    auto state1 = make_loopback_state(0xA5, 0x5A);
+    auto rt1 = TlsRecordCrypto::create(state1);
+    ASSERT_TRUE(rt1.has_value());
+
+    std::vector<uint8_t> pt(33, 0x42);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    std::vector<uint8_t> rec(enc_size);
+    uint16_t written = rt1->encrypt(pt.data(), 32, rec.data());
+    ASSERT_GT(written, 0u);
+    EXPECT_EQ(rt1->write_seq(), 1u) << "post-encrypt seq must advance";
+
+    // Step 2: create the donor with completely different keys (different
+    // seed). After the move, rt1 must be able to encrypt with the new keys
+    // — i.e. no residual state from the destination's prior config.
+    auto state2 = make_loopback_state(0xC3, 0x3C);
+    auto rt2 = TlsRecordCrypto::create(state2);
+    ASSERT_TRUE(rt2.has_value());
+
+    *rt1 = std::move(*rt2);
+
+    EXPECT_EQ(rt1->write_seq(), 0u)
+        << "moved-into seq must reset to 0 (donor's value)";
+
+    // Step 3: encrypt with the new state and decrypt with a fresh
+    // crypto built from the SAME state2. If move-assign leaked the donor's
+    // ctx_ (i.e. the destination still holds state1's key) decryption
+    // would fail with auth-tag mismatch.
+    auto verifier = TlsRecordCrypto::create(state2);
+    ASSERT_TRUE(verifier.has_value());
+
+    std::vector<uint8_t> rec2(enc_size);
+    uint16_t w2 = rt1->encrypt(pt.data(), 32, rec2.data());
+    ASSERT_GT(w2, 0u);
+
+    uint8_t out[64];
+    uint16_t dec_len = 0;
+    bool ok = verifier->decrypt(rec2.data(), w2, out, dec_len);
+    EXPECT_TRUE(ok)
+        << "decrypt must succeed with state2 keys — proves move-assign "
+           "cleaned up the old ctx and installed the donor's";
+    EXPECT_EQ(dec_len, 32u);
+    EXPECT_EQ(0, std::memcmp(out, pt.data(), 32));
+
+    // Step 4: rt2 (the moved-from) must still be safely destroyable
+    // when this scope ends — `OPENSSL_cleanse(&other.ctx_)` + `init_=false`
+    // means the dtor's `if (init_) EVP_AEAD_CTX_cleanup` is a no-op.
+    // ASan/leak-san would scream if not.
+}
+
 TEST(TlsRecord, DecryptCorruptedHeader) {
     auto state = make_roundtrip_state();
     auto enc = TlsRecordCrypto::create(state);
