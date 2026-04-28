@@ -57,7 +57,11 @@ static bool run_one_session(en::StreamConfig& cfg,
         return false;  // reconnect
     }
     auto stream = std::move(*sr);
-    stream->on_message = [](std::span<const uint8_t> app_frame) {
+    // [[maybe_unused]] on the param: SPDLOG_DEBUG compiles out under
+    // SPDLOG_ACTIVE_LEVEL=INFO (the release-build default), so app_frame
+    // is referenced only at TRACE/DEBUG levels — without the attribute,
+    // release builds get -Wunused-parameter.
+    stream->on_message = [](std::span<const uint8_t> app_frame [[maybe_unused]]) {
         SPDLOG_DEBUG("prod: rx {} bytes", app_frame.size());
     };
     if (auto r = poller.add(stream.get()); !r) {
