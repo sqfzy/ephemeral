@@ -73,6 +73,30 @@ Typed primitive for exchange REST request signing (Binance / Bybit / OKX /
 - `hmac_sha256_sign(key, msg)` — one-shot, `noexcept`, zero-alloc signing
   over `span<const uint8_t>` or `string_view`.
 
+### ES256 JWT signing (`include/eph/net/jwt_signed_request.hpp`)
+
+Coinbase Advanced Trade is the one HFT venue we ship support for that
+requires asymmetric (ECDSA P-256) authentication rather than HMAC. This
+header provides the JWT envelope:
+
+- `Es256PrivateKey` — RAII wrapper over an `EVP_PKEY*` holding a P-256
+  private key; loaded from PEM (PKCS#8 or legacy SEC1) via `from_pem()`.
+  Move-only. Validates that the loaded key is actually EC P-256 — RSA /
+  Ed25519 / P-384 are rejected with `Error::InvalidConfig`.
+- `CoinbaseJwtParams { key_id, api_key_name, method, uri, now_unix_secs,
+  ttl_secs, nonce_override }` — the fields Coinbase requires for the
+  `kid` / `sub` / `iss` / `nbf` / `exp` / `uri` claims. `nonce_override`
+  defaults to fresh CSPRNG bytes; tests pass a fixed value for
+  determinism.
+- `build_coinbase_jwt(key, params)` — produces the
+  `header.payload.signature` JWT string. Signature is the IEEE P-1363
+  r||s form (NOT DER) per JOSE / RFC 7518 §3.4 — getting that conversion
+  wrong is the most common JWT-against-Coinbase bug.
+- `tests/integration/test_coinbase_adapter.cpp` end-to-end exercises
+  this against an in-process TLS WS server with `EVP_DigestVerify` on
+  the server side — both a unit-level signature self-verify and a
+  round-trip "the JWT survived TLS + WS unchanged" gate.
+
 ### HTTP CONNECT proxy (`include/eph/net/proxy.hpp`)
 
 - `ProxyConfig { host, port, basic_auth_user, basic_auth_pass, timeout }`
@@ -169,6 +193,8 @@ No sockets, no network, no threading variance.
 
 ## Signing an exchange REST request
 
+For HMAC venues (Binance / Bybit / OKX):
+
 ```cpp
 #include "eph/net/hmac.hpp"
 
@@ -179,6 +205,24 @@ HmacSha256Tag tag = hmac_sha256_sign(key, canonical_query);
 
 uint8_t hex[64];
 tag.to_hex(std::span<uint8_t, 64>{hex});           // zero-alloc hex
+```
+
+For Coinbase Advanced Trade (ES256 JWT):
+
+```cpp
+#include "eph/net/jwt_signed_request.hpp"
+
+using namespace eph::net;
+
+auto key = Es256PrivateKey::from_pem(pem_text).value();   // PKCS#8 or SEC1
+CoinbaseJwtParams params{
+    .key_id        = "organizations/.../apiKeys/...",
+    .api_key_name  = "<api-key-name>",
+    .method        = "GET",
+    .uri           = "api.coinbase.com/api/v3/brokerage/accounts",
+    .now_unix_secs = static_cast<uint64_t>(std::time(nullptr)),
+};
+auto jwt = build_coinbase_jwt(key, params).value();        // header.payload.sig
 ```
 
 ## Dependencies
