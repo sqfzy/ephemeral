@@ -1,5 +1,56 @@
 # eph-net-kernel changelog
 
+## [Unreleased] — Cross-module additions catch-up (2026-04-28)
+
+### Added (cross-module work that landed on `KernelTcpStream`)
+- **`KernelTcpStream::drain(std::chrono::milliseconds)`** (commit
+  `3e853cdd`, 2026-04-28). Synchronous orderly-shutdown API: sends our
+  FIN via `shutdown(fd, SHUT_WR)`, then `poll(POLLIN)` + `recv()` loop
+  until peer FIN-ACK (recv() == 0). On timeout bumps
+  `StreamMetric::kRxSessionResets`, falls back to `shutdown(SHUT_RDWR)`,
+  returns `Err(Timeout)`. Pre-condition: state == Established (else
+  `Err(InvalidConfig)` without touching the socket). Caller-owned —
+  no Poller may concurrently drive the same stream.
+
+- **TLS 1.3 session resumption (PSK ticket)** (commit `49fb08ef`,
+  2026-04-28). Cross-cuts kernel + DPDK via the shared
+  `eph::net::detail::TlsSession`. Kernel surface:
+  - `StreamConfig::tls_resumption_ticket` accepts opaque DER-encoded
+    `SSL_SESSION` bytes from a prior connection. Empty (default) =
+    full handshake.
+  - `KernelTcpStream::tls_resumption_ticket()` move-out the captured
+    server-issued NewSessionTicket bytes after a successful handshake.
+  - `KernelTcpStream::tls_was_resumed()` returns the
+    `SSL_session_reused` boolean for the just-completed handshake.
+  - `StreamMetric::kTlsResumeCount` / `kTlsHandshakeCount` counters
+    fire at handshake completion. Pair to compute the resumption hit
+    rate `resume / (resume + full)`.
+
+- **`KernelTcpStream::metric` exposes WS deflate counters**
+  (commit `4976af92`, 2026-04-28). Pulls
+  `StreamMetric::kWsDeflateBytesIn` / `kWsDeflateBytesOut` from the
+  decoder so callers see the achieved compression ratio. Stays at 0
+  for non-WS streams or when `permessage-deflate` was not negotiated.
+
+- **`StreamConfig::ws_permessage_deflate` auto-negotiation**
+  (commit `c24ddac1`, 2026-04-26). RFC 7692 advertised in the upgrade
+  request; on `Sec-WebSocket-Extensions: permessage-deflate` (with our
+  parameters honored) in the response, the codec switches to the
+  inflate path. README + ONBOARDING describe the wire-side handshake.
+
+- **`ReconnectOrchestrator` integration smoke** (commit `c2ee84ff`,
+  2026-04-28). End-to-end test
+  `tests/test_kernel_reconnect_orchestrator.cpp` drives
+  `ReconnectOrchestrator<KernelTcpStream<RawStreamCodec, false>>`
+  against an in-process loopback echo server: peer-close detection
+  via `auto_detect_via_state`, factory-driven reconnect after backoff,
+  reconnect_count assertion. The orchestrator itself lives in
+  `eph-net`; this entry records the kernel-side wiring proof.
+
+### Changed
+- No source changes to existing API. The four additions above are
+  purely additive on the kernel surface.
+
 ## [Unreleased] — Doc sync (2026-04-24)
 
 ### Docs
