@@ -97,6 +97,33 @@ misconfiguration too.
   (`g_src_port_search_counter`) preserves N concurrent fan-out streams
   to the same exchange landing on distinct 5-tuples.
 
+### Hardened — DNS pointer-chain iteration cap tightened (2026-04-28)
+
+- `select_dns_src_port_with_state::skip_dns_name` previously bounded
+  pointer-chain iteration at 128 hops. A valid DNS name has at most
+  127 labels (RFC 1035 §2.3.4 — total length ≤ 253 chars, ≥ 2 chars
+  per label) but realistic CDN responses ship far fewer (typically
+  < 10 labels per name). 128 hops is plenty of slack for an attacker
+  to keep us spinning before bailing.
+- New cap is 32 iterations — still 3× the worst-case observed in
+  production traces but materially shrinks the wasted-CPU
+  amplification. `test_dns_adversarial.PointerChainHittingIterationLimitReturnsZero`
+  uses a chain of 200, exceeds the new limit, still trips correctly.
+  New explicit `kMaxIterations=32` boundary regression in
+  `tests/integration/test_dpdk_rss_key_correctness.cpp` (commit
+  `f5c80b5b`).
+
+### Hardened — packet_core layout pinned via static_assert (2026-04-28)
+
+- `PacketTemplate::build_packet` does cast-pointer arithmetic with the
+  hand-written `kEtherHeaderLen` / `kIpv4HeaderLen` / `kTcpHeaderLen`
+  constants while DPDK later parses the same bytes through its native
+  `rte_ether_hdr` / `rte_ipv4_hdr` / `rte_tcp_hdr` views. The two views
+  are now explicitly tied via `static_assert(sizeof(rte_X_hdr) == kXLen)`
+  in `packet_core.hpp`. Any future DPDK header-layout change that drops
+  the implicit agreement now breaks the build instead of silently
+  corrupting outbound packets. Behaviour unchanged.
+
 ### Review sweep (2026-04-23 / 2026-04-24)
 
 Post-v0.1.0 review-and-implement sweep focused on easy-of-use, simplicity,
