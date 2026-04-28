@@ -1,140 +1,288 @@
 # Troubleshooting Guide
 
-Error diagnosis reference for ephemeral. Maps error codes to causes and fixes.
+Error diagnosis reference for ephemeral. Maps the post-v3.3 `eph::core::Error`
+codes (as returned by `std::expected<T, ErrorInfo>` from every fallible API)
+to causes and fixes.
 
-> **Pre-v3.3 archive notice** — most of this guide describes the retired
-> `Transport` / `SocketTransport` API and its per-domain error enums
-> (`ConnectionError`, `SendError`). The post-v3.3 surface is
-> `eph::core::Error` (single enum, see `eph-core/include/eph/core/error.hpp`)
-> + `eph::core::ErrorInfo` (enum + free-form `detail` string), returned
-> via `std::expected<T, ErrorInfo>` from every fallible API
-> (`KernelTcpStream::create`, `DpdkTcpStream::create_and_attach`, etc.).
-> The categorical mappings below are still useful as **failure-mode
-> taxonomy** even though the symbol names changed — INVALID_CONFIG /
-> FACTORY_FAILED / TLS_HANDSHAKE_FAILED / WS_UPGRADE_REJECTED all map
-> directly to current `Error` values (`InvalidConfig`, `ConnectFailed`,
-> `TlsHandshakeFailed`, `WsHandshakeFailed`). A focused rewrite tracking
-> the current API is a future followup.
+The canonical error type is defined in
+[`eph-core/include/eph/core/error.hpp`](../eph-core/include/eph/core/error.hpp):
 
-## Connection Errors (`ConnectionError`)
-
-Returned by `Transport::create()` and reconnection attempts.
-
-### INVALID_CONFIG
-
-**Cause**: `TransportConfig` validation failed before any network I/O.
-
-| Detail message | Fix |
-|----------------|-----|
-| `remote_host is empty` | Set `cfg.remote_host` |
-| `pong_timeout must be >= ping_interval` | Increase `pong_timeout` or decrease `ping_interval` |
-| `client_cert_path set without client_key_path` | Set both or neither for mTLS |
-
-### FACTORY_FAILED
-
-**Cause**: The `TcpFactory` lambda returned an error. For socket backend, this usually means TCP connect failed.
-
-| Detail pattern | Likely cause | Fix |
-|----------------|-------------|-----|
-| `Connection refused` | Server not listening on that port | Verify host:port, check firewall |
-| `Connection timed out` | Network unreachable or blocked | Check routing, VPC security groups |
-| `Name resolution failed` | DNS lookup failed | Verify hostname, check DNS config |
-| `Network is unreachable` | No route to host | Check network interface, gateway |
-
-### TCP_NOT_ESTABLISHED
-
-**Cause**: TcpFactory returned a socket that isn't in ESTABLISHED state.
-
-**Fix**: Ensure your TcpFactory calls `tcp->connect()` and checks the result before returning.
-
-### TLS_SESSION_FAILED
-
-**Cause**: TLS session object creation failed (before handshake).
-
-**Common causes**:
-- aws-lc library not linked or incompatible version
-- Invalid CA cert path (`ca_cert_path` points to nonexistent file)
-- Invalid client cert/key for mTLS
-
-### TLS_HANDSHAKE_FAILED
-
-**Cause**: TLS handshake failed after TCP connection established.
-
-| Detail pattern | Likely cause | Fix |
-|----------------|-------------|-----|
-| `certificate verify failed` | Server cert not trusted | Set `ca_cert_path` to correct CA bundle, or check cert expiry |
-| `handshake timeout` | Server slow to respond | Increase `tls_timeout` |
-| `protocol version` | TLS version mismatch | ephemeral requires TLS 1.3; ensure server supports it |
-| `self-signed certificate` | Dev/staging server | Set `verify_peer = false` for testing only |
-
-**Diagnosis steps**:
-1. Test with `openssl s_client -connect host:port -tls1_3`
-2. Check cert expiry: `openssl s_client -connect host:port 2>/dev/null | openssl x509 -noout -dates`
-3. Check system clock: TLS certs are time-sensitive
-
-### TLS_KEY_EXPORT_FAILED
-
-**Cause**: Could not export AEAD keys after successful handshake. Internal error.
-
-**Fix**: Report as bug with the TLS library version (`openssl version`).
-
-### WS_UPGRADE_FAILED
-
-**Cause**: HTTP upgrade request sent but response parsing failed.
-
-| Detail pattern | Likely cause | Fix |
-|----------------|-------------|-----|
-| `timeout waiting for upgrade response` | Server didn't respond | Increase `ws_timeout`, verify `ws_path` |
-| `incomplete HTTP response` | Connection closed mid-handshake | Check if server supports WebSocket |
-| `missing Upgrade/Connection headers` | Server responded but not with WS upgrade | Verify endpoint is a WebSocket URL |
-
-### WS_UPGRADE_REJECTED
-
-**Cause**: Server responded with a non-101 status code.
-
-| HTTP Status | Meaning | Fix |
-|-------------|---------|-----|
-| 400 | Bad request | Check `ws_path`, `extra_headers` |
-| 401 / 403 | Auth required/forbidden | Add auth token to `extra_headers` |
-| 404 | Wrong path | Fix `ws_path` |
-| 429 | Rate limited | Add backoff, reduce connection frequency |
-| 503 | Server overloaded | Retry later |
-
-**Detect a rejected upgrade programmatically**:
 ```cpp
-auto result = en::KernelTcpStream<ec::WsCodec>::create(cfg);
-if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
-    // result.error().detail holds a short string literal describing the
-    // wire-side reason (e.g. "ws_handshake: 429 status"). Match on the
-    // detail substring or, for stricter routing, parse the HTTP status
-    // line out of your reconnect logger before reaching this branch —
-    // ErrorInfo intentionally carries no integer http_status field
-    // (kept allocation-free, see eph/core/error.hpp).
-}
+struct ErrorInfo {
+    eph::core::Error code;     // typed category (programmatic match)
+    const char*      detail;   // static-lifetime string (logging only)
+};
 ```
 
-### WS_ACCEPT_INVALID
+`ErrorInfo` is allocation-free: `detail` is always a string literal, never an
+owned `std::string`. Match on `.code` for control flow; log `.detail` for
+human diagnosis. Stream insertion (`std::cout << err`), `std::format("{}", err)`
+and `SPDLOG_LOGGER_ERROR(...)` all render as `CODE: detail`.
 
-**Cause**: Server's `Sec-WebSocket-Accept` header doesn't match expected SHA-1 hash.
+This guide covers the four backends that surface errors in production:
 
-**Likely cause**: Proxy or CDN modifying WebSocket headers.
+- `eph::net::kernel::KernelTcpStream<Codec, EnableTls>` /
+  `KernelUdpSocket<Codec>` (epoll backend)
+- `eph::net::dpdk::DpdkTcpStream<Codec, EnableTls>` /
+  `DpdkUdpSocket<Codec>` (DPDK kernel-bypass backend)
 
-**Fix**: Connect directly (bypass proxy) or configure proxy for WebSocket passthrough.
+`KernelPoller` / `DpdkPoller` only ever return `Error::NotAttached` or
+`Error::InvalidConfig` from public APIs; runtime poll loops route per-stream
+errors back through the stream's own state.
 
 ---
 
-## Send Errors (`SendError`)
+## Connection Lifecycle Errors
 
-Returned by `send()`, `send_text()`, `send_binary()`.
+Returned by `KernelTcpStream::create()`, `DpdkTcpStream::create_and_attach()`,
+and reconnection paths driven by `eph::net::ReconnectPolicy`.
+
+### `Error::InvalidConfig`
+
+**Cause**: `StreamConfig` (kernel) or `eph::dpdk::TcpConfig` / `DpdkTcpStreamConfig`
+(DPDK) failed validation before any I/O.
+
+| `detail` substring | Fix |
+|--------------------|-----|
+| `remote address empty` | Set `cfg.remote` to a valid `SocketAddr` |
+| `ws_path set but ws_host empty` | Set `cfg.ws_host` for the RFC 6455 `Host:` header |
+| `proxy.host empty` | Either clear `cfg.proxy` or fill `host` + `port` |
+| `tls.hostname empty with verify_peer=true` | Set `cfg.tls.hostname` for SNI / cert verify |
+| `client_cert without client_key` | Set both fields or neither (mTLS) |
+| `proxy on DPDK backend` | Kernel only — DPDK rejects HTTP CONNECT |
+| `enable_rss=false with nb_rx_queues>1` | Either enable RSS or set `nb_rx_queues=1` |
+
+The DPDK platform also hard-fails (no silent collapse to queue 0) when RSS
+bring-up fails on every path; see `eph::dpdk::Platform::create` and the
+`rss_using_probed_key()` diagnostic getter.
+
+### `Error::ConnectFailed`
+
+**Cause**: TCP three-way handshake (kernel `connect(2)` or DPDK SYN/SYN-ACK)
+did not complete.
+
+| `detail` pattern | Likely cause | Fix |
+|------------------|--------------|-----|
+| `connection refused` | No listener on `host:port` | Verify endpoint, check firewall |
+| `connect timeout` | Network unreachable / blackholed | Check VPC SG, route table, NAT |
+| `name resolution failed` | DNS lookup failed (kernel only) | Verify DNS config, prefer IP literals |
+| `network unreachable` | No route to host | Check default route, NIC up |
+| `ARP failed` | DPDK only — gateway MAC not resolvable | Check `gateway_ip`, ARP request reaching gateway |
+
+DPDK's connect is async by construction (`DpdkTcpStream::create_and_attach`
+runs the handshake under the poll loop); kernel sets `O_NONBLOCK` and reports
+the error from the first poll cycle's writability check.
+
+### `Error::Disconnected`
+
+**Cause**: Peer closed the connection (FIN, RST, or kernel-detected dead
+socket).
+
+**Diagnosis**:
+- Check `ReconnectPolicy::on_state_change(kDisconnected)` callback timing —
+  is it periodic? See "Connection drops every N minutes" below.
+- DPDK: `TcpSession::Stats::tx_rst_received` / `tx_fin_received` counters
+  distinguish RST vs graceful close.
+
+### `Error::Timeout`
+
+**Cause**: Operation deadline exceeded. Used by handshake (TLS, WS) and
+explicit `recv_for(timeout)` waits.
+
+**Fix**: Increase the matching `*_timeout` in `StreamConfig` (`tcp_timeout`,
+`tls_timeout`, `ws_timeout`) — defaults are tight (1-2 s) by design, since
+HFT venues are local-DC.
+
+### `Error::NotAttached`
+
+**Cause**: `Stream::send` / `recv` called before `Poller::add(stream)`.
+
+**Fix**: Always attach the stream to a poller before any I/O. The `create_and_attach`
+factory on DPDK does this in one step; on kernel use the standard
+`auto p = ...; auto s = KernelTcpStream::create(cfg).value(); p->add(s.get());`
+pattern.
+
+---
+
+## TLS Errors
+
+### `Error::TlsHandshakeFailed`
+
+**Cause**: aws-lc handshake returned an error after TCP established.
+
+| `detail` pattern | Likely cause | Fix |
+|------------------|--------------|-----|
+| `certificate verify failed` | Server cert not trusted | Set `cfg.tls.ca_cert_path`, check expiry |
+| `alert handshake_failure` | Cipher / version mismatch | ephemeral requires TLS 1.3 |
+| `handshake timeout` | Server slow to respond | Increase `cfg.tls_timeout` |
+| `self-signed certificate` | Dev / staging | Set `cfg.tls.verify_peer=false` (dev only) |
+
+**Diagnosis steps**:
+
+```bash
+# Probe TLS 1.3 directly
+openssl s_client -connect host:port -tls1_3 -servername host
+
+# Check cert expiry
+openssl s_client -connect host:port 2>/dev/null \
+    | openssl x509 -noout -dates
+
+# Sanity-check system clock — TLS is time-sensitive
+date -u
+```
+
+### `Error::TlsRecordBad`
+
+**Cause**: Malformed TLS record received (bad version, length, or content
+type). Often indicates protocol-layer corruption upstream of TLS — e.g.
+HTTP CONNECT proxy that forgot to switch to tunnel mode.
+
+**Fix**: Capture with `tcpdump -i <iface> -w trace.pcap host <peer>` and
+inspect with Wireshark; the first non-TLS-shaped record will be obvious.
+
+### `Error::TlsCipherFailed`
+
+**Cause**: AEAD encrypt or decrypt rejected an authentication tag. After a
+clean handshake this almost always indicates IV / sequence-number desync —
+typically a middlebox rewriting bytes.
+
+**Fix**: Bypass middleboxes; if unavoidable, log the sequence numbers via
+`SPDLOG_LEVEL_TRACE` to confirm the desync direction.
+
+---
+
+## WebSocket Errors
+
+### `Error::WsHandshakeFailed`
+
+**Cause**: HTTP/1.1 upgrade request sent but the response was rejected,
+malformed, or non-101.
+
+The `detail` string is intentionally short (`ws_handshake: 429 status`,
+`ws_handshake: missing Sec-WebSocket-Accept`, `ws_handshake: bad Upgrade
+header`, etc.). For programmatic match, key on the substring:
+
+```cpp
+namespace en = eph::net::kernel;
+namespace ec = eph::codec;
+
+auto result = en::KernelTcpStream<ec::WsCodec>::create(cfg);
+if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
+    // result.error().detail holds a string literal describing the wire-side
+    // reason (e.g. "ws_handshake: 429 status"). Match on the substring or,
+    // for stricter routing, parse the HTTP status line out of your reconnect
+    // logger before reaching this branch — ErrorInfo intentionally carries no
+    // integer http_status field (kept allocation-free, see eph/core/error.hpp).
+    SPDLOG_ERROR("WS upgrade rejected: {}", result.error().detail);
+}
+```
+
+| HTTP status (in `detail`) | Meaning | Fix |
+|---------------------------|---------|-----|
+| `400` | Malformed request | Check `cfg.ws_path`, `cfg.ws_extra_headers` |
+| `401` / `403` | Auth required / forbidden | Add auth token to `ws_extra_headers` |
+| `404` | Wrong path | Fix `cfg.ws_path` |
+| `426` | Upgrade required (rare) | Server expects different protocol; check vendor docs |
+| `429` | Rate limited | Backoff via `ReconnectPolicy`, reduce conn frequency |
+| `503` | Server overloaded | Retry later |
+
+### `Error::WsFrameBad`
+
+**Cause**: Frame violates RFC 6455 — bad opcode, RSV bits set, fragmented
+control frame, payload exceeds `WsCodec` max, etc.
+
+**Fix**: A vendor sending non-conformant frames is a server bug — capture
+the frame with `tcpdump` and report. ephemeral does not silently accept
+malformed frames.
+
+### `Error::WsCloseReceived`
+
+**Cause**: Peer sent a Close frame. Not a fatal error per se — the codec
+auto-acks the close and the stream transitions to closed.
+
+**Fix**: Inspect close code in payload (RFC 6455 §7.4). Treat `1000` as
+clean shutdown; `1011` / `1013` indicate server-side issues; `1008` /
+`1009` indicate ephemeral sent something the server rejected.
+
+---
+
+## Codec / Application Protocol
+
+### `Error::CodecNeedMoreData`
+
+**Internal signal**, not surfaced to user code in the post-v3.3 API.
+Streams loop on this until enough bytes arrive. If you see it leak, it is
+a bug in a custom codec.
+
+### `Error::CodecBad`
+
+**Cause**: Application protocol violation — invalid FIX checksum, invalid
+ITCH message type, JSON parse error mid-stream.
+
+**Fix**: Match on the codec's domain-specific enum (`FrameError`, `FixError`,
+`ItchError`) for fine-grained branching; the unified `Error::CodecBad` is
+returned only when the codec routes through the generic `Stream::recv` path.
+
+### `Error::CodecOverflow`
+
+**Cause**: A decoded frame exceeded the codec's `MaxPayload` template
+parameter.
+
+**Fix**: Increase `MaxPayload`, or move to a streaming consumer pattern if
+the protocol genuinely supports messages larger than expected.
+
+---
+
+## Send-side / Buffer Errors
+
+### `Error::WouldBlock`
+
+**Cause**: Non-blocking send would block (kernel `EAGAIN`), or DPDK
+TX-burst returned 0.
+
+**Fix**: Either retry on next poll cycle, or use the codec's framing buffer
+(every codec exposes the `OutputBuffer&` injection path) to queue rather
+than synchronously send.
+
+### `Error::BufferFull`
+
+**Cause**: TX queue saturated.
+
+**Fix**:
+- Drain via the poller faster — check `poll(timeout)` is being called
+- For DPDK, check `tx_queue_id` is on a CPU not contending with other lcores
+- Check application backpressure (downstream consumer not keeping up)
+
+### `Error::NoData`
+
+**Cause**: `recv()` returned zero packets. Not an error in poll-driven code
+— it means "nothing this cycle." Tests assert on it; production code
+treats it as a fast-path no-op.
+
+---
+
+## HTTP CONNECT Proxy Errors
+
+Kernel backend only (DPDK rejects with `Error::InvalidConfig`).
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `MESSAGE_TOO_LARGE` | Payload exceeds `MaxPayload` template parameter | Increase MaxPayload or split message |
-| `NOT_CONNECTED` | Transport not running or disconnected | Check `is_connected()` before sending, or handle reconnect |
-| `QUEUE_FULL` | TX queue is full (backpressure) | Use `send_for()` with timeout, or check `tx_queue_occupancy()` |
-| `INVALID_UTF8` | Text frame payload fails UTF-8 validation | Fix payload encoding, or set `skip_utf8_validation = true` |
-| `INVALID_CLOSE_CODE` | Close code not in RFC 6455 valid range | Use `ws::close_code::kNormal` (1000) or other valid codes |
-| `NULL_DATA` | `data` is nullptr but `len > 0` | Fix caller to provide valid data pointer |
+| `ProxyConnectFailed` | TCP connect to proxy itself failed | Verify `cfg.proxy.host` / `port`, firewall |
+| `ProxyHandshakeFailed` | Proxy returned non-200 / malformed | Check proxy logs, verify target host allowed |
+| `ProxyAuthRequired` | Proxy returned 407 | Set `cfg.proxy.username` / `password` (Basic auth) |
+
+---
+
+## Registry / Lookup Errors
+
+### `Error::NotFound`
+
+**Cause**: Lookup miss — typically `Platform::register_icmp_target` followed
+by an unregister of an already-removed handle. Distinct from `InvalidConfig`
+(programmer error) — `NotFound` is recoverable state mismatch.
+
+**Fix**: Callers may ignore `NotFound` from unregister paths; log at DEBUG
+not WARN.
 
 ---
 
@@ -142,80 +290,132 @@ Returned by `send()`, `send_text()`, `send_binary()`.
 
 ### Connection drops every N minutes
 
-**Symptom**: Transport reconnects periodically with `on_state_change(kDisconnected)`.
+**Symptom**: Reconnect callback fires periodically with `Error::Disconnected`.
 
 **Diagnosis**:
-1. Check if server sends Close frames: register `on_close` callback
-2. Check ping/pong health: register `on_pong` callback, measure RTT
-3. Check TLS sequence exhaustion: look for `TLS write sequence at 90%` log warning
-4. Check server-side idle timeout: many servers close connections after 5-30 min of no activity
-
-**Fixes**:
-- Reduce `ping_interval` to keep connection alive
-- If TLS sequence warning appears: reconnect proactively before reaching limit
-
-### RX queue drops (messages lost)
-
-**Symptom**: `on_rx_drop` callback fires, messages missing.
-
-**Diagnosis**: Application thread not consuming fast enough.
-
-**Fixes**:
-- Use `on_message` push callback instead of `recv()` polling (eliminates queue entirely)
-- Increase queue depth (template parameter `QueueDepth`)
-- Use `EvictingQueue` (template parameter `RxQueueTmpl`) to keep latest and discard old
-- Profile the application's message processing — is it doing I/O in the hot loop?
+1. DPDK: check `TcpSession::Stats::idle_timeout_fired` — if non-zero, peer
+   keepalive interval is too long. Tune `TcpConfig::keepalive_interval` /
+   `keepalive_probes`.
+2. Kernel: check `SO_KEEPALIVE` settings or rely on application-layer ping
+   (WS ping/pong via codec).
+3. Server-side idle timeout: many venues close after 5-30 min of no
+   activity. Application-layer ping is the canonical fix.
 
 ### High tail latency (p99 spikes)
 
 **Diagnosis**:
-1. Check CPU pinning: `tx_cpu`/`rx_cpu` must be on isolated cores (not shared with OS)
-2. Check NUMA locality: TX/RX cores should be on same NUMA node as NIC
-3. Check for thermal throttling: `cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq`
-4. Check for context switches: `perf stat -e context-switches ./your_app`
+
+```bash
+# CPU pinning sanity
+taskset -p $(pidof your_app)
+
+# NUMA locality (NIC vs CPU)
+lscpu | grep NUMA
+cat /sys/class/net/<iface>/device/numa_node
+
+# Frequency / thermal
+cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq
+
+# Context switches
+perf stat -e context-switches,cs-migrations ./your_app
+```
 
 **Fixes**:
-- Isolate cores: `isolcpus=2,3` in kernel boot params
-- Disable turbo boost for consistent frequency: `echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo`
-- Use `perf_tuning_basics` example to validate CPU topology before deployment
+- Isolate cores: `isolcpus=2-7` in kernel cmdline
+- Per-thread pin every bench / lcore thread (see CLAUDE rule "Bench 每个
+  线程必须绑独立 CPU")
+- DPDK: `nb_rx_queues` ≥ 2 with RSS, pin lcore per queue
+- Disable turbo for consistency (Intel: `intel_pstate/no_turbo`)
 
 ### DPDK: connection fails immediately
 
 **Diagnosis**:
-- Check EAL init: `rte_eal_init()` must succeed before any DPDK operations
-- Check NIC binding: `dpdk-devbind.py --status` — NIC must be bound to DPDK-compatible driver
-- Check hugepages: `cat /proc/meminfo | grep HugePages` — need at least 1024 2MB pages
-- Check ARP: gateway MAC must be resolved before TCP connect
+
+```bash
+# EAL init: hugepages mounted?
+mount | grep hugetlb
+
+# Hugepage availability
+cat /proc/meminfo | grep -E 'HugePages_(Free|Total)'
+# Need ≥ 1024 free 2MB pages, or enough 1G pages for your app
+
+# NIC binding
+dpdk-devbind.py --status
+
+# Resource conflicts (per CLAUDE rule)
+ps -ef | grep -E 'dpdk|lat_|mockex|dpdk_e2e'
+sudo lsof | grep hugepages
+```
 
 **Fixes**:
+
 ```bash
-# Allocate hugepages
-echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+# Hugepages
+echo 1024 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
 # Bind NIC to vfio-pci
-modprobe vfio-pci
-dpdk-devbind.py -b vfio-pci 0000:00:05.0
+sudo modprobe vfio-pci
+sudo dpdk-devbind.py -b vfio-pci 0000:00:05.0
 
 # Verify
-dpdk-devbind.py --status
+dpdk-devbind.py --status | head -20
 ```
+
+The `eph-net-dpdk/scripts/dpdk-setup.sh` and `dpdk-teardown.sh` scripts
+encapsulate this idempotently. The `benchmarks/latency/lat` dispatcher
+handles transitions automatically.
+
+### DPDK: RSS bring-up fails on ENA / aged PMD
+
+**Symptom**: `Platform::create` returns
+`InvalidConfig: rss_hash_update rejected; probe also failed`.
+
+**Cause**: PMD doesn't support `rte_eth_dev_rss_hash_update` and the probe
+via `rte_eth_dev_rss_hash_conf_get` also failed (driver doesn't expose
+the active key).
+
+**Fix**:
+- For diagnostic: `Platform::rss_using_probed_key()` returns `true` if the
+  fallback path resolved. If `Platform::create` hard-fails, neither path
+  worked.
+- Confirm PMD version (some ENA versions in 21.x predate
+  `rss_hash_conf_get`).
+- Workaround: drop to `nb_rx_queues=1` and disable RSS (single-queue mode).
+
+### Path MTU shrinkage
+
+**Symptom**: `effective_mss()` shrinks below the originally negotiated
+`peer_mss_negotiated()` value mid-session.
+
+**Cause**: Router-originated ICMP Type 3 Code 4 (Frag Needed) reached the
+session via `Platform::register_icmp_target`. Expected behavior — TCP is
+behaving correctly.
+
+**Diagnosis**: `TcpSession::Stats::icmp_frag_needed_received` counter.
 
 ---
 
 ## Log Levels
 
-Set spdlog level to control verbosity:
+ephemeral uses spdlog with **compile-time** level filtering via
+`SPDLOG_ACTIVE_LEVEL`:
 
-```cpp
-spdlog::set_level(spdlog::level::debug);  // Full debug output
-spdlog::set_level(spdlog::level::info);   // Normal operation
-spdlog::set_level(spdlog::level::warn);   // Only warnings and errors
-```
+| Build mode | Level     | Where set        |
+|------------|-----------|------------------|
+| `release`  | `INFO`    | xmake.lua `net_log_level` |
+| `debug`    | `TRACE`   | xmake.lua        |
+| `asan` / `tsan` | `DEBUG` | xmake.lua  |
 
-Key log channels:
-- `net.transport` — connection lifecycle, reconnection, state changes
-- `net.websocket` — WS frame encoding/decoding issues
-- `net.tls` — TLS handshake, encryption errors, sequence warnings
-- `net.http` — HTTP upgrade request/response
-- `fix.parser` / `fix.builder` — FIX message validation errors
-- `itch.parser` — ITCH parse errors (unknown type, truncated)
+Use the macros (`SPDLOG_TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR`) so
+suppressed levels compile out entirely. Runtime `spdlog::set_level()` only
+filters within the compile-time band.
+
+Key loggers (registered lazily via `eph::utils::get_logger("name")`):
+
+- `net.kernel.tcp` / `net.kernel.udp` — kernel stream lifecycle
+- `net.dpdk.tcp` / `net.dpdk.udp` / `net.dpdk.platform` — DPDK lifecycle
+- `net.ws` — WebSocket frame encode / decode
+- `net.tls` — TLS handshake, AEAD seq, alerts
+- `net.http` — HTTP/1.1 parse (upgrade requests, CONNECT proxy)
+- `fix.parser` / `fix.builder` — FIX validation
+- `itch.parser` — ITCH parse errors
