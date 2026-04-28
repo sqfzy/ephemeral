@@ -3,8 +3,11 @@
 /// @file session.hpp
 /// FIX 4.4 Session layer — complete implementation.
 ///
-/// Provides session management on top of any transport that can send/receive
-/// raw bytes (e.g., Transport<SocketTransport, FixFramer>).
+/// Provides session management on top of any byte transport. The session
+/// is decoupled from networking: it consumes a `send_fn(const uint8_t*,
+/// size_t) -> bool` and is fed inbound bytes by the user's RX callback.
+/// Compose with `eph::net::kernel::KernelTcpStream<RawStreamCodec>` (or
+/// the DPDK equivalent) for production use.
 ///
 /// Features:
 ///   - Logon/Logout handshake with configurable timeout
@@ -22,21 +25,30 @@
 ///   - FIX encryption (EncryptMethod always 0)
 ///   - Full PossDupFlag deduplication (logged but not filtered)
 ///
-/// Usage with Transport:
+/// Usage with a kernel TCP stream:
 /// @code
-///   auto tp = Transport<SocketTransport, FixFramer>::create(factory, cfg);
+///   namespace en = eph::net::kernel;
+///   namespace ec = eph::codec;
+///
+///   auto poller = en::KernelPoller::create().value();
+///   auto stream = en::KernelTcpStream<ec::RawStreamCodec>::create(cfg).value();
+///   poller->add(stream.get()).value();
+///
 ///   FixSession session(
-///       [&](const uint8_t* d, size_t l) { return tp->send(d, l) == SendError::kOk; },
+///       [&stream](const uint8_t* d, std::size_t l) {
+///           auto r = stream->send({d, l});
+///           return r.has_value();
+///       },
 ///       {.sender_comp_id = "MY_ALGO", .target_comp_id = "EXCHANGE"});
 ///
-///   cfg.on_message = [&](const uint8_t* d, uint16_t l, uint8_t) {
-///       if (!session.on_rx(d, l)) {
+///   stream->on_message = [&](std::span<const uint8_t> bytes) {
+///       if (!session.on_rx(bytes.data(), bytes.size())) {
 ///           // Application message — process it
 ///       }
 ///   };
 ///
 ///   session.logon();
-///   // ... receive market data ...
+///   while (running) poller->poll();
 ///   session.logout();
 /// @endcode
 

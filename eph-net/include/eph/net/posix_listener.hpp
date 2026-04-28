@@ -4,10 +4,11 @@
 /// Kernel-side TCP/UDP bind helpers and a poll-based accept loop.
 ///
 /// These are the small ergonomic wrappers around socket()/bind()/listen()/
-/// accept() that mock servers and test fixtures need.  Distinct from
-/// eph-net's SocketTransport (which is the connect-side, async,
-/// std::expected-returning client implementation): the helpers here
-/// target the server side of in-process / in-host kernel socket pairs.
+/// accept() that mock servers and test fixtures need. Distinct from
+/// `eph::net::kernel::KernelTcpStream` (which is the connect-side,
+/// `std::expected`-returning client used by production code): the
+/// helpers here target the *server* side of in-process / in-host
+/// kernel socket pairs.
 ///
 /// Originally lived under benchmarks/latency/core/socket_bind.hpp;
 /// promoted to eph-net so that test fixtures can use them without

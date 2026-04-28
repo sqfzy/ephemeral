@@ -3,9 +3,14 @@
 /// @file detail/string_checks.hpp
 /// Constexpr string validation helpers for hostname/path sanitization.
 ///
-/// Extracted from repeated inline checks across TransportConfig, SocketConfig,
-/// and ProxyConfig to eliminate duplication and ensure consistent validation
-/// rules. All functions are constexpr for use in compile-time config validation.
+/// Originally extracted from repeated inline checks across the
+/// pre-v3.3 `TransportConfig` / `SocketConfig` / `ProxyConfig` to
+/// eliminate duplication. Today only `eph::net::ProxyConfig` (and any
+/// out-of-tree `StreamConfig` variants) consume these helpers; the
+/// TransportConfig and SocketConfig types were collapsed into
+/// `KernelTcpStream::StreamConfig` / `KernelUdpSocket::UdpConfig`
+/// in v3.3. All functions remain `constexpr` for use in compile-time
+/// config validation.
 
 #include <string_view>
 
