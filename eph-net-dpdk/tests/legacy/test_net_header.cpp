@@ -402,10 +402,22 @@ TEST(PacketTemplate, ValidateExcessiveMssFails) {
 }
 
 TEST(PacketTemplate, ValidateIsConstexpr) {
-    // Verify validate() can be evaluated at compile time
+    // Verify validate() is usable in a constexpr context. PacketTemplate
+    // is a literal type only in release builds; debug builds add a
+    // mutable std::thread::id owner_tid_ field for the single-thread
+    // assertion (see packet_template.hpp:55-61), which makes the type
+    // non-literal. The constexpr promise therefore only holds when
+    // NDEBUG is defined; in debug we fall back to a runtime check that
+    // still validates the behavior.
+#ifdef NDEBUG
     constexpr PacketTemplate tmpl_invalid{};
     static_assert(!tmpl_invalid.validate().empty(),
                   "Default PacketTemplate should fail validation (zero IPs)");
+#else
+    PacketTemplate tmpl_invalid{};
+    EXPECT_FALSE(tmpl_invalid.validate().empty())
+        << "Default PacketTemplate should fail validation (zero IPs)";
+#endif
 }
 
 TEST(PacketTemplate, DumpContainsKeyFields) {
