@@ -97,7 +97,7 @@ misconfiguration too.
   (`g_src_port_search_counter`) preserves N concurrent fan-out streams
   to the same exchange landing on distinct 5-tuples.
 
-## [Unreleased] — review sweep (2026-04-23 / 2026-04-24)
+### Review sweep (2026-04-23 / 2026-04-24)
 
 Post-v0.1.0 review-and-implement sweep focused on easy-of-use, simplicity,
 consistency, and bugs. DPDK-environment validation deferred — no NIC
