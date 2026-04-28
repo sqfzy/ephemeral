@@ -183,9 +183,10 @@ TEST(UdpE2E, BurstEcho) {
 // kernel ws_echo_mock.  This validates the wire-level path (DPDK packet
 // I/O + HTTP upgrade exchange + RFC 6455 §1.3 sample accept hash).
 //
-// A full eph::net::DirectTransport<TcpSession, WsFramer> orchestration
-// (TransportConfig + callback set + frame echo) is intentionally a
-// separate test that doesn't fit in a smoke pass.
+// A full `DpdkTcpStream<WsCodec>` orchestration (StreamConfig.ws_path
+// non-empty + Poller.add + on_message echo) is exercised by
+// `eph-net-dpdk/tests/test_dpdk_tcp_stream.cpp`; it doesn't fit in this
+// smoke pass which is at the raw-session layer.
 // ═══════════════════════════════════════════════════════════════════════
 
 TEST(WsE2E, HandshakeAndEcho) {

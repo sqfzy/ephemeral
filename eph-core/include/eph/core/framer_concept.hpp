@@ -1,12 +1,23 @@
 #pragma once
 
 /// @file framer_concept.hpp
-/// MessageFramer concept — pluggable message framing for Transport.
+/// MessageFramer concept — pluggable message framing for legacy parser
+/// adapters (FIX, ITCH, JSON, length-prefix).
 ///
 /// Framers handle the wire format layer: encoding application payloads
 /// into framed bytes and decoding framed bytes back into payloads.
-/// Built-in implementations: WsFramer (WebSocket), RawFramer (pass-through),
-/// LengthPrefixFramer (2-byte big-endian length prefix).
+/// Surviving in-tree implementations:
+///
+///   - `eph::core::LengthPrefixFramer`        (2-byte big-endian length prefix)
+///   - `eph::json::JsonFramer`                (newline-delimited JSON)
+///   - `eph::fix::Framer` / `eph::itch::*`    (parser modules)
+///
+/// The WebSocket and pass-through wire formats are now provided by the
+/// stateful `eph::core::StreamCodec` concept (`eph::codec::WsCodec` /
+/// `eph::codec::RawStreamCodec`) — see `eph/core/codec.hpp`. The
+/// `MessageFramer` concept is preserved here for the parser modules
+/// that still satisfy it; new networking work should target
+/// `StreamCodec` / `DatagramCodec`.
 
 #include <cstdint>
 #include <cstring>
@@ -72,9 +83,9 @@ struct DecodedFrame {
 ///
 /// decode() is an instance method (not static) to support stateful framers
 /// that maintain per-connection decoding context (e.g., SBE schema cache,
-/// protocol version negotiation state). Stateless framers (WsFramer, RawFramer,
-/// LengthPrefixFramer) incur zero overhead — the compiler eliminates the
-/// unused `this` pointer for types with no member state.
+/// protocol version negotiation state). Stateless framers
+/// (`LengthPrefixFramer`, `JsonFramer`) incur zero overhead — the compiler
+/// eliminates the unused `this` pointer for types with no member state.
 template <typename F>
 concept MessageFramer = requires(F f, uint8_t* out, const uint8_t* in,
                                   size_t len, uint8_t msg_type) {
