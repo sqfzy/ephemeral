@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
 
     // ── 6) ARP-resolve the gateway MAC ─────────────────────────────────────
     auto gw_mac_r = eph::dpdk::arp::resolve(
-        port_id, /*queue=*/0, pool, src_mac, app_cfg.local_ip,
+        port_id, pool, src_mac, app_cfg.local_ip,
         app_cfg.gateway_ip, std::chrono::seconds{3});
     if (!gw_mac_r) {
         spdlog::error("ARP resolve gateway {} failed: {}",
