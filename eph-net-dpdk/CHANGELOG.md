@@ -1,5 +1,57 @@
 # eph-net-dpdk changelog
 
+## [Unreleased]
+
+### BREAKING CHANGES — RSS bring-up reshape (2026-04-28)
+
+`Platform::create` no longer silently degrades multi-queue configurations
+to a single working queue when RSS bring-up partially fails. The
+previous behaviour — collapse RETA to queue 0 + pin `dispatch_mode` to
+Software — silently masked two real problems:
+
+  1. Users requesting `nb_rx_queues=N` got 1 queue's throughput on PMDs
+     that reject `rte_eth_dev_rss_hash_update` (notably ENA), with only
+     an INFO-level log to indicate it.
+  2. Any caller that subsequently invoked `predict_rss_queue` would use
+     `kRssDefaultKey` even though the NIC was running its own internal
+     default key — silently returning wrong queue indices.
+
+New flow when `enable_rss=true && nb_rx_queues > 1`:
+
+  * `configure_rss` succeeds → `rss_active=true`, eph's key installed
+    (unchanged path).
+  * `configure_rss` fails → probe via `rte_eth_dev_rss_hash_conf_get`
+    after port start.
+      * Probe returns a key (`key_len > 0`) → `rss_active=true`,
+        `rss_using_probed_key=true`. RssPartitioned mode genuinely
+        usable; `predict_rss_queue` transparently uses the probed key.
+      * Probe also fails → `Platform::create` returns an error citing
+        both PMD failures + a recovery hint.
+
+Additionally, `enable_rss=false && nb_rx_queues > 1` now hard-fails with
+the same recovery shape — the previous silent collapse hid this
+misconfiguration too.
+
+**Recovery for callers hitting the new hard-fail**:
+
+  * If you wanted multi-queue parallelism: set `enable_rss=true` and
+    confirm your PMD supports `rss_hash_update` or `rss_hash_conf_get`.
+  * If you wanted single-queue: set `nb_rx_queues=1` explicitly.
+
+### Added
+
+- `Platform::rss_using_probed_key()` — diagnostic getter returning
+  `true` when RSS is active and the prediction key was probed from the
+  NIC rather than installed by `configure_rss`. Useful for asserting
+  expected bring-up path in operational dashboards.
+
+### Tests
+
+- New integration test binary `test_dpdk_rss_bringup` covers the new
+  configuration matrix (multi-queue probe-or-fail / multi-queue without
+  RSS hard-fail / single-queue unchanged). SKIPs cleanly when NIC_B
+  isn't bound to vfio-pci.
+
 ## [Unreleased] — review sweep (2026-04-23 / 2026-04-24)
 
 Post-v0.1.0 review-and-implement sweep focused on easy-of-use, simplicity,

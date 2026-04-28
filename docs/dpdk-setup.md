@@ -230,3 +230,49 @@ sudo ./benchmarks/latency/lat tcp --dpdk
 | `PMD: net_ena: Failed to init` | ENA not bound to vfio-pci | Bind: `dpdk-devbind.py -b vfio-pci <pci>` |
 | `ARP resolution failed` | Gateway unreachable | Check IP config, routing, security groups |
 | `TCP handshake timeout` | Firewall blocking | Check server-side firewall allows the source IP |
+| `Multi-queue RSS bring-up failed ... probe also failed` | PMD rejects both `rss_hash_update` AND `rss_hash_conf_get` (older ENA, exotic VFs) | Set `PlatformConfig::nb_rx_queues=1` — multi-queue RSS isn't safely usable on this PMD version |
+| `nb_rx_queues=N but enable_rss=false ... cannot route packets` | Caller asked for multi-queue but disabled RSS | Either set `enable_rss=true` (and confirm PMD support) OR set `nb_rx_queues=1` |
+
+## 8. RSS bring-up paths (multi-queue)
+
+`Platform::create` resolves multi-queue RSS via two paths, transparently:
+
+```
+nb_rx_queues > 1 && enable_rss=true
+       │
+       ▼
+configure_rss (rte_eth_dev_rss_hash_update)
+   ┌───┴────┐
+   │ ok     │ rejected (notably ENA)
+   ▼        ▼
+rss_active  query_rss_state (rte_eth_dev_rss_hash_conf_get)
+=true       ┌────┴─────┐
+            │ key_len>0│ no key
+            ▼          ▼
+        rss_active   Platform::create returns error
+        =true        ("Recovery: set nb_rx_queues=1")
+        using_probed
+        _key=true
+```
+
+The probe path uses the NIC's actual hash key, so `predict_rss_queue`
+returns the correct queue id even on PMDs that won't accept eph's key.
+There is no silent fallback to single-queue any more — operators must
+make an explicit choice when the NIC can't host multi-queue RSS.
+
+`Platform::rss_using_probed_key()` reports which path resolved, useful
+for assertions in production code or operational dashboards:
+
+```cpp
+auto plat = eph::dpdk::Platform::create(cfg);
+if (plat) {
+    spdlog::info("Platform up (using_probed_key={})",
+                 plat->rss_using_probed_key());
+}
+```
+
+The hard-fail path on `enable_rss=false + nb_rx_queues>1` exists
+because eph cannot route packets to multiple queues without a
+functional RSS path; the previous silent-collapse-to-queue-0 behaviour
+(which appeared to "work" with N queues but actually used 1) was
+removed.

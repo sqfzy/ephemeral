@@ -50,6 +50,17 @@ The scope decisions for the current feature set are archived in
   (default off). In DPDK production (`DpdkPoller::poll`) the tick fires on
   every poll cycle via the `on_poll_tick_` hook; single-stream users driving
   `poll_once_` directly must tick themselves.
+- `eph::dpdk::Platform::rss_using_probed_key()` — diagnostic getter
+  reflecting which RSS bring-up path resolved. `Platform::create` for
+  `enable_rss=true && nb_rx_queues>1` first tries `configure_rss`
+  (installs eph's key); if the PMD rejects `rte_eth_dev_rss_hash_update`
+  (notably ENA), it falls back to a probe via
+  `rte_eth_dev_rss_hash_conf_get` and uses the NIC's actual key for
+  `predict_rss_queue`. `rss_using_probed_key()` returns true on that
+  fallback path. If the probe also fails, `Platform::create` hard-fails
+  with a recovery hint; the previous silent-collapse-to-queue-0 path
+  was removed (BREAKING CHANGE — see `eph-net-dpdk/CHANGELOG.md`). The
+  hard-fail also fires for `enable_rss=false && nb_rx_queues>1`.
 - `eph::dpdk::TcpSession::effective_mss()` / `peer_mss_negotiated()` —
   connection MSS is clamped to `min(local, peer SYN-ACK MSS)` and may shrink
   further on ICMP Frag Needed; exposed read-only for diagnostics.
