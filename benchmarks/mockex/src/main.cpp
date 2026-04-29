@@ -25,6 +25,7 @@
 #include "eph/utils/shutdown_signal.hpp"
 #include "mockex/dispatch.hpp"
 #include "mockex/scenario.hpp"
+#include "mockex/tls_server.hpp"
 
 namespace {
 
@@ -159,15 +160,44 @@ int main(int argc, char** argv) {
     // happy path.
     (void)::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
 
+    // ── Optional TLS server bring-up ─────────────────────────────────
+    //
+    // Triggered by `[scenarios.<name>].use_tls = true`. Cert/key paths
+    // come from the global `[tls]` table — same cert reused across all
+    // scenarios. UDP scenarios that have no TCP fd to wrap will simply
+    // ignore ctx.tls regardless.
+    std::shared_ptr<mockex::tls::TlsServer> tls_server;
+    const bool use_tls = scenario_ptr->get_or<bool>("use_tls", false);
+    if (use_tls) {
+        const auto cert = cfg_e->raw()["tls"]["cert_path"].value<std::string>();
+        const auto key  = cfg_e->raw()["tls"]["key_path"].value<std::string>();
+        if (!cert || !key || cert->empty() || key->empty()) {
+            SPDLOG_ERROR("[mockex] use_tls=true but [tls].cert_path / "
+                         "[tls].key_path are missing in {}", config_path);
+            return 1;
+        }
+        auto srv_r = mockex::tls::TlsServer::create({
+            .cert_path = *cert,
+            .key_path  = *key,
+        });
+        if (!srv_r) {
+            SPDLOG_ERROR("[mockex] TlsServer::create failed: {}", srv_r.error());
+            return 1;
+        }
+        tls_server = std::shared_ptr<mockex::tls::TlsServer>(std::move(*srv_r));
+        SPDLOG_INFO("[mockex] TLS enabled (cert={}, key={})", *cert, *key);
+    }
+
     mockex::ScenarioContext ctx{
         .scenario_name = entry->section,
         .config_path   = config_path,
         .cfg           = &*cfg_e,
         .scenario      = scenario_ptr,
         .running       = &eph::utils::g_shutdown_flag,
+        .tls           = tls_server,
     };
 
-    SPDLOG_INFO("[mockex] scenario='{}' section='[{}]' config='{}'",
-                scenario_name, entry->section, config_path);
+    SPDLOG_INFO("[mockex] scenario='{}' section='[{}]' config='{}' tls={}",
+                scenario_name, entry->section, config_path, use_tls);
     return entry->fn(ctx);
 }

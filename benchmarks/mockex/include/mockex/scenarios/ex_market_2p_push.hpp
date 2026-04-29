@@ -23,10 +23,12 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/posix_listener.hpp"
+#include "mockex/io_stream.hpp"
 #include "mockex/mmpp2.hpp"
 #include "mockex/payload_pool.hpp"
 #include "mockex/push_loop.hpp"
 #include "mockex/scenario.hpp"
+#include "mockex/tls_server.hpp"
 #include "mockex/ws_server.hpp"
 
 namespace mockex::scenarios {
@@ -81,6 +83,7 @@ ex_market_2p_push_run(const ScenarioContext& ctx) noexcept {
                 params_e->lambda_quiet_hz, params_e->lambda_busy_hz,
                 burst, seed);
 
+    SPDLOG_INFO("[ex_market_2p_push] tls={}", ctx.tls != nullptr);
     while (ctx.running->load(std::memory_order_acquire)) {
         auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
         if (!cfd_e) {
@@ -89,16 +92,21 @@ ex_market_2p_push_run(const ScenarioContext& ctx) noexcept {
         }
         const int cfd = *cfd_e;
         if (cfd < 0) break;
-        if (!ws::accept_handshake(cfd)) {
-            ::close(cfd);
-            continue;
+
+        auto run_with_io = [&]<class IoStream>(IoStream io_local) {
+            if (!ws::accept_handshake(io_local)) return;
+            SPDLOG_INFO("[ex_market_2p_push] client connected fd={} "
+                        "— push start", cfd);
+            run_push_loop(io_local, sampler, pool, *ctx.running,
+                          PushConfig{.scenario_log_tag = "[ex_market_2p_push]",
+                                     .burst_multiplier = burst});
+        };
+        if (ctx.tls) {
+            auto conn = ctx.tls->accept_tls(cfd);
+            if (conn.fd() >= 0) run_with_io(std::move(conn));
+        } else {
+            run_with_io(io::RawFdStream{cfd});
         }
-        SPDLOG_INFO("[ex_market_2p_push] client connected fd={} — push start",
-                    cfd);
-        run_push_loop(cfd, sampler, pool, *ctx.running,
-                      PushConfig{.scenario_log_tag = "[ex_market_2p_push]",
-                                 .burst_multiplier = burst});
-        ::close(cfd);
         SPDLOG_INFO("[ex_market_2p_push] client disconnected");
     }
     ::close(lfd);

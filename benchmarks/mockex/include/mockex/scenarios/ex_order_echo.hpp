@@ -29,7 +29,9 @@
 
 #include "core/measurement.hpp"
 #include "eph/net/posix_listener.hpp"
+#include "mockex/io_stream.hpp"
 #include "mockex/scenario.hpp"
+#include "mockex/tls_server.hpp"
 #include "mockex/ws_server.hpp"
 
 namespace mockex::scenarios {
@@ -84,23 +86,24 @@ inject_timestamps(std::span<const uint8_t> payload,
 
 } // namespace detail::ex_order_echo
 
+template <class IoStream>
 inline void
-ex_order_handle(int cfd, const std::atomic<bool>& running) noexcept {
-    if (!ws::accept_handshake(cfd)) {
-        SPDLOG_WARN("[ex_order_echo] handshake failed fd={}", cfd);
+ex_order_handle(IoStream& io, const std::atomic<bool>& running) noexcept {
+    if (!ws::accept_handshake(io)) {
+        SPDLOG_WARN("[ex_order_echo] handshake failed");
         return;
     }
 
     while (running.load(std::memory_order_relaxed)) {
-        auto frame = ws::decode_frame(cfd);
+        auto frame = ws::decode_frame(io);
         if (!frame) return;
 
         if (frame->opcode == ws::kOpcodeClose) {
-            (void)ws::send_frame(cfd, ws::kOpcodeClose, {});
+            (void)ws::send_frame(io, ws::kOpcodeClose, {});
             return;
         }
         if (frame->opcode == ws::kOpcodePing) {
-            if (!ws::send_frame(cfd, ws::kOpcodePong, frame->payload)) return;
+            if (!ws::send_frame(io, ws::kOpcodePong, frame->payload)) return;
             continue;
         }
 
@@ -116,7 +119,7 @@ ex_order_handle(int cfd, const std::atomic<bool>& running) noexcept {
         // as 0 here and patch inline right before send.
         auto patched = detail::ex_order_echo::inject_timestamps(
             frame->payload, t_recv, bench::monotonic_raw_ns());
-        if (!ws::send_frame(cfd, ws::kOpcodeBinary,
+        if (!ws::send_frame(io, ws::kOpcodeBinary,
                             std::span<const uint8_t>(patched))) {
             return;
         }
@@ -143,6 +146,7 @@ ex_order_handle(int cfd, const std::atomic<bool>& running) noexcept {
     const int lfd = *lfd_e;
     SPDLOG_INFO("[ex_order_echo] listening on {}:{}", host, port);
 
+    SPDLOG_INFO("[ex_order_echo] tls={}", ctx.tls != nullptr);
     while (ctx.running->load(std::memory_order_acquire)) {
         auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
         if (!cfd_e) {
@@ -152,8 +156,15 @@ ex_order_handle(int cfd, const std::atomic<bool>& running) noexcept {
         const int cfd = *cfd_e;
         if (cfd < 0) break;
         SPDLOG_INFO("[ex_order_echo] client connected fd={}", cfd);
-        ex_order_handle(cfd, *ctx.running);
-        ::close(cfd);
+        if (ctx.tls) {
+            auto conn = ctx.tls->accept_tls(cfd);
+            if (conn.fd() >= 0) {
+                ex_order_handle(conn, *ctx.running);
+            }
+        } else {
+            io::RawFdStream io{cfd};
+            ex_order_handle(io, *ctx.running);
+        }
         SPDLOG_INFO("[ex_order_echo] client disconnected");
     }
 

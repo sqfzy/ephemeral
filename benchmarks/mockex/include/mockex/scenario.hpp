@@ -14,10 +14,16 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include "core/bench_conf.hpp"  // bench::BenchConfig / bench::Scenario
+
+// Forward declaration — full header (mockex/tls_server.hpp) only included
+// by handlers and main.cpp that actually wrap fds with TLS. Keeps the
+// UDP scenario handlers free of an aws-lc dep they don't use.
+namespace mockex::tls { class TlsServer; }
 
 namespace mockex {
 
@@ -28,12 +34,18 @@ namespace mockex {
 ///
 /// `running` is a pointer into `eph::utils::g_shutdown_flag`; scenarios
 /// poll it in their accept / recv loops so SIGTERM causes a clean exit.
+///
+/// `tls` is non-null when the scenario's `[scenarios.<name>].use_tls =
+/// true` and `TlsServer::create(...)` succeeded at startup. TCP-based
+/// scenario handlers wrap each accepted fd via `tls->accept_tls(cfd)`
+/// when the field is set. UDP handlers ignore it.
 struct ScenarioContext {
     std::string_view             scenario_name;   ///< e.g. "lat_tcp"
     std::string_view             config_path;     ///< absolute path to config.toml
     const bench::BenchConfig*    cfg       = nullptr;   ///< whole config
     const bench::Scenario*       scenario  = nullptr;   ///< [scenarios.<name>] subtable
     std::atomic<bool>*           running;               ///< true while we should keep serving
+    std::shared_ptr<tls::TlsServer> tls;                ///< nullable; non-null = wrap accepts in TLS
 };
 
 /// Handler function pointer. Return 0 = clean exit; non-zero propagates

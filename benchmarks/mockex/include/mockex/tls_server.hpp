@@ -111,6 +111,38 @@ public:
         return static_cast<ssize_t>(n);
     }
 
+    // ── IoStream interface (matches mockex::io::RawFdStream) ─────────
+    //
+    // These two methods let scenario handlers (tcp_echo / ws_server / ...)
+    // treat plain TCP and TLS sockets uniformly via templates instead of
+    // duplicating handler bodies. Their semantics mirror eph-net's
+    // posix::recv_exact / send_all.
+
+    /// `read(2)`-like single-shot read: blocks until ≥1 byte is
+    /// available; returns 0 on clean close, -1 on error.
+    [[nodiscard]] ssize_t read_some(void* buf, std::size_t n) noexcept {
+        return read(buf, n);
+    }
+
+    /// Block until exactly `n` bytes are read into `buf`, or return
+    /// false on EOF / error / partial read.
+    [[nodiscard]] bool read_exact(void* buf, std::size_t n) noexcept {
+        auto* p = static_cast<std::uint8_t*>(buf);
+        while (n > 0) {
+            const ssize_t r = read(p, n);
+            if (r <= 0) return false;
+            p += static_cast<std::size_t>(r);
+            n -= static_cast<std::size_t>(r);
+        }
+        return true;
+    }
+
+    /// Block until all `n` bytes from `buf` are written, or return
+    /// false on error.
+    [[nodiscard]] bool write_all(const void* buf, std::size_t n) noexcept {
+        return write(buf, n) == static_cast<ssize_t>(n);
+    }
+
     /// Tear down the TLS session and close the fd. Idempotent.
     void close() noexcept {
         if (ssl_) {

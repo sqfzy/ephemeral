@@ -7,6 +7,10 @@
 /// `t_mock_recv` / `t_mock_send` before being echoed back as an
 /// unmasked binary frame. Ping is replied with Pong; Close acks and
 /// closes the socket.
+///
+/// TLS variant: when `[lat_ws].use_tls = true` and `ctx.tls` is set,
+/// each accepted fd is wrapped in `tls::TlsConn` before the WS
+/// handshake — i.e. the handshake itself rides on TLS.
 #pragma once
 
 #include <atomic>
@@ -21,8 +25,10 @@
 
 #include "core/measurement.hpp"
 #include "eph/net/posix_listener.hpp"
+#include "mockex/io_stream.hpp"
 #include "mockex/scenario.hpp"
 #include "mockex/scenarios/tcp_echo.hpp"  // put_u64_le
+#include "mockex/tls_server.hpp"
 #include "mockex/ws_server.hpp"
 
 namespace mockex::scenarios {
@@ -33,26 +39,27 @@ constexpr size_t kTsBlockSize = 24;
 
 /// Inner per-client loop. Returns when the client closes, sends a
 /// malformed frame, or shutdown is requested.
+template <class IoStream>
 inline void
-ws_echo_handle(int cfd, const std::atomic<bool>& running) noexcept {
+ws_echo_handle(IoStream& io, const std::atomic<bool>& running) noexcept {
     using namespace detail::ws_echo;
 
-    if (!ws::accept_handshake(cfd)) {
-        SPDLOG_WARN("[ws_echo] handshake failed fd={}", cfd);
+    if (!ws::accept_handshake(io)) {
+        SPDLOG_WARN("[ws_echo] handshake failed");
         return;
     }
 
     while (running.load(std::memory_order_relaxed)) {
-        auto frame = ws::decode_frame(cfd);
+        auto frame = ws::decode_frame(io);
         if (!frame) return;   // peer close / IO error
 
         if (frame->opcode == ws::kOpcodeClose) {
             // Polite close ack. Failure is fine; we're bailing anyway.
-            (void)ws::send_frame(cfd, ws::kOpcodeClose, {});
+            (void)ws::send_frame(io, ws::kOpcodeClose, {});
             return;
         }
         if (frame->opcode == ws::kOpcodePing) {
-            if (!ws::send_frame(cfd, ws::kOpcodePong, frame->payload)) return;
+            if (!ws::send_frame(io, ws::kOpcodePong, frame->payload)) return;
             continue;
         }
 
@@ -64,7 +71,7 @@ ws_echo_handle(int cfd, const std::atomic<bool>& running) noexcept {
             const uint64_t t_send = bench::monotonic_raw_ns();
             detail::tcp_echo::put_u64_le(frame->payload.data(), 16, t_send);
         }
-        if (!ws::send_frame(cfd, ws::kOpcodeBinary, frame->payload)) return;
+        if (!ws::send_frame(io, ws::kOpcodeBinary, frame->payload)) return;
     }
 }
 
@@ -86,7 +93,8 @@ ws_echo_handle(int cfd, const std::atomic<bool>& running) noexcept {
         return 1;
     }
     const int lfd = *lfd_e;
-    SPDLOG_INFO("[ws_echo] listening on {}:{}", host, port);
+    SPDLOG_INFO("[ws_echo] listening on {}:{} (tls={})",
+                host, port, ctx.tls != nullptr);
 
     while (ctx.running->load(std::memory_order_acquire)) {
         auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
@@ -98,8 +106,18 @@ ws_echo_handle(int cfd, const std::atomic<bool>& running) noexcept {
         if (cfd < 0) break;
 
         SPDLOG_INFO("[ws_echo] client connected fd={}", cfd);
-        ws_echo_handle(cfd, *ctx.running);
-        ::close(cfd);
+
+        if (ctx.tls) {
+            auto conn = ctx.tls->accept_tls(cfd);
+            if (conn.fd() >= 0) {
+                ws_echo_handle(conn, *ctx.running);
+            }
+            // accept_tls already closed cfd on handshake failure.
+        } else {
+            io::RawFdStream io{cfd};
+            ws_echo_handle(io, *ctx.running);
+            // RawFdStream dtor closes fd.
+        }
         SPDLOG_INFO("[ws_echo] client disconnected");
     }
 

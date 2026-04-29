@@ -78,9 +78,9 @@ struct PushConfig {
 /// burst share the same T stamp — that matches the real exchange
 /// semantics, where the event timestamp is stamped at the matching-
 /// engine event, not per-outgoing frame.
-template <class SamplerT>
+template <class IoStream, class SamplerT>
 inline void
-run_push_loop(int cfd,
+run_push_loop(IoStream& io,
               SamplerT& sampler,
               PayloadPool& pool,
               const std::atomic<bool>& running,
@@ -95,7 +95,7 @@ run_push_loop(int cfd,
             ? cfg.burst_multiplier : 1;
         for (size_t i = 0; i < frames; ++i) {
             auto bytes = pool.stamp_and_next(t_send_ns);
-            if (!ws::send_frame(cfd, ws::kOpcodeBinary, bytes)) {
+            if (!ws::send_frame(io, ws::kOpcodeBinary, bytes)) {
                 SPDLOG_INFO("{} client hung up mid-send", cfg.scenario_log_tag);
                 return;
             }
@@ -104,17 +104,6 @@ run_push_loop(int cfd,
         const uint64_t dt_ns = sampler.next_interval_ns();
         next_tick_ns = bench::monotonic_raw_ns() + dt_ns;
     }
-}
-
-/// Skim any unsolicited client→server frames (ping/close) without
-/// blocking. Run this at the top of the push loop on each iteration
-/// when you suspect the peer may send control frames — currently not
-/// used because bench clients are strictly passive listeners on push
-/// scenarios, but exposed for future use.
-[[nodiscard]] inline bool
-peek_client_frame(int cfd) noexcept {
-    (void)cfd;
-    return true;
 }
 
 } // namespace mockex

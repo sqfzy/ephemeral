@@ -6,6 +6,11 @@
 /// frames and emit unmasked server frames — a subset that exactly
 /// matches the bench client's expectations.
 ///
+/// All entry points are templated on an `IoStream` type that exposes
+/// `read_exact(buf,n)` / `read_some(buf,n)` / `write_all(buf,n)`. The
+/// two adapters used in mockex are `mockex::io::RawFdStream` (plain
+/// TCP) and `mockex::tls::TlsConn` (TLS-wrapped TCP).
+///
 /// Zero allocations after construction: the caller owns a fixed-size
 /// recv scratch buffer and the encoder writes into a caller-supplied
 /// output buffer. No fragmentation, no permessage-deflate, no
@@ -24,13 +29,9 @@
 #include <string_view>
 #include <vector>
 
-#include <poll.h>
-#include <sys/socket.h>
-
 #include <spdlog/spdlog.h>
 
 #include "eph/net/detail/ws_handshake.hpp"  // ws_compute_accept
-#include "eph/net/posix_io.hpp"
 
 namespace mockex::ws {
 
@@ -53,18 +54,20 @@ struct Frame {
 namespace detail {
 
 /// Read the entire HTTP upgrade request into `out` until `\r\n\r\n`.
-/// Caps at 64 KiB like the Python mock. Returns false on peer close,
-/// timeout, or oversized request.
+/// Caps at 64 KiB. Blocks until pattern found or stream ends.
+///
+/// The pre-TLS implementation used `::poll(fd, …, timeout_ms)` for a
+/// 2-second deadline. The poll path doesn't translate to TLS (where
+/// `::poll` on the underlying fd misses SSL-buffered bytes). For the
+/// trusted bench environment we drop the timeout — mockex SIGTERM
+/// cleans up any wedged conn.
+template <class IoStream>
 [[nodiscard]] inline bool
-read_upgrade_request(int fd, std::string& out,
-                     int timeout_ms = 2000) noexcept {
+read_upgrade_request(IoStream& io, std::string& out) noexcept {
     out.clear();
-    pollfd p{ .fd = fd, .events = POLLIN, .revents = 0 };
+    char buf[4096];
     while (out.find("\r\n\r\n") == std::string::npos) {
-        int rv = ::poll(&p, 1, timeout_ms);
-        if (rv <= 0) return false;  // timeout or error
-        char buf[4096];
-        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
+        const ssize_t n = io.read_some(buf, sizeof(buf));
         if (n <= 0) return false;
         out.append(buf, static_cast<size_t>(n));
         if (out.size() > 65536) return false;
@@ -98,17 +101,18 @@ extract_sec_ws_key(std::string_view req) noexcept {
 }
 
 /// Full client-exact length decoding (1-byte | 2-byte | 8-byte).
+template <class IoStream>
 [[nodiscard]] inline std::optional<uint64_t>
-read_length(int fd, uint8_t raw_len) noexcept {
+read_length(IoStream& io, uint8_t raw_len) noexcept {
     if (raw_len < 126) return raw_len;
     if (raw_len == 126) {
         uint8_t b[2];
-        if (!eph::net::posix::recv_exact(fd, b, 2)) return std::nullopt;
+        if (!io.read_exact(b, 2)) return std::nullopt;
         return (static_cast<uint64_t>(b[0]) << 8) | b[1];
     }
     // raw_len == 127
     uint8_t b[8];
-    if (!eph::net::posix::recv_exact(fd, b, 8)) return std::nullopt;
+    if (!io.read_exact(b, 8)) return std::nullopt;
     uint64_t v = 0;
     for (int i = 0; i < 8; ++i) v = (v << 8) | b[i];
     return v;
@@ -116,15 +120,16 @@ read_length(int fd, uint8_t raw_len) noexcept {
 
 } // namespace detail
 
-/// Perform the RFC 6455 server handshake on `fd`. On success the socket
-/// is ready to exchange frames; on failure the caller should close it.
+/// Perform the RFC 6455 server handshake on `io`. On success the stream
+/// is ready to exchange frames; on failure the caller should drop it.
 ///
 /// Returns true on 101 Switching Protocols + well-formed `Accept`,
-/// false on malformed request, IO error, or timeout.
+/// false on malformed request or IO error.
+template <class IoStream>
 [[nodiscard]] inline bool
-accept_handshake(int fd, int timeout_ms = 2000) noexcept {
+accept_handshake(IoStream& io) noexcept {
     std::string req;
-    if (!detail::read_upgrade_request(fd, req, timeout_ms)) {
+    if (!detail::read_upgrade_request(io, req)) {
         SPDLOG_WARN("[ws_server] handshake read failed");
         return false;
     }
@@ -142,20 +147,21 @@ accept_handshake(int fd, int timeout_ms = 2000) noexcept {
                 "Sec-WebSocket-Accept: ");
     resp.append(accept);
     resp.append("\r\n\r\n");
-    return eph::net::posix::send_all(fd, resp.data(), resp.size());
+    return io.write_all(resp.data(), resp.size());
 }
 
-/// Read one client→server frame from `fd`. Returns nullopt on peer
+/// Read one client→server frame from `io`. Returns nullopt on peer
 /// close / IO error, or on a mandatory-mask violation (client frames
 /// must be masked per RFC 6455 §5.3).
+template <class IoStream>
 [[nodiscard]] inline std::optional<Frame>
-decode_frame(int fd) noexcept {
+decode_frame(IoStream& io) noexcept {
     uint8_t hdr[2];
-    if (!eph::net::posix::recv_exact(fd, hdr, 2)) return std::nullopt;
+    if (!io.read_exact(hdr, 2)) return std::nullopt;
     const uint8_t opcode_raw = hdr[0] & 0x0F;
     const bool    masked     = (hdr[1] & 0x80) != 0;
     const uint8_t raw_len    = hdr[1] & 0x7F;
-    auto len_opt = detail::read_length(fd, raw_len);
+    auto len_opt = detail::read_length(io, raw_len);
     if (!len_opt) return std::nullopt;
     const uint64_t length = *len_opt;
 
@@ -165,13 +171,13 @@ decode_frame(int fd) noexcept {
     }
 
     uint8_t mask[4];
-    if (!eph::net::posix::recv_exact(fd, mask, 4)) return std::nullopt;
+    if (!io.read_exact(mask, 4)) return std::nullopt;
 
     Frame f;
     f.opcode = static_cast<Opcode>(opcode_raw);
     if (length == 0) return f;
     f.payload.resize(length);
-    if (!eph::net::posix::recv_exact(fd, f.payload.data(), length))
+    if (!io.read_exact(f.payload.data(), length))
         return std::nullopt;
 
     // Unmask in-place. Loop is cheap compared to the syscall we just did.
@@ -206,15 +212,17 @@ encode_frame(Opcode opcode, std::span<const uint8_t> payload,
     return o + n;
 }
 
-/// Convenience: encode + send_all one server frame.
+/// Convenience: encode + write_all one server frame.
+template <class IoStream>
 [[nodiscard]] inline bool
-send_frame(int fd, Opcode opcode, std::span<const uint8_t> payload) noexcept {
+send_frame(IoStream& io, Opcode opcode,
+           std::span<const uint8_t> payload) noexcept {
     // Frame header is at most 10 bytes. One-shot buffer to keep the
     // send atomic (a split send would be visible as two TCP segments,
     // which some clients tolerate but is surprising for a bench).
     std::vector<uint8_t> buf(payload.size() + 10);
     const size_t n = encode_frame(opcode, payload, buf.data());
-    return eph::net::posix::send_all(fd, buf.data(), n);
+    return io.write_all(buf.data(), n);
 }
 
 } // namespace mockex::ws

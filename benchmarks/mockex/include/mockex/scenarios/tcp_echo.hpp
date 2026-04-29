@@ -9,6 +9,11 @@
 /// client's timestamp at [0:8] and the filler at [24:] are untouched.
 ///
 /// The 24-byte block convention matches Phase 11.1 of the bench.
+///
+/// TLS variant: when `[lat_tcp].use_tls = true` and
+/// `ScenarioContext::tls` is set, each accepted fd is wrapped in a
+/// `tls::TlsConn` before entering the echo loop. The loop body is
+/// templated on `IoStream` so the same code runs over both.
 #pragma once
 
 #include <algorithm>
@@ -28,7 +33,9 @@
 #include "core/measurement.hpp"          // bench::monotonic_raw_ns
 #include "eph/net/posix_io.hpp"
 #include "eph/net/posix_listener.hpp"
+#include "mockex/io_stream.hpp"
 #include "mockex/scenario.hpp"
+#include "mockex/tls_server.hpp"
 
 namespace mockex::scenarios {
 
@@ -46,23 +53,24 @@ inline void put_u64_le(uint8_t* buf, size_t off, uint64_t v) noexcept {
         buf[off + static_cast<size_t>(i)] = static_cast<uint8_t>(v >> (i * 8));
     }
 }
-} // namespace detail::tcp_echo
 
-namespace detail::tcp_echo {
-
-/// Per-client echo worker — drains recv/send until peer closes or
+/// Per-client echo worker — drains read/write until peer closes or
 /// shutdown is signalled. Stamps the 24 B timestamp block on every
-/// recv chunk ≥ 24 B (matches the original sequential path's
-/// semantics; see tcp_echo.py:69-74).
-inline void echo_client_loop(int cfd,
-                              const std::atomic<bool>& running) noexcept {
+/// chunk ≥ 24 B (matches the original sequential path's semantics; see
+/// tcp_echo.py:69-74).
+///
+/// Templated on `IoStream` so the same body serves plain TCP and
+/// TLS-wrapped TCP. `io` is moved-in and dropped (closed) on return.
+template <class IoStream>
+inline void echo_client_loop(IoStream io,
+                             const std::atomic<bool>& running,
+                             int fd_for_log) noexcept {
     std::vector<uint8_t> scratch(kScratchSize);
     while (running.load(std::memory_order_relaxed)) {
-        ssize_t n = ::recv(cfd, scratch.data(), scratch.size(), 0);
+        const ssize_t n = io.read_some(scratch.data(), scratch.size());
         if (n < 0) {
-            if (errno == EINTR) continue;
-            SPDLOG_WARN("[tcp_echo:fd={}] recv err: {}",
-                        cfd, std::strerror(errno));
+            SPDLOG_WARN("[tcp_echo:fd={}] read err: {}",
+                        fd_for_log, std::strerror(errno));
             break;
         }
         if (n == 0) break;  // peer closed
@@ -73,14 +81,13 @@ inline void echo_client_loop(int cfd,
             const uint64_t t_send = bench::monotonic_raw_ns();
             put_u64_le(scratch.data(), 16, t_send);
         }
-        if (!eph::net::posix::send_all(cfd, scratch.data(),
-                                       static_cast<size_t>(n))) {
-            SPDLOG_WARN("[tcp_echo:fd={}] send err: {}",
-                        cfd, std::strerror(errno));
+        if (!io.write_all(scratch.data(), static_cast<size_t>(n))) {
+            SPDLOG_WARN("[tcp_echo:fd={}] write err: {}",
+                        fd_for_log, std::strerror(errno));
             break;
         }
     }
-    ::close(cfd);
+    // io.~IoStream() closes the fd / SSL session.
 }
 
 } // namespace detail::tcp_echo
@@ -112,13 +119,6 @@ inline void echo_client_loop(int cfd,
     }
     const uint16_t port = *port_e;
 
-    // mockex_max_connections caps concurrent clients.  Default 1 = the
-    // original single-client behaviour, fully backwards-compatible with
-    // lat_tcp et al.  Set to N in [lat_ex_market_multi] for PR-8.
-    //
-    // Hard upper bound to prevent a typo / runaway config from
-    // spawning millions of std::threads → OOM / EAGAIN.  64 is more
-    // than enough for any realistic HFT bench (matches kMaxRssQueues).
     constexpr uint32_t kMaxMockConn = 64;
     const uint32_t requested =
         ctx.scenario->get_or<uint32_t>("mockex_max_connections", 1u);
@@ -138,8 +138,8 @@ inline void echo_client_loop(int cfd,
         return 1;
     }
     const int lfd = *lfd_e;
-    SPDLOG_INFO("[tcp_echo] listening on {}:{} (max_conn={})",
-                host, port, max_conn);
+    SPDLOG_INFO("[tcp_echo] listening on {}:{} (max_conn={}, tls={})",
+                host, port, max_conn, ctx.tls != nullptr);
 
     std::vector<std::thread> client_threads;
     client_threads.reserve(max_conn);
@@ -174,9 +174,21 @@ inline void echo_client_loop(int cfd,
         }
         SPDLOG_INFO("[tcp_echo] client connected fd={} (active={}/{})",
                     cfd, client_threads.size() + 1, max_conn);
+
+        const bool use_tls = (ctx.tls != nullptr);
         client_threads.emplace_back(
-            [cfd, running = ctx.running, &active_fds_mu, &active_fds]() {
-                echo_client_loop(cfd, *running);
+            [cfd, use_tls, tls = ctx.tls,
+             running = ctx.running,
+             &active_fds_mu, &active_fds]() {
+                if (use_tls) {
+                    auto conn = tls->accept_tls(cfd);
+                    if (conn.fd() >= 0) {
+                        echo_client_loop(std::move(conn), *running, cfd);
+                    }
+                    // accept_tls already closed cfd on handshake failure.
+                } else {
+                    echo_client_loop(io::RawFdStream{cfd}, *running, cfd);
+                }
                 std::lock_guard lk(active_fds_mu);
                 active_fds.erase(
                     std::remove(active_fds.begin(), active_fds.end(), cfd),

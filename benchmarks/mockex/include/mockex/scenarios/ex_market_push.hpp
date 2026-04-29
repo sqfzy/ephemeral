@@ -21,10 +21,12 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/net/posix_listener.hpp"
+#include "mockex/io_stream.hpp"
 #include "mockex/mmpp2.hpp"
 #include "mockex/payload_pool.hpp"
 #include "mockex/push_loop.hpp"
 #include "mockex/scenario.hpp"
+#include "mockex/tls_server.hpp"
 #include "mockex/ws_server.hpp"
 
 namespace mockex::scenarios {
@@ -75,6 +77,7 @@ ex_market_push_run(const ScenarioContext& ctx) noexcept {
                 host, port,
                 params_e->lambda_quiet_hz, params_e->lambda_busy_hz, seed);
 
+    SPDLOG_INFO("[ex_market_push] tls={}", ctx.tls != nullptr);
     while (ctx.running->load(std::memory_order_acquire)) {
         auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
         if (!cfd_e) {
@@ -83,16 +86,22 @@ ex_market_push_run(const ScenarioContext& ctx) noexcept {
         }
         const int cfd = *cfd_e;
         if (cfd < 0) break;
-        if (!ws::accept_handshake(cfd)) {
-            ::close(cfd);
-            continue;
+
+        // Wrap the fd (TLS or plain), then handshake + push.
+        auto run_with_io = [&]<class IoStream>(IoStream io_local) {
+            if (!ws::accept_handshake(io_local)) return;
+            SPDLOG_INFO("[ex_market_push] client connected fd={} "
+                        "— push loop start", cfd);
+            run_push_loop(io_local, sampler, pool, *ctx.running,
+                          PushConfig{.scenario_log_tag = "[ex_market_push]",
+                                     .burst_multiplier = 1});
+        };
+        if (ctx.tls) {
+            auto conn = ctx.tls->accept_tls(cfd);
+            if (conn.fd() >= 0) run_with_io(std::move(conn));
+        } else {
+            run_with_io(io::RawFdStream{cfd});
         }
-        SPDLOG_INFO("[ex_market_push] client connected fd={} — push loop start",
-                    cfd);
-        run_push_loop(cfd, sampler, pool, *ctx.running,
-                      PushConfig{.scenario_log_tag = "[ex_market_push]",
-                                 .burst_multiplier = 1});
-        ::close(cfd);
         SPDLOG_INFO("[ex_market_push] client disconnected");
     }
     ::close(lfd);
