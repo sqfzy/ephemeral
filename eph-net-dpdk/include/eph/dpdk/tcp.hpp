@@ -1002,14 +1002,31 @@ public:
     send_batch(const std::pair<const void*, uint16_t>* segments, uint16_t count) {
         [[maybe_unused]] auto log = detail::tcp_logger();
 
+        // Preserve the caller's original count for the BatchSendResult
+        // `requested` field. Pre-fix the function returned the *clamped*
+        // count, so a caller passing 50 segments would see {32, 32} when
+        // only the first 32 were attempted — the silent loss of segments
+        // 32..49 was indistinguishable from a clean full success. With
+        // `requested = original_count`, `sent < requested` truthfully
+        // reflects "some segments did not reach the wire", matching the
+        // partial-tx_burst case below.
+        const uint16_t original_count = count;
+
         if (state_ != TcpState::Established) {
             SPDLOG_LOGGER_WARN(log, "send_batch: not established (state={})",
                                tcp_state_name(state_));
-            return {0, count};
+            return {0, original_count};
         }
 
         static constexpr uint16_t kMaxBatchSize = 32;
-        count = std::min(count, kMaxBatchSize);
+        if (count > kMaxBatchSize) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(log,
+                "send_batch: count={} clamped to kMaxBatchSize={}; "
+                "{} trailing segments will be reported via "
+                "(requested - sent) — caller should chunk before calling",
+                count, kMaxBatchSize, count - kMaxBatchSize);
+            count = kMaxBatchSize;
+        }
 
         rte_mbuf* mbufs[kMaxBatchSize];
         uint32_t seg_lengths[kMaxBatchSize];  // track per-segment payload length
@@ -1047,7 +1064,7 @@ public:
             ++prepared;
         }
 
-        if (prepared == 0) return {0, count};
+        if (prepared == 0) return {0, original_count};
 
         // Step 2: single burst send
         uint16_t sent = rte_eth_tx_burst(
@@ -1079,9 +1096,9 @@ public:
 
         SPDLOG_LOGGER_TRACE(log,
             "send_batch: sent {}/{} segments, {} bytes",
-            sent, count, sent_bytes);
+            sent, original_count, sent_bytes);
 
-        return {sent, count};
+        return {sent, original_count};
     }
 
     // ─────────────────────────────────────────────────────────────────────────
