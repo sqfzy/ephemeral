@@ -213,44 +213,43 @@ public:
     ///        invoke its callback with `parsed.next_hop_mtu` and bump
     ///        the `dispatched()` counter. Silently no-op on no match
     ///        or on `embedded_valid == false`.
-    /// @note The **match-and-copy** happens under `mu_`, but the
-    ///       callback itself is invoked **after releasing the lock**.
-    ///       This lets callbacks safely call back into the registry
-    ///       (e.g. `unregister` from a different thread's Handle
-    ///       destructor, or a future self-unregistering target)
-    ///       without recursive-lock deadlock.
+    /// @note The matching scan AND the callback itself run under
+    ///       `mu_` to close a UAF window. Concrete scenario the lock
+    ///       hold-through prevents:
+    ///         1. lcore enters `dispatch`, snapshots `(stream, cb)`.
+    ///         2. lcore releases lock (the prior shape).
+    ///         3. app thread's `~Stream` runs `~Handle` → `unregister`,
+    ///            acquires lock, removes slot, returns. App proceeds to
+    ///            destroy `sess_` / `codec_` / the entire stream object.
+    ///         4. lcore invokes `cb(stream, mtu)` on freed memory.
+    ///       Holding the lock through the callback makes step 3 block
+    ///       on step 4 — `~Stream` cannot proceed until the callback
+    ///       finishes touching the stream.
+    /// @warning Callback contract: the callback **must not** call back
+    ///       into the registry (`register_target` / `unregister`) on
+    ///       this thread — `mu_` is non-recursive and recursion
+    ///       deadlocks. The stock production callback
+    ///       (`DpdkTcpStream::on_icmp_mtu_thunk_`) only forwards into
+    ///       `TcpSession::on_icmp_frag_needed`, which is registry-free
+    ///       and trivially conforms.
     void dispatch(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
         if (!parsed.embedded_valid) return;
 
-        // Match-and-copy phase: scan under the lock and snapshot the
-        // (stream, cb) pair into stack locals so we can release the
-        // lock before invoking. dispatched_ is bumped here (before
-        // the call) so the counter and the decision to invoke are
-        // atomic with respect to other threads' scans — a concurrent
-        // unregister will remove the entry we just snapshotted, but
-        // the counter correctly records that the dispatch-to-that-
-        // entry happened.
-        void*       stream = nullptr;
-        MtuCallback cb     = nullptr;
-        {
-            std::lock_guard<std::mutex> g(mu_);
-            for (std::size_t i = 0; i < n_targets_; ++i) {
-                const auto& e = targets_[i];
-                if (e.proto            == parsed.embedded_proto   &&
-                    e.tuple.src_ip     == parsed.embedded_src_ip  &&
-                    e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
-                    e.tuple.src_port   == parsed.embedded_src_port &&
-                    e.tuple.dst_port   == parsed.embedded_dst_port) {
-                    stream = e.stream;
-                    cb     = e.cb;
-                    ++dispatched_;
-                    break;
-                }
+        std::lock_guard<std::mutex> g(mu_);
+        for (std::size_t i = 0; i < n_targets_; ++i) {
+            const auto& e = targets_[i];
+            if (e.proto            == parsed.embedded_proto   &&
+                e.tuple.src_ip     == parsed.embedded_src_ip  &&
+                e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
+                e.tuple.src_port   == parsed.embedded_src_port &&
+                e.tuple.dst_port   == parsed.embedded_dst_port) {
+                ++dispatched_;
+                // Invoke under the lock so a concurrent unregister
+                // cannot free the stream out from under us. See @note.
+                if (e.cb) e.cb(e.stream, parsed.next_hop_mtu);
+                return;
             }
         }
-        // Invoke out-of-lock — callback is free to mutate the
-        // registry (or anything else) without deadlock risk.
-        if (cb) cb(stream, parsed.next_hop_mtu);
     }
 
     /// @brief Cumulative count of successful dispatches.
