@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed — `parse_arp_reply` reflection-attack mitigation
+
+`parse_arp_reply` previously only validated `sender_ip == target_ip`
+(the IP being resolved). An attacker sniffing our broadcast could
+craft a reply with the real gateway's IP/MAC in the sender slots but
+with the reply's `target_ip` field pointing at a different host (or
+zero) — the parser accepted it, letting the attacker poison our cache
+with the gateway's MAC at any time and bypassing the `expected_mac`
+allowlist gate (which only checks sender MAC, not the reply target).
+
+Add an optional `expected_local_ip` parameter (default nullopt to
+preserve the fuzzer harness's permissive shape) and have
+`resolve_with_io` pass our `src_ip`. Mismatched target_ip is logged
+WARN and rejected. The previous batch's `parse_arp_reply` doc note
+already described the limitation; this entry closes the gap rather
+than just documenting it.
+
 ### Fixed — `TcpSession::send_batch` reports caller's original count
 
 Pre-fix, `send_batch` clamped the input count to `kMaxBatchSize=32`
