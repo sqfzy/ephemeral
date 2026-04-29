@@ -103,9 +103,17 @@ public:
                  double qty, double price) noexcept
     {
         // Validate inputs -- reject nonsensical fills.
-        if (!std::isfinite(price)) {
-            SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: non-finite price rejected symbol={} side={} qty={} price={}",
-                        symbol, side, qty, price);
+        // The isfinite() guards must run BEFORE the `qty <= 0.0` /
+        // `price <= 0.0` comparisons, because every comparison against NaN
+        // returns false: a NaN qty/price would slip past `qty <= 0.0` and
+        // poison every downstream field (qty, avg_price, notional,
+        // realized_pnl). +inf qty also satisfies `qty > 0.0` and would
+        // produce nonsense PnL once close_qty clamps it to a finite
+        // old_qty inside the reducing-fill branch.
+        if (!std::isfinite(qty) || !std::isfinite(price)) {
+            SPDLOG_LOGGER_WARN(detail::position_logger(),
+                "on_fill: non-finite qty/price rejected symbol={} side={} qty={} price={}",
+                symbol, side, qty, price);
             return;
         }
         if (qty <= 0.0 || price <= 0.0) {
