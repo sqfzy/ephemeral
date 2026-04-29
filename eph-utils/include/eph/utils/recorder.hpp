@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -46,6 +47,34 @@ namespace recorder_detail {
 [[nodiscard]] inline std::string get_timestamp() {
     auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%d_%H-%M-%S}",
+                       std::chrono::floor<std::chrono::seconds>(now));
+}
+
+/// @brief Read CLOCK_MONOTONIC_RAW in nanoseconds.
+///
+/// Used by Recorder to time the bench's own measurement window — a
+/// monotonic source unaffected by NTP/PTP slewing, suitable for
+/// computing `runtime_seconds` deltas. Local to recorder_detail to
+/// avoid pulling benchmarks/latency/core/measurement.hpp (which would
+/// invert the layering: eph-utils is below benchmarks/).
+[[nodiscard]] inline uint64_t monotonic_raw_ns() noexcept {
+    timespec ts{};
+    if (::clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0) {
+        return 0;
+    }
+    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ull +
+           static_cast<uint64_t>(ts.tv_nsec);
+}
+
+/// @brief Get the current wall-clock time as ISO-8601 UTC.
+/// @return Timestamp in `YYYY-MM-DDTHH:MM:SSZ` format (seconds precision).
+///
+/// Used by Recorder JSON export for `started_at` / `finished_at`. ISO-8601
+/// is the cross-tool-friendly timestamp format; the existing `timestamp`
+/// field (file-safe) stays for back-compat with output filenames.
+[[nodiscard]] inline std::string iso8601_utc_now() {
+    auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}",
                        std::chrono::floor<std::chrono::seconds>(now));
 }
 
@@ -190,7 +219,9 @@ class Recorder {
     /// @throws std::runtime_error if TSC initialization fails.
     explicit Recorder(std::string name, uint64_t lowest_cycles = 1,
                       uint64_t highest_cycles = 0, int precision = 3)
-        : name_(std::move(name)) {
+        : name_(std::move(name)),
+          start_mono_ns_(recorder_detail::monotonic_raw_ns()),
+          start_iso_(recorder_detail::iso8601_utc_now()) {
         if (name_.empty()) {
             throw std::invalid_argument("Recorder name cannot be empty");
         }
@@ -386,11 +417,21 @@ class Recorder {
             return false;
         }
 
+        const uint64_t end_mono_ns = recorder_detail::monotonic_raw_ns();
+        const std::string finished_iso = recorder_detail::iso8601_utc_now();
+        const double runtime_seconds =
+            (end_mono_ns >= start_mono_ns_)
+                ? static_cast<double>(end_mono_ns - start_mono_ns_) / 1e9
+                : 0.0;
+
         try {
             file << std::format(
                 R"({{
   "name": "{}",
   "timestamp": "{}",
+  "started_at": "{}",
+  "finished_at": "{}",
+  "runtime_seconds": {:.3f},
   "samples": {{
     "recorded": {},
     "skipped_invalid": {},
@@ -409,6 +450,7 @@ class Recorder {
   "histogram_memory_bytes": {}
 }})",
                 eph::core::detail::json_escape(stats->name), get_timestamp(),
+                start_iso_, finished_iso, runtime_seconds,
                 stats->count, skipped_invalid_,
                 skipped_overflow_, stats->avg_ns, stats->min_ns, stats->max_ns,
                 stats->stddev_ns, stats->p50_ns, stats->p90_ns, stats->p99_ns,
@@ -521,6 +563,12 @@ class Recorder {
 
    private:
     std::string name_;
+    // Capture-on-construct timestamps used to report the bench's own
+    // wall-clock window in JSON. start_mono_ns_ is monotonic-raw for the
+    // delta math (`runtime_seconds`); start_iso_ is the ISO-8601 wall
+    // anchor (`started_at`). finished_at is sampled at export time.
+    uint64_t    start_mono_ns_ = 0;
+    std::string start_iso_;
     uint64_t count_ = 0;
     uint64_t total_cycles_ = 0;
     uint64_t min_cycles_ = std::numeric_limits<uint64_t>::max();
@@ -626,7 +674,9 @@ class ConcurrentRecorder {
     explicit ConcurrentRecorder(std::string name, uint64_t lowest_cycles = 1,
                                 uint64_t highest_cycles = 0,
                                 int precision = 3)
-        : name_(std::move(name)) {
+        : name_(std::move(name)),
+          start_mono_ns_(recorder_detail::monotonic_raw_ns()),
+          start_iso_(recorder_detail::iso8601_utc_now()) {
         if (name_.empty()) {
             throw std::invalid_argument(
                 "ConcurrentRecorder name cannot be empty");
@@ -806,11 +856,21 @@ class ConcurrentRecorder {
         auto [active, retired] = state_->thread_counts();
         auto [skipped_invalid, skipped_overflow] = merged_skipped_counts();
 
+        const uint64_t end_mono_ns = recorder_detail::monotonic_raw_ns();
+        const std::string finished_iso = recorder_detail::iso8601_utc_now();
+        const double runtime_seconds =
+            (end_mono_ns >= start_mono_ns_)
+                ? static_cast<double>(end_mono_ns - start_mono_ns_) / 1e9
+                : 0.0;
+
         try {
             file << std::format(
                 R"({{
   "name": "{}",
   "timestamp": "{}",
+  "started_at": "{}",
+  "finished_at": "{}",
+  "runtime_seconds": {:.3f},
   "threads": {{
     "active": {},
     "retired": {}
@@ -832,6 +892,7 @@ class ConcurrentRecorder {
   }}
 }})",
                 eph::core::detail::json_escape(stats->name), get_timestamp(),
+                start_iso_, finished_iso, runtime_seconds,
                 active, retired,
                 stats->count, skipped_invalid, skipped_overflow,
                 stats->avg_ns, stats->min_ns, stats->max_ns,
@@ -1140,6 +1201,9 @@ class ConcurrentRecorder {
     };
 
     std::string name_;
+    // Mirrors Recorder's runtime tracking — see comment there for rationale.
+    uint64_t    start_mono_ns_ = 0;
+    std::string start_iso_;
     std::shared_ptr<SharedState> state_;
 
     [[nodiscard]] static std::string get_timestamp() {
