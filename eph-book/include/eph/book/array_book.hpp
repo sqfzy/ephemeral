@@ -275,6 +275,20 @@ private:
             return;
         }
 
+        // -- Reject NaN qty — every NaN comparison is false, so NaN slips
+        //    past both the negative-clamp guard and the `qty <= 0.0` removal
+        //    branch and writes NaN straight into levels[i].qty. Downstream
+        //    consequences: total_*_qty() returns NaN and every signal that
+        //    reads it (vwap, depth_ratio, order_imbalance, mid_price,
+        //    spread) cascades NaN forever; is_crossed() / is_locked() get
+        //    NaN comparisons that hide real crossed-book conditions.
+        //    Treat NaN qty the same fail-soft way as NaN price.
+        if (std::isnan(qty)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::array_book_logger(),
+                "update_side ignoring NaN qty at price={}", price);
+            return;
+        }
+
         // -- Warn on negative qty (caller likely has a bug) ------------------
         // Intentional: clamp to 0 so downstream removal logic doesn't need
         // to distinguish negative from zero — both mean "remove this level".

@@ -305,6 +305,16 @@ private:
             return;
         }
 
+        // Reject NaN qty — same rationale as ArrayBook: every NaN comparison
+        // is false, so a NaN qty would skip the `qty <= 0.0` removal branch
+        // and call insert_or_assign with NaN, poisoning total_*_qty() and
+        // every signal downstream.
+        if (std::isnan(qty)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::map_book_logger(),
+                "MapBook::update_side ignoring NaN qty at price={}", price);
+            return;
+        }
+
         // Canonicalize price to eliminate rounding-induced duplicates.
         price = quantize(price);
 
