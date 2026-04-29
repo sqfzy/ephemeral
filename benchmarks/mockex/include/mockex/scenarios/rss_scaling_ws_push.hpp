@@ -38,6 +38,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -93,7 +94,9 @@ struct Subscriber {
     std::unique_ptr<tls::TlsConn> conn;
     uint64_t                      next_send_ns{};
     uint64_t                      packets_sent{};
-    bool                          dead = false;   ///< latched on first send error
+    bool                          dead     = false;   ///< latched on first send error
+    bool                          active   = false;   ///< push only after first client
+                                                      ///< frame ("subscribe") arrives
 };
 
 } // namespace detail::rss_scaling_ws
@@ -215,6 +218,16 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
     // memory cost across cells is bounded (~100 entries per cell × few
     // cells) so we don't bother purging.
     uint64_t loop_counter = 0;
+    // Scratch for the "subscribe" frame each new client sends. The
+    // payload content is irrelevant — its arrival is the signal that
+    // the client's RX path is fully wired up (workers spawned, RX
+    // ring being drained) and mock can safely begin pushing without
+    // backpressuring the unread SO_RCVBUF / mempool. Without this
+    // gate, mbufs accumulate in the DPDK PMD's queues during the
+    // bench's create_and_attach setup loop and starve out subsequent
+    // SYN-ACK delivery.
+    uint8_t subscribe_scratch[64];
+
     while (ctx.running->load(std::memory_order_relaxed)) {
         // Throttle accept attempts to ~every 64th iter — accept syscall
         // overhead on the hot push loop matters when conn_count is high.
@@ -222,9 +235,48 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
             accept_one_nonblocking();
         }
 
+        // Subscribe-poll throttle: same 64-iter cadence as accept. Each
+        // round does a single poll(2) over every inactive sub's fd
+        // (O(1) syscall, O(N) on the kernel side). Active subs are
+        // skipped — once a sub is activated it's never re-polled.
+        const bool subscribe_round = ((loop_counter & 0x3F) == 0);
         const uint64_t now_ns = bench::monotonic_raw_ns();
+        if (subscribe_round) {
+            // Build a pollfd vector for inactive, non-dead subs only.
+            std::vector<struct pollfd> pfds;
+            std::vector<size_t> pfd_idx;
+            pfds.reserve(subs.size());
+            pfd_idx.reserve(subs.size());
+            for (size_t i = 0; i < subs.size(); ++i) {
+                if (!subs[i].dead && !subs[i].active) {
+                    pfds.push_back(
+                        pollfd{.fd = subs[i].conn->fd(),
+                               .events = POLLIN, .revents = 0});
+                    pfd_idx.push_back(i);
+                }
+            }
+            if (!pfds.empty()) {
+                const int rv = ::poll(pfds.data(), pfds.size(), 0);
+                if (rv > 0) {
+                    for (size_t k = 0; k < pfds.size(); ++k) {
+                        if (!(pfds[k].revents & POLLIN)) continue;
+                        auto& s = subs[pfd_idx[k]];
+                        const ssize_t nrd = s.conn->read_some(
+                            subscribe_scratch, sizeof(subscribe_scratch));
+                        if (nrd <= 0) { s.dead = true; continue; }
+                        s.active       = true;
+                        s.next_send_ns = bench::monotonic_raw_ns() +
+                                         kInitialPushDelayNs;
+                        SPDLOG_INFO("[rss_scaling_ws] subscriber fd={} "
+                                    "active (subscribe frame {} bytes)",
+                                    s.conn->fd(), nrd);
+                    }
+                }
+            }
+        }
+
         for (auto& s : subs) {
-            if (s.dead || s.next_send_ns > now_ns) continue;
+            if (s.dead || !s.active || s.next_send_ns > now_ns) continue;
 
             const uint64_t t_send = bench::monotonic_raw_ns();
             std::memcpy(frame.data() + ts_offset, &t_send, sizeof(t_send));

@@ -434,6 +434,14 @@ int main(int argc, char** argv) {
         SPDLOG_INFO("cell n={}: {} streams established", n, conns.size());
 
         // Open the gate and run.
+        // Subscribe protocol: mock waits for one WS frame from each
+        // client before pushing to that subscriber. We send the
+        // subscribe AFTER workers are spawned so the RX path (PMD →
+        // mbuf → poller → on_message) is ready to drain pushes from
+        // the moment they start. Without this gate, mock pushes
+        // during the setup loop accumulate as unread mbufs and
+        // exhaust the pool around conn≈8 of cell 2, dropping the
+        // SYN-ACK for subsequent connects.
         const uint64_t now_ns      = bench::monotonic_raw_ns();
         const uint64_t mock_grace  = 150ull * 1'000'000ull;
         const uint64_t warmup_ns   = static_cast<uint64_t>(warmup_s) *
@@ -473,6 +481,20 @@ int main(int argc, char** argv) {
             });
         }
 
+        // Subscribe pass: send one tiny WS frame per stream. Mock
+        // gates push activation on this frame's arrival.
+        {
+            const std::array<uint8_t, 1> hello{0x73};  // 's'
+            for (uint16_t i = 0; i < n; ++i) {
+                auto sr = conns[i]->stream->send(
+                    std::span<const uint8_t>{hello.data(), hello.size()});
+                if (!sr) {
+                    SPDLOG_ERROR("subscribe(conn={}): {}",
+                                 i, sr.error().detail);
+                }
+            }
+        }
+
         while (bench::monotonic_raw_ns() < deadline_ns &&
                !bench::shutdown_requested()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -484,6 +506,19 @@ int main(int argc, char** argv) {
         stop_workers.store(true, std::memory_order_relaxed);
         workers.clear();
 #else
+        // Kernel: send subscribe frames now, then spin the poller for
+        // the measurement window.
+        {
+            const std::array<uint8_t, 1> hello{0x73};
+            for (uint16_t i = 0; i < n; ++i) {
+                auto sr = conns[i]->stream->send(
+                    std::span<const uint8_t>{hello.data(), hello.size()});
+                if (!sr) {
+                    SPDLOG_ERROR("subscribe(conn={}): {}",
+                                 i, sr.error().detail);
+                }
+            }
+        }
         while (bench::monotonic_raw_ns() < deadline_ns &&
                !bench::shutdown_requested()) {
             (void)poller->poll();
@@ -515,14 +550,24 @@ int main(int argc, char** argv) {
             if (c->stream) (void)c->stream->close_gracefully();
         }
 #if defined(EPH_USE_DPDK)
-        // Main thread now drives the queue pollers to push the
-        // FIN/ACK/RST packets through (workers already stopped above).
+        // Main thread drives the queue pollers to push the FIN/ACK/RST
+        // packets through (workers already stopped above). 1.5 s is
+        // generous: enough time for every cell-N stream's FIN to land,
+        // mock to mark each fd dead via a failed write_all, and any
+        // residual mock pushes already in flight to drain into the
+        // closing PMD queue. Without this, the next cell's setup
+        // races with mock's still-in-progress catch-up state and
+        // drops SYN-ACKs around conn≈10.
         const uint64_t close_until =
-            bench::monotonic_raw_ns() + 300ull * 1'000'000ull;
+            bench::monotonic_raw_ns() + 1500ull * 1'000'000ull;
         while (bench::monotonic_raw_ns() < close_until) {
             for (auto& p : pollers) (void)p->poll();
         }
         for (auto& c : conns) c->stream.reset();
+        // Brief settle after streams unregister from Platform's flow
+        // table so the next cell's create_and_attach starts with a
+        // clean route_table on each Poller.
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
 #else
         const uint64_t drain_until =
             bench::monotonic_raw_ns() + 300ull * 1'000'000ull;
