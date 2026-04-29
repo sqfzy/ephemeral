@@ -198,6 +198,37 @@ TEST(PinLcores, DuplicateCpuRollsBackEarlierStaged) {
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(31));
 }
 
+TEST(PinLcores, DuplicateLcoreIdIsRejectedBeforeStaging) {
+    // Two LcorePin entries with the same lcore_id but different cpus
+    // would slip past the cpu-collision check (the registry only
+    // notices duplicate cpus, not duplicate lcore ids), and produce a
+    // --lcores=0@4,0@5 argv that rte_eal_init would later reject with
+    // a generic "invalid lcore mask" message. pin_lcores must fail
+    // fast and name both indices so the misconfiguration is obvious.
+    eph::utils::reset_pin_registry_for_tests();
+    std::array pins = {
+        LcorePin{0, 50, "first"},
+        LcorePin{1, 51, "second"},
+        LcorePin{0, 52, "dup-id"},  // <-- same lcore_id as pin[0]
+    };
+    auto g = pin_lcores(std::span<LcorePin const>{pins});
+    ASSERT_FALSE(g.has_value());
+    EXPECT_NE(g.error().find("pin[2]"), std::string::npos)
+        << "error must point at the duplicate index: " << g.error();
+    EXPECT_NE(g.error().find("lcore_id=0"), std::string::npos)
+        << "error must name the duplicated lcore id: " << g.error();
+    EXPECT_NE(g.error().find("pin[0]"), std::string::npos)
+        << "error must reference the prior occupant index: " << g.error();
+
+    // No staged cpus survive the rejection — pin[0]/pin[1] never made
+    // it into the registry because we fail BEFORE pin_lcore is called
+    // for pin[2], and the fail return drops the guard vector which
+    // would have unregistered them anyway.
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(50));
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(51));
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(52));
+}
+
 TEST(PinLcores, ConflictWithExistingExternalPinDetected) {
     eph::utils::reset_pin_registry_for_tests();
     ASSERT_TRUE(eph::utils::register_external_pin(40, "external-mock").has_value());

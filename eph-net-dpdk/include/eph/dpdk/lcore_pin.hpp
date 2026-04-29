@@ -162,6 +162,26 @@ pin_lcores(std::span<LcorePin const> pins,
 
     for (std::size_t i = 0; i < pins.size(); ++i) {
         auto const& p = pins[i];
+
+        // Reject duplicate lcore_id BEFORE staging any registration:
+        // the cpu-collision path (via register_external_pin) catches
+        // 1:1 cpu duplicates, but DPDK's --lcores argv requires each
+        // lcore_id to appear at most once. Passing 0@4,0@5 would
+        // assemble cleanly, the registry would happily accept both
+        // (different cpus), and rte_eal_init would later reject the
+        // argv with a generic "invalid lcore mask" — the diagnostic
+        // would name neither the offending index nor the duplicate
+        // id. Fail-fast here with the index pin_lcores already uses
+        // for cpu errors so the call site sees a coherent message.
+        for (std::size_t j = 0; j < i; ++j) {
+            if (pins[j].lcore_id == p.lcore_id) {
+                return std::unexpected(std::format(
+                    "pin_lcores: pin[{}]: lcore_id={} duplicates pin[{}] "
+                    "(cpu={}, role='{}'); each EAL lcore must map to one cpu",
+                    i, p.lcore_id, j, pins[j].cpu_id, pins[j].role));
+            }
+        }
+
         auto g = pin_lcore(p.lcore_id, p.cpu_id, p.role, policy);
         if (!g) {
             // `guards` going out of scope here unregisters every staged cpu.
