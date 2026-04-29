@@ -378,3 +378,84 @@ TEST(WsCodec, EncodeBufferFull) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
+
+// ---------------------------------------------------------------------------
+// encode_close — RFC 6455 §5.5.1 / §7.1.1
+// ---------------------------------------------------------------------------
+
+TEST(WsCodec, EncodeCloseEmitsValidMaskedFrame) {
+    WsCodec encoder;
+    uint8_t wire[16]{};
+    auto n = encoder.encode_close(
+        wire, sizeof(wire),
+        eph::net::ws::close_code::kNormal);
+    ASSERT_TRUE(n.has_value());
+    // Header (2) + mask key (4) + 2-byte status code = 8 bytes
+    EXPECT_EQ(*n, 8u);
+    // Byte 0: FIN=1 + opcode=Close(0x8) → 0x88
+    EXPECT_EQ(wire[0], 0x88);
+    // Byte 1: MASK=1 + len=2 → 0x82
+    EXPECT_EQ(wire[1], 0x82);
+}
+
+TEST(WsCodec, EncodeCloseRoundTripStatusCode) {
+    WsCodec encoder;
+    uint8_t wire[16]{};
+    auto n = encoder.encode_close(wire, sizeof(wire), 1011);
+    ASSERT_TRUE(n.has_value());
+
+    // Feed through decoder; close auto-acks and surfaces WsCloseReceived.
+    WsCodec decoder;
+    SpanPacketView view{wire, *n};
+    uint8_t out_storage[32]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+    auto r = decoder.decode(view, out);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::WsCloseReceived);
+    // Auto-ack has been written into `out`. Decode that ack to recover the
+    // status code (the ack mirrors the peer's code when it's valid; 1011
+    // is in the valid range so it round-trips).
+    SpanPacketView ack_view{out_storage, out.size()};
+    uint8_t out2_storage[32]{};
+    OutputBuffer out2{out2_storage, sizeof(out2_storage)};
+    WsCodec ack_decoder;
+    auto rr = ack_decoder.decode(ack_view, out2);
+    ASSERT_FALSE(rr.has_value());
+    EXPECT_EQ(rr.error().code, Error::WsCloseReceived);
+}
+
+TEST(WsCodec, EncodeCloseWithReason) {
+    WsCodec encoder;
+    constexpr std::string_view reason = "going away";
+    uint8_t wire[64]{};
+    auto n = encoder.encode_close(
+        wire, sizeof(wire), 1001, reason);
+    ASSERT_TRUE(n.has_value());
+    // Header (2) + mask (4) + 2-byte status + reason → 8 + 10 = 18
+    EXPECT_EQ(*n, 8u + reason.size());
+    EXPECT_EQ(wire[0], 0x88);
+    EXPECT_EQ(wire[1] & 0x80, 0x80);  // mask bit
+    EXPECT_EQ(wire[1] & 0x7F, 2u + reason.size());  // payload length
+}
+
+TEST(WsCodec, EncodeCloseTooSmallBufferReturnsBufferFull) {
+    WsCodec encoder;
+    uint8_t wire[8]{};  // smaller than kMaxFrameHeaderLen (14) + 2
+    auto r = encoder.encode_close(
+        wire, sizeof(wire), eph::net::ws::close_code::kNormal);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::BufferFull);
+}
+
+TEST(WsCodec, EncodeCloseDefaultStatusCodeIsNormal) {
+    WsCodec encoder;
+    uint8_t wire[16]{};
+    auto n = encoder.encode_close(wire, sizeof(wire));
+    ASSERT_TRUE(n.has_value());
+    EXPECT_EQ(*n, 8u);
+    // Bytes 6-7 are the masked status code; un-mask using key at bytes 2-5
+    const uint16_t hi = static_cast<uint16_t>(wire[6] ^ wire[2]);
+    const uint16_t lo = static_cast<uint16_t>(wire[7] ^ wire[3]);
+    const uint16_t code = static_cast<uint16_t>((hi << 8) | lo);
+    EXPECT_EQ(code, eph::net::ws::close_code::kNormal);
+}

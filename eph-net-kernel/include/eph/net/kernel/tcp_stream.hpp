@@ -48,6 +48,7 @@
 #include "eph/net/concepts.hpp"
 #include "eph/utils/time.hpp"
 #include "eph/net/detail/http_connect.hpp"   // HTTP CONNECT proxy
+#include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
@@ -715,6 +716,18 @@ public:
 
     /// @brief Initiate a graceful half-close (shutdown(SHUT_WR) equivalent).
     ///
+    /// When the codec is WS-aware (defines `encode_close`), prepends an
+    /// RFC 6455 §7.1.1 Close frame onto the TX path BEFORE the TCP FIN.
+    /// The `if constexpr (requires { ... })` branch compiles away for
+    /// non-WS codecs (RawStreamCodec, FixCodec, ...). Caller's poller is
+    /// responsible for draining the peer's Close-ack on RX; this method
+    /// returns as soon as TCP FIN is queued and does NOT wait for it.
+    ///
+    /// Threading: caller MUST NOT have a `KernelPoller` actively driving
+    /// this stream from another thread during the call — the new
+    /// `send()` would race with RX-side codec state. Same contract as
+    /// `drain()` below, just for the lighter close path.
+    ///
     /// Error-path policy:
     ///   - ENOTCONN: peer already closed; tolerated silently (DEBUG-logged)
     ///     because the caller's intent ("stop sending") is already achieved.
@@ -726,6 +739,38 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     close_gracefully() noexcept {
         auto* log = detail::tcp_stream_logger();
+
+        // WS-Close emission (RFC 6455 §7.1.1). Compiles out for non-WS
+        // codecs. Best-effort: we don't fail close_gracefully on a
+        // close-frame send error — TCP FIN still happens.
+        if constexpr (requires {
+            codec_.encode_close(
+                std::declval<uint8_t*>(), std::declval<std::size_t>(),
+                uint16_t{}, std::string_view{});
+        }) {
+            if (state_ == TcpState::Established) {
+                uint8_t close_buf[16];  // 14-byte max header + 2-byte status
+                auto enc = codec_.encode_close(
+                    close_buf, sizeof(close_buf),
+                    eph::net::ws::close_code::kNormal);
+                if (enc) {
+                    auto sr = this->send(
+                        std::span<const uint8_t>(close_buf, *enc));
+                    if (!sr) {
+                        SPDLOG_LOGGER_DEBUG(log,
+                            "KernelTcpStream::close_gracefully: "
+                            "WS Close send skipped: {}",
+                            sr.error().detail);
+                    }
+                } else {
+                    SPDLOG_LOGGER_DEBUG(log,
+                        "KernelTcpStream::close_gracefully: "
+                        "encode_close skipped: {}",
+                        enc.error().detail);
+                }
+            }
+        }
+
         const int fd = sock_.fd();
         if (fd < 0) {
             // Already closed — treat as idempotent success and flip state.

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "eph/codec/raw_stream_codec.hpp"
+#include "eph/codec/ws_codec.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
@@ -217,6 +218,97 @@ TEST(KernelTcpStream, CloseGracefullyFlipsStateToFinWait1) {
     EXPECT_EQ(s->state(), en::TcpState::FinWait1);
     server.join();
     ::close(lfd);
+}
+
+// ---------------------------------------------------------------------------
+// close_gracefully WS-Close emission (RFC 6455 §7.1.1)
+// ---------------------------------------------------------------------------
+
+// Server helper: accept one client, recv all bytes until EOF into `out`.
+static void recv_until_eof(int listen_fd, std::vector<uint8_t>& out) {
+    struct sockaddr_in cli{};
+    socklen_t clen = sizeof(cli);
+    int c = ::accept(listen_fd,
+                     reinterpret_cast<struct sockaddr*>(&cli), &clen);
+    if (c < 0) return;
+    uint8_t buf[256];
+    for (;;) {
+        ssize_t n = ::recv(c, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        out.insert(out.end(), buf, buf + n);
+    }
+    ::close(c);
+}
+
+using PlainWsStream = ek::KernelTcpStream<eph::codec::WsCodec, false>;
+
+TEST(KernelTcpStream, CloseGracefullySendsWsCloseFrameBeforeFin) {
+    auto [lfd, port] = bind_ephemeral_listener();
+    ASSERT_GE(lfd, 0);
+
+    std::vector<uint8_t> received;
+    std::thread server([lfd, &received] { recv_until_eof(lfd, received); });
+
+    // Use WsCodec but skip the WS handshake (cfg.ws.path empty). close
+    // path needs `state_ == Established` + codec exposing
+    // `encode_close` + stream attached to a poller (send() requires it).
+    auto poller = ek::KernelPoller::create().value();
+
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    cfg.connect_timeout = std::chrono::milliseconds{1000};
+    cfg.reasm_capacity = 16 * 1024;
+    auto r = PlainWsStream::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    auto s = std::move(*r);
+    ASSERT_EQ(s->state(), en::TcpState::Established);
+    ASSERT_TRUE(poller->add(s.get()).has_value());
+
+    ASSERT_TRUE(s->close_gracefully().has_value());
+    (void)poller->remove(s.get());
+    s.reset();  // ensure fd close so server's recv returns EOF
+    server.join();
+    ::close(lfd);
+
+    // Server should have received the 8-byte client-masked Close frame
+    // before EOF: byte0=0x88 (FIN+Close), byte1=0x82 (mask + len 2).
+    ASSERT_EQ(received.size(), 8u);
+    EXPECT_EQ(received[0], 0x88);
+    EXPECT_EQ(received[1], 0x82);
+    // Bytes 6-7 are the masked status code; un-mask using the mask key
+    // at bytes 2-5 and verify it decodes to kNormal (1000).
+    const uint16_t hi = static_cast<uint16_t>(received[6] ^ received[2]);
+    const uint16_t lo = static_cast<uint16_t>(received[7] ^ received[3]);
+    EXPECT_EQ(static_cast<uint16_t>((hi << 8) | lo),
+              eph::net::ws::close_code::kNormal);
+}
+
+TEST(KernelTcpStream, CloseGracefullyOnRawCodecOmitsWsClose) {
+    auto [lfd, port] = bind_ephemeral_listener();
+    ASSERT_GE(lfd, 0);
+
+    std::vector<uint8_t> received;
+    std::thread server([lfd, &received] { recv_until_eof(lfd, received); });
+
+    // Match the WS test's pollers-attached precondition so the only
+    // difference between the two cells is the codec type.
+    auto poller = ek::KernelPoller::create().value();
+
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    auto s = PlainRawStream::create(cfg).value();
+    ASSERT_EQ(s->state(), en::TcpState::Established);
+    ASSERT_TRUE(poller->add(s.get()).has_value());
+    ASSERT_TRUE(s->close_gracefully().has_value());
+    (void)poller->remove(s.get());
+    s.reset();
+    server.join();
+    ::close(lfd);
+
+    // Raw codec — no encode_close, no Close frame. Just TCP FIN.
+    EXPECT_TRUE(received.empty())
+        << "received " << received.size() << " unexpected bytes "
+        << "(close_gracefully should NOT send anything for non-WS codec)";
 }
 
 TEST(KernelTcpStream, DestructorAutoDetachesFromPoller) {

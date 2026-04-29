@@ -554,6 +554,46 @@ public:
         return n;
     }
 
+    /// @brief Encode a Close frame (RFC 6455 §5.5.1) into `buf`.
+    ///
+    /// Writes a masked Close frame with the given 2-byte status code and
+    /// optional UTF-8 reason. Wraps the free function `ws::build_close_frame`
+    /// — same masking convention as `encode()` (every WS frame in eph is
+    /// masked regardless of direction; see encode for the well-known caveat).
+    ///
+    /// Buffer requirement: `cap >= ws::kMaxFrameHeaderLen + 2 + reason.size()`.
+    /// `reason.size()` is implicitly clamped to 123 by `ws::build_close_frame`
+    /// per RFC 6455 §5.5 control-frame payload limit (a clamping log line
+    /// is emitted by the underlying builder).
+    ///
+    /// Used by `KernelTcpStream::close_gracefully` /
+    /// `DpdkTcpStream::close_gracefully` to emit a WS-level close before
+    /// TCP FIN. Callers that want a custom status code or reason can call
+    /// this directly + `Stream::send()` BEFORE invoking `close_gracefully`.
+    [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
+    encode_close(uint8_t* buf, std::size_t cap,
+                 uint16_t status_code = eph::net::ws::close_code::kNormal,
+                 std::string_view reason = {}) noexcept {
+        namespace ws = eph::net::ws;
+        const std::size_t needed =
+            ws::kMaxFrameHeaderLen + 2 + reason.size();
+        if (cap < needed) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                "WsCodec::encode_close: buffer too small (need {}, have {})",
+                needed, cap);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "WsCodec::encode_close: destination buffer too small"});
+        }
+        const std::size_t n = ws::build_close_frame(buf, status_code, reason);
+        if (n == 0) [[unlikely]] {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad,
+                "WsCodec::encode_close: ws::build_close_frame rejected"});
+        }
+        return n;
+    }
+
 private:
     /// @brief Write a pong frame into `out` echoing the ping payload.
     std::expected<void, core::ErrorInfo>
