@@ -611,6 +611,22 @@ public:
 
     TcpSession& operator=(TcpSession&& other) noexcept {
         if (this != &other) {
+            // Symmetry with ~TcpSession: if *this currently holds a live
+            // session (peer still believes the connection is open) we
+            // must emit the same best-effort RST the dtor would, before
+            // overwriting our state. Without this, `live = std::move
+            // (other);` silently abandons the peer — no FIN, no RST,
+            // half-open connection from the peer's view until its
+            // keepalive / read-timeout fires (minutes to hours). The
+            // dtor's gating mirrors this exactly: same state policy,
+            // same `pool_ != nullptr` precondition.
+            if (should_rst_on_destroy_(state_) && pool_ != nullptr) {
+                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                    "TcpSession::operator=(&&): state={} on target -> "
+                    "best-effort RST before overwrite",
+                    tcp_state_name(state_));
+                reset();
+            }
             config_ = std::move(other.config_);
             pool_ = other.pool_;
             state_ = other.state_;

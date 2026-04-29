@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed — TcpSession::operator=(&&) now matches dtor RST-on-overwrite policy
+
+Move-assigning into a live `TcpSession` (target in `Established` /
+`SynSent` / `SynReceived` / `CloseWait` with a non-null `pool_`)
+silently abandoned the peer: the target's old state was overwritten
+without firing the best-effort RST that `~TcpSession` would have
+emitted. The peer was left half-open until its own keepalive /
+read-timeout fired (minutes to hours).
+
+Move-assign now invokes the same `should_rst_on_destroy_(state_) &&
+pool_ != nullptr` policy as the destructor and calls `reset()` before
+overwriting fields. The move ctor is unaffected — it constructs a
+brand-new instance, so there is no prior state to wind down.
+
 ### Fixed — StreamSnapshot.tcp.peer_mss now reports the raw peer advertisement
 
 `DpdkTcpStream::snapshot().tcp.peer_mss` previously returned
