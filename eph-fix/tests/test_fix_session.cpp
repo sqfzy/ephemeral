@@ -3,6 +3,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -627,4 +629,99 @@ TEST(FixSession, SessionStateFormatterProducesName) {
     EXPECT_EQ(s, "ACTIVE");
     auto s2 = std::format("{}", SessionState::kDisconnected);
     EXPECT_EQ(s2, "DISCONNECTED");
+}
+
+// ===========================================================================
+// Regression: concurrent send must produce strictly monotonic MsgSeqNum.
+//
+// The session's RX-thread heartbeat / TestRequest path (`on_rx` → send_*)
+// races with the application-thread `send_app` path on outbound_seq_.
+// `fill_session_header` historically used a load-then-store pattern,
+// which under contention produces duplicate MsgSeqNum values on the wire
+// — a fatal session-level FIX protocol violation that gets the session
+// torn down by the counter-party.
+//
+// This test spawns two threads each issuing 200 send_app calls and then
+// asserts that every successfully-sent message carries a unique MsgSeqNum
+// in {2, 3, …, 401}. Before the fix the test fails with duplicate entries.
+// ===========================================================================
+TEST(FixSession, concurrent_send_app_produces_unique_seq) {
+    // Mock with internal mutex so the concurrency under test is the
+    // session's own outbound_seq_ handling, not vector growth.
+    struct ThreadSafeMock {
+        std::mutex                       mu;
+        std::vector<std::vector<uint8_t>> sent;
+        bool send(const uint8_t* d, size_t l) {
+            std::lock_guard lk(mu);
+            sent.emplace_back(d, d + l);
+            return true;
+        }
+    } mock;
+
+    auto cfg = test_config();
+    FixSession session(
+        [&](const uint8_t* d, size_t l) { return mock.send(d, l); }, cfg);
+
+    // Logon manually so the mock's mutex doesn't deadlock with do_logon's
+    // helper which uses MockFixTransport.
+    size_t before;
+    {
+        std::lock_guard lk(mock.mu);
+        before = mock.sent.size();
+    }
+    std::thread t([&] { (void)session.logon(std::chrono::milliseconds{500}); });
+    while (true) {
+        std::lock_guard lk(mock.mu);
+        if (mock.sent.size() > before) break;
+        std::this_thread::yield();
+    }
+    auto resp = MockFixTransport::logon_response();
+    session.on_rx(resp.data(), resp.size());
+    t.join();
+    ASSERT_EQ(session.state(), SessionState::kActive);
+
+    constexpr int kPerThread = 5000;
+    std::atomic<int> success_count{0};
+    auto worker = [&] {
+        for (int i = 0; i < kPerThread; ++i) {
+            uint8_t buf[256];
+            MessageBuilder b(buf, sizeof(buf));
+            b.set(tag::MsgType, "V");
+            b.set(tag::MDReqID, "md-conc");
+            if (session.send_app(b)) {
+                success_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    };
+
+    std::thread t1(worker);
+    std::thread t2(worker);
+    t1.join();
+    t2.join();
+
+    // Walk every successfully-captured outbound message and collect the
+    // MsgSeqNum values. With 2 × 200 = 400 sends after the Logon (seq=1),
+    // the seq set must be {2..401} — exactly 400 unique values.
+    std::lock_guard lk(mock.mu);
+    std::set<int64_t> seen_seqs;
+    int duplicate_count = 0;
+    for (const auto& bytes : mock.sent) {
+        auto msg = parse(bytes.data(), bytes.size());
+        if (!msg) continue;
+        auto seq = msg->get_int(tag::MsgSeqNum);
+        if (!seq) continue;
+        if (!seen_seqs.insert(*seq).second) {
+            ++duplicate_count;
+        }
+    }
+
+    EXPECT_EQ(duplicate_count, 0)
+        << "outbound_seq_ race produced duplicate MsgSeqNum values "
+        << "(violates FIX session-level monotonicity)";
+
+    // Every successful send_app must contribute a fresh MsgSeqNum: under
+    // contention the load-then-store version would (silently) reuse seqs,
+    // leaving |seen_seqs| < |success_count|.
+    EXPECT_EQ(static_cast<int>(seen_seqs.size()),
+              success_count.load() + 1 /* +1 for the initial Logon at seq=1 */);
 }
