@@ -126,10 +126,19 @@ public:
             SHA256(raw.data(), raw.size(), normalized_);
             SPDLOG_TRACE("HmacSha256Key: hashed long key ({} bytes) to 32B",
                          raw.size());
-        } else {
+        } else if (!raw.empty()) {
+            // memcpy(_, nullptr, 0) is ISO C UB even though zero-byte. An
+            // empty `std::span` may carry a null `data()` pointer (the
+            // standard does not require it to be non-null when size==0),
+            // so guard explicitly. The buffer is already zeroed above so
+            // an empty key normalizes to all-zero — same RFC 2104 result
+            // as a single-byte zero-padded key, with no UB on the way.
             std::memcpy(normalized_, raw.data(), raw.size());
             SPDLOG_TRACE("HmacSha256Key: copied key ({} bytes), zero-padded",
                          raw.size());
+        } else {
+            SPDLOG_TRACE("HmacSha256Key: empty key (degenerate; "
+                         "normalized to zeros)");
         }
     }
 
