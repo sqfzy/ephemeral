@@ -156,7 +156,9 @@ warmup_seconds             = 2
 # saturation showed up in the bench as a systemic 20 ms P99.9 spike on
 # every conn — masking the actual scaling property under test.
 push_rate_pps_per_conn     = 2000
-conn_count                 = 5
+# Sweep list — the bench iterates these in order in a single process.
+# Set to a single-element list (e.g. [20]) to run one cell.
+conn_count_list            = [5, 20, 100]
 
 # DPDK-only knobs. The override fields don't touch the global
 # [dpdk.rss] table because every other scenario expects nb_rx_queues=1
@@ -186,7 +188,7 @@ warmup_seconds             = 2
 # SSL_write is heavier than sendto. Empirically 1500 pps/conn keeps
 # the mock CPU below saturation through conn_count=100.
 push_rate_pps_per_conn     = 1500
-conn_count                 = 5
+conn_count_list            = [5, 20, 100]
 
 # Enables the mock's SSL_accept/SSL_write path (aws-lc) using the
 # self-signed cert/key from the global [tls] table.

@@ -138,67 +138,66 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
     }
     const uint64_t interval_ns = 1'000'000'000ull / push_rate;
 
-    const uint16_t expected_conn_count =
-        ctx.scenario->get_or<uint16_t>("conn_count", 5);
-
-    // Listen with backlog ≥ expected fan-out so the burst of N client
-    // connect()s during the bench's setup phase doesn't overflow the
-    // SYN queue. tcp_bind_listen sets SO_REUSEADDR + nonblocking +
-    // accept_one polls cooperatively.
-    auto lfd_e = eph::net::posix::tcp_bind_listen(
-        host, port, /*backlog=*/std::max<int>(expected_conn_count, 8));
+    // Backlog only matters for the burst of accepts at cell-start; pick
+    // a generous fixed size so we don't have to know conn_count up
+    // front. Mock has no per-conn cap — see "interleaved accept+push"
+    // note below.
+    auto lfd_e = eph::net::posix::tcp_bind_listen(host, port, /*backlog=*/256);
     if (!lfd_e) {
         SPDLOG_ERROR("[rss_scaling_ws] tcp_bind_listen {}:{} failed: {}",
                      host, port, lfd_e.error());
         return 1;
     }
     const int lfd = *lfd_e;
-    SPDLOG_INFO("[rss_scaling_ws] listening {}:{} expected_conns={} "
-                "push_rate={} pps interval={} ns payload={} B (TLS+WS)",
-                host, port, expected_conn_count,
-                push_rate, interval_ns, payload_size);
+
+    // Non-blocking accept — we interleave accept-if-pending with the
+    // push fanout in a single loop, so accept(2) must not block.
+    {
+        const int flags = ::fcntl(lfd, F_GETFL, 0);
+        if (flags >= 0) (void)::fcntl(lfd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    SPDLOG_INFO("[rss_scaling_ws] listening {}:{} push_rate={} pps "
+                "interval={} ns payload={} B (TLS+WS, accept-on-demand)",
+                host, port, push_rate, interval_ns, payload_size);
 
     std::vector<Subscriber> subs;
-    subs.reserve(expected_conn_count);
+    subs.reserve(64);
 
-    // ── Phase 1: accept all clients sequentially ──────────────────────
-    //
-    // Each accept does:
-    //   accept_one(lfd, running)  → cfd
-    //   ctx.tls->accept_tls(cfd)  → SSL_accept (aws-lc handshake)
-    //   ws::accept_handshake(io)  → RFC 6455 client→server upgrade
-    // Sequential is fine: the bench client opens conn i+1 only after
-    // conn i's handshake completes, so the pipeline matches.
-    while (subs.size() < expected_conn_count &&
-           ctx.running->load(std::memory_order_acquire)) {
-        auto cfd_e = eph::net::posix::accept_one(lfd, *ctx.running);
-        if (!cfd_e) {
-            SPDLOG_WARN("[rss_scaling_ws] accept: {}", cfd_e.error());
-            continue;
-        }
-        const int cfd = *cfd_e;
-        if (cfd < 0) break;  // shutdown signaled
+    // Pre-build the static WS binary frame once. Per-push we only patch
+    // mock_send_ns into the payload region and write_all the whole
+    // buffer — no per-send heap allocation.
+    std::vector<uint8_t> frame(kWsHeaderMax + payload_size, 0);
+    const size_t hdr_n     = build_ws_header(payload_size, frame.data());
+    const size_t total_n   = hdr_n + payload_size;
+    const size_t ts_offset = hdr_n + kMockSendNsOffset;
+
+    auto accept_one_nonblocking = [&]() {
+        // Try a single accept(2). The blocking SSL_accept and
+        // ws::accept_handshake that follow are brief on LAN (~1–3 ms);
+        // they introduce a small jitter blip on existing subscribers'
+        // pushes only during cell-transition warmup, which the bench
+        // client discards via warmup_seconds.
+        sockaddr_in caddr{};
+        socklen_t   clen = sizeof(caddr);
+        const int cfd = ::accept(lfd,
+                                  reinterpret_cast<sockaddr*>(&caddr),
+                                  &clen);
+        if (cfd < 0) return;  // EAGAIN / EWOULDBLOCK / EINTR
 
         auto tls_conn = ctx.tls->accept_tls(cfd);
         if (tls_conn.fd() < 0) {
-            SPDLOG_WARN("[rss_scaling_ws] accept_tls(cfd={}) failed; "
-                        "client closed pre-handshake?", cfd);
-            continue;
+            SPDLOG_WARN("[rss_scaling_ws] accept_tls(cfd={}) failed", cfd);
+            return;
         }
-
         if (!ws::accept_handshake(tls_conn)) {
             SPDLOG_WARN("[rss_scaling_ws] WS handshake failed on cfd={}",
                         tls_conn.fd());
-            continue;  // tls_conn destructor closes fd
+            return;
         }
-
-        // TCP_NODELAY on the underlying fd — bench measures push-to-RX
-        // latency, Nagle batching would inflate it visibly at low rate.
         const int one = 1;
         (void)::setsockopt(tls_conn.fd(), IPPROTO_TCP, TCP_NODELAY,
                            &one, sizeof(one));
-        // Larger SO_SNDBUF so the per-conn bursty fan-out doesn't drain
-        // serialize on the kernel buffer. Best-effort.
         (void)::setsockopt(tls_conn.fd(), SOL_SOCKET, SO_SNDBUF,
                            &kSocketBufBytes, sizeof(kSocketBufBytes));
 
@@ -206,29 +205,23 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
         s.conn         = std::make_unique<tls::TlsConn>(std::move(tls_conn));
         s.next_send_ns = bench::monotonic_raw_ns() + kInitialPushDelayNs;
         subs.push_back(std::move(s));
-
         SPDLOG_INFO("[rss_scaling_ws] subscriber #{} ready (fd={})",
                     subs.size(), subs.back().conn->fd());
-    }
+    };
 
-    if (!ctx.running->load(std::memory_order_acquire)) {
-        ::close(lfd);
-        return 0;
-    }
-    SPDLOG_INFO("[rss_scaling_ws] accepted {} subscribers; entering push loop",
-                subs.size());
-
-    // ── Phase 2: pre-build the static frame and enter push loop ───────
-    //
-    // The WS header for our fixed payload size is built once. Per-push
-    // we only patch `mock_send_ns` into the payload region (offset
-    // hdr_n + 16) and write_all the whole frame. No per-send heap.
-    std::vector<uint8_t> frame(kWsHeaderMax + payload_size, 0);
-    const size_t hdr_n     = build_ws_header(payload_size, frame.data());
-    const size_t total_n   = hdr_n + payload_size;
-    const size_t ts_offset = hdr_n + kMockSendNsOffset;
-
+    // Interleaved accept + push loop. Per iteration: one accept attempt
+    // (non-blocking; cheap if no pending), then push to every due
+    // subscriber. Dead subscribers stay in the vector but are skipped —
+    // memory cost across cells is bounded (~100 entries per cell × few
+    // cells) so we don't bother purging.
+    uint64_t loop_counter = 0;
     while (ctx.running->load(std::memory_order_relaxed)) {
+        // Throttle accept attempts to ~every 64th iter — accept syscall
+        // overhead on the hot push loop matters when conn_count is high.
+        if ((loop_counter++ & 0x3F) == 0) {
+            accept_one_nonblocking();
+        }
+
         const uint64_t now_ns = bench::monotonic_raw_ns();
         for (auto& s : subs) {
             if (s.dead || s.next_send_ns > now_ns) continue;
@@ -238,9 +231,10 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
 
             if (!s.conn->write_all(frame.data(), total_n)) {
                 // SSL_write or underlying TCP write failed (peer reset,
-                // SSL fatal). Latch dead — don't retry, would just thrash.
-                SPDLOG_WARN("[rss_scaling_ws] write_all failed on fd={} "
-                            "after {} packets; latching dead",
+                // SSL fatal). Latch dead — typical when the bench
+                // client closes streams between cells.
+                SPDLOG_INFO("[rss_scaling_ws] write_all closed on fd={} "
+                            "after {} packets (latching dead)",
                             s.conn->fd(), s.packets_sent);
                 s.dead = true;
                 continue;
@@ -248,10 +242,6 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
             ++s.packets_sent;
             s.next_send_ns += interval_ns;
 
-            // Drift correction: if the loop fell more than 5 intervals
-            // behind (CFS preempt, TLS write contention spike), snap
-            // the next deadline forward instead of issuing a long
-            // catch-up burst. Same heuristic as rss_scaling_push.
             const uint64_t lag = (s.next_send_ns < now_ns)
                                      ? (now_ns - s.next_send_ns)
                                      : 0;
@@ -261,12 +251,16 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
         }
     }
 
-    for (size_t i = 0; i < subs.size(); ++i) {
-        SPDLOG_INFO("[rss_scaling_ws] subscriber #{} sent={} packets dead={}",
-                    i, subs[i].packets_sent, subs[i].dead);
+    size_t alive = 0, dead = 0;
+    uint64_t total_sent = 0;
+    for (const auto& s : subs) {
+        if (s.dead) ++dead; else ++alive;
+        total_sent += s.packets_sent;
     }
+    SPDLOG_INFO("[rss_scaling_ws] shutdown — subs={} (alive={}, dead={}) "
+                "total_sent={}",
+                subs.size(), alive, dead, total_sent);
     ::close(lfd);
-    SPDLOG_INFO("[rss_scaling_ws] shutdown");
     return 0;
 }
 
