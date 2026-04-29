@@ -744,12 +744,31 @@ private:
     [[nodiscard]] bool fill_session_header(MessageBuilder& b) noexcept {
         b.set(tag::SenderCompID, cfg_.sender_comp_id);
         b.set(tag::TargetCompID, cfg_.target_comp_id);
+
+        // Atomic claim of the next MsgSeqNum.  The TX (app) thread and the RX
+        // poll thread both call this (RX → on_rx → send_heartbeat /
+        // send_test_request / send_sequence_reset_gap_fill) — see the
+        // class-level "Thread model" comment.  A simple load+store would race
+        // and produce duplicate MsgSeqNum on the wire (a fatal session-level
+        // FIX violation that the counter-party drops the session for); a
+        // single fetch_add could not cleanly enforce the UINT32_MAX boundary.
+        // We therefore CAS-claim seq in a loop, refusing the claim once the
+        // counter is exhausted.
         uint32_t seq = outbound_seq_.load(std::memory_order_relaxed);
-        if (seq >= UINT32_MAX) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
-                "Outbound sequence number exhausted (seq={}): cannot send, "
-                "must reset session", seq);
-            return false;
+        for (;;) {
+            if (seq >= UINT32_MAX) [[unlikely]] {
+                SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    "Outbound sequence number exhausted (seq={}): cannot send, "
+                    "must reset session", seq);
+                return false;
+            }
+            if (outbound_seq_.compare_exchange_weak(
+                    seq, seq + 1,
+                    std::memory_order_relaxed,
+                    std::memory_order_relaxed)) {
+                break;  // We exclusively own `seq` for this message.
+            }
+            // Another thread won this slot — `seq` was reloaded, retry.
         }
 
         // Warn at 90% capacity so operators can schedule a session reset.
@@ -765,7 +784,6 @@ private:
                 seq);
         }
 
-        outbound_seq_.store(seq + 1, std::memory_order_relaxed);
         b.set_int(tag::MsgSeqNum, static_cast<int64_t>(seq));
 
         uint64_t now_ns = static_cast<uint64_t>(
