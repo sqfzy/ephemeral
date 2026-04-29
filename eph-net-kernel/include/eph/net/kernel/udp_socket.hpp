@@ -162,8 +162,19 @@ public:
     }
 
     ~KernelUdpSocket() {
+        // Symmetric with ~DpdkUdpSocket and ~KernelTcpStream: log a WARN
+        // when auto-detach fails so a Poller/Socket lifecycle mismatch is
+        // visible instead of being silently `(void)`-discarded. Pre-fix
+        // the result was dropped on the floor, hiding double-remove and
+        // stale-attached_to_ bugs at the kernel-backend tier.
         if (attached_to_ != nullptr) {
-            (void)attached_to_->remove(this);
+            auto r = attached_to_->remove(this);
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                    "~KernelUdpSocket: auto-detach failed: {} — possible "
+                    "Poller/Socket lifecycle mismatch",
+                    r.error().detail ? r.error().detail : "unknown");
+            }
         }
         if (fd_ >= 0) {
             ::close(fd_);

@@ -639,10 +639,22 @@ public:
         // If still attached to a Poller, remove ourselves first so the
         // Poller's entries_ does not retain a dangling pointer. The Poller
         // clears our attached_to_ via notify_detached_ during the remove.
+        // A non-OK result means the Stream and Poller lifecycles drifted
+        // (e.g. double-remove or stale attached_to_) — log loudly to
+        // match the symmetric DpdkTcpStream dtor and keep the bug
+        // surface consistent across backends. Pre-fix the result was
+        // silently `(void)`-discarded, so an out-of-sync teardown was
+        // invisible at the kernel-backend tier.
         if (attached_to_ != nullptr) {
             SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
                 "~KernelTcpStream: auto-detach fd={}", sock_.fd());
-            (void)attached_to_->remove(this);
+            auto r = attached_to_->remove(this);
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "~KernelTcpStream: auto-detach failed: {} — possible "
+                    "Poller/Stream lifecycle mismatch",
+                    r.error().detail ? r.error().detail : "unknown");
+            }
         }
         // ByteSocket closes automatically on its own destruction.
     }
