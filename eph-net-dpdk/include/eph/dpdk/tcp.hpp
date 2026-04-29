@@ -2147,15 +2147,21 @@ private:
     }
 
     /// Convert `config_.keepalive_interval` (milliseconds) into TSC
-    /// cycles once per call. Uses the 1 GHz ns→cycles fallback if
-    /// TSC::init() has not yet run — keepalive does not need
-    /// microsecond precision, so an off-by-a-few-percent is acceptable
-    /// in that edge case.
+    /// cycles once per call. Uses a 3 GHz ns→cycles fallback if
+    /// TSC::init() has not yet run — same direction the DNS resolver
+    /// fallback already picked (`AsyncDnsResolver::start`): when in
+    /// doubt the upper-bound CPU frequency makes the timer fire LATE
+    /// rather than EARLY. Picking 1 GHz (the legacy choice) on a real
+    /// 3 GHz host scaled the keepalive interval down by 3× and produced
+    /// keepalive probe storms in tests where TSC::init() had been
+    /// skipped (typical mock setups). Production paths call TSC::init()
+    /// at startup and never hit the fallback.
     [[nodiscard]] uint64_t keepalive_interval_cycles_() const noexcept {
         const double ns =
             static_cast<double>(config_.keepalive_interval.count()) * 1'000'000.0;
         if (auto opt = eph::utils::TSC::to_cycles(ns)) return *opt;
-        return static_cast<uint64_t>(ns);
+        // Fallback: assume 3 GHz upper-bound. cycles = ns × 3.
+        return static_cast<uint64_t>(ns * 3.0);
     }
 
     /// Send a bare ACK packet.

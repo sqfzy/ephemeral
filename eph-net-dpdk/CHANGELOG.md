@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed — `keepalive_interval_cycles_` TSC fallback aligned with DNS
+
+`TcpSession::keepalive_interval_cycles_()` returned
+`static_cast<uint64_t>(ns)` when `TSC::to_cycles` failed (TSC not
+yet calibrated), implicitly assuming 1 GHz. The DNS resolver's
+matching fallback for `timeout_cycles_` / `retry_interval_cycles_`
+chose 3 GHz on the same code path with the rationale "an
+upper-bound frequency keeps the timer firing LATE rather than
+EARLY". Keeping the keepalive at 1 GHz means a real 3 GHz host
+without `TSC::init()` (typical mock setups) divided the keepalive
+interval by 3× and produced probe storms; a 30 s configured
+interval fired every 10 s.
+
+Match the DNS path: the keepalive fallback now multiplies by 3.0
+(3 GHz upper-bound). Production paths call `TSC::init()` at
+startup and never reach the fallback. Test paths that bypass
+`TSC::init()` now match the configured interval to within the
+real CPU frequency rather than aggressively over-firing.
+
 ### Fixed — `UdpConfig::warnings` parity with TcpConfig (zero MAC + loopback)
 
 `eph::dpdk::TcpConfig::warnings` has surfaced four advisory checks
