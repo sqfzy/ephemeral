@@ -221,6 +221,73 @@ TEST(FaultTolerance, SimultaneousCloseFinWait1ToClosing) {
     EXPECT_EQ(s.state(), TcpState::Closing);
 }
 
+// RFC 793 §3.5: a segment may carry FIN together with data. The FIN
+// occupies one sequence number AT (seg_seq + payload_len), not at
+// seg_seq. Confirm process_rx delivers the data, transitions to
+// CloseWait, and advances rcv_nxt_ past the FIN — the regression
+// (pre-fix) dropped the FIN as "out-of-order" because the legacy
+// in-order check compared parsed.seq() against the post-payload
+// rcv_nxt_, which they never equal when payload_len > 0.
+TEST(FaultTolerance, FinWithDataInEstablishedConsumesBoth) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::Established);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2000, 8192);
+
+    constexpr uint8_t payload[] = {0xAB, 0xCD, 0xEF, 0x12, 0x34};
+    constexpr size_t  payload_len = sizeof(payload);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2000, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck),
+               /*window=*/65535, payload, payload_len);
+
+    bool data_seen = false;
+    uint16_t data_len_seen = 0;
+    rte_mbuf* p = &fake.mbuf;
+    auto r = s.process_rx(&p, 1,
+        [&](const uint8_t* d, uint16_t len) {
+            data_seen = true;
+            data_len_seen = len;
+            (void)d;
+        });
+    ASSERT_TRUE(r.has_value());
+
+    // Data callback must fire even though the same segment carries FIN.
+    EXPECT_TRUE(data_seen);
+    EXPECT_EQ(data_len_seen, payload_len);
+    // FIN consumes one byte AFTER the payload.
+    // rcv_nxt_ must end at 2000 + payload_len + 1 (FIN).
+    EXPECT_EQ(s.rcv_nxt(), 2000u + payload_len + 1u);
+    // Established + FIN(+ACK) → CloseWait per RFC 793 §3.5.
+    EXPECT_EQ(s.state(), TcpState::CloseWait);
+}
+
+// Companion case: data + FIN arriving in FinWait2 must complete the
+// half-close → TimeWait transition.
+TEST(FaultTolerance, FinWithDataInFinWait2ToTimeWait) {
+    auto cfg = make_test_config();
+    TcpSession<> s(cfg, nullptr);
+    s.inject_state_for_testing(TcpState::FinWait2);
+    s.inject_send_seq_for_testing(1000, 1000);
+    s.inject_recv_seq_for_testing(2000, 8192);
+
+    constexpr uint8_t payload[] = {0x01, 0x02, 0x03};
+    constexpr size_t  payload_len = sizeof(payload);
+
+    FakeTcpMbuf fake;
+    fake.build(/*seq=*/2000, /*ack=*/1000,
+               static_cast<uint8_t>(net::kTcpFin | net::kTcpAck),
+               /*window=*/65535, payload, payload_len);
+
+    rte_mbuf* p = &fake.mbuf;
+    auto r = s.process_rx(&p, 1, [](const uint8_t*, uint16_t) {});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(s.rcv_nxt(), 2000u + payload_len + 1u);
+    EXPECT_EQ(s.state(), TcpState::TimeWait);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // PacketTemplate overflow guard
 // ═══════════════════════════════════════════════════════════════════════
