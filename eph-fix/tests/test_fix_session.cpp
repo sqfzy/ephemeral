@@ -324,6 +324,50 @@ TEST(FixSession, handles_sequence_reset_gap_fill) {
 // silently truncate to 0 in expected_inbound_seq_ and treat every
 // subsequent received message as a fresh gap. Reject the over-range
 // reset rather than corrupt local state.
+// Same protocol cap as NewSeqNo above, but for the per-message
+// MsgSeqNum bookkeeping. A peer sending MsgSeqNum > UINT32_MAX would
+// truncate to the low 32 bits, get stored in `last_inbound_seq_`, and
+// the gap-detection comparison would treat it as a fresh number rather
+// than rejecting the protocol-illegal input.
+TEST(FixSession, rejects_message_with_overrange_msg_seq_num) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // After logon, expected_inbound_seq is 2.
+    ASSERT_EQ(session.expected_inbound_seq(), 2u);
+
+    // Hand-build a Heartbeat (MsgType=0) with MsgSeqNum > UINT32_MAX
+    // (UINT32_MAX + 7 = 4294967302).
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "0");
+    b.set(tag::SenderCompID, "EXCHANGE");
+    b.set(tag::TargetCompID, "CLIENT");
+    b.set_int(tag::MsgSeqNum,
+              static_cast<int64_t>(std::numeric_limits<uint32_t>::max())
+                  + 7);
+    const size_t len = b.finish("FIX.4.4");
+    std::vector<uint8_t> msg(buf, buf + len);
+
+    EXPECT_TRUE(session.on_rx(msg.data(), msg.size()));
+
+    // Truncation fingerprint: (UINT32_MAX + 7) & 0xFFFF_FFFF == 6.
+    // If the unchecked uint32_t cast was used, expected_inbound_seq
+    // would advance to 7 (recv=6 looks like a gap from expected=2,
+    // recv+1 -> 7 is stored).
+    const uint32_t after = session.expected_inbound_seq();
+    EXPECT_NE(after, 7u)
+        << "Truncation bug: MsgSeqNum=UINT32_MAX+7 was cast to uint32 "
+           "and stored as recv=6, then expected advanced to 7. Local "
+           "seq tracker is now corrupt.";
+    // Correct behaviour: ignore the over-range MsgSeqNum entirely so
+    // expected stays at 2, ready to receive the legitimate next
+    // message at seq=2.
+    EXPECT_EQ(after, 2u)
+        << "Over-range MsgSeqNum should be ignored, expected stays at 2";
+}
+
 TEST(FixSession, rejects_sequence_reset_with_overrange_new_seq) {
     MockFixTransport mock;
     FixSession session(mock.send_fn(), test_config());
