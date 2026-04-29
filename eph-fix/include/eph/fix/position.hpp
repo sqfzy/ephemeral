@@ -110,18 +110,18 @@ public:
         // realized_pnl). +inf qty also satisfies `qty > 0.0` and would
         // produce nonsense PnL once close_qty clamps it to a finite
         // old_qty inside the reducing-fill branch.
-        if (!std::isfinite(qty) || !std::isfinite(price)) {
+        if (!std::isfinite(qty) || !std::isfinite(price)) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::position_logger(),
                 "on_fill: non-finite qty/price rejected symbol={} side={} qty={} price={}",
                 symbol, side, qty, price);
             return;
         }
-        if (qty <= 0.0 || price <= 0.0) {
+        if (qty <= 0.0 || price <= 0.0) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: ignoring invalid fill symbol={} side={} qty={} price={}",
                         symbol, side, qty, price);
             return;
         }
-        if (side != '1' && side != '2') {
+        if (side != '1' && side != '2') [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: ignoring unknown side={} for symbol={}", side, symbol);
             return;
         }
@@ -157,7 +157,7 @@ public:
                 pos.avg_price += delta * (std::abs(signed_qty) / std::abs(new_qty));
             }
             // Guard against non-finite results from degenerate inputs.
-            if (!std::isfinite(pos.avg_price)) {
+            if (!std::isfinite(pos.avg_price)) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: symbol={} avg_price became non-finite, "
                             "resetting to fill price={}", symbol, price);
                 pos.avg_price = price;
@@ -167,7 +167,7 @@ public:
             const double close_qty = std::min(std::abs(signed_qty), std::abs(old_qty));
 
             // Realized PnL on the closed portion.
-            if (!std::isfinite(pos.avg_price)) {
+            if (!std::isfinite(pos.avg_price)) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: avg_price non-finite for symbol={}, "
                             "resetting to fill price and skipping PnL calc", symbol);
                 pos.avg_price = price;
