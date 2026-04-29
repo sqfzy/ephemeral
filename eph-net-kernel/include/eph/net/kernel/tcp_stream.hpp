@@ -1098,6 +1098,22 @@ public:
     /// delivered.
     std::size_t poll_once_() noexcept {
         if (state_ != TcpState::Established) return 0;
+        // Fail-fast on a previously latched TLS desync: send() has
+        // already burned a TLS write seq we couldn't fully drain to the
+        // wire, so any inbound record's AEAD-open from the peer's
+        // perspective will fail at an unpredictable point. Drop further
+        // decode work and let the next state-check transition the
+        // stream out of Established for the reconnect orchestrator.
+        if constexpr (EnableTls) {
+            if (tls_corrupt_) [[unlikely]] {
+                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                    "KernelTcpStream::poll_once_: tls_corrupt_ latched; "
+                    "skipping decode and tearing down fd={}",
+                    sock_.fd());
+                state_ = TcpState::Closed;
+                return 0;
+            }
+        }
         if (!on_message) {
             // No sink — still drain to avoid stalling the peer, but skip
             // the decode path (codec.decode would be wasted work).
