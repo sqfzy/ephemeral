@@ -196,7 +196,8 @@ public:
                      symbol, side, qty, price);
 
         // Reject non-finite inputs — NaN/Inf would bypass all comparisons.
-        if (!std::isfinite(qty) || !std::isfinite(price) || qty <= 0.0 || price <= 0.0) {
+        if (!std::isfinite(qty) || !std::isfinite(price) ||
+            qty <= 0.0 || price <= 0.0) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: invalid qty={} or price={} for symbol={}",
                         qty, price, symbol);
             return RiskRejectReason::kInvalidInput;
@@ -210,7 +211,7 @@ public:
         // already rejects unknown sides — the matching invariant must hold
         // here so the projected position used by check_order does not drift
         // away from the on_fill state machine.
-        if (side != '1' && side != '2') {
+        if (side != '1' && side != '2') [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
                 "risk reject: invalid side='{}' (0x{:02x}) for symbol={} — "
                 "must be FIX '1' (Buy) or '2' (Sell)",
@@ -221,14 +222,14 @@ public:
         const double notional = qty * price;
 
         // 1. Single order quantity check.
-        if (limits_.max_order_qty > 0.0 && qty > limits_.max_order_qty) {
+        if (limits_.max_order_qty > 0.0 && qty > limits_.max_order_qty) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order qty {} exceeds limit {} for symbol={}",
                         qty, limits_.max_order_qty, symbol);
             return RiskRejectReason::kOrderQtyExceeded;
         }
 
         // 2. Single order notional check.
-        if (limits_.max_order_notional > 0.0 && notional > limits_.max_order_notional) {
+        if (limits_.max_order_notional > 0.0 && notional > limits_.max_order_notional) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order notional {} exceeds limit {} for symbol={}",
                         notional, limits_.max_order_notional, symbol);
             return RiskRejectReason::kOrderNotionalExceeded;
@@ -239,7 +240,7 @@ public:
             const auto& pos = positions.get(symbol);
             const double signed_qty = (side == '1') ? qty : -qty;
             const double projected_qty = std::abs(pos.qty + signed_qty);
-            if (projected_qty > limits_.max_position_qty) {
+            if (projected_qty > limits_.max_position_qty) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position qty {} exceeds limit {} "
                             "for symbol={}", projected_qty, limits_.max_position_qty, symbol);
                 return RiskRejectReason::kPositionQtyExceeded;
@@ -253,7 +254,7 @@ public:
             const double projected_qty = std::abs(pos.qty + signed_qty);
             // Use order price as best estimate for projected notional.
             const double projected_notional = projected_qty * price;
-            if (projected_notional > limits_.max_position_notional) {
+            if (projected_notional > limits_.max_position_notional) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position notional {} exceeds limit {} "
                             "for symbol={}", projected_notional, limits_.max_position_notional,
                             symbol);
@@ -279,7 +280,7 @@ public:
             // Replace this symbol's current notional with its projected notional.
             const double projected_exposure =
                 current_exposure - current_notional + projected_symbol_notional;
-            if (projected_exposure > limits_.max_total_exposure) {
+            if (projected_exposure > limits_.max_total_exposure) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected total exposure {} "
                             "(current={}, symbol {} notional {} -> {}) exceeds limit {}",
                             projected_exposure, current_exposure, symbol,
