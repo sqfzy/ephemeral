@@ -178,7 +178,12 @@ inline bool cpu_has_active_irq(int cpu) {
 inline void set_thread_name(std::string_view name) noexcept {
     char buf[16] = {};
     auto n = std::min(name.size(), sizeof(buf) - 1);
-    std::memcpy(buf, name.data(), n);
+    // ISO C requires src/dst to be valid pointers even when count==0
+    // (UBSan -fsanitize=undefined catches this). std::string_view::data()
+    // may legitimately return nullptr for an empty view (e.g. a default-
+    // constructed std::string_view{}). Mirrors the equivalent batch-2 guard
+    // in eph-net/include/eph/net/hmac_sha256.hpp.
+    if (n > 0) std::memcpy(buf, name.data(), n);
 #if defined(__linux__)
     pthread_setname_np(pthread_self(), buf);
 #else
