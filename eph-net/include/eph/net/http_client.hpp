@@ -385,18 +385,29 @@ public:
         rx_buffer_.clear();
         auto saved_on_message = std::move(stream_->on_message);
         stream_->on_message = [this](std::span<const uint8_t> bytes) noexcept {
-            // Cap defensively — the parser will detect overflow but we'd
-            // rather not let a runaway server fill our process address space.
-            if (rx_buffer_.size() + bytes.size() <= cfg_.max_response_bytes) {
-                rx_buffer_.insert(rx_buffer_.end(),
-                                  bytes.begin(), bytes.end());
-            } else {
-                // Mark overflow by setting the size to a sentinel above the
-                // cap; the loop below checks this each turn. We don't throw
-                // (callbacks are noexcept).
-                rx_buffer_.insert(rx_buffer_.end(),
-                                  bytes.begin(), bytes.end());
+            // Defensive cap — the main parse loop also checks overflow once
+            // the response is incomplete, but a runaway server delivering
+            // a single multi-MB chunk on one on_message firing would
+            // otherwise grow `rx_buffer_` past `max_response_bytes` before
+            // the parse loop runs. Append at most enough bytes to put us
+            // ONE byte above the cap; the parse loop then trips its
+            // overflow branch on the next iteration. Excess bytes are
+            // dropped on the floor — the connection is about to be torn
+            // down anyway, so preserving the tail buys nothing.
+            const std::size_t cap   = cfg_.max_response_bytes;
+            const std::size_t have  = rx_buffer_.size();
+            if (have > cap) {
+                // Already over — discard further bytes; parse loop will
+                // surface the overflow on its next turn.
+                return;
             }
+            // Allow overshoot by exactly one byte so the strict `>` check
+            // in the parse loop fires.
+            const std::size_t budget = (cap - have) + 1;
+            const std::size_t take   = std::min(bytes.size(), budget);
+            rx_buffer_.insert(rx_buffer_.end(),
+                              bytes.begin(),
+                              bytes.begin() + static_cast<std::ptrdiff_t>(take));
         };
 
         // Restore on_message on every exit path (success or error).
