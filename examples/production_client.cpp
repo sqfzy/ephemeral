@@ -132,7 +132,7 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
     cfg.remote          = eph::net::SocketAddr{*ip, port};
     cfg.reasm_capacity  = 256 * 1024;   // room for burst of snapshot frames
     cfg.connect_timeout = 3s;
-    cfg.tcp_nodelay     = true;
+    cfg.kernel.tcp_nodelay = true;
 
     // Reconnect policy lives HERE in the caller — not on the stream
     // config. This is deliberate: after a drop, real recovery needs

@@ -321,15 +321,22 @@ public:
                 core::Error::InvalidConfig,
                 "KernelTcpStream::create: connect_timeout must be > 0"});
         }
-        if (!cfg.ws_path.empty() &&
-            cfg.ws_timeout <= std::chrono::milliseconds::zero()) {
+        // Delegate WS sub-config validation. Empty `cfg.ws.path` is the
+        // disabled state and always validates; non-empty path requires a
+        // strictly positive timeout. See `eph/net/ws_config.hpp`.
+        if (auto wv = cfg.ws.validate(); !wv) {
             SPDLOG_LOGGER_WARN(log,
-                "KernelTcpStream::create: ws_timeout={}ms must be > 0 when "
-                "ws_path is non-empty",
-                cfg.ws_timeout.count());
-            return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
-                "KernelTcpStream::create: ws_timeout must be > 0"});
+                "KernelTcpStream::create: WsConfig invalid: {}",
+                wv.error().detail);
+            return std::unexpected(wv.error());
+        }
+        // Delegate keepalive sub-config validation. Empty (interval == 0)
+        // = disabled; non-empty requires probes in [1, 10].
+        if (auto kv = cfg.keepalive.validate(); !kv) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::create: KeepaliveConfig invalid: {}",
+                kv.error().detail);
+            return std::unexpected(kv.error());
         }
 
         // Validate optional proxy config up-front to avoid constructing
@@ -375,11 +382,12 @@ public:
 
         // The local-bind side is *upstream* configuration: even when a
         // proxy is in use, the bind is on our local end of the wire to the
-        // proxy. So we always pass `cfg_.local`, regardless of whether the
-        // immediate connect_target is the proxy or the upstream itself.
+        // proxy. So we always pass `cfg_.kernel.local_bind`, regardless of
+        // whether the immediate connect_target is the proxy or the upstream
+        // itself.
         auto cr = stream->sock_.connect(connect_target,
                                         stream->cfg_.connect_timeout,
-                                        stream->cfg_.local);
+                                        stream->cfg_.kernel.local_bind);
         if (!cr) {
             SPDLOG_LOGGER_WARN(log,
                 "KernelTcpStream::create: connect failed: {}", cr.error().detail);
@@ -394,8 +402,21 @@ public:
             return std::unexpected(cr.error());
         }
 
-        if (stream->cfg_.tcp_nodelay) {
+        if (stream->cfg_.kernel.tcp_nodelay) {
             (void)stream->sock_.set_no_delay(true);
+        }
+
+        // Optional TCP keepalive — wired post-connect so the open fd is
+        // valid. Non-zero interval drives SO_KEEPALIVE + TCP_KEEPIDLE +
+        // TCP_KEEPINTVL + TCP_KEEPCNT. Failure here is logged but not
+        // fatal: keepalive is a defense in depth, not a connect
+        // precondition.
+        if (!stream->cfg_.keepalive.empty()) {
+            const int interval_secs = static_cast<int>(
+                std::chrono::ceil<std::chrono::seconds>(
+                    stream->cfg_.keepalive.interval).count());
+            (void)stream->sock_.set_keepalive(
+                interval_secs, stream->cfg_.keepalive.probes);
         }
 
         // HTTP CONNECT handshake (before TLS). At this point we are
@@ -434,7 +455,7 @@ public:
                         core::Error::ProxyHandshakeFailed,
                         "KernelTcpStream::create: proxy over-read before TLS "
                         "is not supported"});
-                } else if (!stream->cfg_.ws_path.empty()) {
+                } else if (!stream->cfg_.ws.path.empty()) {
                     SPDLOG_LOGGER_WARN(log,
                         "KernelTcpStream::create: {}B over-read from proxy "
                         "cannot be threaded through WS handshake input; "
@@ -498,20 +519,20 @@ public:
                 stream->tls_.was_resumed());
         }
 
-        // Optional WebSocket HTTP Upgrade. When cfg.ws_path is non-empty,
+        // Optional WebSocket HTTP Upgrade. When cfg.ws.path is non-empty,
         // drive the RFC 6455 handshake
         // through either a plaintext (PlainWsSink) or TLS-wrapped
         // (TlsWsSink) byte sink. Any post-handshake bytes that arrived in
         // the same recv(2) as the 101 response are seeded into the
         // reassembly buffer so the codec sees them on the first poll.
-        if (!stream->cfg_.ws_path.empty()) {
+        if (!stream->cfg_.ws.path.empty()) {
             // Pick the Host header: prefer an explicit ws_host, fall back
             // to the TLS SNI hostname (for wss://), then to the numeric
             // remote address (for ws://).
             std::string host_storage;
             std::string_view host_sv;
-            if (!stream->cfg_.ws_host.empty()) {
-                host_sv = stream->cfg_.ws_host;
+            if (!stream->cfg_.ws.host.empty()) {
+                host_sv = stream->cfg_.ws.host;
             } else if constexpr (EnableTls) {
                 if (!stream->cfg_.tls.hostname.empty()) {
                     host_sv = stream->cfg_.tls.hostname;
@@ -527,7 +548,7 @@ public:
             // taken from cfg, `negotiated` / `server_no_context_takeover`
             // come back populated if the server accepted.
             ::eph::net::detail::WsHandshakeDeflate deflate_state{
-                .request                      = stream->cfg_.ws_permessage_deflate,
+                .request                      = stream->cfg_.ws.permessage_deflate,
                 .negotiated                   = false,
                 .server_no_context_takeover   = false,
             };
@@ -535,18 +556,18 @@ public:
             if constexpr (EnableTls) {
                 detail::TlsWsSink sink{&stream->sock_, &stream->tls_};
                 hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws_path,
+                    sink, host_sv, stream->cfg_.ws.path,
                     std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws_extra_headers),
-                    stream->cfg_.ws_timeout,
+                        stream->cfg_.ws.extra_headers),
+                    stream->cfg_.ws.timeout,
                     &leftover, &deflate_state);
             } else {
                 detail::PlainWsSink sink{&stream->sock_};
                 hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws_path,
+                    sink, host_sv, stream->cfg_.ws.path,
                     std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws_extra_headers),
-                    stream->cfg_.ws_timeout,
+                        stream->cfg_.ws.extra_headers),
+                    stream->cfg_.ws.timeout,
                     &leftover, &deflate_state);
             }
             if (!hs_result) {
@@ -598,7 +619,7 @@ public:
 
             SPDLOG_LOGGER_INFO(log,
                 "KernelTcpStream::create: WS upgrade OK path='{}' fd={}",
-                stream->cfg_.ws_path, stream->sock_.fd());
+                stream->cfg_.ws.path, stream->sock_.fd());
         }
 
         stream->state_ = TcpState::Established;

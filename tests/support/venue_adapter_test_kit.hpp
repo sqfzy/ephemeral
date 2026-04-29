@@ -66,14 +66,14 @@ namespace eph::test {
         eph::net::Ipv4Addr{127, 0, 0, 1}, port};
     cfg.reasm_capacity        = 64 * 1024;
     cfg.connect_timeout       = 2s;
-    cfg.tcp_nodelay           = true;
+    cfg.kernel.tcp_nodelay    = true;
     cfg.tls.hostname          = "eph-test-server";
     cfg.tls.verify_peer       = false;
     cfg.tls.handshake_timeout = 2s;
-    cfg.ws_path               = std::string{ws_path};
-    cfg.ws_host               = "eph-test-server";
-    cfg.ws_timeout            = 2s;
-    cfg.ws_permessage_deflate = false;
+    cfg.ws.path               = std::string{ws_path};
+    cfg.ws.host               = "eph-test-server";
+    cfg.ws.timeout            = 2s;
+    cfg.ws.permessage_deflate = false;
     return cfg;
 }
 

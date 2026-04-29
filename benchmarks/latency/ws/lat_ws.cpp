@@ -162,8 +162,8 @@ int run_ws(const bench::BenchConfig& bench_cfg,
     cfg.remote          = remote;
     cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
+    cfg.ws.path         = ws_path;
+    cfg.ws.timeout      = std::chrono::seconds{10};
 #endif
 
     if constexpr (EnableTls) {

@@ -82,7 +82,7 @@ ek::StreamConfig make_tls_config(uint16_t port,
     cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     cfg.reasm_capacity  = 64 * 1024;
     cfg.connect_timeout = 2s;
-    cfg.tcp_nodelay     = true;
+    cfg.kernel.tcp_nodelay = true;
     // The in-process echo server uses an ephemeral self-signed ECDSA cert.
     // Disable peer verify so the kernel TLS path completes the handshake.
     // Hostname is irrelevant under verify_peer=false but we set a placeholder

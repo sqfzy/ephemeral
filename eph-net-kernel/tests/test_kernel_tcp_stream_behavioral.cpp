@@ -298,13 +298,13 @@ TEST(KernelTcpStreamBehavioral, Connect_DestructorClosesCleanly) {
 
 TEST(KernelTcpStreamBehavioral, Connect_TcpNodelayDefaultsTrue) {
     ek::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.tcp_nodelay);
+    EXPECT_TRUE(cfg.kernel.tcp_nodelay);
 }
 
 TEST(KernelTcpStreamBehavioral, Connect_TcpNodelayDisabledConfig) {
     auto srv = make_running_echo();
     auto cfg = cfg_for(*srv);
-    cfg.tcp_nodelay = false;
+    cfg.kernel.tcp_nodelay = false;
     auto r = PlainRawStream::create(cfg);
     EXPECT_TRUE(r.has_value());  // disabling nodelay must still succeed
 }

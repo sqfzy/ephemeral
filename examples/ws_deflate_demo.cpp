@@ -143,14 +143,14 @@ int main(int argc, char** argv) {
     cfg.reasm_capacity          = 256 * 1024;
     cfg.tls.hostname            = args.sni;
     cfg.tls.handshake_timeout   = 5s;
-    cfg.ws_path                 = args.path;
-    cfg.ws_host                 = args.sni;
-    cfg.ws_timeout              = 5s;
-    cfg.ws_permessage_deflate   = !args.no_deflate;
+    cfg.ws.path                 = args.path;
+    cfg.ws.host                 = args.sni;
+    cfg.ws.timeout              = 5s;
+    cfg.ws.permessage_deflate   = !args.no_deflate;
 
     spdlog::info("ws_deflate_demo: connecting wss://{}{} (deflate={}, duration={}s)",
                  args.sni, args.path,
-                 cfg.ws_permessage_deflate ? "offered" : "off",
+                 cfg.ws.permessage_deflate ? "offered" : "off",
                  args.duration);
 
     auto sr = Stream::create(std::move(cfg));

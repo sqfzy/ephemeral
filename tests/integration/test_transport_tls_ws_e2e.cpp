@@ -45,7 +45,7 @@ ek::StreamConfig make_config(uint16_t port) {
     cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     cfg.reasm_capacity  = 64 * 1024;
     cfg.connect_timeout = 2s;
-    cfg.tcp_nodelay     = true;
+    cfg.kernel.tcp_nodelay = true;
     // TlsConfig defaults: no SNI, no system trust store. The in-process
     // test server uses a self-signed cert, so the kernel TLS path
     // tolerates it via the same loopback shortcut (`verify_peer=false`).

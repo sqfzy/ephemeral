@@ -64,7 +64,7 @@ int main() {
     en::StreamConfig cfg{};
     cfg.remote          = eph::net::SocketAddr{eph::net::Ipv4Addr{127,0,0,1}, 9000};
     cfg.connect_timeout = 3s;
-    cfg.tcp_nodelay     = true;
+    cfg.kernel.tcp_nodelay = true;
 
     eph::net::ReconnectPolicy policy{eph::net::ReconnectPolicyConfig{
         .initial_backoff = 100ms,

@@ -223,8 +223,8 @@ int main(int argc, char** argv) {
     // Order payloads are tiny (~30 B); 64 KiB reassembly is ample.
     cfg.reasm_capacity  = 64 * 1024;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
+    cfg.ws.path         = ws_path;
+    cfg.ws.timeout      = std::chrono::seconds{10};
 #endif
 
     if constexpr (EnableTls) {

@@ -186,8 +186,8 @@ TEST(KernelWsUpgrade, PlainHandshakeSucceedsAndStreamEstablished) {
 
     ek::StreamConfig cfg{};
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path = "/ws/feed";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws/feed";
+    cfg.ws.host = "localhost";
 
     auto stream_r = PlainStream::create(cfg);
     ASSERT_TRUE(stream_r.has_value())
@@ -209,8 +209,8 @@ TEST(KernelWsUpgrade, ConnectFailureBubblesUp) {
     ek::StreamConfig cfg{};
     // Use a port that is almost certainly not listening on loopback.
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
-    cfg.ws_path = "/ws";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws";
+    cfg.ws.host = "localhost";
     cfg.connect_timeout = std::chrono::milliseconds{300};
 
     auto stream_r = PlainStream::create(cfg);
@@ -229,8 +229,8 @@ TEST(KernelWsUpgrade, WrongServerResponseFailsHandshake) {
 
     ek::StreamConfig cfg{};
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path = "/ws";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws";
+    cfg.ws.host = "localhost";
 
     auto stream_r = PlainStream::create(cfg);
     ASSERT_FALSE(stream_r.has_value());
@@ -287,8 +287,8 @@ TEST(KernelWsUpgrade, PostHandshakeEchoRoundTrips) {
 
     ek::StreamConfig cfg{};
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path = "/ws/feed";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws/feed";
+    cfg.ws.host = "localhost";
 
     auto stream_r = PlainStream::create(cfg);
     ASSERT_TRUE(stream_r.has_value())
@@ -332,8 +332,8 @@ TEST(KernelWsUpgrade, MissingUpgradeHeaderFailsHandshake) {
 
     ek::StreamConfig cfg{};
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path = "/ws";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws";
+    cfg.ws.host = "localhost";
 
     auto stream_r = PlainStream::create(cfg);
     ASSERT_FALSE(stream_r.has_value());
@@ -375,9 +375,9 @@ TEST(KernelWsUpgrade, WsTimeoutIsEnforcedWhenServerStalls) {
 
     ek::StreamConfig cfg{};
     cfg.remote     = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path    = "/ws";
-    cfg.ws_host    = "localhost";
-    cfg.ws_timeout = std::chrono::milliseconds{150};
+    cfg.ws.path    = "/ws";
+    cfg.ws.host    = "localhost";
+    cfg.ws.timeout = std::chrono::milliseconds{150};
 
     const auto start = std::chrono::steady_clock::now();
     auto stream_r = PlainStream::create(cfg);
@@ -571,8 +571,8 @@ using WsStream = ek::KernelTcpStream<eph::codec::WsCodec, false>;
 ek::StreamConfig make_ws_cfg(uint16_t port) {
     ek::StreamConfig cfg{};
     cfg.remote  = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
-    cfg.ws_path = "/ws/feed";
-    cfg.ws_host = "localhost";
+    cfg.ws.path = "/ws/feed";
+    cfg.ws.host = "localhost";
     return cfg;
 }
 

@@ -457,6 +457,72 @@ public:
         return {};
     }
 
+    /// @brief Enable TCP keepalive on the open fd.
+    ///
+    /// Wires `SO_KEEPALIVE` + `TCP_KEEPIDLE` + `TCP_KEEPINTVL` + `TCP_KEEPCNT`
+    /// in one shot. `interval_secs` drives both the idle-before-first-probe
+    /// time and the inter-probe gap (the same pair the DPDK PMD honours
+    /// in its TCP session machinery — keeping the surface uniform across
+    /// backends). Caller is responsible for clamping `interval_secs` to a
+    /// positive value before calling; passing 0 is treated as a no-op
+    /// (returns success without issuing any setsockopt).
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    set_keepalive(int interval_secs, uint8_t probes) noexcept {
+        if (fd_ < 0) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: fd closed"});
+        }
+        if (interval_secs <= 0) {
+            return {}; // disabled — no syscall
+        }
+        int one = 1;
+        if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
+                         &one, sizeof(one)) != 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: SO_KEEPALIVE errno={} ({})",
+                errno, std::strerror(errno));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: SO_KEEPALIVE failed"});
+        }
+        if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
+                         &interval_secs, sizeof(interval_secs)) != 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: TCP_KEEPIDLE errno={} ({}) "
+                "interval_secs={}",
+                errno, std::strerror(errno), interval_secs);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: TCP_KEEPIDLE failed"});
+        }
+        if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPINTVL,
+                         &interval_secs, sizeof(interval_secs)) != 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: TCP_KEEPINTVL errno={} ({}) "
+                "interval_secs={}",
+                errno, std::strerror(errno), interval_secs);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: TCP_KEEPINTVL failed"});
+        }
+        int p = static_cast<int>(probes);
+        if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPCNT,
+                         &p, sizeof(p)) != 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: TCP_KEEPCNT errno={} ({}) "
+                "probes={}",
+                errno, std::strerror(errno), probes);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: TCP_KEEPCNT failed"});
+        }
+        SPDLOG_LOGGER_DEBUG(byte_socket_logger(),
+            "ByteSocket::set_keepalive: fd={} interval={}s probes={}",
+            fd_, interval_secs, probes);
+        return {};
+    }
+
 private:
     int fd_{-1};
 };

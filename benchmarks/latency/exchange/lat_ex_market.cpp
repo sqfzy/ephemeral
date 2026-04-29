@@ -401,8 +401,8 @@ int main(int argc, char** argv) {
     ek::StreamConfig cfg{};
     cfg.reasm_capacity  = 256 * 1024;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = effective_ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
+    cfg.ws.path         = effective_ws_path;
+    cfg.ws.timeout      = std::chrono::seconds{10};
 
     int rc = 0;
     // Common kernel-side helper: explicit poller->add (DPDK pre-attaches
@@ -424,7 +424,7 @@ int main(int argc, char** argv) {
         // stays at its default (true) — real CA cert chain expected.
         cfg.remote          = remote;
         cfg.tls.hostname    = endpoint.host;
-        cfg.ws_host         = endpoint.host;
+        cfg.ws.host         = endpoint.host;
         auto stream_r = StreamTls::create(cfg);
         if (!stream_r) {
             std::fprintf(stderr,

@@ -133,27 +133,27 @@ TEST(StreamConfigValidation, DefaultReasmCapacityNonzero) {
 
 TEST(StreamConfigValidation, DefaultTcpNodelayTrue) {
     ek::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.tcp_nodelay);
+    EXPECT_TRUE(cfg.kernel.tcp_nodelay);
 }
 
 TEST(StreamConfigValidation, DefaultWsPathEmpty) {
     ek::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.ws_path.empty());
+    EXPECT_TRUE(cfg.ws.path.empty());
 }
 
 TEST(StreamConfigValidation, DefaultWsHostEmpty) {
     ek::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.ws_host.empty());
+    EXPECT_TRUE(cfg.ws.host.empty());
 }
 
 TEST(StreamConfigValidation, DefaultWsExtraHeadersEmpty) {
     ek::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.ws_extra_headers.empty());
+    EXPECT_TRUE(cfg.ws.extra_headers.empty());
 }
 
 TEST(StreamConfigValidation, DefaultWsTimeoutPositive) {
     ek::StreamConfig cfg{};
-    EXPECT_GT(cfg.ws_timeout.count(), 0);
+    EXPECT_GT(cfg.ws.timeout.count(), 0);
 }
 
 TEST(StreamConfigValidation, DefaultProxyNotSet) {
@@ -191,33 +191,33 @@ TEST(StreamConfigValidation, AssignReasmCapacity) {
 
 TEST(StreamConfigValidation, AssignTcpNodelayFalse) {
     ek::StreamConfig cfg{};
-    cfg.tcp_nodelay = false;
-    EXPECT_FALSE(cfg.tcp_nodelay);
+    cfg.kernel.tcp_nodelay = false;
+    EXPECT_FALSE(cfg.kernel.tcp_nodelay);
 }
 
 TEST(StreamConfigValidation, AssignWsPath) {
     ek::StreamConfig cfg{};
-    cfg.ws_path = "/ws/btcusdt@bookTicker";
-    EXPECT_EQ(cfg.ws_path, "/ws/btcusdt@bookTicker");
+    cfg.ws.path = "/ws/btcusdt@bookTicker";
+    EXPECT_EQ(cfg.ws.path, "/ws/btcusdt@bookTicker");
 }
 
 TEST(StreamConfigValidation, AssignWsHost) {
     ek::StreamConfig cfg{};
-    cfg.ws_host = "stream.binance.com";
-    EXPECT_EQ(cfg.ws_host, "stream.binance.com");
+    cfg.ws.host = "stream.binance.com";
+    EXPECT_EQ(cfg.ws.host, "stream.binance.com");
 }
 
 TEST(StreamConfigValidation, AssignWsExtraHeaders) {
     ek::StreamConfig cfg{};
-    cfg.ws_extra_headers.push_back(en::HttpHeader{"X-API-Key", "abcd"});
-    ASSERT_EQ(cfg.ws_extra_headers.size(), 1u);
-    EXPECT_EQ(cfg.ws_extra_headers[0].name, "X-API-Key");
+    cfg.ws.extra_headers.push_back(en::HttpHeader{"X-API-Key", "abcd"});
+    ASSERT_EQ(cfg.ws.extra_headers.size(), 1u);
+    EXPECT_EQ(cfg.ws.extra_headers[0].name, "X-API-Key");
 }
 
 TEST(StreamConfigValidation, AssignWsTimeout) {
     ek::StreamConfig cfg{};
-    cfg.ws_timeout = std::chrono::seconds{5};
-    EXPECT_EQ(cfg.ws_timeout, std::chrono::milliseconds{5000});
+    cfg.ws.timeout = std::chrono::seconds{5};
+    EXPECT_EQ(cfg.ws.timeout, std::chrono::milliseconds{5000});
 }
 
 TEST(StreamConfigValidation, AssignProxyConfig) {
@@ -290,12 +290,16 @@ TEST(StreamConfigValidation, Create_ZeroWsTimeoutWithWsPath_InvalidConfig) {
     cfg.remote          = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
     cfg.reasm_capacity  = 4096;
     cfg.connect_timeout = std::chrono::milliseconds{100};
-    cfg.ws_path         = "/ws";
-    cfg.ws_timeout      = std::chrono::milliseconds{0};
+    cfg.ws.path         = "/ws";
+    cfg.ws.timeout      = std::chrono::milliseconds{0};
     auto r = PlainStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
-    EXPECT_NE(std::string_view{r.error().detail}.find("ws_timeout"),
+    // Error detail surfaces from `WsConfig::validate()` after the
+    // sub-config refactor (T3.19). Match the new, generic phrasing.
+    EXPECT_NE(std::string_view{r.error().detail}.find("WsConfig"),
+              std::string_view::npos);
+    EXPECT_NE(std::string_view{r.error().detail}.find("timeout"),
               std::string_view::npos);
 }
 
@@ -305,8 +309,8 @@ TEST(StreamConfigValidation, Create_ZeroWsTimeoutWithoutWsPath_Ignored) {
     OneShotEcho echo;
     ASSERT_GE(echo.fd, 0);
     auto cfg = make_valid_config(echo);
-    cfg.ws_path    = "";
-    cfg.ws_timeout = std::chrono::milliseconds{0};
+    cfg.ws.path    = "";
+    cfg.ws.timeout = std::chrono::milliseconds{0};
     auto r = PlainStream::create(cfg);
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().detail);
 }
@@ -338,7 +342,7 @@ TEST(StreamConfigValidation, Create_LargeReasmCapacityAccepted) {
 TEST(StreamConfigValidation, Create_TcpNodelayFalseAccepted) {
     OneShotEcho echo;
     auto cfg = make_valid_config(echo);
-    cfg.tcp_nodelay = false;
+    cfg.kernel.tcp_nodelay = false;
     auto r = PlainStream::create(cfg);
     EXPECT_TRUE(r.has_value());
 }
@@ -579,7 +583,7 @@ TEST(StreamConfigValidation, Reconnect_MaxAttemptsFiniteStopsAfterN) {
 TEST(StreamConfigValidation, Ws_EmptyPathSkipsUpgradeStillSucceeds) {
     OneShotEcho echo;
     auto cfg = make_valid_config(echo);
-    cfg.ws_path = "";
+    cfg.ws.path = "";
     auto r = PlainStream::create(cfg);
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().detail);
 }
@@ -590,8 +594,8 @@ TEST(StreamConfigValidation, Ws_NonEmptyPathCausesCreateToDriveHandshake) {
     // signal the field is plumbed through.
     OneShotEcho echo;
     auto cfg = make_valid_config(echo);
-    cfg.ws_path = "/ws/feed";
-    cfg.ws_timeout = std::chrono::milliseconds{500};
+    cfg.ws.path = "/ws/feed";
+    cfg.ws.timeout = std::chrono::milliseconds{500};
     auto r = PlainStream::create(cfg);
     EXPECT_FALSE(r.has_value());
 }
@@ -599,9 +603,9 @@ TEST(StreamConfigValidation, Ws_NonEmptyPathCausesCreateToDriveHandshake) {
 TEST(StreamConfigValidation, Ws_PathAndHostTogether) {
     OneShotEcho echo;
     auto cfg = make_valid_config(echo);
-    cfg.ws_path = "/ws/feed";
-    cfg.ws_host = "example.com";
-    cfg.ws_timeout = std::chrono::milliseconds{500};
+    cfg.ws.path = "/ws/feed";
+    cfg.ws.host = "example.com";
+    cfg.ws.timeout = std::chrono::milliseconds{500};
     auto r = PlainStream::create(cfg);
     // Server closes immediately → failure, but field is consumed.
     EXPECT_FALSE(r.has_value());
@@ -609,10 +613,10 @@ TEST(StreamConfigValidation, Ws_PathAndHostTogether) {
 
 TEST(StreamConfigValidation, Ws_ExtraHeadersStored) {
     ek::StreamConfig cfg{};
-    cfg.ws_extra_headers.push_back(en::HttpHeader{"Authorization", "Bearer x"});
-    cfg.ws_extra_headers.push_back(en::HttpHeader{"X-Trace-Id", "abc"});
-    EXPECT_EQ(cfg.ws_extra_headers.size(), 2u);
-    EXPECT_EQ(cfg.ws_extra_headers[1].name, "X-Trace-Id");
+    cfg.ws.extra_headers.push_back(en::HttpHeader{"Authorization", "Bearer x"});
+    cfg.ws.extra_headers.push_back(en::HttpHeader{"X-Trace-Id", "abc"});
+    EXPECT_EQ(cfg.ws.extra_headers.size(), 2u);
+    EXPECT_EQ(cfg.ws.extra_headers[1].name, "X-Trace-Id");
 }
 
 TEST(StreamConfigValidation, Proxy_CreateWithoutProxyFieldDirectConnect) {
