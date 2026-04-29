@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### Docs — `parse_arp_reply` security note refreshed
+
+The pre-existing `@note Security` comment on `eph::dpdk::arp::
+parse_arp_reply` claimed the function "does NOT detect ARP spoofing",
+but the implementation grew sender-MAC well-formedness checks
+(reject all-zero / non-unicast I-G bit) and an optional `expected_mac`
+allowlist over the past months. The note now lists what we validate
+(opcode / hw+proto types / target IP match / sender MAC well-formed /
+optional expected_mac) and what we still don't (reflection-style
+attacks where reply.target_ip != our local IP), and calls out the
+recommended HFT colo posture (pre-configured gateway MAC + expected_mac).
+
+### Fixed — `UdpConfig::warnings` flags `src_ip == dst_ip` self-send
+
+`TcpConfig::warnings` already surfaces the self-connect case
+(`tuple.src_ip == tuple.dst_ip`); the matching `UdpConfig::warnings`
+did not, so a misconfigured UDP socket aimed at the local IP went
+silently to the wire (DPDK has no kernel-loopback fallback) and the
+peer never received the frame. Add the same advisory to UDP. Two
+existing `WarningsHwCksum` / `WarningsEmptyNoHwCksum` tests had been
+silently passing because the prior advisories were already firing
+on default-zero MACs — populate non-zero MACs so the size-1 / empty
+expectations actually exercise the documented contract.
+
+### Fixed — `EalGuard::init_with_pins` rejects raw `--lcores` in `extra_args`
+
+`init_with_pins` already rejected the `cfg.lcores` raw escape hatch
+when typed pins were also supplied (mutually exclusive), but the
+identical duplication is reachable through `cfg.extra_args` (where
+users hand-write argv tokens). DPDK silently keeps only the *last*
+`--lcores` token, so the user's raw value would be discarded with no
+diagnostic — exactly the silent surprise the typed path was meant to
+prevent. Scan `extra_args` for both `--lcores=...` (single-token)
+and `--lcores` (two-token) when typed pins are non-empty, fail
+fast with a clear error before any pin registration.
+
+### Fixed — `DpdkPoller::maybe_dispatch_icmp_` guards empty callback
+
+`set_icmp_callback` is install-once: a default-constructed
+`std::function` validly claims the slot and blocks subsequent
+installs (documented by the existing
+`SetIcmpCallbackEmptyIsAlsoInstallOnce` test). When a real ICMP
+Type 3 Code 4 message later arrived, `maybe_dispatch_icmp_` invoked
+the empty function, throwing `std::bad_function_call`; the method is
+`noexcept`, so the throw terminated the process. Add an
+`if (!icmp_cb_)` short-circuit mirroring the same guard already
+present in `IcmpRegistry::dispatch`. Reproducer test injects a real
+ICMP T3C4 mbuf via the test seam after an empty install.
+
 ### Fixed — `keepalive_interval_cycles_` TSC fallback aligned with DNS
 
 `TcpSession::keepalive_interval_cycles_()` returned
