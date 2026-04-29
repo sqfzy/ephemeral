@@ -628,7 +628,7 @@ perform_ws_handshake(
     const auto& resp = parsed->value;
 
     // ── 5. Verify status == 101 Switching Protocols ───────────────────────
-    if (resp.status_code != 101) {
+    if (resp.status_code != 101) [[unlikely]] {
         SPDLOG_WARN("ws_handshake: unexpected status {} (reason='{}')",
                     resp.status_code, resp.reason_phrase);
         return std::unexpected(::eph::core::ErrorInfo{
@@ -638,7 +638,7 @@ perform_ws_handshake(
 
     // ── 6. Upgrade: websocket (case-insensitive) ──────────────────────────
     auto upgrade_hdr = ws_find_header(resp.headers, "Upgrade");
-    if (!upgrade_hdr || !iequal(*upgrade_hdr, "websocket")) {
+    if (!upgrade_hdr || !iequal(*upgrade_hdr, "websocket")) [[unlikely]] {
         SPDLOG_WARN("ws_handshake: missing/invalid Upgrade header");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
@@ -647,7 +647,7 @@ perform_ws_handshake(
 
     // ── 7. Connection: Upgrade (may be a comma-separated token list) ──────
     auto conn_hdr = ws_find_header(resp.headers, "Connection");
-    if (!conn_hdr || !ws_connection_has_upgrade(*conn_hdr)) {
+    if (!conn_hdr || !ws_connection_has_upgrade(*conn_hdr)) [[unlikely]] {
         SPDLOG_WARN("ws_handshake: missing/invalid Connection: Upgrade");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
@@ -656,14 +656,14 @@ perform_ws_handshake(
 
     // ── 8. Sec-WebSocket-Accept correctness ───────────────────────────────
     auto accept_hdr = ws_find_header(resp.headers, "Sec-WebSocket-Accept");
-    if (!accept_hdr) {
+    if (!accept_hdr) [[unlikely]] {
         SPDLOG_WARN("ws_handshake: missing Sec-WebSocket-Accept header");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::WsHandshakeFailed,
             "ws_handshake: missing Sec-WebSocket-Accept"});
     }
     const std::string expected_accept = ws_compute_accept(client_key);
-    if (*accept_hdr != expected_accept) {
+    if (*accept_hdr != expected_accept) [[unlikely]] {
         SPDLOG_WARN("ws_handshake: Sec-WebSocket-Accept mismatch "
                     "(expected='{}' got='{}')",
                     expected_accept, *accept_hdr);
