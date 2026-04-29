@@ -68,12 +68,25 @@ class BinanceBookAdapter {
 public:
     /// @brief Update book from a Binance bookTicker message.
     ///
-    /// Only updates the BBO (best bid/ask) since bookTicker contains BBO only.
+    /// `bookTicker` is a **BBO snapshot** stream — each message
+    /// represents the new best bid and best ask. It is NOT an
+    /// incremental delta. When the BBO price moves, the previously-best
+    /// level is no longer the top of book on Binance and must be
+    /// removed from our local view too; otherwise consumers see a
+    /// phantom BBO that only exists in our state. We therefore track
+    /// the most recently published bid/ask price and, when the new
+    /// tick reports a different price, retire the old level (qty=0
+    /// removes it from `ArrayBook`) before installing the new one.
+    ///
+    /// Same-price ticks just refresh the qty (or remove the level via
+    /// qty=0) without churning the previous-price bookkeeping.
+    ///
     /// String price/quantity fields are parsed to doubles internally.
     ///
-    /// @param ticker  Parsed BookTicker obtained from `eph::json::binance::BookTicker::from()`.
-    /// @return `true` if the book was modified, `false` on parse failure
-    ///         (e.g., non-numeric price/qty strings).
+    /// @param ticker  Parsed BookTicker obtained from
+    ///                `eph::json::binance::BookTicker::from()`.
+    /// @return `true` if the book was modified, `false` on parse
+    ///         failure (e.g., non-numeric price/qty strings).
     bool update_from_ticker(const eph::json::binance::BookTicker& ticker) noexcept {
         SPDLOG_LOGGER_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::update_from_ticker symbol={}", ticker.symbol);
 
@@ -94,8 +107,37 @@ public:
         SPDLOG_LOGGER_TRACE(detail::binance_adapter_logger(), "BinanceBookAdapter: bid={}@{} ask={}@{}",
                      *bid_price, *bid_qty, *ask_price, *ask_qty);
 
+        // Snapshot semantics: retire the prior best level if the price
+        // moved. We compare with bit-equality on the parsed double; the
+        // exchange always re-emits the same string for an unchanged
+        // price, so `parse_number` produces the same bits and the
+        // memcmp check is exact and robust to float-formatting drift.
+        if (last_bid_valid_ && last_bid_price_ != *bid_price) {
+            book_.update_bid(last_bid_price_, 0.0);  // remove old BBO
+        }
+        if (last_ask_valid_ && last_ask_price_ != *ask_price) {
+            book_.update_ask(last_ask_price_, 0.0);  // remove old BBO
+        }
+
         book_.update_bid(*bid_price, *bid_qty);
         book_.update_ask(*ask_price, *ask_qty);
+
+        // Track the live BBO so the next tick can retire whichever
+        // side moved. A qty=0 tick removes the level entirely; we
+        // forget the price so the *next* tick at a different price
+        // does not try to remove a level that's already gone.
+        if (*bid_qty > 0.0) {
+            last_bid_price_ = *bid_price;
+            last_bid_valid_ = true;
+        } else {
+            last_bid_valid_ = false;
+        }
+        if (*ask_qty > 0.0) {
+            last_ask_price_ = *ask_price;
+            last_ask_valid_ = true;
+        } else {
+            last_ask_valid_ = false;
+        }
         return true;
     }
 
@@ -117,6 +159,11 @@ public:
 
         book_.clear();
         last_update_id_ = snapshot.last_update_id;
+        // The snapshot blew away the previous BBO; the next bookTicker
+        // tick should not try to retire a stale "old best" that no
+        // longer exists in the book. Reset the BBO-tracking state.
+        last_bid_valid_ = false;
+        last_ask_valid_ = false;
 
         for (const auto& level : snapshot.bids) {
             SPDLOG_LOGGER_TRACE(detail::binance_adapter_logger(), "load_snapshot bid price={} qty={}", level.price, level.qty);
@@ -153,6 +200,13 @@ public:
 private:
     ArrayBook<MaxLevels> book_;
     int64_t last_update_id_ = 0;
+    // Tracks the most recently published BBO so update_from_ticker can
+    // retire the old top-of-book level when the price moves on the next
+    // tick (BBO snapshot semantics — see update_from_ticker docs).
+    double  last_bid_price_ = 0.0;
+    double  last_ask_price_ = 0.0;
+    bool    last_bid_valid_ = false;
+    bool    last_ask_valid_ = false;
 
     /// Parse a string_view as double (price/quantity fields).
     static std::optional<double> parse_number(std::string_view sv) noexcept {
