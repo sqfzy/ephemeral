@@ -397,6 +397,27 @@ public:
             return 0;
         }
 
+        // Hardening: reject begin_string containing SOH (0x01) or NUL (0x00).
+        // SOH is the FIX field delimiter — embedding it terminates the
+        // BeginString field early and corrupts the wire format. NUL is not
+        // legal in FIX header strings either (the spec mandates printable
+        // ASCII apart from the SOH delimiter); accepting it would emit a
+        // malformed header that downstream parsers cannot recover from.
+        // This guard catches both honest caller bugs (e.g. a misconfigured
+        // FixSessionConfig) and any opportunity for a hostile control
+        // surface above us to inject extra fields into the prefix.
+        for (size_t i = 0; i < begin_string.size(); ++i) {
+            const auto b_ch = static_cast<uint8_t>(begin_string[i]);
+            if (b_ch == 0x01 || b_ch == 0x00) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+                    "FIX builder: begin_string contains illegal byte 0x{:02x} "
+                    "at offset {} — SOH/NUL would corrupt header framing",
+                    b_ch, i);
+                overflow_ = true;
+                return 0;
+            }
+        }
+
         char header[kHeaderBufSize];
         size_t hpos = 0;
 
