@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed — `UdpConfig::warnings` parity with TcpConfig (zero MAC + loopback)
+
+`eph::dpdk::TcpConfig::warnings` has surfaced four advisory checks
+since its inception (loopback src_ip, loopback dst_ip, all-zero
+src_mac, all-zero dst_mac, plus self-connect and MSS) — these are the
+silent-fail classes that pass `validate()` but produce a NIC frame
+the switch silently drops. The matching `UdpConfig::warnings` only
+flagged `hw_cksum=true`, leaving every UDP caller using designated
+initialisation (UdpConfig{.src_ip=, .dst_ip=, ...}) without
+src_mac/dst_mac to debug a black-hole socket from scratch.
+
+Add the loopback-IP and zero-MAC checks to `UdpConfig::warnings` so
+both transports surface the same advisories. The `<vector>` and
+`<cstring>` headers were already used implicitly via spdlog/format
+transitive pulls — make them explicit so the file is robust to any
+future header-include reshuffle.
+
 ### Fixed — `query_rss_state` ceiling-divide RETA group count
 
 `query_rss_state` initialises the per-group RETA mask before calling

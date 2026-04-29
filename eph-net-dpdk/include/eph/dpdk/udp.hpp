@@ -17,10 +17,12 @@
 ///   rte_eth_tx_burst(port, queue, &mbuf, 1);
 
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <format>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 
@@ -105,10 +107,36 @@ struct UdpConfig {
 
     /// Check for non-fatal misconfigurations. Unlike validate() which blocks
     /// construction, these are advisory.
+    ///
+    /// Symmetric with TcpConfig::warnings — both transports run on the same
+    /// underlying DPDK PMD and share the same failure modes (loopback IPs
+    /// don't reach the NIC, all-zero MACs survive validate but produce
+    /// silent-drop packets at L2). Until this round the UDP path only
+    /// flagged hw_cksum, leaving the same uninitialised-config classes that
+    /// the TCP path catches as silent failures for UDP callers.
     [[nodiscard]] std::vector<std::string> warnings() const {
         std::vector<std::string> w;
         if (hw_cksum)
             w.emplace_back("hw_cksum=true — ensure NIC supports UDP checksum offload");
+        // Loopback IPs in src or dst — DPDK bypasses the kernel, so
+        // 127.0.0.0/8 traffic never reaches the wire. Mirror TcpConfig.
+        if ((src_ip >> 24) == 127)
+            w.emplace_back("src_ip is in 127.0.0.0/8 (loopback) -- "
+                           "DPDK bypasses the kernel, loopback traffic "
+                           "will not reach the NIC");
+        if ((dst_ip >> 24) == 127)
+            w.emplace_back("dst_ip is in 127.0.0.0/8 (loopback) -- "
+                           "DPDK bypasses the kernel, loopback traffic "
+                           "will not reach the NIC");
+        // Zero MACs survive validate (it only checks IPs / ports / pool)
+        // but produce frames the switch silently drops. Surface as advisory
+        // so the operator sees it before chasing a "no traffic on the wire"
+        // ghost — same shape TcpConfig::warnings has carried for months.
+        rte_ether_addr zero_mac{};
+        if (std::memcmp(&src_mac, &zero_mac, sizeof(rte_ether_addr)) == 0)
+            w.emplace_back("src_mac is all zeros -- likely uninitialized");
+        if (std::memcmp(&dst_mac, &zero_mac, sizeof(rte_ether_addr)) == 0)
+            w.emplace_back("dst_mac is all zeros -- likely uninitialized");
         return w;
     }
 };
