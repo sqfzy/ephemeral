@@ -424,6 +424,24 @@ public:
                     "Invalid MsgSeqNum={} (must be >= 1), ignoring", *received_seq);
                 return true;
             }
+            // FIX 4.4 Vol 2 §4 caps MsgSeqNum at uint32. A peer
+            // sending MsgSeqNum > UINT32_MAX is sending a protocol-
+            // illegal value; the unchecked uint32_t cast below would
+            // silently truncate to the low 32 bits and the gap-
+            // detection comparison would treat the truncated value as
+            // a fresh sequence, advancing `expected_inbound_seq_` to
+            // an arbitrary number. Ignore the message so local state
+            // stays consistent with the peer's actual wire counter.
+            // Same protocol cap is enforced on NewSeqNo in the
+            // SequenceReset handler below.
+            if (*received_seq >
+                static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    "MsgSeqNum={} exceeds UINT32_MAX — FIX 4.4 caps "
+                    "MsgSeqNum at uint32; ignoring message to avoid "
+                    "local sequence corruption", *received_seq);
+                return true;
+            }
             uint32_t recv = static_cast<uint32_t>(*received_seq);
             uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
             last_inbound_seq_.store(recv, std::memory_order_release);
