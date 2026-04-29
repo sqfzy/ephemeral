@@ -120,9 +120,19 @@ public:
         // const_cast-free: refill_locked_ is logically const in the
         // observable-state sense but mutates `tokens_` / `last_refill_`,
         // so we duplicate the refill math inline here to keep this
-        // method clean and const-correct.
+        // method clean and const-correct. Mirror refill_locked_'s
+        // negative-elapsed guard: if the clock has somehow slipped (or
+        // the snapshot is taken in the same nanosecond as the last
+        // refill so the difference rounds to zero), treat it as "no
+        // additional refill" rather than crediting NEGATIVE tokens
+        // back to the caller — without this guard, a returning negative
+        // count would mislead diagnostic dashboards into reading
+        // "below empty", which is impossible for a token bucket.
         const auto  now     = std::chrono::steady_clock::now();
         const auto  elapsed = std::chrono::duration<double>(now - last_refill_).count();
+        if (elapsed <= 0.0) {
+            return std::min(tokens_, static_cast<double>(capacity_));
+        }
         const double refilled = tokens_ + elapsed * refill_per_sec_;
         return std::min(refilled, static_cast<double>(capacity_));
     }
