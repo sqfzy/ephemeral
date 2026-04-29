@@ -998,10 +998,17 @@ struct ParserStats {
     /// later (lhs) snapshot since they are point-in-time diagnostics.
     [[nodiscard]] friend ParserStats operator-(const ParserStats& lhs,
                                                const ParserStats& rhs) noexcept {
+        // Saturating subtraction — if a caller hands in lhs/rhs swapped,
+        // an unguarded subtract would wrap to a huge uint64_t and
+        // silently mislead monitoring dashboards. Mirror the saturating
+        // pattern already used by EvictingQueueStats / BoundedQueueStats.
         return ParserStats{
-            .messages_parsed    = lhs.messages_parsed - rhs.messages_parsed,
-            .parse_errors       = lhs.parse_errors    - rhs.parse_errors,
-            .bytes_consumed     = lhs.bytes_consumed  - rhs.bytes_consumed,
+            .messages_parsed    = lhs.messages_parsed >= rhs.messages_parsed
+                ? lhs.messages_parsed - rhs.messages_parsed : 0,
+            .parse_errors       = lhs.parse_errors    >= rhs.parse_errors
+                ? lhs.parse_errors    - rhs.parse_errors    : 0,
+            .bytes_consumed     = lhs.bytes_consumed  >= rhs.bytes_consumed
+                ? lhs.bytes_consumed  - rhs.bytes_consumed  : 0,
             .first_error_offset = lhs.first_error_offset,
             .first_error_type   = lhs.first_error_type,
             .first_error_tag_byte = lhs.first_error_tag_byte,
