@@ -153,10 +153,18 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
     return mbuf;
 }
 
-/// @note Security: ARP has no built-in authentication. In production DPDK deployments,
-///       gateway_mac is typically pre-configured (bypassing ARP) or validated against
-///       a known MAC allowlist. This function only validates opcode, hw/proto types,
-///       and target IP — it does NOT detect ARP spoofing.
+/// @note Security: ARP has no built-in authentication. In production DPDK
+///       deployments, gateway_mac is typically pre-configured (bypassing ARP
+///       entirely) or validated against a known MAC allowlist via the
+///       `expected_mac` parameter below. This function validates: opcode,
+///       hw/proto types, target IP match, and sender-MAC well-formedness
+///       (rejects all-zero and non-unicast / I-G-bit-set source MACs). When
+///       `expected_mac` is supplied, replies from any other sender MAC are
+///       also rejected. Reflection-style attacks where a forged reply
+///       carries a `target_ip` field that is not our local IP are NOT
+///       detected — we only filter on `sender_ip == target_ip` (the IP
+///       being resolved). Pre-configured gateway MAC + `expected_mac` is
+///       the recommended HFT colo posture.
 ///
 /// Parse an ARP reply from a received mbuf.
 /// Returns the sender MAC if the packet is a valid ARP reply for target_ip.
