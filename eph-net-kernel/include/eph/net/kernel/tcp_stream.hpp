@@ -332,6 +332,20 @@ public:
                 wv.error().detail);
             return std::unexpected(wv.error());
         }
+        // TLS sub-config validation (only meaningful when this stream
+        // type is the EnableTls=true instantiation; the validate() call
+        // is cheap and idempotent for the non-TLS case so we run it
+        // unconditionally rather than wrap in `if constexpr`). Catches
+        // handshake_timeout <= 0 and client_cert/client_key mismatch
+        // before TCP connect spends an RTT.
+        if constexpr (EnableTls) {
+            if (auto tv = cfg.tls.validate(); !tv) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelTcpStream::create: TlsConfig invalid: {}",
+                    tv.error().detail);
+                return std::unexpected(tv.error());
+            }
+        }
         // Delegate keepalive sub-config validation. Empty (interval == 0)
         // = disabled; non-empty requires probes in [1, 10].
         if (auto kv = cfg.keepalive.validate(); !kv) {
