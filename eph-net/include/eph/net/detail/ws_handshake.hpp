@@ -181,11 +181,31 @@ inline constexpr std::string_view kWsMagicGuid =
 ///         for verifying the server's response on the client side.
 [[nodiscard]] inline std::string
 ws_compute_accept(std::string_view client_key) noexcept {
-    // Concat on the stack — client_key is <= 24 bytes, guid is 36 bytes.
-    // Total input to SHA-1 is <= 60 bytes, well under one SHA-1 block.
-    char scratch[64];
-    const size_t n1 = std::min<size_t>(client_key.size(), 32);
-    std::memcpy(scratch, client_key.data(), n1);
+    // Production client_key is 24 bytes (base64 of a 16-byte nonce).
+    // The server-side `mockex/ws_server.hpp::accept_handshake` extracts
+    // the `Sec-WebSocket-Key` header value verbatim from a remote HTTP
+    // request, however, so a malicious / buggy peer can deliver an
+    // arbitrarily-sized string here. Size scratch generously and clamp
+    // the per-call copy to the explicit budget so stack-buffer overflow
+    // is impossible regardless of input length.
+    //
+    // Layout: [client_key bytes (≤ kMaxKeyLen)] [kWsMagicGuid (36 bytes)]
+    //         total ≤ 192 bytes — comfortably under one stack page and
+    //         keeps SHA-1's 64-byte block iteration count bounded.
+    constexpr size_t kMaxKeyLen = 156;  // RFC 6455 §4.1 key is 24B; 156 covers
+                                        // every documented length and well
+                                        // beyond, while keeping scratch ≤ 192B.
+    char scratch[kMaxKeyLen + kWsMagicGuid.size()];
+    static_assert(sizeof(scratch) >= kMaxKeyLen + kWsMagicGuid.size(),
+                  "ws_compute_accept scratch must hold key + magic GUID");
+    const size_t n1 = std::min<size_t>(client_key.size(), kMaxKeyLen);
+    if (n1 < client_key.size()) [[unlikely]] {
+        SPDLOG_WARN("ws_compute_accept: client_key truncated from {} to {} "
+                    "bytes (expected ~24)", client_key.size(), n1);
+    }
+    if (n1 > 0) {
+        std::memcpy(scratch, client_key.data(), n1);
+    }
     std::memcpy(scratch + n1, kWsMagicGuid.data(), kWsMagicGuid.size());
     const auto digest = ws_sha1(std::string_view{scratch, n1 + kWsMagicGuid.size()});
     return ::eph::core::detail::base64_encode(digest.data(), digest.size());
