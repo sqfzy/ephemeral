@@ -743,12 +743,20 @@ public:
             uint8_t            scratch[detail::kDatagramAutoResponseBytes];
             core::OutputBuffer out_sink(scratch, sizeof(scratch));
 
+            // Track frames delivered before any decode error so the
+            // ERROR log below can report partial success. Mirrors the
+            // kernel backend's poll_once_ (`delivered_before_err`) so
+            // operators reading either backend's logs see the same
+            // diagnostic shape — UDP datagram-loss attribution must
+            // not depend on which transport the venue is using.
+            std::size_t delivered = 0;
             auto sink = [&](auto&& frame) {
                 if (frame.size() > 0 && on_datagram) {
                     on_datagram(std::span<const uint8_t>(
                                     frame.data(), frame.size()),
                                 src_addr);
                     inc_<::eph::net::StreamMetric::kFramesDecoded>();
+                    ++delivered;
                 }
             };
             auto dr = codec_.decode(view, out_sink, sink);
@@ -782,10 +790,20 @@ public:
             }
 
             if (!dr) {
+                // Elevate to ERROR + include {src, payload_len,
+                // delivered_before_err} for parity with KernelUdpSocket
+                // (5c44e99 shape). A decode failure on a datagram is
+                // not state-corrupting on UDP (per-packet codec, no
+                // session) but it IS a market-data-loss event the
+                // operator must see. The shared shape lets a venue
+                // running both backends grep one query across logs.
                 inc_<::eph::net::StreamMetric::kCodecErrors>();
-                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
-                    "DpdkUdpSocket::process_burst_: codec decode err={}",
-                    dr.error().detail);
+                SPDLOG_LOGGER_ERROR(detail::udp_socket_logger(),
+                    "DpdkUdpSocket::process_burst_: decode err={} "
+                    "src={} payload_len={} delivered_before_err={}",
+                    dr.error().detail, src_addr.to_string(),
+                    static_cast<std::size_t>(parsed.payload_len),
+                    delivered);
             }
             rte_pktmbuf_free(mbufs[i]);
         }

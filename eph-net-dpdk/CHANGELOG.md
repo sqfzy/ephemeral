@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed — `DpdkUdpSocket::process_burst_` codec-error log parity with kernel
+
+A decode failure on an inbound UDP datagram surfaced as a one-line
+`SPDLOG_WARN("codec decode err={}")` with only the error detail —
+no `src`, no `payload_len`, no count of frames already delivered
+on this datagram. The kernel-side `KernelUdpSocket::poll_once_`
+has logged the full `{src, payload_len, delivered_before_err}`
+shape at `ERROR` since 5c44e99, with the rationale that a UDP
+codec error is a market-data-loss event the operator must see
+(per-packet codec, no session corruption, but the lost frames
+will not retransmit). The DPDK backend silently disagreed.
+
+`process_burst_` now tracks `delivered` inside the sink lambda and,
+on `decode` failure, emits `SPDLOG_ERROR` with the same four-field
+shape as the kernel. `kCodecErrors` accounting is unchanged. A
+venue running both backends can now grep one query across logs
+when investigating a feed gap.
+
 ### Fixed — `~DpdkUdpSocket` now clears multicast MAC filters on the NIC
 
 `DpdkUdpSocket::join_multicast()` pushes MAC filters into the NIC's
