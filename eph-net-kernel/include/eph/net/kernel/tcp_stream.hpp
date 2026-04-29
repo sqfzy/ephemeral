@@ -709,12 +709,12 @@ public:
     ///        has not been added to a Poller yet.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> app_payload) noexcept {
-        if (attached_to_ == nullptr) {
+        if (attached_to_ == nullptr) [[unlikely]] {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "KernelTcpStream::send called before attach"});
         }
-        if (state_ != TcpState::Established) {
+        if (state_ != TcpState::Established) [[unlikely]] {
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelTcpStream::send: state != Established"});
@@ -734,7 +734,7 @@ public:
             tx_ciphertext_.clear();
             auto enc = tls_.encrypt_for_send(app_payload.data(), app_payload.size(),
                                               tx_ciphertext_);
-            if (!enc) {
+            if (!enc) [[unlikely]] {
                 return std::unexpected(enc.error());
             }
             // `encrypt_for_send` advanced the TLS write sequence number
@@ -750,7 +750,7 @@ public:
             // replaces the session — same fix the DPDK backend has
             // (DpdkTcpStream::send, see kTlsSendDesyncs there).
             auto sr = sock_.send(tx_ciphertext_);
-            if (!sr) {
+            if (!sr) [[unlikely]] {
                 tls_corrupt_ = true;
                 inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
@@ -765,7 +765,7 @@ public:
             return app_payload.size();
         } else {
             auto sr = sock_.send(app_payload);
-            if (!sr) return std::unexpected(sr.error());
+            if (!sr) [[unlikely]] return std::unexpected(sr.error());
             inc_<::eph::net::StreamMetric::kBytesSent>(*sr);
             return *sr;
         }
