@@ -202,6 +202,22 @@ public:
             return RiskRejectReason::kInvalidInput;
         }
 
+        // Validate Side: only FIX 4.4 codes '1' (Buy) and '2' (Sell) are
+        // legal. Without this guard, the ternary `(side == '1') ? qty : -qty`
+        // silently projects any other byte (Binance-native 'B'/'S', NUL,
+        // garbage) as Sell, which can hide a real Buy-direction breach of
+        // max_position_qty / max_total_exposure. PositionTracker::on_fill
+        // already rejects unknown sides — the matching invariant must hold
+        // here so the projected position used by check_order does not drift
+        // away from the on_fill state machine.
+        if (side != '1' && side != '2') {
+            SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                "risk reject: invalid side='{}' (0x{:02x}) for symbol={} — "
+                "must be FIX '1' (Buy) or '2' (Sell)",
+                side, static_cast<uint8_t>(side), symbol);
+            return RiskRejectReason::kInvalidInput;
+        }
+
         const double notional = qty * price;
 
         // 1. Single order quantity check.
