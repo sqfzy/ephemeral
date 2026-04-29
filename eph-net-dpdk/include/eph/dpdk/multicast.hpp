@@ -198,7 +198,8 @@ struct MulticastConfig {
     int      rx_cpu       = -1;      ///< CPU affinity for RX thread (-1 = no pin)
     uint16_t rx_burst     = 32;      ///< Max packets per rte_eth_rx_burst call
 
-    /// Set to `Platform::is_rss_active()` when this MulticastReceiver runs
+    /// Set to `Platform::dispatch_mode() == eph::net::dpdk::RxDispatchMode::RssPartitioned`
+    /// when this MulticastReceiver runs
     /// on a Platform that has RSS multi-queue dispatch enabled. When true,
     /// `start()` fail-fasts unless the caller has *also* installed
     /// FlowDirector rules pinning each multicast group's traffic to

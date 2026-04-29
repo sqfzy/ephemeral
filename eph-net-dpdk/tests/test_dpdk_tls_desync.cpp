@@ -22,7 +22,7 @@
 /// verify only the stream-level fail-fast wiring.
 ///
 /// Coverage:
-///   1. Fresh stream reports `is_tls_send_desynced() == false`.
+///   1. Fresh stream reports `snapshot().tls.send_desynced == false`.
 ///   2. After the latch trips, `send()` returns `Disconnected` (and NOT
 ///      `NotAttached`) — the desync guard runs before any precondition
 ///      check, so the error surface is consistent regardless of whether
@@ -58,7 +58,7 @@ using PlainRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/fal
 TEST(DpdkTlsDesync, FreshStreamIsNotDesynced) {
     auto stream = TlsRawStream::make_default_for_test_();
     ASSERT_NE(stream, nullptr);
-    EXPECT_FALSE(stream->is_tls_send_desynced());
+    EXPECT_FALSE(stream->snapshot().tls.send_desynced);
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsSendDesyncs), 0u);
 }
 
@@ -66,9 +66,9 @@ TEST(DpdkTlsDesync, LatchFlipsIsTlsSendDesynced) {
     auto stream = TlsRawStream::make_default_for_test_();
     ASSERT_NE(stream, nullptr);
 
-    EXPECT_FALSE(stream->is_tls_send_desynced());
+    EXPECT_FALSE(stream->snapshot().tls.send_desynced);
     stream->force_tls_desync_for_test_();
-    EXPECT_TRUE(stream->is_tls_send_desynced());
+    EXPECT_TRUE(stream->snapshot().tls.send_desynced);
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsSendDesyncs), 1u);
 }
 
@@ -101,7 +101,7 @@ TEST(DpdkTlsDesync, LatchIsIdempotent) {
     stream->force_tls_desync_for_test_();
     stream->force_tls_desync_for_test_();
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsSendDesyncs), 1u);
-    EXPECT_TRUE(stream->is_tls_send_desynced());
+    EXPECT_TRUE(stream->snapshot().tls.send_desynced);
 }
 
 TEST(DpdkTlsDesync, PlainStreamNeverReportsDesynced) {
@@ -109,12 +109,12 @@ TEST(DpdkTlsDesync, PlainStreamNeverReportsDesynced) {
     // accessor must always return false regardless of bookkeeping.
     auto stream = PlainRawStream::make_default_for_test_();
     ASSERT_NE(stream, nullptr);
-    EXPECT_FALSE(stream->is_tls_send_desynced());
+    EXPECT_FALSE(stream->snapshot().tls.send_desynced);
     // force_tls_desync_for_test_ is a no-op on plain streams — it lives
     // under the same macro guard but the `if constexpr (EnableTls)`
     // inside flips nothing.
     stream->force_tls_desync_for_test_();
-    EXPECT_FALSE(stream->is_tls_send_desynced());
+    EXPECT_FALSE(stream->snapshot().tls.send_desynced);
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsSendDesyncs), 0u);
 }
 

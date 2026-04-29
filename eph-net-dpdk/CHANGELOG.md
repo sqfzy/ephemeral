@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+### BREAKING CHANGES — StreamSnapshot unification + enable_rss removal (2026-04-29)
+
+Stream-level diagnostic getters and the `PlatformConfig::enable_rss`
+flag have been removed in favour of a unified post-create state view
+and `nb_rx_queues > 1` derivation. **Breaking** for any caller that
+queried per-getter or set the flag explicitly.
+
+| Removed                                          | Replacement                                                              |
+|--------------------------------------------------|--------------------------------------------------------------------------|
+| `DpdkTcpStream::tls_was_resumed()`               | `stream->snapshot().tls.was_resumed`                                     |
+| `DpdkTcpStream::is_tls_send_desynced()`          | `stream->snapshot().tls.send_desynced`                                   |
+| `KernelTcpStream::tls_was_resumed()`             | `stream->snapshot().tls.was_resumed`                                     |
+| `Platform::is_rss_active()`                      | `platform.dispatch_mode() == RxDispatchMode::RssPartitioned`             |
+| `PlatformConfig::enable_rss`                     | Field deleted; `nb_rx_queues > 1` auto-engages RSS/FlowDirector bring-up |
+| `PlatformConfig::to_json` `"enable_rss"` key     | Field absent from JSON output                                            |
+
+The previous "`enable_rss=false && nb_rx_queues > 1` → `Platform::create`
+hard-fails" combination is no longer expressible. Recovery hint in the
+both-RSS-paths-failed error now points at `nb_rx_queues=1` and "use a
+NIC whose PMD supports rss_hash_update or rss_hash_conf_get".
+
+`TcpSession::effective_mss()` / `peer_mss_negotiated()` (internal API,
+not part of the user-facing stream surface) are **retained**;
+`StreamSnapshot::Tcp` reads from them. `Platform::dispatch_mode` /
+`effective_rx_queue_range` / `rss_using_probed_key` are also retained
+(Platform-level diagnostics that need to be queryable before any stream
+exists, and used internally by `create_and_attach` queue selection).
+
+Migration map (mechanical):
+
+```
+- if (stream->tls_was_resumed()) { ... }
++ if (stream->snapshot().tls.was_resumed) { ... }
+
+- if (stream->is_tls_send_desynced()) { ... }
++ if (stream->snapshot().tls.send_desynced) { ... }
+
+- if (platform.is_rss_active()) { ... }
++ if (platform.dispatch_mode() ==
++     ::eph::net::dpdk::RxDispatchMode::RssPartitioned) { ... }
+
+  PlatformConfig pcfg{};
+  pcfg.nb_rx_queues = 4;
+- pcfg.enable_rss   = true;     // line removed; nb_rx_queues > 1 suffices
+```
+
+New programmatic affordance: `snapshot().endpoint.src_port_rewritten`
+exposes whether RSS reverse-pick changed the caller's pre-chosen
+src_port. Replaces the `binance_latency.cpp` `warned_src_port_override`
+one-shot warn pattern with a query.
+
 ### BREAKING CHANGES — StreamConfig reshape (2026-04-29, T3.19)
 
 `DpdkTcpStream::StreamConfig` reorganized into a backend-symmetric shape

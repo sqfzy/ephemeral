@@ -178,13 +178,6 @@ struct PlatformConfig {
     uint32_t mbuf_pool_size  = 4095;
     uint16_t mbuf_cache_size = 256;     ///< Per-lcore mempool cache size
     bool     enable_promiscuous = false; ///< Enable promiscuous mode on the port
-    /// @brief Enable RSS hashing across `nb_rx_queues` RX queues. When true and
-    /// `nb_rx_queues > 1`, Platform::create() turns on `RTE_ETH_MQ_RX_RSS` in
-    /// the eth_conf and calls `eph::net::dpdk::configure_rss()` before starting
-    /// the port. After the port starts, `detect_rx_dispatch_mode()` is run
-    /// once and the result is cached (see `Platform::dispatch_mode()`).
-    /// Default false — single-queue Software mode, fully backwards compatible.
-    bool     enable_rss      = false;
     /// @brief Opt-in: request NIC RX checksum offload for IPv4 and UDP.
     ///
     /// When true, `configure_port()` sets
@@ -372,11 +365,6 @@ struct PlatformConfig {
             w.emplace_back("enable_promiscuous=true -- receives all NIC "
                            "traffic, not just this MAC; consider disabling "
                            "in production");
-        if (enable_rss && nb_rx_queues < 2)
-            w.emplace_back(std::format(
-                "enable_rss=true but nb_rx_queues={} -- RSS needs >=2 queues, "
-                "the flag will be silently ignored (single-queue Software mode)",
-                nb_rx_queues));
         if (enable_strict_rx_checksum && !enable_rx_checksum_offload)
             w.emplace_back(
                 "enable_strict_rx_checksum=true but enable_rx_checksum_offload"
@@ -397,7 +385,7 @@ struct PlatformConfig {
             "{{\"port_id\":{},\"nb_rx_queues\":{},\"nb_tx_queues\":{},"
             "\"nb_rx_desc\":{},\"nb_tx_desc\":{},"
             "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
-            "\"enable_promiscuous\":{},\"enable_rss\":{},"
+            "\"enable_promiscuous\":{},"
             "\"enable_rx_checksum_offload\":{},"
             "\"enable_strict_rx_checksum\":{},"
             "\"link_timeout_ms\":{},"
@@ -408,7 +396,6 @@ struct PlatformConfig {
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false",
-            enable_rss ? "true" : "false",
             enable_rx_checksum_offload ? "true" : "false",
             enable_strict_rx_checksum  ? "true" : "false",
             link_timeout_ms,
@@ -654,18 +641,6 @@ public:
     /// @brief The actual number of RX queues configured on the port (after
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
-
-    /// @brief True iff RSS hashing is active on this Platform (multi-queue
-    /// dispatch is in effect). Returns true iff `configure_rss` succeeded
-    /// or the probe-based fallback is in use; returns false for
-    /// single-queue Platforms, moved-from Platforms, or when both RSS
-    /// configuration paths failed.
-    ///
-    /// Read this from cold-path control-plane code (`dns::resolve`,
-    /// `MulticastRx::create`) to decide whether to reverse-pick a src_port
-    /// via `find_src_port_for_queue` (RSS active) or fall back to a
-    /// random ephemeral port (single-queue / no-RSS).
-    [[nodiscard]] bool is_rss_active() const noexcept;
 
     /// @brief True iff RSS is active and the prediction key was *probed*
     /// from the NIC (via `rte_eth_dev_rss_hash_conf_get`) rather than
@@ -1130,7 +1105,7 @@ struct Platform::Impl {
         // rss_hash_update later cannot upgrade single-queue → multi-queue.
         // Hash flags are intersected with NIC capability — passing flags the
         // PMD does not advertise causes EINVAL.
-        if (config.enable_rss && nb_rx > 1) {
+        if (nb_rx > 1) {
             eth_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
             eth_conf.rx_adv_conf.rss_conf.rss_key = nullptr;
             eth_conf.rx_adv_conf.rss_conf.rss_key_len = 0;
@@ -1141,7 +1116,7 @@ struct Platform::Impl {
                  RTE_ETH_RSS_IPV4);
             if (eth_conf.rx_adv_conf.rss_conf.rss_hf == 0) {
                 SPDLOG_LOGGER_WARN(log,
-                    "port={} enable_rss=true but NIC reports no IPv4 TCP/UDP "
+                    "port={} nb_rx_queues > 1 but NIC reports no IPv4 TCP/UDP "
                     "RSS hash offloads (flow_type_rss_offloads=0x{:016x}); "
                     "RSS will be inactive — falling back to single-queue dispatch",
                     config.port_id, dev_info.flow_type_rss_offloads);
@@ -1410,7 +1385,7 @@ Platform::create(const PlatformConfig& config) {
 
     // RSS hash key + RETA must be installed BEFORE rte_eth_dev_start.
     // configure_port already set mq_mode=RTE_ETH_MQ_RX_RSS in eth_conf when
-    // enable_rss && nb_rx_queues > 1; here we wire up the actual hash params.
+    // nb_rx_queues > 1; here we wire up the actual hash params.
     //
     // Failure is NOT silently absorbed any more (commit BREAKING CHANGE):
     //   * If configure_rss succeeds: rss_active=true (eph's own key
@@ -1425,7 +1400,7 @@ Platform::create(const PlatformConfig& config) {
     //     collapsing to single-queue (the previous behaviour, which hid
     //     a real configuration mismatch behind an INFO log).
     std::string configure_rss_error;
-    if (config.enable_rss && impl->config.nb_rx_queues > 1) {
+    if (impl->config.nb_rx_queues > 1) {
         auto rss_r = ::eph::net::dpdk::configure_rss(
             config.port_id, impl->config.nb_rx_queues);
         if (rss_r) {
@@ -1457,8 +1432,7 @@ Platform::create(const PlatformConfig& config) {
     // can use the probed key transparently and multi-queue RSS is
     // genuinely usable. We probe AFTER port start because some PMDs
     // only return meaningful RSS state once the device is running.
-    if (config.enable_rss && impl->config.nb_rx_queues > 1
-        && !impl->rss_active) {
+    if (impl->config.nb_rx_queues > 1 && !impl->rss_active) {
         SPDLOG_LOGGER_WARN(log,
             "Platform: configure_rss failed earlier on port={} ('{}'); "
             "attempting probe-based bring-up via "
@@ -1497,7 +1471,7 @@ Platform::create(const PlatformConfig& config) {
 
     // Reflect what THIS Platform is actually doing, not just NIC capability.
     // detect_rx_dispatch_mode reports the NIC's intrinsic capabilities;
-    // if we didn't bring up RSS (single-queue config OR enable_rss=false),
+    // if we didn't bring up RSS (single-queue config: nb_rx_queues == 1),
     // dispatch_mode is effectively Software for the purposes of stream
     // attach decisions. Without this pin, Stream::create_and_attach would
     // walk the RssPartitioned branch and call predict_rss_queue + attach
@@ -1517,8 +1491,9 @@ Platform::create(const PlatformConfig& config) {
     }
 
     // ── Hard-fail the legitimate-but-unsafe combination "nb_rx_queues>1
-    //    with no functional RSS path" — happens when the caller set
-    //    enable_rss=false but nb_rx_queues>1. The previous behaviour
+    //    with no functional RSS path" — happens when the PMD rejected both
+    //    `configure_rss` (rss_hash_update) AND the probe-based fallback
+    //    (rss_hash_conf_get returned key_len=0). The previous behaviour
     //    silently collapsed the RETA to queue 0, which masked the
     //    misconfiguration; we now refuse so the caller makes an explicit
     //    decision. (The configure_rss-failed-but-probe-succeeded path
@@ -1530,11 +1505,12 @@ Platform::create(const PlatformConfig& config) {
             "cannot route packets to multiple queues without functional RSS",
             impl->config.nb_rx_queues, config.port_id);
         return std::unexpected(std::format(
-            "PlatformConfig has nb_rx_queues={} but enable_rss=false (or "
-            "RSS bring-up was skipped); eph cannot route packets to "
-            "multiple queues without a functional RSS path. Recovery: "
-            "set enable_rss=true (and ensure your PMD supports "
-            "rss_hash_update or rss_hash_conf_get) OR set nb_rx_queues=1.",
+            "PlatformConfig has nb_rx_queues={} but RSS bring-up failed "
+            "(both rss_hash_update and rss_hash_conf_get were rejected by "
+            "the PMD); eph cannot route packets to multiple queues without "
+            "a functional RSS path. Recovery: set nb_rx_queues=1 to use "
+            "single-queue Software dispatch, or use a NIC whose PMD "
+            "supports rss_hash_update or rss_hash_conf_get.",
             impl->config.nb_rx_queues));
     }
 
@@ -1737,10 +1713,6 @@ Platform::dispatch_mode() const noexcept {
 
 inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
-}
-
-inline bool Platform::is_rss_active() const noexcept {
-    return impl_ && impl_->rss_active;
 }
 
 inline bool Platform::rss_using_probed_key() const noexcept {

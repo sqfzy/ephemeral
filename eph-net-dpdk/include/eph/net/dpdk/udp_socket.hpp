@@ -61,6 +61,7 @@
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/stream_metrics.hpp"
+#include "eph/net/stream_snapshot.hpp"
 
 namespace eph::net::dpdk {
 
@@ -834,6 +835,34 @@ public:
         }
         return counters_[static_cast<std::size_t>(m)]
             .v.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Post-create socket state snapshot.
+    /// @see eph::net::StreamSnapshot for field semantics.
+    /// @note UDP has no TCP / TLS / WS state — those sub-structs stay
+    ///       inert (`enabled=false`). DPDK UDP also has no RX queue at
+    ///       config time (RX dispatch is the Poller's job per
+    ///       `PollerConfig::rx_queue_id`); `dpdk.rx_queue` therefore
+    ///       reports 0 and consumers should query
+    ///       `Platform::dispatch_mode()` for the broader picture.
+    [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
+        ::eph::net::StreamSnapshot s{};
+        s.endpoint.src_ip   = cfg_.legacy.src_ip;
+        s.endpoint.src_port = cfg_.legacy.src_port;
+        s.endpoint.dst_ip   = cfg_.legacy.dst_ip;
+        s.endpoint.dst_port = cfg_.legacy.dst_port;
+        // UDP never reverse-picks src_port; src_port_rewritten stays false.
+
+        // tcp.* / tls.* / ws.* / keepalive.* all stay default (enabled=false).
+
+        s.dpdk.rx_queue                 = 0;  // RX is Poller-driven; no per-socket binding
+        s.dpdk.tx_queue                 = cfg_.legacy.tx_queue_id;
+        s.dpdk.pool_lcore_hint_resolved = cfg_.pool_lcore_hint;
+        if (flow_rule_ && flow_rule_->valid()) {
+            s.dpdk.flow_rule_handle =
+                reinterpret_cast<uint64_t>(flow_rule_->handle);
+        }
+        return s;
     }
 };
 

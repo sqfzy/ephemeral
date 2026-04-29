@@ -283,7 +283,6 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         pcfg.port_id      = 0;
         pcfg.nb_rx_queues = kNbQueues;
         pcfg.nb_tx_queues = kNbQueues;
-        pcfg.enable_rss   = true;
 
         // We bypass DpdkBenchEnv::create_full and inline its flow because
         // we need the EalGuard separate from the Platform creation error
@@ -511,7 +510,6 @@ TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
         pcfg.port_id      = 0;
         pcfg.nb_rx_queues = kNbQueues;
         pcfg.nb_tx_queues = kNbQueues;
-        pcfg.enable_rss   = true;
 
         auto eal = init_eal(RssKeyEnv::pci_bdf());
         ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();

@@ -18,14 +18,14 @@
 ///
 /// All cases SKIP cleanly if NIC_B isn't bound to vfio-pci.
 ///
-/// Configuration matrix:
+/// Configuration matrix (post enable_rss removal):
 ///
 ///   ┌──────────────────────────────────────┬─────────────────────────┐
 ///   │ PlatformConfig                       │ Expected outcome        │
 ///   ├──────────────────────────────────────┼─────────────────────────┤
-///   │ nb_rx_queues=4 enable_rss=true       │ Platform::create succeeds
-///   │   (probe path on ENA)                │   with rss_using_probed_key()
-///   │                                      │   == true, OR fails with
+///   │ nb_rx_queues=4                       │ Platform::create succeeds
+///   │   (RSS auto-engages; probe path on   │   with rss_using_probed_key()
+///   │    ENA)                              │   == true, OR fails with
 ///   │                                      │   "probe also failed" in
 ///   │                                      │   the error message — both
 ///   │                                      │   are valid post-reshape
@@ -33,16 +33,15 @@
 ///   │                                      │   depends on the running
 ///   │                                      │   ENA driver version.
 ///   ├──────────────────────────────────────┼─────────────────────────┤
-///   │ nb_rx_queues=4 enable_rss=false      │ Platform::create FAILS
-///   │                                      │ with a recovery hint
-///   │                                      │ pointing at enable_rss /
-///   │                                      │ nb_rx_queues=1.
-///   ├──────────────────────────────────────┼─────────────────────────┤
 ///   │ nb_rx_queues=1                       │ Platform::create succeeds,
 ///   │                                      │ rss_using_probed_key() ==
 ///   │                                      │ false (probe path never
 ///   │                                      │ runs in single-queue mode).
 ///   └──────────────────────────────────────┴─────────────────────────┘
+///
+/// Note: the previous "nb_rx_queues=4 enable_rss=false → hard-fail" case
+/// is no longer expressible (the field is gone) — the invariant moved
+/// from runtime check to type system. See CHANGELOG.
 
 #include <cstdint>
 #include <cstdlib>
@@ -160,14 +159,15 @@ private:
         }                                                                \
     } while (0)
 
-/// Build a baseline `PlatformConfig` for NIC_B. Tests override individual
-/// fields (`nb_rx_queues`, `enable_rss`) to exercise the bring-up matrix.
+/// Build a baseline `PlatformConfig` for NIC_B. Tests override
+/// `nb_rx_queues` to exercise the bring-up matrix; nb_rx_queues > 1
+/// auto-engages RSS/FlowDirector bring-up (the previous `enable_rss`
+/// flag was removed in favour of this derivation).
 ::eph::dpdk::PlatformConfig make_pcfg() noexcept {
     ::eph::dpdk::PlatformConfig p{};
     p.port_id         = 0;  // EAL allow-listed only NIC_B → port_id 0
     p.nb_rx_queues    = 1;
     p.nb_tx_queues    = 1;
-    p.enable_rss      = false;
     p.link_timeout_ms = 0;
     return p;
 }
@@ -227,13 +227,13 @@ void run_in_subprocess(std::function<void()> body) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MultiQueue_OnEna_ResolvesViaProbeOrFails
 //
-// `enable_rss=true + nb_rx_queues=4`: on ENA the legacy
-// `rte_eth_dev_rss_hash_update` is rejected, and the post-reshape code
-// either (a) probes the NIC's actual key via `rte_eth_dev_rss_hash_conf_get`
-// and brings RSS up via the probed key, or (b) hard-fails when the PMD
-// also won't expose its key. Both are valid outcomes — the test asserts
-// that the result lands in exactly one of those two buckets, never the
-// previous "silently degrade to single queue" trap.
+// `nb_rx_queues=4`: on ENA the legacy `rte_eth_dev_rss_hash_update` is
+// rejected, and the post-reshape code either (a) probes the NIC's
+// actual key via `rte_eth_dev_rss_hash_conf_get` and brings RSS up via
+// the probed key, or (b) hard-fails when the PMD also won't expose its
+// key. Both are valid outcomes — the test asserts that the result lands
+// in exactly one of those two buckets, never the previous "silently
+// degrade to single queue" trap.
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
@@ -245,7 +245,6 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
         auto pcfg = make_pcfg();
         pcfg.nb_rx_queues = 4;
         pcfg.nb_tx_queues = 4;
-        pcfg.enable_rss   = true;
 
         auto plat_r = ::eph::dpdk::Platform::create(pcfg);
         if (plat_r) {
@@ -254,10 +253,10 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
             const auto& plat = *plat_r;
             EXPECT_TRUE(plat.rss_using_probed_key())
                 << "configure_rss must have failed AND probe must have "
-                   "succeeded for this Platform to exist with multi-queue + "
-                   "enable_rss=true on ENA — but rss_using_probed_key() is "
-                   "false. Either the PMD now accepts hash_update (relax to "
-                   "allow false in that case) or bring-up logic regressed.";
+                   "succeeded for this Platform to exist with nb_rx_queues=4 "
+                   "on ENA — but rss_using_probed_key() is false. Either the "
+                   "PMD now accepts hash_update (relax to allow false in that "
+                   "case) or bring-up logic regressed.";
             EXPECT_NE(plat.dispatch_mode(),
                       ::eph::net::dpdk::RxDispatchMode::Software)
                 << "probe-based RSS bring-up should leave dispatch_mode at "
@@ -282,49 +281,19 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MultiQueue_NoRss_HardFails
+// SingleQueue_Unchanged
 //
-// `enable_rss=false + nb_rx_queues=4` is a configuration that the old
-// code silently collapsed to single-queue (RETA → queue 0). The reshape
-// hard-fails so operators see and handle the misconfiguration.
-// ─────────────────────────────────────────────────────────────────────────────
-
-TEST(RssBringup, MultiQueue_NoRss_HardFails) {
-    EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
-    run_in_subprocess([] {
-        auto eal = init_eal_for_nic_b();
-        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
-
-        auto pcfg = make_pcfg();
-        pcfg.nb_rx_queues = 4;
-        pcfg.nb_tx_queues = 4;
-        pcfg.enable_rss   = false;
-
-        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-        ASSERT_FALSE(plat_r.has_value())
-            << "Platform::create must hard-fail when nb_rx_queues>1 is paired "
-               "with enable_rss=false — the silent-collapse path was removed.";
-
-        const std::string& err = plat_r.error();
-        spdlog::info("RssBringup: enable_rss=false multi-queue rejection: {}",
-                     err);
-        EXPECT_NE(err.find("enable_rss=true"), std::string::npos)
-            << "recovery message must mention 'enable_rss=true': " << err;
-        EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
-            << "recovery message must mention 'nb_rx_queues=1': " << err;
-    });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SingleQueue_RssEnabled_Unchanged
+// `nb_rx_queues=1`: must build, dispatch_mode pinned to Software,
+// rss_using_probed_key=false (probe never runs in single-queue mode).
+// Sanity check that the reshape didn't disturb the single-queue path.
 //
-// `nb_rx_queues=1 + enable_rss=true`: must build, dispatch_mode pinned
-// to Software, rss_using_probed_key=false (probe never runs in
-// single-queue mode). Sanity check that the reshape didn't disturb the
-// single-queue path.
+// Post-derivation note: the previous matrix had two cases here
+// (RssEnabled / RssDisabled). With `enable_rss` removed, both
+// collapsed onto the same configuration — one test now covers the
+// single-queue invariant.
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(RssBringup, SingleQueue_RssEnabled_Unchanged) {
+TEST(RssBringup, SingleQueue_Unchanged) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
     run_in_subprocess([] {
         auto eal = init_eal_for_nic_b();
@@ -333,7 +302,6 @@ TEST(RssBringup, SingleQueue_RssEnabled_Unchanged) {
         auto pcfg = make_pcfg();
         pcfg.nb_rx_queues = 1;
         pcfg.nb_tx_queues = 1;
-        pcfg.enable_rss   = true;  // honored only when nb_rx_queues > 1
 
         auto plat_r = ::eph::dpdk::Platform::create(pcfg);
         ASSERT_TRUE(plat_r.has_value())
@@ -343,33 +311,6 @@ TEST(RssBringup, SingleQueue_RssEnabled_Unchanged) {
         EXPECT_EQ(plat_r->dispatch_mode(),
                   ::eph::net::dpdk::RxDispatchMode::Software)
             << "single-queue dispatch_mode must remain pinned to Software";
-    });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SingleQueue_RssDisabled_Unchanged
-//
-// `nb_rx_queues=1 + enable_rss=false`: same as above, but with RSS
-// disabled. Both single-queue paths are unchanged by the reshape.
-// ─────────────────────────────────────────────────────────────────────────────
-
-TEST(RssBringup, SingleQueue_RssDisabled_Unchanged) {
-    EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
-    run_in_subprocess([] {
-        auto eal = init_eal_for_nic_b();
-        ASSERT_TRUE(eal.has_value()) << "EAL init: " << eal.error();
-
-        auto pcfg = make_pcfg();
-        pcfg.nb_rx_queues = 1;
-        pcfg.nb_tx_queues = 1;
-        pcfg.enable_rss   = false;
-
-        auto plat_r = ::eph::dpdk::Platform::create(pcfg);
-        ASSERT_TRUE(plat_r.has_value())
-            << "single-queue Platform must still build: " << plat_r.error();
-        EXPECT_FALSE(plat_r->rss_using_probed_key());
-        EXPECT_EQ(plat_r->dispatch_mode(),
-                  ::eph::net::dpdk::RxDispatchMode::Software);
     });
 }
 

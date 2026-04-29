@@ -126,7 +126,6 @@ struct Measurement {
 
 struct DpdkRss {
     uint16_t nb_rx_queues = 1;
-    bool     enable_rss   = false;
     std::string lcore_per_queue;   ///< CSV; reserved (not yet consumed)
 };
 
@@ -460,8 +459,6 @@ load_bench_conf(std::string_view path) {
         if (auto* rss = (*d)["rss"].as_table()) {
             if (auto v = (*rss)["nb_rx_queues"].value<int64_t>())
                 cfg.dpdk.nb_rx_queues = static_cast<uint16_t>(*v);
-            if (auto v = (*rss)["enable_rss"].value<bool>())
-                cfg.dpdk.enable_rss = *v;
             if (auto v = (*rss)["lcore_per_queue"].value<std::string>())
                 cfg.dpdk.lcore_per_queue = *v;
         }

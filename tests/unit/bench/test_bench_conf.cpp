@@ -144,7 +144,6 @@ TEST(BenchConf, MinimalValidLoads) {
     EXPECT_EQ(cfg.cpu.eal_cores, "0,1");
     EXPECT_FALSE(cfg.cpu.allow_non_isolated);
     EXPECT_EQ(cfg.dpdk.nb_rx_queues, 1u);
-    EXPECT_FALSE(cfg.dpdk.enable_rss);
 
     EXPECT_TRUE(cfg.scenario_names().empty());
     EXPECT_EQ(cfg.scenario("lat_tcp"), nullptr);
@@ -173,7 +172,6 @@ server_work_ns = 500
 
 [dpdk.rss]
 nb_rx_queues    = 4
-enable_rss      = true
 lcore_per_queue = "4,5,6,7"
 
 [scenarios.lat_tcp]
@@ -196,7 +194,6 @@ inflights = [1, 4, 16, 64]
     EXPECT_EQ(cfg.measurement.warmup_samples, 2048u);
     EXPECT_EQ(cfg.measurement.server_work_ns, 500u);
     EXPECT_EQ(cfg.dpdk.nb_rx_queues, 4u);
-    EXPECT_TRUE(cfg.dpdk.enable_rss);
     EXPECT_EQ(cfg.dpdk.lcore_per_queue, "4,5,6,7");
 
     // Scenario lookup

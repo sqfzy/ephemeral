@@ -92,7 +92,6 @@ TEST(DpdkMpPrimary, BringUpHoldAndCleanup) {
     pcfg.port_id      = port_id;
     pcfg.nb_rx_queues = nb_rx_queues;
     pcfg.nb_tx_queues = nb_rx_queues;
-    pcfg.enable_rss   = (nb_rx_queues > 1);
     pcfg.proc_type    = eph::dpdk::ProcType::Primary;
     pcfg.file_prefix  = file_prefix;
     // Primary owns the lower half of queues. Source-port partitioning is

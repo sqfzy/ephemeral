@@ -182,7 +182,7 @@ inline uint16_t random_ephemeral_port() noexcept {
 /// Select a src_port for an outbound DNS query so that the resulting
 /// reply's 5-tuple RSS-hashes back to the caller's RX queue.
 ///
-/// On RSS-active NICs (multi-queue + `enable_rss=true`), delegates to
+/// On RSS-active NICs (multi-queue: `nb_rx_queues > 1`), delegates to
 /// `find_src_port_for_queue` which walks the ephemeral port range and
 /// returns the first port whose inbound 5-tuple hashes to @p queue_id.
 /// The reply's 5-tuple is `(nameserver_ip, dns_server_port, local_ip,

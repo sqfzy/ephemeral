@@ -160,7 +160,6 @@ public:
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
         pcfg.nb_tx_queues     = 4;
-        pcfg.enable_rss       = true;
         pcfg.link_timeout_ms  = 0;
 
         auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(

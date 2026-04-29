@@ -14,7 +14,7 @@
 ///     hard-failing on RSS bring-up (no silent collapse to queue 0 — see
 ///     `eph-net-dpdk/CHANGELOG.md`).
 ///   * The four diagnostic getters that tell you what RSS path resolved:
-///         `dispatch_mode()` / `is_rss_active()` /
+///         `dispatch_mode()` /
 ///         `rss_using_probed_key()` / `effective_rx_queue_range()`.
 ///     The probed-key path lights up on ENA where the PMD rejects
 ///     `rte_eth_dev_rss_hash_update`; we read back the NIC's own key via
@@ -244,7 +244,6 @@ int main(int argc, char** argv) {
     pcfg.port_id          = args.port_id;
     pcfg.nb_rx_queues     = args.nb_rx_queues;
     pcfg.nb_tx_queues     = args.nb_rx_queues;
-    pcfg.enable_rss       = true;
     pcfg.per_lcore_pools  = args.per_lcore_pools;  // 0 = single shared pool
 
     auto plat_r = ed::Platform::create_primary(std::move(pcfg));
@@ -266,7 +265,8 @@ int main(int argc, char** argv) {
         "rx_queue_range=[{},{})",
         platform.port_id(), platform.nb_rx_queues(),
         edpdk::rx_dispatch_mode_name(platform.dispatch_mode()),
-        platform.is_rss_active(), platform.rss_using_probed_key(),
+        platform.dispatch_mode() == edpdk::RxDispatchMode::RssPartitioned,
+        platform.rss_using_probed_key(),
         qr.first, qr.second);
 
     if (platform.dispatch_mode() != edpdk::RxDispatchMode::RssPartitioned) {

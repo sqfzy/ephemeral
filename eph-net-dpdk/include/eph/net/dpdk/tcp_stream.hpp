@@ -51,6 +51,7 @@
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/stream_metrics.hpp"
+#include "eph/net/stream_snapshot.hpp"
 #include "eph/net/tcp_state.hpp"
 #include "eph/utils/time.hpp"
 
@@ -604,6 +605,11 @@ public:
             // `requires` clause prevents instantiating it for other
             // StreamCodecs.
             if (deflate_state.negotiated) {
+                // Snapshot bookkeeping: server accepted the offer regardless
+                // of whether the configured codec can actually inflate.
+                // This reflects the wire-level negotiation outcome, which is
+                // the truth most diagnostic consumers want.
+                stream->ws_deflate_active_ = true;
                 if constexpr (requires (C& c) {
                     c.enable_permessage_deflate(false);
                 }) {
@@ -678,6 +684,15 @@ public:
         // connect() runs. Other modes can defer queue selection to phase 2.
         uint16_t target_qid = 0;
         bool defer_queue_selection = false;
+
+        // Capture the caller's requested src_port BEFORE any reverse-pick
+        // overwrite, so post-create we can populate
+        // `StreamSnapshot::Endpoint::src_port_rewritten` truthfully. Only
+        // mutated by the RSS+pin branch below; other branches leave it
+        // untouched. We treat src_port==0 as "caller didn't care" and never
+        // flag rewriting in that case.
+        const uint16_t original_src_port =
+            cfg.dpdk.tcp_low_level.tuple.src_port;
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
@@ -827,6 +842,15 @@ public:
         auto sr = create(std::move(cfg));
         if (!sr) return std::unexpected(sr.error());
         auto stream = std::move(*sr);
+
+        // Snapshot bookkeeping: flag if the RSS+pin path mutated the
+        // caller's pre-chosen src_port. `original_src_port == 0` means
+        // the caller didn't pre-choose anything, so we never call that
+        // a "rewrite" — the library is allowed to populate an empty slot.
+        if (original_src_port != 0 &&
+            stream->cfg_.dpdk.tcp_low_level.tuple.src_port != original_src_port) {
+            stream->src_port_rewritten_ = true;
+        }
 
         // TD-2: propagate effective strict mode from Platform. Only set
         // here (not in plain create()) because create() has no Platform
@@ -1323,15 +1347,6 @@ public:
         return sess_.state();
     }
 
-    /// @brief Diagnostic — true once a TLS partial-send has desynced the
-    ///        write sequence counter with the peer. The stream then refuses
-    ///        further send/recv and expects the caller to reconnect. Always
-    ///        false on `EnableTls=false`.
-    [[nodiscard]] bool is_tls_send_desynced() const noexcept {
-        if constexpr (EnableTls) return tls_corrupt_;
-        else return false;
-    }
-
     // ── Pollable concept API ─────────────────────────────────────────────
     //
     // These methods are conceptually private to the Poller but exposed
@@ -1428,13 +1443,52 @@ public:
         }
     }
 
-    /// True if the just-completed handshake was a TLS 1.3 ticket resumption.
-    [[nodiscard]] bool tls_was_resumed() const noexcept {
+    /// @brief Post-create stream state snapshot.
+    /// @see eph::net::StreamSnapshot for field semantics.
+    [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
+        ::eph::net::StreamSnapshot s{};
+        const auto& t = cfg_.dpdk.tcp_low_level.tuple;
+        s.endpoint.src_ip   = t.src_ip;
+        s.endpoint.src_port = t.src_port;
+        s.endpoint.dst_ip   = t.dst_ip;
+        s.endpoint.dst_port = t.dst_port;
+        s.endpoint.src_port_rewritten = src_port_rewritten_;
+
+        s.tcp.enabled             = true;
+        s.tcp.recv_window         = static_cast<uint16_t>(
+            cfg_.dpdk.tcp_low_level.recv_window);
+        s.tcp.local_mss           = cfg_.dpdk.tcp_low_level.mss;
+        s.tcp.effective_mss       = sess_.effective_mss();
+        s.tcp.peer_mss_negotiated = sess_.peer_mss_negotiated();
+        s.tcp.peer_mss            = s.tcp.peer_mss_negotiated
+                                        ? sess_.effective_mss() : 0;
+        s.tcp.icmp_pmtu_shrunk    =
+            sess_.tcp_stats().icmp_frag_needed_received > 0;
+
+        s.keepalive.active   = !cfg_.keepalive.empty();
+        s.keepalive.interval = cfg_.keepalive.interval;
+        s.keepalive.probes   = cfg_.keepalive.probes;
+
         if constexpr (EnableTls) {
-            return tls_.was_resumed();
-        } else {
-            return false;
+            s.tls.enabled       = true;
+            s.tls.was_resumed   = tls_.was_resumed();
+            s.tls.send_desynced = tls_corrupt_;
+            s.tls.sni           = cfg_.tls.hostname;
         }
+
+        s.ws.enabled                   = !cfg_.ws.path.empty();
+        s.ws.path                      = cfg_.ws.path;
+        s.ws.host                      = cfg_.ws.host;
+        s.ws.permessage_deflate_active = ws_deflate_active_;
+
+        s.dpdk.rx_queue                 = cfg_.dpdk.tcp_low_level.rx_queue_id;
+        s.dpdk.tx_queue                 = cfg_.dpdk.tcp_low_level.tx_queue_id;
+        s.dpdk.pool_lcore_hint_resolved = cfg_.dpdk.pool_lcore_hint;
+        if (flow_rule_ && flow_rule_->valid()) {
+            s.dpdk.flow_rule_handle =
+                reinterpret_cast<uint64_t>(flow_rule_->handle);
+        }
+        return s;
     }
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
@@ -2027,6 +2081,16 @@ private:
     ///        See the detailed rationale in `send()` and the metric
     ///        `kTlsSendDesyncs` in `eph/net/stream_metrics.hpp`.
     bool                                    tls_corrupt_{false};
+    /// @brief Snapshot bookkeeping: true iff RSS+pin reverse-pick mutated
+    ///        the caller's pre-chosen src_port. Set by `create_and_attach`
+    ///        when the original (non-zero) src_port differs from the
+    ///        post-pick value. Surfaced via `snapshot().endpoint.src_port_rewritten`.
+    bool                                    src_port_rewritten_{false};
+    /// @brief Snapshot bookkeeping: true once the WS handshake confirmed
+    ///        permessage-deflate negotiation (regardless of whether the
+    ///        codec can actually inflate). Surfaced via
+    ///        `snapshot().ws.permessage_deflate_active`.
+    bool                                    ws_deflate_active_{false};
     // Cross-record carry-over for the TLS codec drain path. Holds the
     // unconsumed tail from a previous emit when a WS frame's payload
     // spans a TLS record boundary; prepended to the next record's

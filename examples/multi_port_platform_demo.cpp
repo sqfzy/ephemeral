@@ -200,7 +200,6 @@ int main(int argc, char** argv) {
         pcfg.port_id      = static_cast<uint16_t>(i);
         pcfg.nb_rx_queues = 1;
         pcfg.nb_tx_queues = 1;
-        pcfg.enable_rss   = false;
         port_cfgs.push_back(pcfg);
     }
 
@@ -229,7 +228,8 @@ int main(int argc, char** argv) {
                      "rx_queue_range=[{},{})",
                      i, p.port_id(), p.nb_rx_queues(),
                      edpdk::rx_dispatch_mode_name(p.dispatch_mode()),
-                     p.is_rss_active(), qr.first, qr.second);
+                     p.dispatch_mode() == edpdk::RxDispatchMode::RssPartitioned,
+                     qr.first, qr.second);
     }
 
     // Sanity-check the reverse lookup helper. Picks slot 0's DPDK port_id

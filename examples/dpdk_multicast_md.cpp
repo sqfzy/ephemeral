@@ -217,7 +217,6 @@ int main(int argc, char** argv) {
     pcfg.port_id      = args.port_id;
     pcfg.nb_rx_queues = 1;
     pcfg.nb_tx_queues = 1;
-    pcfg.enable_rss   = false;
     pcfg.enable_promiscuous = false;  // multicast filter does the steering
 
     auto plat_r = ed::Platform::create_primary(std::move(pcfg));
@@ -227,8 +226,10 @@ int main(int argc, char** argv) {
         return 3;
     }
     auto platform = std::move(*plat_r);
+    const bool rss_active_diag =
+        platform.dispatch_mode() == ::eph::net::dpdk::RxDispatchMode::RssPartitioned;
     spdlog::info("dpdk_multicast_md: Platform up — port={}, is_rss_active={}",
-                 platform.port_id(), platform.is_rss_active());
+                 platform.port_id(), rss_active_diag);
 
     // ── 3) Build MulticastConfig + receiver ──────────────────────────────
     ed::MulticastConfig mc_cfg{};
@@ -238,7 +239,7 @@ int main(int argc, char** argv) {
     mc_cfg.rx_burst    = 32;
     mc_cfg.rss_active_multi_queue = args.rss_fail_test
                                       ? true   // demonstrate the gate
-                                      : platform.is_rss_active();
+                                      : rss_active_diag;
     spdlog::info("dpdk_multicast_md: MulticastConfig:\n{}", mc_cfg.dump());
 
     ed::MulticastReceiver receiver{mc_cfg};

@@ -106,8 +106,7 @@ synthesize_eal_argv(std::string_view cores_csv,
 ///   - networking.nic_b_pci   — NIC_B PCI BDF (required for DPDK bring-up)
 /// Optional:
 ///   - cpu.eal_cores          — comma-separated lcore list (default "0,1")
-///   - dpdk.rss.nb_rx_queues  — default 1
-///   - dpdk.rss.enable_rss    — default false
+///   - dpdk.rss.nb_rx_queues  — default 1; > 1 auto-engages RSS/FD bring-up
 ///
 /// Failure modes (all surface as `std::unexpected(std::string)`):
 ///   - "load_dpdk_env: networking.nic_b_pci is required ..."
@@ -146,12 +145,11 @@ load_dpdk_env(const BenchConfig& cfg,
     pcfg.port_id      = dpdk_port_id;
     pcfg.nb_rx_queues = cfg.dpdk.nb_rx_queues;
     pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
-    pcfg.enable_rss   = cfg.dpdk.enable_rss;
 
-    if (pcfg.enable_rss || pcfg.nb_rx_queues > 1) {
+    if (pcfg.nb_rx_queues > 1) {
         spdlog::info(
-            "load_dpdk_env: RSS configured nb_rx_queues={} enable_rss={}",
-            pcfg.nb_rx_queues, pcfg.enable_rss ? "true" : "false");
+            "load_dpdk_env: RSS auto-engaged via nb_rx_queues={}",
+            pcfg.nb_rx_queues);
     }
 
     auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full(

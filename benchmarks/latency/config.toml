@@ -46,9 +46,10 @@ server_work_ns = 200               # mock spin ns simulating business work
 
 # ── DPDK RSS / multi-queue (optional, default off) ────────────────────
 #
-# nb_rx_queues + enable_rss are end-to-end plumbed through bench helpers
-# into Platform::create — when enable_rss=true and nb_rx_queues>1 the
-# port comes up with RSS hash + RETA across N queues.
+# nb_rx_queues > 1 auto-engages RSS/FlowDirector bring-up in
+# Platform::create. The previous `enable_rss` flag was redundant with
+# this derivation and was removed; setting nb_rx_queues=1 keeps the
+# Platform in single-queue Software mode.
 #
 # lcore_per_queue is NOT YET CONSUMED: no lat_*_dpdk scenario currently
 # spawns multiple lcores / Pollers — single-Stream scenarios attach to
@@ -57,7 +58,6 @@ server_work_ns = 200               # mock spin ns simulating business work
 
 [dpdk.rss]
 nb_rx_queues    = 1
-enable_rss      = false
 lcore_per_queue = "4,5,6,7"
 
 # ── TLS (mock self-signed cert) ───────────────────────────────────────

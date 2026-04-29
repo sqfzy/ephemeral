@@ -192,7 +192,6 @@ ed::PlatformConfig make_platform_config(const AppArgs& a) {
     cfg.port_id      = a.port_id;
     cfg.nb_rx_queues = a.nb_rx_queues;
     cfg.nb_tx_queues = a.nb_rx_queues;
-    cfg.enable_rss   = (a.nb_rx_queues > 1);
     cfg.proc_type    = a.role;
     cfg.file_prefix  = a.file_prefix;
 
