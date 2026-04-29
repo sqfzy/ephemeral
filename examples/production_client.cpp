@@ -45,16 +45,33 @@ static void on_signal(int) {
 
 // ── Run one session to completion (returns when disconnected or signalled) ─
 //
-// `true`  = session ended cleanly on signal (outer loop should stop)
-// `false` = session dropped on its own (outer loop should reconnect)
+// `SessionOutcome::SignalStop`        = session ended cleanly on signal
+//                                       (outer loop should stop)
+// `SessionOutcome::Connected`         = stream connected & ran the poll
+//                                       loop, then dropped — outer loop
+//                                       should `policy.reset()` then
+//                                       reconnect (a clean drop after a
+//                                       healthy session restarts the
+//                                       backoff chain fresh).
+// `SessionOutcome::CreateFailed`      = `Stream::create()` failed before
+//                                       the poll loop ever ran — outer
+//                                       loop must NOT reset; the next
+//                                       attempt should inherit the
+//                                       exponential-backoff growth.
+
+enum class SessionOutcome : uint8_t {
+    SignalStop,
+    Connected,
+    CreateFailed,
+};
 
 template <bool EnableTls>
-static bool run_one_session(en::StreamConfig& cfg,
-                            en::KernelPoller& poller) {
+static SessionOutcome run_one_session(en::StreamConfig& cfg,
+                                      en::KernelPoller& poller) {
     auto sr = en::KernelTcpStream<ec::WsCodec, EnableTls>::create(cfg);
     if (!sr) {
         spdlog::error("create failed: {}", sr.error().detail);
-        return false;  // reconnect
+        return SessionOutcome::CreateFailed;
     }
     auto stream = std::move(*sr);
     // [[maybe_unused]] on the param: SPDLOG_DEBUG compiles out under
@@ -66,7 +83,11 @@ static bool run_one_session(en::StreamConfig& cfg,
     };
     if (auto r = poller.add(stream.get()); !r) {
         spdlog::error("poller add failed: {}", r.error().detail);
-        return false;
+        // poller.add() failing after a successful create is rare — the fd is
+        // already open. Treat it as a create-class failure for backoff
+        // purposes: we never entered the steady-state poll loop, so the
+        // exponential chain should keep growing rather than reset.
+        return SessionOutcome::CreateFailed;
     }
 
     // ── Observability hookup ─────────────────────────────────────────────
@@ -115,7 +136,15 @@ static bool run_one_session(en::StreamConfig& cfg,
             spdlog::info("drain ok — peer FIN received, session orderly-closed");
         }
     }
-    return !g_running.load(std::memory_order_acquire);
+    // Reached the poll loop, then exited it. If the operator hit Ctrl-C
+    // (g_running cleared) we propagate SignalStop so the outer loop bails
+    // out instead of reconnecting; otherwise the session connected
+    // successfully and dropped on its own — the outer loop should
+    // `policy.reset()` before computing the next backoff.
+    if (!g_running.load(std::memory_order_acquire)) {
+        return SessionOutcome::SignalStop;
+    }
+    return SessionOutcome::Connected;
 }
 
 static int run_session(const std::string& host, uint16_t port, bool use_tls) {
@@ -144,9 +173,21 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
 
     while (g_running.load(std::memory_order_acquire)
            && reconnect.should_reconnect()) {
-        const bool stop = use_tls ? run_one_session<true>(cfg, *poller)
-                                  : run_one_session<false>(cfg, *poller);
-        if (stop) break;
+        const auto outcome = use_tls ? run_one_session<true>(cfg, *poller)
+                                     : run_one_session<false>(cfg, *poller);
+        if (outcome == SessionOutcome::SignalStop) break;
+
+        // A clean drop after a healthy session restarts the backoff chain
+        // fresh — otherwise every successive drop would inherit the
+        // previous chain's accumulated delay and quickly saturate at
+        // max_backoff, defeating the exponential growth design. Matches
+        // the documented pattern in session_reconnect.cpp / the
+        // production loop in binance_latency.cpp. The create-failure
+        // path deliberately skips the reset so the exponential chain
+        // continues to grow as documented in ReconnectPolicy.
+        if (outcome == SessionOutcome::Connected) {
+            reconnect.reset();
+        }
 
         // Session dropped (or create failed). Sleep with jitter before
         // trying again. A real strategy would re-check kill-switch,
