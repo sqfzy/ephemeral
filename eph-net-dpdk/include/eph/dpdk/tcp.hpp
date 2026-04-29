@@ -2182,7 +2182,17 @@ private:
     }
 
     /// Send a bare ACK packet.
-    [[nodiscard]] std::expected<void, core::ErrorInfo> send_ack() {
+    /// noexcept-marked to align with `send_keepalive_probe_` and to keep
+    /// the inner DpdkPoller hot path crash-safe: if a `std::format` or
+    /// spdlog allocation in this function ever threw, the unwind would
+    /// escape `process_burst_fn` (a noexcept function pointer) and call
+    /// `std::terminate`. None of the callees actually throw in practice
+    /// — `pkt_template_.build_packet`, `rte_eth_tx_burst`,
+    /// `rte_pktmbuf_free`, and the SPDLOG_LOGGER_* macros all reduce to
+    /// noexcept ops under SPDLOG_NO_EXCEPTIONS — but the contract is
+    /// what the Poller's hot path actually relies on. Making the
+    /// signature match the body forces the compiler to confirm.
+    [[nodiscard]] std::expected<void, core::ErrorInfo> send_ack() noexcept {
         auto* ack_pkt = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!ack_pkt) {
