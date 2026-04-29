@@ -185,12 +185,30 @@ public:
             return {};
         };
 
+        // On any feed/drain failure we return to the caller with the
+        // z_stream possibly mid-block (some compressed bytes consumed,
+        // LZ77 window populated with a partial message). RFC 7692
+        // context-takeover would otherwise carry that partial state into
+        // the NEXT message and inflate it against a corrupted dictionary.
+        // The connection is dead anyway after a CodecOverflow / CodecBad
+        // (the WsCodec returns the error to its caller and the caller
+        // drops the stream), but if a WsCodec instance is reused after
+        // a transient inflate failure we don't want to silently corrupt
+        // the next message — `inflateReset` returns the z_stream to
+        // post-init clean state regardless of where we were mid-block.
+        auto reset_on_error = [this](::eph::core::ErrorInfo err)
+            -> std::expected<std::span<const uint8_t>, ::eph::core::ErrorInfo>
+        {
+            (void)::inflateReset(&strm_);
+            return std::unexpected(std::move(err));
+        };
+
         if (!compressed.empty()) {
             auto fr = feed(compressed.data(), compressed.size());
-            if (!fr) return std::unexpected(fr.error());
+            if (!fr) return reset_on_error(fr.error());
         }
         auto fr = feed(kDeflateTail, sizeof(kDeflateTail));
-        if (!fr) return std::unexpected(fr.error());
+        if (!fr) return reset_on_error(fr.error());
 
         // After feeding the tail, drain any remaining output by calling
         // inflate with Z_SYNC_FLUSH-like behaviour (we call inflate
@@ -199,7 +217,7 @@ public:
         // common case — this is a defensive flush.
         while (true) {
             if (out_.size() >= max_inflated_size) {
-                return std::unexpected(::eph::core::ErrorInfo{
+                return reset_on_error(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecOverflow,
                     "WsInflater: inflated payload exceeds max"});
             }
@@ -224,7 +242,7 @@ public:
             if (ret != Z_OK && ret != Z_STREAM_END) {
                 SPDLOG_WARN("WsInflater: drain inflate ret={} msg='{}'",
                             ret, strm_.msg ? strm_.msg : "(null)");
-                return std::unexpected(::eph::core::ErrorInfo{
+                return reset_on_error(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecBad,
                     "WsInflater: zlib drain inflate failed"});
             }
