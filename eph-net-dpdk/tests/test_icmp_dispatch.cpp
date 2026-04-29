@@ -489,6 +489,40 @@ TEST_F(IcmpDispatchTest, RegistryFullReturnsOom) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 7b. 100+ targets (regression for kMaxTargets bump 64 → 256)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The rss_scaling_ws bench's conn_count=100 cell hit the original 64-entry
+// cap because every DpdkTcpStream registers an ICMP target on
+// create_and_attach. After the bump to 256, registering 100 distinct
+// tuples must succeed.
+TEST_F(IcmpDispatchTest, HundredTargetsRegisterSuccessfully) {
+    auto reg = std::make_shared<IcmpRegistry>();
+    std::vector<IcmpRegistry::Handle> handles;
+    constexpr std::size_t kCount = 100;
+    handles.reserve(kCount);
+
+    int dummy = 0;
+    void* sentinel_stream = &dummy;
+
+    for (std::size_t i = 0; i < kCount; ++i) {
+        ConnectionTuple t{kStreamSrcIp, kStreamDstIp,
+                          static_cast<uint16_t>(40000 + i),
+                          kStreamDstPort};
+        auto h = reg->register_target(t, kIpProtoTcp,
+                                       sentinel_stream, &fake_stream_mtu_cb);
+        ASSERT_TRUE(h.has_value())
+            << "registration #" << i << " failed at kMaxTargets="
+            << IcmpRegistry::kMaxTargets << ": " << h.error().detail;
+        handles.emplace_back(std::move(*h));
+    }
+    EXPECT_EQ(reg->size(), kCount);
+    static_assert(IcmpRegistry::kMaxTargets >= 256,
+                  "kMaxTargets must be at least 256 to support the "
+                  "rss_scaling_ws conn_count=100 sweep + headroom");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // 8. Duplicate tuple registration is rejected
 // ═══════════════════════════════════════════════════════════════════════
 
