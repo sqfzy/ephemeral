@@ -70,7 +70,7 @@ public:
     decode(PacketView& dgram, core::OutputBuffer& /*out*/,
            const std::function<void(Frame)>& sink) noexcept {
         const std::size_t n = dgram.length();
-        if (n == 0) {
+        if (n == 0) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
                 "RawDatagramCodec::decode: empty datagram rejected");
             return std::unexpected(core::ErrorInfo{

@@ -117,7 +117,7 @@ public:
         // Parse header first so we can surface a typed error on malformed
         // datagrams (parse_moldudp64 silently returns 0 on bad headers).
         auto hdr = eph::itch::parse_moldudp64_header(data, len);
-        if (!hdr) {
+        if (!hdr) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: malformed header, len={}", len);
             // Consume the datagram regardless — contract says we must.
