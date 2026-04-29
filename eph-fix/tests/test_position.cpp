@@ -232,6 +232,31 @@ TEST(PositionTracker, InvalidFillsRejected)
 }
 
 // ---------------------------------------------------------------------------
+// Side validation parity with RiskChecker
+//
+// PositionTracker rejects side ∉ {'1','2'} (FIX 4.4 §Side); RiskChecker
+// must do the same (and now does, post-batch-4 fix). This test pins the
+// rejection invariant for the most common confusables — Binance-native
+// 'B'/'S', uninitialized NUL, ASCII '0' — so a regression that loosens
+// either side validator would surface here too.
+// ---------------------------------------------------------------------------
+TEST(PositionTracker, RejectsExchangeNativeAndZeroAndNulSide)
+{
+    PositionTracker tracker;
+    // Binance-native 'B' / 'S' (incorrectly used in place of FIX '1' / '2').
+    tracker.on_fill("SYM", 'B', 10.0, 50.0);
+    EXPECT_FALSE(tracker.has_position("SYM"));
+    tracker.on_fill("SYM", 'S', 10.0, 50.0);
+    EXPECT_FALSE(tracker.has_position("SYM"));
+    // ASCII '0' — looks like FIX but isn't a Side code.
+    tracker.on_fill("SYM", '0', 10.0, 50.0);
+    EXPECT_FALSE(tracker.has_position("SYM"));
+    // NUL — uninitialized buffer / zeroed struct.
+    tracker.on_fill("SYM", '\0', 10.0, 50.0);
+    EXPECT_FALSE(tracker.has_position("SYM"));
+}
+
+// ---------------------------------------------------------------------------
 // NaN guard: fill that crosses zero exactly (division by zero scenario)
 // ---------------------------------------------------------------------------
 TEST(PositionTracker, FillCrossesZeroExactlyNoNaN)
