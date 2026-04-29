@@ -1,36 +1,31 @@
 /// @file lat_rss_scaling.cpp
-/// Multi-connection one-way RX latency bench.
+/// Multi-connection one-way RX latency bench (raw UDP).
 ///
-/// Reproduces the observed AWS Nitro NIC behaviour: even with multi-
-/// lcore parallel polling, DPDK RX latency on the client side grows
-/// (slope ≈ 0.6 µs/connection on c7g) as the number of concurrent
-/// connections rises through 5 → 20 → 100. The kernel comparison
-/// (single-thread epoll with the same N sockets) shows a flat-to-mild
+/// Reproduces the AWS Nitro NIC behaviour: even with multi-lcore
+/// parallel polling, DPDK RX latency on the client side grows as the
+/// number of concurrent connections rises. The kernel comparison
+/// (single-thread epoll with the same N sockets) shows a different
 /// curve; the asymmetry is the deliverable.
 ///
-/// Topology (matches `test_dpdk_rss_fanout` `NStreamsDistributedAcrossQueues`):
-///   - DPDK: nb_rx_queues=4, RSS engaged. One DpdkPoller per queue,
-///     registered with Platform. N sockets distributed round-robin
-///     across queues — `pin_to_queue` rebinds each src_port via
-///     `find_src_port_for_queue` so packets actually land on the
-///     intended queue. Worker thread per queue, pinned to a dedicated
-///     CPU.
-///   - Kernel: 1 thread on `cpu_client`, single KernelPoller, N
-///     KernelUdpSocket bound to ephemeral src_ports.
+/// One-process internal sweep: reads `conn_count_list` from
+/// `[scenarios.lat_rss_scaling]` and runs each conn count as a "cell"
+/// sequentially against a single mockex instance. Per cell:
+///   1. Open N UDP sockets, send a zero-filled subscribe packet from
+///      each so mockex can register the (client_ip, src_port) tuple.
+///   2. After mock-grace + warmup_seconds, record per-connection
+///      one-way RX latency (`t_recv − mock_send_ns` from the [16:24]
+///      slot of every received datagram) for `duration_seconds`.
+///   3. Drop sockets (no graceful close needed for UDP); mock's writes
+///      to dead peers fail with ECONNREFUSED and self-evict.
+///   4. Print per-cell report; collect (n, agg p50, agg p99.9) for
+///      the final summary table.
 ///
-/// One-way protocol (mockex `rss_scaling_push_run`):
-///   - Client sends a single zero-filled subscribe datagram per socket
-///     (mock keys subscriptions on (client_ip, src_port)).
-///   - After 100 ms grace, mock pushes payload-sized datagrams at
-///     `push_rate_pps_per_conn` per peer with `mock_send_ns` written
-///     to bytes [16:24].
-///   - Each push received → record `now_ns - mock_send_ns` into the
-///     per-connection Recorder. No echo / no RTT — pure RX.
-///
-/// Output: per-connection P50/P99/P99.9 distributions + aggregate
-/// merged across connections. Run thrice (BENCH_CONN_COUNT=5/20/100)
-/// to chart the scaling slope; `scripts/run_rss_scaling.sh` does the
-/// sweep and tabulates.
+/// Topology mirrors `test_dpdk_rss_fanout` `NStreamsDistributedAcrossQueues`:
+///   - DPDK: nb_rx_queues=4 RSS, 4 worker jthreads each polling one
+///     DpdkPoller. Workers spawn once at startup, persist across all
+///     cells. Socket i pinned to queue (i % nb_q).
+///   - Kernel: single thread, single KernelPoller, N sockets bound to
+///     ephemeral src_ports.
 
 #include <algorithm>
 #include <array>
@@ -41,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -98,9 +94,6 @@ constexpr const char* kSection           = "lat_rss_scaling";
     return kDefaultConfigPath;
 }
 
-/// Parse a CSV "0,1,2,3" of cpu indices into a vector. Empty/garbage
-/// tokens are skipped silently — the caller is expected to have already
-/// validated the count.
 [[nodiscard, maybe_unused]] std::vector<int>
 parse_csv_ints(std::string_view csv) noexcept {
     std::vector<int> out;
@@ -127,12 +120,8 @@ parse_csv_ints(std::string_view csv) noexcept {
     return out;
 }
 
-/// Result of summarising N per-connection P-percentile values.
 struct ConnDistro {
-    uint64_t min{};
-    uint64_t p50{};
-    uint64_t p90{};
-    uint64_t max{};
+    uint64_t min{}, p50{}, p90{}, max{};
 };
 
 [[nodiscard]] ConnDistro summarise(std::vector<uint64_t> v) noexcept {
@@ -161,16 +150,21 @@ void print_distro(const char* label, const ConnDistro& d) noexcept {
                 static_cast<unsigned long long>(d.max));
 }
 
-/// Per-connection container — one Recorder per socket. Boxed so the
-/// `on_datagram` lambda can capture a stable pointer that survives
-/// vector growth.
 struct Conn {
     std::unique_ptr<Socket> sock;
     eu::Recorder            rec;
     uint64_t                samples = 0;
-    uint16_t                queue   = 0;       ///< DPDK only; 0 on kernel
-
+    uint16_t                queue   = 0;
     explicit Conn(std::string name) : rec(std::move(name)) {}
+};
+
+struct CellResult {
+    uint16_t                  conn_count{};
+    uint64_t                  total_samples{};
+    std::optional<eu::Stats>  agg;
+    ConnDistro                p50_distro;
+    ConnDistro                p99_distro;
+    ConnDistro                p999_distro;
 };
 
 } // namespace
@@ -218,18 +212,24 @@ int main(int argc, char** argv) {
         sc.get_or<uint32_t>("duration_seconds", 30);
     const uint32_t warmup_s =
         sc.get_or<uint32_t>("warmup_seconds", 2);
-    const uint32_t push_rate =
-        sc.get_or<uint32_t>("push_rate_pps_per_conn", 5000);
 
-    uint16_t conn_count = sc.get_or<uint16_t>("conn_count", 5);
-    if (const char* env = std::getenv("BENCH_CONN_COUNT"); env && *env) {
-        const int v = std::atoi(env);
-        if (v > 0 && v <= 10000) conn_count = static_cast<uint16_t>(v);
+    std::vector<uint16_t> conn_counts =
+        sc.get_or<std::vector<uint16_t>>("conn_count_list",
+                                          std::vector<uint16_t>{});
+    if (conn_counts.empty()) {
+        const uint16_t single = sc.get_or<uint16_t>("conn_count", 5);
+        conn_counts.push_back(single);
     }
-    if (conn_count == 0) {
-        std::fprintf(stderr, "lat_rss_scaling: conn_count must be > 0\n");
-        return 1;
+    for (auto n : conn_counts) {
+        if (n == 0) {
+            std::fprintf(stderr,
+                         "lat_rss_scaling: conn_count_list contains 0\n");
+            return 1;
+        }
     }
+    const uint16_t max_conn_count =
+        *std::max_element(conn_counts.begin(), conn_counts.end());
+    (void)max_conn_count;
 
 #if defined(EPH_USE_DPDK)
     const uint16_t nb_rx_queues =
@@ -244,12 +244,10 @@ int main(int argc, char** argv) {
     if (worker_threads != nb_rx_queues) {
         std::fprintf(stderr,
                      "lat_rss_scaling: worker_threads (%u) must equal "
-                     "nb_rx_queues_override (%u) — one polling thread "
-                     "per queue\n",
+                     "nb_rx_queues_override (%u)\n",
                      worker_threads, nb_rx_queues);
         return 1;
     }
-
     auto worker_cpus = parse_csv_ints(worker_cpus_csv);
     if (worker_cpus.size() < worker_threads) {
         std::fprintf(stderr,
@@ -263,9 +261,9 @@ int main(int argc, char** argv) {
     cfg.dpdk.nb_rx_queues = nb_rx_queues;
 #endif
 
-    const std::string& mock_ip_str = cfg.networking.server_ip.empty()
-                                         ? std::string{"127.0.0.1"}
-                                         : cfg.networking.server_ip;
+    const std::string mock_ip_str = cfg.networking.server_ip.empty()
+                                        ? std::string{"127.0.0.1"}
+                                        : cfg.networking.server_ip;
     auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
     if (!ip_r) {
         std::fprintf(stderr, "lat_rss_scaling: invalid mock_ip '%s': %s\n",
@@ -274,9 +272,9 @@ int main(int argc, char** argv) {
     }
     const en::SocketAddr remote{ip_r.value(), port};
 
-    const std::string& client_ip_str = cfg.networking.client_ip.empty()
-                                           ? std::string{"0.0.0.0"}
-                                           : cfg.networking.client_ip;
+    const std::string client_ip_str = cfg.networking.client_ip.empty()
+                                          ? std::string{"0.0.0.0"}
+                                          : cfg.networking.client_ip;
     auto client_ip_r = en::Ipv4Addr::parse(client_ip_str);
     if (!client_ip_r) {
         std::fprintf(stderr, "lat_rss_scaling: invalid client_ip '%s': %s\n",
@@ -286,12 +284,15 @@ int main(int argc, char** argv) {
 
     std::printf("=== lat_rss_scaling (%s) ===\n", kBackend);
     std::printf("config: mock=%s client_bind=%s port=%u payload=%zu "
-                "duration=%us warmup=%us push_rate_per_conn=%u pps "
-                "conn_count=%u\n",
+                "duration=%us warmup=%us conn_count_list=[",
                 mock_ip_str.c_str(), client_ip_str.c_str(),
                 static_cast<unsigned>(port),
-                payload_size, duration_s, warmup_s, push_rate,
-                static_cast<unsigned>(conn_count));
+                payload_size, duration_s, warmup_s);
+    for (size_t i = 0; i < conn_counts.size(); ++i) {
+        std::printf("%s%u", i == 0 ? "" : ",",
+                    static_cast<unsigned>(conn_counts[i]));
+    }
+    std::printf("]\n");
 #if defined(EPH_USE_DPDK)
     std::printf("dpdk_topo: nb_rx_queues=%u workers=%u worker_cpus=%s\n",
                 nb_rx_queues, worker_threads, worker_cpus_csv.c_str());
@@ -300,8 +301,8 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
+    // ── One-time setup: DPDK env + workers OR kernel poller ──────────
 #if defined(EPH_USE_DPDK)
-    // DPDK bring-up — Platform with nb_rx_queues, ARP resolved, EAL up.
     auto env_r = bench::load_dpdk_env(cfg, /*port_id=*/0);
     if (!env_r) {
         std::fprintf(stderr, "lat_rss_scaling: %s\n", env_r.error().c_str());
@@ -313,23 +314,17 @@ int main(int argc, char** argv) {
     if (env.platform.nb_rx_queues() < nb_rx_queues) {
         std::fprintf(stderr,
                      "lat_rss_scaling: Platform reports %u RX queues, "
-                     "requested %u — NIC firmware likely capped\n",
+                     "requested %u\n",
                      env.platform.nb_rx_queues(), nb_rx_queues);
         return 2;
     }
 
-    // Per-queue Pollers, registered with the Platform's queue→poller
-    // map. Each push lands on the queue the RSS hash dictates and is
-    // dispatched to that queue's Poller.
     std::vector<std::unique_ptr<Poller>> pollers;
     pollers.reserve(nb_rx_queues);
     for (uint16_t q = 0; q < nb_rx_queues; ++q) {
         ed::PollerConfig pcfg{};
-        pcfg.port_id     = env.port_id;
-        pcfg.rx_queue_id = q;
-        // Opt in to the Poller's hard cap (kMaxConnHard=64) so a 100-conn
-        // sweep with hash imbalance fits in any single queue's table.
-        // Default is kMaxConn=16 — too small once conn_count > 4*16=64.
+        pcfg.port_id         = env.port_id;
+        pcfg.rx_queue_id     = q;
         pcfg.max_connections = ed::DpdkPoller<void>::kMaxConnHard;
         auto p_r = Poller::create(pcfg);
         if (!p_r) {
@@ -346,6 +341,13 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+
+    // Workers spawned PER CELL (see run_cell). For UDP this is less
+    // critical than for TLS+WS — `Socket::create_and_attach` is
+    // synchronous but does not poll the queue's Poller (UDP has no
+    // handshake). Still, the close-pollers-from-main-thread teardown
+    // path needs exclusive ownership to avoid races, so the per-cell
+    // pattern is matched for symmetry with the WS variant.
 #else
     auto poller_r = Poller::create({});
     if (!poller_r) {
@@ -354,17 +356,10 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto poller = std::move(*poller_r);
+    bench::pin_client_from_cfg(cfg, "lat_rss_scaling");
 #endif
 
-    // Per-connection state — boxed so the on_datagram lambda's captured
-    // raw pointer is stable through the rest of setup.
-    std::vector<std::unique_ptr<Conn>> conns;
-    conns.reserve(conn_count);
-
-    // The "no samples before this ns" gate. Updated to the actual
-    // measurement-window start right after the subscribe pass and the
-    // mock's 100 ms grace lapses. Atomic because the workers read it
-    // (relaxed) on every callback.
+    // ── Per-cell measurement ─────────────────────────────────────────
     std::atomic<uint64_t> measurement_start_ns{UINT64_MAX};
 
     auto make_callback = [&measurement_start_ns](Conn* cp) {
@@ -373,213 +368,249 @@ int main(int argc, char** argv) {
                    const en::SocketAddr& /*src*/) noexcept {
             if (data.size() < bench::kTimestampBlockSize) return;
             const uint64_t t1 = bench::monotonic_raw_ns();
-            const uint64_t start = measurement_start_ns.load(
-                std::memory_order_relaxed);
-            if (t1 < start) return;  // warmup-discard
+            const uint64_t start =
+                measurement_start_ns.load(std::memory_order_relaxed);
+            if (t1 < start) return;
 
             uint64_t mock_send = 0;
             std::memcpy(&mock_send, data.data() + 16, sizeof(mock_send));
-            if (mock_send == 0 || mock_send > t1) return;  // sanity
+            if (mock_send == 0 || mock_send > t1) return;
 
             cp->rec.record_ns(t1 - mock_send);
             ++cp->samples;
         };
     };
 
-    for (uint16_t i = 0; i < conn_count; ++i) {
-        auto c = std::make_unique<Conn>(
-            std::string{"rss_scaling_"} + kBackend + "_conn_" +
-            std::to_string(i));
+    auto run_cell = [&](uint16_t n) -> CellResult {
+        SPDLOG_INFO("==== cell start: conn_count={} ====", n);
+
+        std::vector<std::unique_ptr<Conn>> conns;
+        conns.reserve(n);
+
+        measurement_start_ns.store(UINT64_MAX, std::memory_order_relaxed);
+
+        for (uint16_t i = 0; i < n; ++i) {
+            auto c = std::make_unique<Conn>(
+                std::string{"rss_scaling_"} + kBackend +
+                "_n" + std::to_string(n) + "_conn_" + std::to_string(i));
 
 #if defined(EPH_USE_DPDK)
-        const uint16_t target_q = i % nb_rx_queues;
-        ed::UdpConfig scfg{};
-        scfg.legacy.src_ip       = env.src_ip;
-        scfg.legacy.dst_ip       = env.dst_ip;
-        scfg.legacy.src_port     = 0;  // overridden by find_src_port_for_queue
-        scfg.legacy.dst_port     = port;
-        scfg.legacy.src_mac      = env.src_mac;
-        scfg.legacy.dst_mac      = env.gw_mac;
-        scfg.legacy.port_id      = env.port_id;
-        scfg.legacy.tx_queue_id  = target_q;
-        scfg.legacy.pool         = env.pool;
-        scfg.pin_to_queue        = target_q;
+            const uint16_t target_q = i % nb_rx_queues;
+            ed::UdpConfig scfg{};
+            scfg.legacy.src_ip       = env.src_ip;
+            scfg.legacy.dst_ip       = env.dst_ip;
+            scfg.legacy.src_port     = 0;
+            scfg.legacy.dst_port     = port;
+            scfg.legacy.src_mac      = env.src_mac;
+            scfg.legacy.dst_mac      = env.gw_mac;
+            scfg.legacy.port_id      = env.port_id;
+            scfg.legacy.tx_queue_id  = target_q;
+            scfg.legacy.pool         = env.pool;
+            scfg.pin_to_queue        = target_q;
 
-        auto sock_r = Socket::create_and_attach(std::move(scfg), env.platform);
-        if (!sock_r) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling: create_and_attach(conn=%u, q=%u): %s\n",
-                         i, target_q, sock_r.error().detail);
-            return 3;
-        }
-        c->sock  = std::move(*sock_r);
-        c->queue = target_q;
+            auto sock_r = Socket::create_and_attach(std::move(scfg),
+                                                     env.platform);
+            if (!sock_r) {
+                SPDLOG_ERROR("create_and_attach(conn={}, q={}): {}",
+                             i, target_q, sock_r.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
+            }
+            c->sock  = std::move(*sock_r);
+            c->queue = target_q;
 #else
-        ek::UdpConfig scfg{};
-        scfg.bind = en::SocketAddr{client_ip_r.value(), 0};  // ephemeral
-        auto sock_r = Socket::create(scfg);
-        if (!sock_r) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling: KernelUdpSocket::create(conn=%u): %s\n",
-                         i, sock_r.error().detail);
-            return 3;
+            ek::UdpConfig scfg{};
+            scfg.bind = en::SocketAddr{client_ip_r.value(), 0};
+            auto sock_r = Socket::create(scfg);
+            if (!sock_r) {
+                SPDLOG_ERROR("KernelUdpSocket::create(conn={}): {}",
+                             i, sock_r.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
+            }
+            c->sock = std::move(*sock_r);
+            if (auto rr = poller->add(c->sock.get()); !rr) {
+                SPDLOG_ERROR("poller->add(conn={}): {}", i, rr.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
+            }
+#endif
+            c->sock->on_datagram = make_callback(c.get());
+            conns.push_back(std::move(c));
         }
-        c->sock = std::move(*sock_r);
-        if (auto rr = poller->add(c->sock.get()); !rr) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling: poller->add(conn=%u): %s\n",
-                         i, rr.error().detail);
-            return 3;
+
+        // Subscribe pass — one zero-filled datagram from each socket.
+        {
+            std::array<uint8_t, bench::kTimestampBlockSize> zeros{};
+            for (uint16_t i = 0; i < n; ++i) {
+                auto sr = conns[i]->sock->send_to(
+                    std::span<const uint8_t>{zeros.data(), zeros.size()},
+                    remote);
+                if (!sr) {
+                    SPDLOG_ERROR("subscribe(conn={}): {}",
+                                 i, sr.error().detail);
+                    return CellResult{n, 0, std::nullopt, {}, {}, {}};
+                }
+            }
+        }
+        SPDLOG_INFO("cell n={}: {} subscribes sent", n, conns.size());
+
+        const uint64_t now_ns      = bench::monotonic_raw_ns();
+        const uint64_t mock_grace  = 150ull * 1'000'000ull;
+        const uint64_t warmup_ns   = static_cast<uint64_t>(warmup_s) *
+                                     1'000'000'000ull;
+        const uint64_t measure_at  = now_ns + mock_grace + warmup_ns;
+        const uint64_t deadline_ns = measure_at +
+            static_cast<uint64_t>(duration_s) * 1'000'000'000ull;
+        measurement_start_ns.store(measure_at, std::memory_order_relaxed);
+
+#if defined(EPH_USE_DPDK)
+        std::atomic<bool> stop_workers{false};
+        std::vector<std::jthread> workers;
+        workers.reserve(nb_rx_queues);
+        for (uint16_t q = 0; q < nb_rx_queues; ++q) {
+            const int cpu = worker_cpus[q];
+            Poller* p = pollers[q].get();
+            workers.emplace_back([cpu, p, &stop_workers]() {
+                eph::utils::CpuPinPolicy policy{
+                    .require_isolcpus            = false,
+                    .require_no_sibling_conflict = false,
+                    .require_same_numa           = false,
+                    .warn_irq_overlap            = false,
+                };
+                char tname[16];
+                std::snprintf(tname, sizeof(tname), "rss-w-%d", cpu);
+                auto pin = eph::utils::pin_thread(cpu, tname, policy);
+                if (pin) pin->release();
+                else SPDLOG_WARN("worker pin to cpu {} failed: {}",
+                                 cpu, pin.error());
+                while (!stop_workers.load(std::memory_order_relaxed)) {
+                    (void)p->poll();
+                }
+            });
+        }
+
+        while (bench::monotonic_raw_ns() < deadline_ns &&
+               !bench::shutdown_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+
+        stop_workers.store(true, std::memory_order_relaxed);
+        workers.clear();
+#else
+        while (bench::monotonic_raw_ns() < deadline_ns &&
+               !bench::shutdown_requested()) {
+            (void)poller->poll();
         }
 #endif
 
-        c->sock->on_datagram = make_callback(c.get());
-        conns.push_back(std::move(c));
-    }
-
-    // Subscribe pass — single zero-filled datagram per socket.
-    {
-        std::array<uint8_t, bench::kTimestampBlockSize> zeros{};
-        for (uint16_t i = 0; i < conn_count; ++i) {
-            auto sr = conns[i]->sock->send_to(
-                std::span<const uint8_t>{zeros.data(), zeros.size()},
-                remote);
-            if (!sr) {
-                std::fprintf(stderr,
-                             "lat_rss_scaling: subscribe(conn=%u): %s\n",
-                             i, sr.error().detail);
-                return 4;
+        // Snapshot stats then drop sockets. UDP has no graceful close;
+        // mock will see ECONNREFUSED on next sendto and stop pushing.
+        std::vector<uint64_t> p50s, p99s, p999s;
+        eu::Recorder agg{std::string{"rss_scaling_"} + kBackend +
+                         "_n" + std::to_string(n) + "_aggregate"};
+        uint64_t total_samples = 0;
+        for (auto& c : conns) {
+            if (auto s_opt = c->rec.compute_stats()) {
+                p50s.push_back(s_opt->p50_ns);
+                p99s.push_back(s_opt->p99_ns);
+                p999s.push_back(s_opt->p999_ns);
+                total_samples += s_opt->count;
             }
+            (void)agg.merge(c->rec);
         }
-    }
-    SPDLOG_INFO("lat_rss_scaling: {} subscribes sent", conn_count);
-
-    // Drive the mock's 100 ms grace + scenario warmup before flipping
-    // the recording gate. After the gate flips, callbacks start
-    // counting samples toward the per-conn Recorder.
-    const uint64_t now_ns       = bench::monotonic_raw_ns();
-    const uint64_t mock_grace   = 150ull * 1'000'000ull;          // a hair past mock's 100 ms
-    const uint64_t warmup_ns    = static_cast<uint64_t>(warmup_s) * 1'000'000'000ull;
-    const uint64_t measure_at   = now_ns + mock_grace + warmup_ns;
-    const uint64_t deadline_ns  = measure_at +
-        static_cast<uint64_t>(duration_s) * 1'000'000'000ull;
-    measurement_start_ns.store(measure_at, std::memory_order_relaxed);
+        auto agg_stats = agg.compute_stats();
 
 #if defined(EPH_USE_DPDK)
-    // Worker threads — one per queue, each spinning its own Poller
-    // until the deadline. Pinned to the configured worker_cpus so the
-    // OS scheduler can't migrate them onto each other.
-    std::atomic<bool> stop{false};
-    std::vector<std::jthread> workers;
-    workers.reserve(nb_rx_queues);
-    for (uint16_t q = 0; q < nb_rx_queues; ++q) {
-        const int cpu = worker_cpus[q];
-        Poller* p = pollers[q].get();
-        workers.emplace_back([cpu, p, &stop]() {
-            eph::utils::CpuPinPolicy policy{
-                .require_isolcpus            = false,
-                .require_no_sibling_conflict = false,
-                .require_same_numa           = false,
-                .warn_irq_overlap            = false,
-            };
-            char tname[16];
-            std::snprintf(tname, sizeof(tname), "rss-w-%d", cpu);
-            auto pin = eph::utils::pin_thread(cpu, tname, policy);
-            if (pin) pin->release();
-            else SPDLOG_WARN("worker pin to cpu {} failed: {}",
-                             cpu, pin.error());
-
-            while (!stop.load(std::memory_order_relaxed)) {
-                (void)p->poll();
-            }
-        });
-    }
-
-    // Main thread idles until deadline (or SIGINT).
-    while (bench::monotonic_raw_ns() < deadline_ns &&
-           !bench::shutdown_requested()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    }
-    stop.store(true, std::memory_order_relaxed);
-    workers.clear();   // jthread join on destruction
+        for (auto& c : conns) c->sock.reset();
+        // Brief drain so the UDP flow-table unregister settles before
+        // the next cell registers new flows.
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
 #else
-    bench::pin_client_from_cfg(cfg, "lat_rss_scaling");
-
-    while (bench::monotonic_raw_ns() < deadline_ns &&
-           !bench::shutdown_requested()) {
-        (void)poller->poll();
-    }
+        for (auto& c : conns) {
+            if (c->sock) (void)poller->remove(c->sock.get());
+            c->sock.reset();
+        }
 #endif
 
-    // ── Reporting ────────────────────────────────────────────────────
-    std::printf("\n=== lat_rss_scaling (%s) conn=%u ===\n",
-                kBackend, static_cast<unsigned>(conn_count));
+        CellResult r{};
+        r.conn_count    = n;
+        r.total_samples = total_samples;
+        r.agg           = agg_stats;
+        r.p50_distro    = summarise(std::move(p50s));
+        r.p99_distro    = summarise(std::move(p99s));
+        r.p999_distro   = summarise(std::move(p999s));
 
-    // Per-connection percentiles → distributions across N conns.
-    std::vector<uint64_t> p50s, p99s, p999s, sample_counts;
-    p50s.reserve(conn_count);
-    p99s.reserve(conn_count);
-    p999s.reserve(conn_count);
-    sample_counts.reserve(conn_count);
+        std::printf("\n--- cell n=%u ---\n", static_cast<unsigned>(n));
+        std::printf("samples_total=%llu (window=%us)\n",
+                    static_cast<unsigned long long>(r.total_samples),
+                    duration_s);
+        std::printf("per-connection percentile distributions (one-way RX_ns):\n");
+        print_distro("P50 across conns",   r.p50_distro);
+        print_distro("P99 across conns",   r.p99_distro);
+        print_distro("P99.9 across conns", r.p999_distro);
+        std::printf("aggregate (all samples merged):\n");
+        if (r.agg) bench::print_stats_block("RX_one_way_ns", *r.agg);
+        else       bench::print_stats_block_empty("RX_one_way_ns");
+        std::fflush(stdout);
 
-    eu::Recorder agg{std::string{"rss_scaling_"} + kBackend + "_aggregate"};
+        SPDLOG_INFO("==== cell done: conn_count={} samples={} ====",
+                    n, r.total_samples);
+        return r;
+    };
 
-    for (auto& c : conns) {
-        if (auto s_opt = c->rec.compute_stats()) {
-            p50s.push_back(s_opt->p50_ns);
-            p99s.push_back(s_opt->p99_ns);
-            p999s.push_back(s_opt->p999_ns);
-            sample_counts.push_back(s_opt->count);
+    // ── Sweep ────────────────────────────────────────────────────────
+    std::vector<CellResult> results;
+    results.reserve(conn_counts.size());
+    for (auto n : conn_counts) {
+        if (bench::shutdown_requested()) break;
+        results.push_back(run_cell(n));
+    }
+
+    // ── Final summary table ──────────────────────────────────────────
+    std::printf("\n═══════════════════════════════════════════════════════════════════\n");
+    std::printf("  lat_rss_scaling (%s) — sweep summary\n", kBackend);
+    std::printf("═══════════════════════════════════════════════════════════════════\n");
+    std::printf("\n%-6s | %-10s | %-10s | %-10s | %-10s | %-10s\n",
+                "conns", "agg p50", "agg p90", "agg p99", "agg p99.9", "agg max");
+    std::printf("%-6s-+-%-10s-+-%-10s-+-%-10s-+-%-10s-+-%-10s\n",
+                "------", "----------", "----------", "----------",
+                "----------", "----------");
+    for (const auto& r : results) {
+        if (r.agg) {
+            std::printf("%-6u | %-10llu | %-10llu | %-10llu | %-10llu | %-10llu\n",
+                        static_cast<unsigned>(r.conn_count),
+                        static_cast<unsigned long long>(r.agg->p50_ns),
+                        static_cast<unsigned long long>(r.agg->p90_ns),
+                        static_cast<unsigned long long>(r.agg->p99_ns),
+                        static_cast<unsigned long long>(r.agg->p999_ns),
+                        static_cast<unsigned long long>(r.agg->max_ns));
         } else {
-            sample_counts.push_back(0);
+            std::printf("%-6u | (no samples)\n",
+                        static_cast<unsigned>(r.conn_count));
         }
-        (void)agg.merge(c->rec);
     }
-
-    uint64_t total_samples = 0;
-    uint64_t min_per_conn  = UINT64_MAX;
-    uint64_t max_per_conn  = 0;
-    for (auto n : sample_counts) {
-        total_samples += n;
-        if (n < min_per_conn) min_per_conn = n;
-        if (n > max_per_conn) max_per_conn = n;
-    }
-    if (sample_counts.empty()) min_per_conn = 0;
-
-    std::printf("samples_total=%llu  per_conn_min=%llu  per_conn_max=%llu  "
-                "(window=%us)\n",
-                static_cast<unsigned long long>(total_samples),
-                static_cast<unsigned long long>(min_per_conn),
-                static_cast<unsigned long long>(max_per_conn),
-                duration_s);
-
-    std::printf("\nper-connection percentile distributions (one-way RX_ns):\n");
-    print_distro("P50 across conns",   summarise(p50s));
-    print_distro("P99 across conns",   summarise(p99s));
-    print_distro("P99.9 across conns", summarise(p999s));
-
-    std::printf("\naggregate (all samples merged):\n");
-    if (auto agg_s = agg.compute_stats()) {
-        bench::print_stats_block("RX_one_way_ns", *agg_s);
-    } else {
-        bench::print_stats_block_empty("RX_one_way_ns");
+    if (results.size() >= 2 && results.front().agg && results.back().agg) {
+        const double dn = static_cast<double>(results.back().conn_count -
+                                              results.front().conn_count);
+        if (dn > 0) {
+            const double p50_slope =
+                (static_cast<double>(results.back().agg->p50_ns) -
+                 static_cast<double>(results.front().agg->p50_ns)) / dn;
+            const double p999_slope =
+                (static_cast<double>(results.back().agg->p999_ns) -
+                 static_cast<double>(results.front().agg->p999_ns)) / dn;
+            std::printf("\nslope (last − first) / Δconn:  "
+                        "agg p50 = %.1f ns/conn   agg p99.9 = %.1f ns/conn\n",
+                        p50_slope, p999_slope);
+        }
     }
     std::fflush(stdout);
 
-    // Cleanup — ensure pollers/sockets tear down cleanly. Order matters
-    // on DPDK: unregister sockets via Platform first, then unregister
-    // queue pollers, then drop pollers and env in reverse setup order.
+    // ── Teardown ─────────────────────────────────────────────────────
 #if defined(EPH_USE_DPDK)
-    for (auto& c : conns) c->sock.reset();
     for (uint16_t q = 0; q < nb_rx_queues; ++q) {
         env.platform.unregister_poller(q);
     }
     pollers.clear();
 #else
-    for (auto& c : conns) {
-        if (c->sock) (void)poller->remove(c->sock.get());
-        c->sock.reset();
-    }
     poller.reset();
 #endif
 

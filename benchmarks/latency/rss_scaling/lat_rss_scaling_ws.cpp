@@ -1,25 +1,22 @@
 /// @file lat_rss_scaling_ws.cpp
 /// WS-over-TLS variant of `lat_rss_scaling`.
 ///
-/// Same scaling story (multi-conn one-way RX latency vs N at fixed
-/// pps/conn, kernel single-thread vs DPDK 4-lcore parallel) but the
-/// transport is `KernelTcpStream<WsCodec, EnableTls=true>` /
-/// `DpdkTcpStream<WsCodec, EnableTls=true>` against the
-/// `rss_scaling_ws` mockex push handler. Production HFT WS feeds
-/// (binance/okx/coinbase) ride this exact stack, so the slope here is
-/// the apples-to-apples comparison for the AWS Nitro multi-flow
-/// dispatch question — TCP+TLS+WS framing changes the per-flow table
-/// state vs the raw-UDP measurement.
+/// One-process internal sweep: reads `conn_count_list` from
+/// `[scenarios.lat_rss_scaling_ws]` and runs each conn count as a
+/// "cell" sequentially against a single mockex instance. Per-cell:
+///   1. Open N TLS+WS streams (sequential connect+handshake).
+///   2. After mock-grace + warmup_seconds, record per-connection
+///      one-way RX latency (`t_recv − mock_send_ns` from frame
+///      [16:24]) for `duration_seconds`.
+///   3. close_gracefully + drain pollers + drop all streams.
+///   4. Print per-cell report; collect (n, agg p50, agg p99.9) for
+///      the final summary table.
 ///
-/// Mock side accepts N TLS+WS clients sequentially, then pushes
-/// timestamped binary frames. Client side:
+/// Topology matches `test_dpdk_rss_fanout` `NStreamsDistributedAcrossQueues`:
+///   - DPDK: nb_rx_queues=4 RSS, 4 worker jthreads each polling one
+///     DpdkPoller. Workers spawn once at startup, persist across all
+///     cells. Stream i pinned to queue (i % nb_q).
 ///   - Kernel: single thread, single KernelPoller, N streams.
-///   - DPDK:   4 RX queues, 4 worker jthreads each polling one
-///             DpdkPoller. Stream i pinned to queue (i % nb_q) via
-///             create_and_attach's `find_src_port_for_queue`.
-///
-/// Per-conn Recorder records `t_recv − mock_send_ns` from bytes
-/// [16:24] of every received WS payload; aggregate stats at end.
 
 #include <algorithm>
 #include <array>
@@ -30,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -151,6 +149,16 @@ struct Conn {
     explicit Conn(std::string name) : rec(std::move(name)) {}
 };
 
+/// Result tuple for the final summary table — populated per cell.
+struct CellResult {
+    uint16_t                  conn_count{};
+    uint64_t                  total_samples{};
+    std::optional<eu::Stats>  agg;
+    ConnDistro                p50_distro;
+    ConnDistro                p99_distro;
+    ConnDistro                p999_distro;
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -199,15 +207,25 @@ int main(int argc, char** argv) {
     const uint32_t warmup_s =
         sc.get_or<uint32_t>("warmup_seconds", 2);
 
-    uint16_t conn_count = sc.get_or<uint16_t>("conn_count", 5);
-    if (const char* env = std::getenv("BENCH_CONN_COUNT"); env && *env) {
-        const int v = std::atoi(env);
-        if (v > 0 && v <= 10000) conn_count = static_cast<uint16_t>(v);
+    // conn_count_list (TOML int array) drives the sweep. Singleton
+    // `conn_count` falls back if the list is absent — mostly for
+    // hand-running with a single fixed N.
+    std::vector<uint16_t> conn_counts =
+        sc.get_or<std::vector<uint16_t>>("conn_count_list",
+                                          std::vector<uint16_t>{});
+    if (conn_counts.empty()) {
+        const uint16_t single = sc.get_or<uint16_t>("conn_count", 5);
+        conn_counts.push_back(single);
     }
-    if (conn_count == 0) {
-        std::fprintf(stderr, "lat_rss_scaling_ws: conn_count must be > 0\n");
-        return 1;
+    for (auto n : conn_counts) {
+        if (n == 0) {
+            std::fprintf(stderr,
+                         "lat_rss_scaling_ws: conn_count_list contains 0\n");
+            return 1;
+        }
     }
+    const uint16_t max_conn_count =
+        *std::max_element(conn_counts.begin(), conn_counts.end());
 
 #if defined(EPH_USE_DPDK)
     const uint16_t nb_rx_queues =
@@ -252,12 +270,14 @@ int main(int argc, char** argv) {
 
     std::printf("=== lat_rss_scaling_ws (%s) ===\n", kBackend);
     std::printf("config: mock=%s port=%u ws_path=%s payload=%zu "
-                "duration=%us warmup=%us conn_count=%u\n",
-                mock_ip_str.c_str(),
-                static_cast<unsigned>(port),
-                ws_path.c_str(),
-                payload_size, duration_s, warmup_s,
-                static_cast<unsigned>(conn_count));
+                "duration=%us warmup=%us conn_count_list=[",
+                mock_ip_str.c_str(), static_cast<unsigned>(port),
+                ws_path.c_str(), payload_size, duration_s, warmup_s);
+    for (size_t i = 0; i < conn_counts.size(); ++i) {
+        std::printf("%s%u", i == 0 ? "" : ",",
+                    static_cast<unsigned>(conn_counts[i]));
+    }
+    std::printf("]\n");
 #if defined(EPH_USE_DPDK)
     std::printf("dpdk_topo: nb_rx_queues=%u workers=%u worker_cpus=%s\n",
                 nb_rx_queues, worker_threads, worker_cpus_csv.c_str());
@@ -266,6 +286,7 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
+    // ── One-time setup: DPDK env + workers OR kernel poller ──────────
 #if defined(EPH_USE_DPDK)
     auto env_r = bench::load_dpdk_env(cfg, /*port_id=*/0);
     if (!env_r) {
@@ -283,17 +304,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // Per-queue Pollers must be registered with the Platform BEFORE
-    // create_and_attach: the TCP+TLS+WS handshake's RX path
-    // (SYN-ACK, ServerHello, 101 Switching Protocols) is dispatched
-    // through the queue's Poller during the synchronous handshake
-    // burst-poll, so a missing registration would silently time out.
     std::vector<std::unique_ptr<Poller>> pollers;
     pollers.reserve(nb_rx_queues);
     for (uint16_t q = 0; q < nb_rx_queues; ++q) {
         ed::PollerConfig pcfg{};
-        pcfg.port_id     = env.port_id;
-        pcfg.rx_queue_id = q;
+        pcfg.port_id         = env.port_id;
+        pcfg.rx_queue_id     = q;
         pcfg.max_connections = ed::DpdkPoller<void>::kMaxConnHard;
         auto p_r = Poller::create(pcfg);
         if (!p_r) {
@@ -310,6 +326,11 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // Workers are spawned PER CELL — see run_cell. They cannot persist
+    // across cells because `Stream::create_and_attach` polls the per-
+    // queue Poller from the main thread during the synchronous TCP /
+    // TLS / WS handshake, and `DpdkPoller::poll()` is not safe under
+    // concurrent callers. Per-cell spawn is cheap (~5 ms × 4 threads).
 #else
     auto poller_r = Poller::create({});
     if (!poller_r) {
@@ -318,11 +339,15 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto poller = std::move(*poller_r);
+    bench::pin_client_from_cfg(cfg, "lat_rss_scaling_ws");
 #endif
+    (void)max_conn_count;
 
-    std::vector<std::unique_ptr<Conn>> conns;
-    conns.reserve(conn_count);
+    // ── Per-cell measurement ─────────────────────────────────────────
 
+    // Gate atomic — reset per cell so each cell discards its own
+    // mock-grace + warmup. Workers read it relaxed in the on_message
+    // callback.
     std::atomic<uint64_t> measurement_start_ns{UINT64_MAX};
 
     auto make_callback = [&measurement_start_ns](Conn* cp) {
@@ -332,7 +357,7 @@ int main(int argc, char** argv) {
             const uint64_t t1 = bench::monotonic_raw_ns();
             const uint64_t start =
                 measurement_start_ns.load(std::memory_order_relaxed);
-            if (t1 < start) return;  // warmup-discard
+            if (t1 < start) return;
 
             uint64_t mock_send = 0;
             std::memcpy(&mock_send, app_frame.data() + 16, sizeof(mock_send));
@@ -343,196 +368,254 @@ int main(int argc, char** argv) {
         };
     };
 
-    // Sequential connect+handshake — each create()/create_and_attach
-    // synchronously runs TCP connect + TLS handshake + WS upgrade. For
-    // N=100 this is on the order of 1–3 seconds total setup time on
-    // the bench host. The mock accepts in lockstep on its single
-    // thread so this matches the mock's accept pipeline.
-    for (uint16_t i = 0; i < conn_count; ++i) {
-        auto c = std::make_unique<Conn>(
-            std::string{"rss_scaling_ws_"} + kBackend + "_conn_" +
-            std::to_string(i));
+    auto run_cell = [&](uint16_t n) -> CellResult {
+        SPDLOG_INFO("==== cell start: conn_count={} ====", n);
+
+        std::vector<std::unique_ptr<Conn>> conns;
+        conns.reserve(n);
+
+        // Disarm gate while we set up — any pre-warmup arrivals get
+        // discarded by the t1<start check.
+        measurement_start_ns.store(UINT64_MAX, std::memory_order_relaxed);
+
+        for (uint16_t i = 0; i < n; ++i) {
+            auto c = std::make_unique<Conn>(
+                std::string{"rss_scaling_ws_"} + kBackend +
+                "_n" + std::to_string(n) + "_conn_" + std::to_string(i));
 
 #if defined(EPH_USE_DPDK)
-        const uint16_t target_q = i % nb_rx_queues;
-        ed::StreamConfig scfg{};
-        scfg.dpdk.tcp_low_level = env.make_tcp_config(
-            bench::random_src_port(), port);
-        scfg.dpdk.pool          = env.pool;
-        scfg.dpdk.pin_to_queue  = target_q;
-        scfg.connect_timeout    = std::chrono::milliseconds{5000};
-        scfg.ws.path            = ws_path;
-        scfg.ws.timeout         = std::chrono::seconds{10};
-        scfg.tls.hostname       = mock_ip_str;
-        scfg.tls.verify_peer    = false;
+            const uint16_t target_q = i % nb_rx_queues;
+            ed::StreamConfig scfg{};
+            scfg.dpdk.tcp_low_level = env.make_tcp_config(
+                bench::random_src_port(), port);
+            scfg.dpdk.pool         = env.pool;
+            scfg.dpdk.pin_to_queue = target_q;
+            scfg.connect_timeout   = std::chrono::milliseconds{5000};
+            scfg.ws.path           = ws_path;
+            scfg.ws.timeout        = std::chrono::seconds{10};
+            scfg.tls.hostname      = mock_ip_str;
+            scfg.tls.verify_peer   = false;
 
-        auto stream_r = Stream::create_and_attach(std::move(scfg), env.platform);
-        if (!stream_r) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling_ws: create_and_attach(conn=%u, q=%u): %s\n",
-                         i, target_q, stream_r.error().detail);
-            return 3;
-        }
-        c->stream = std::move(*stream_r);
-        c->queue  = target_q;
-#else
-        ek::StreamConfig scfg{};
-        scfg.remote          = remote;
-        scfg.reasm_capacity  = std::max<std::size_t>(64 * 1024,
-                                                     payload_size * 4);
-        scfg.connect_timeout = std::chrono::milliseconds{5000};
-        scfg.ws.path         = ws_path;
-        scfg.ws.timeout      = std::chrono::seconds{10};
-        scfg.tls.hostname    = mock_ip_str;
-        scfg.tls.verify_peer = false;
-
-        auto stream_r = Stream::create(scfg);
-        if (!stream_r) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling_ws: KernelTcpStream::create(conn=%u): %s\n",
-                         i, stream_r.error().detail);
-            return 3;
-        }
-        c->stream = std::move(*stream_r);
-        if (auto rr = poller->add(c->stream.get()); !rr) {
-            std::fprintf(stderr,
-                         "lat_rss_scaling_ws: poller->add(conn=%u): %s\n",
-                         i, rr.error().detail);
-            return 3;
-        }
-#endif
-        c->stream->on_message = make_callback(c.get());
-        conns.push_back(std::move(c));
-    }
-    SPDLOG_INFO("lat_rss_scaling_ws: {} streams established (TLS+WS)",
-                conn_count);
-
-    // Mock starts pushing 100 ms after the last subscriber arrives. We
-    // add a configurable warmup on top so the bench discards the
-    // initial transient (kernel/PMD warm caches, TLS record size
-    // bring-up, etc.).
-    const uint64_t now_ns      = bench::monotonic_raw_ns();
-    const uint64_t mock_grace  = 150ull * 1'000'000ull;
-    const uint64_t warmup_ns   = static_cast<uint64_t>(warmup_s) * 1'000'000'000ull;
-    const uint64_t measure_at  = now_ns + mock_grace + warmup_ns;
-    const uint64_t deadline_ns = measure_at +
-        static_cast<uint64_t>(duration_s) * 1'000'000'000ull;
-    measurement_start_ns.store(measure_at, std::memory_order_relaxed);
-
-#if defined(EPH_USE_DPDK)
-    std::atomic<bool> stop{false};
-    std::vector<std::jthread> workers;
-    workers.reserve(nb_rx_queues);
-    for (uint16_t q = 0; q < nb_rx_queues; ++q) {
-        const int cpu = worker_cpus[q];
-        Poller* p = pollers[q].get();
-        workers.emplace_back([cpu, p, &stop]() {
-            eph::utils::CpuPinPolicy policy{
-                .require_isolcpus            = false,
-                .require_no_sibling_conflict = false,
-                .require_same_numa           = false,
-                .warn_irq_overlap            = false,
-            };
-            char tname[16];
-            std::snprintf(tname, sizeof(tname), "rss-ws-%d", cpu);
-            auto pin = eph::utils::pin_thread(cpu, tname, policy);
-            if (pin) pin->release();
-            else SPDLOG_WARN("worker pin to cpu {} failed: {}",
-                             cpu, pin.error());
-
-            while (!stop.load(std::memory_order_relaxed)) {
-                (void)p->poll();
+            auto stream_r = Stream::create_and_attach(std::move(scfg),
+                                                       env.platform);
+            if (!stream_r) {
+                SPDLOG_ERROR("create_and_attach(conn={}, q={}): {}",
+                             i, target_q, stream_r.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
             }
-        });
-    }
-    while (bench::monotonic_raw_ns() < deadline_ns &&
-           !bench::shutdown_requested()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    }
-    stop.store(true, std::memory_order_relaxed);
-    workers.clear();
+            c->stream = std::move(*stream_r);
+            c->queue  = target_q;
 #else
-    bench::pin_client_from_cfg(cfg, "lat_rss_scaling_ws");
+            ek::StreamConfig scfg{};
+            scfg.remote          = remote;
+            scfg.reasm_capacity  = std::max<std::size_t>(64 * 1024,
+                                                          payload_size * 4);
+            scfg.connect_timeout = std::chrono::milliseconds{5000};
+            scfg.ws.path         = ws_path;
+            scfg.ws.timeout      = std::chrono::seconds{10};
+            scfg.tls.hostname    = mock_ip_str;
+            scfg.tls.verify_peer = false;
 
-    while (bench::monotonic_raw_ns() < deadline_ns &&
-           !bench::shutdown_requested()) {
-        (void)poller->poll();
-    }
+            auto stream_r = Stream::create(scfg);
+            if (!stream_r) {
+                SPDLOG_ERROR("KernelTcpStream::create(conn={}): {}",
+                             i, stream_r.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
+            }
+            c->stream = std::move(*stream_r);
+            if (auto rr = poller->add(c->stream.get()); !rr) {
+                SPDLOG_ERROR("poller->add(conn={}): {}", i, rr.error().detail);
+                return CellResult{n, 0, std::nullopt, {}, {}, {}};
+            }
+#endif
+            c->stream->on_message = make_callback(c.get());
+            conns.push_back(std::move(c));
+        }
+        SPDLOG_INFO("cell n={}: {} streams established", n, conns.size());
+
+        // Open the gate and run.
+        const uint64_t now_ns      = bench::monotonic_raw_ns();
+        const uint64_t mock_grace  = 150ull * 1'000'000ull;
+        const uint64_t warmup_ns   = static_cast<uint64_t>(warmup_s) *
+                                     1'000'000'000ull;
+        const uint64_t measure_at  = now_ns + mock_grace + warmup_ns;
+        const uint64_t deadline_ns = measure_at +
+            static_cast<uint64_t>(duration_s) * 1'000'000'000ull;
+        measurement_start_ns.store(measure_at, std::memory_order_relaxed);
+
+#if defined(EPH_USE_DPDK)
+        // Spawn workers AFTER all create_and_attach handshakes are
+        // done. Main thread did the handshake polls; workers now take
+        // over the per-queue Pollers. Safe because no other thread is
+        // calling poll() at this point.
+        std::atomic<bool> stop_workers{false};
+        std::vector<std::jthread> workers;
+        workers.reserve(nb_rx_queues);
+        for (uint16_t q = 0; q < nb_rx_queues; ++q) {
+            const int cpu = worker_cpus[q];
+            Poller* p = pollers[q].get();
+            workers.emplace_back([cpu, p, &stop_workers]() {
+                eph::utils::CpuPinPolicy policy{
+                    .require_isolcpus            = false,
+                    .require_no_sibling_conflict = false,
+                    .require_same_numa           = false,
+                    .warn_irq_overlap            = false,
+                };
+                char tname[16];
+                std::snprintf(tname, sizeof(tname), "rss-ws-%d", cpu);
+                auto pin = eph::utils::pin_thread(cpu, tname, policy);
+                if (pin) pin->release();
+                else SPDLOG_WARN("worker pin to cpu {} failed: {}",
+                                 cpu, pin.error());
+                while (!stop_workers.load(std::memory_order_relaxed)) {
+                    (void)p->poll();
+                }
+            });
+        }
+
+        while (bench::monotonic_raw_ns() < deadline_ns &&
+               !bench::shutdown_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+
+        // Stop workers BEFORE close_gracefully — close_gracefully will
+        // poll the queue's Poller from the main thread, and workers
+        // must not race that.
+        stop_workers.store(true, std::memory_order_relaxed);
+        workers.clear();
+#else
+        while (bench::monotonic_raw_ns() < deadline_ns &&
+               !bench::shutdown_requested()) {
+            (void)poller->poll();
+        }
 #endif
 
-    // ── Reporting ────────────────────────────────────────────────────
-    std::printf("\n=== lat_rss_scaling_ws (%s) conn=%u ===\n",
-                kBackend, static_cast<unsigned>(conn_count));
-
-    std::vector<uint64_t> p50s, p99s, p999s, sample_counts;
-    p50s.reserve(conn_count);
-    p99s.reserve(conn_count);
-    p999s.reserve(conn_count);
-    sample_counts.reserve(conn_count);
-
-    eu::Recorder agg{std::string{"rss_scaling_ws_"} + kBackend + "_aggregate"};
-
-    for (auto& c : conns) {
-        if (auto s_opt = c->rec.compute_stats()) {
-            p50s.push_back(s_opt->p50_ns);
-            p99s.push_back(s_opt->p99_ns);
-            p999s.push_back(s_opt->p999_ns);
-            sample_counts.push_back(s_opt->count);
-        } else {
-            sample_counts.push_back(0);
+        // Snapshot stats BEFORE close — close_gracefully + drain may
+        // race with late callbacks.
+        std::vector<uint64_t> p50s, p99s, p999s;
+        eu::Recorder agg{std::string{"rss_scaling_ws_"} + kBackend +
+                         "_n" + std::to_string(n) + "_aggregate"};
+        uint64_t total_samples = 0;
+        for (auto& c : conns) {
+            if (auto s_opt = c->rec.compute_stats()) {
+                p50s.push_back(s_opt->p50_ns);
+                p99s.push_back(s_opt->p99_ns);
+                p999s.push_back(s_opt->p999_ns);
+                total_samples += s_opt->count;
+            }
+            (void)agg.merge(c->rec);
         }
-        (void)agg.merge(c->rec);
+        auto agg_stats = agg.compute_stats();
+
+        // Close all streams. Drain pollers briefly to let FIN-ACKs land
+        // before destructors unregister the flow table entries (avoids
+        // ASan UAF on the DPDK dispatch path; on kernel it's just
+        // cooperative).
+        for (auto& c : conns) {
+            if (c->stream) (void)c->stream->close_gracefully();
+        }
+#if defined(EPH_USE_DPDK)
+        // Main thread now drives the queue pollers to push the
+        // FIN/ACK/RST packets through (workers already stopped above).
+        const uint64_t close_until =
+            bench::monotonic_raw_ns() + 300ull * 1'000'000ull;
+        while (bench::monotonic_raw_ns() < close_until) {
+            for (auto& p : pollers) (void)p->poll();
+        }
+        for (auto& c : conns) c->stream.reset();
+#else
+        const uint64_t drain_until =
+            bench::monotonic_raw_ns() + 300ull * 1'000'000ull;
+        while (bench::monotonic_raw_ns() < drain_until) {
+            (void)poller->poll();
+        }
+        for (auto& c : conns) {
+            if (c->stream) (void)poller->remove(c->stream.get());
+            c->stream.reset();
+        }
+#endif
+
+        CellResult r{};
+        r.conn_count    = n;
+        r.total_samples = total_samples;
+        r.agg           = agg_stats;
+        r.p50_distro    = summarise(std::move(p50s));
+        r.p99_distro    = summarise(std::move(p99s));
+        r.p999_distro   = summarise(std::move(p999s));
+
+        std::printf("\n--- cell n=%u ---\n", static_cast<unsigned>(n));
+        std::printf("samples_total=%llu (window=%us)\n",
+                    static_cast<unsigned long long>(r.total_samples),
+                    duration_s);
+        std::printf("per-connection percentile distributions (one-way RX_ns):\n");
+        print_distro("P50 across conns",   r.p50_distro);
+        print_distro("P99 across conns",   r.p99_distro);
+        print_distro("P99.9 across conns", r.p999_distro);
+        std::printf("aggregate (all samples merged):\n");
+        if (r.agg) bench::print_stats_block("RX_one_way_ns", *r.agg);
+        else       bench::print_stats_block_empty("RX_one_way_ns");
+        std::fflush(stdout);
+
+        SPDLOG_INFO("==== cell done: conn_count={} samples={} ====",
+                    n, r.total_samples);
+        return r;
+    };
+
+    // ── Sweep ────────────────────────────────────────────────────────
+    std::vector<CellResult> results;
+    results.reserve(conn_counts.size());
+    for (auto n : conn_counts) {
+        if (bench::shutdown_requested()) break;
+        results.push_back(run_cell(n));
     }
 
-    uint64_t total_samples = 0;
-    uint64_t min_per_conn  = UINT64_MAX;
-    uint64_t max_per_conn  = 0;
-    for (auto n : sample_counts) {
-        total_samples += n;
-        if (n < min_per_conn) min_per_conn = n;
-        if (n > max_per_conn) max_per_conn = n;
+    // ── Final summary table ──────────────────────────────────────────
+    std::printf("\n═══════════════════════════════════════════════════════════════════\n");
+    std::printf("  lat_rss_scaling_ws (%s) — sweep summary\n", kBackend);
+    std::printf("═══════════════════════════════════════════════════════════════════\n");
+    std::printf("\n%-6s | %-10s | %-10s | %-10s | %-10s | %-10s\n",
+                "conns", "agg p50", "agg p90", "agg p99", "agg p99.9", "agg max");
+    std::printf("%-6s-+-%-10s-+-%-10s-+-%-10s-+-%-10s-+-%-10s\n",
+                "------", "----------", "----------", "----------",
+                "----------", "----------");
+    for (const auto& r : results) {
+        if (r.agg) {
+            std::printf("%-6u | %-10llu | %-10llu | %-10llu | %-10llu | %-10llu\n",
+                        static_cast<unsigned>(r.conn_count),
+                        static_cast<unsigned long long>(r.agg->p50_ns),
+                        static_cast<unsigned long long>(r.agg->p90_ns),
+                        static_cast<unsigned long long>(r.agg->p99_ns),
+                        static_cast<unsigned long long>(r.agg->p999_ns),
+                        static_cast<unsigned long long>(r.agg->max_ns));
+        } else {
+            std::printf("%-6u | (no samples)\n",
+                        static_cast<unsigned>(r.conn_count));
+        }
     }
-    if (sample_counts.empty()) min_per_conn = 0;
-
-    std::printf("samples_total=%llu  per_conn_min=%llu  per_conn_max=%llu  "
-                "(window=%us)\n",
-                static_cast<unsigned long long>(total_samples),
-                static_cast<unsigned long long>(min_per_conn),
-                static_cast<unsigned long long>(max_per_conn),
-                duration_s);
-
-    std::printf("\nper-connection percentile distributions (one-way RX_ns):\n");
-    print_distro("P50 across conns",   summarise(p50s));
-    print_distro("P99 across conns",   summarise(p99s));
-    print_distro("P99.9 across conns", summarise(p999s));
-
-    std::printf("\naggregate (all samples merged):\n");
-    if (auto agg_s = agg.compute_stats()) {
-        bench::print_stats_block("RX_one_way_ns", *agg_s);
-    } else {
-        bench::print_stats_block_empty("RX_one_way_ns");
+    if (results.size() >= 2 && results.front().agg && results.back().agg) {
+        const double dn = static_cast<double>(results.back().conn_count -
+                                              results.front().conn_count);
+        if (dn > 0) {
+            const double p50_slope =
+                (static_cast<double>(results.back().agg->p50_ns) -
+                 static_cast<double>(results.front().agg->p50_ns)) / dn;
+            const double p999_slope =
+                (static_cast<double>(results.back().agg->p999_ns) -
+                 static_cast<double>(results.front().agg->p999_ns)) / dn;
+            std::printf("\nslope (last − first) / Δconn:  "
+                        "agg p50 = %.1f ns/conn   agg p99.9 = %.1f ns/conn\n",
+                        p50_slope, p999_slope);
+        }
     }
     std::fflush(stdout);
 
-    // Cleanup: gracefully close each stream so the FIN handshake
-    // completes before the Poller / Platform tear down. On DPDK we
-    // also unregister the per-queue Pollers from the Platform's slot
-    // map — without this, dangling Poller* in Platform during stream
-    // destructors would surface as use-after-free under ASan.
-    for (auto& c : conns) {
-        if (c->stream) (void)c->stream->close_gracefully();
-    }
+    // ── Teardown ─────────────────────────────────────────────────────
 #if defined(EPH_USE_DPDK)
-    for (auto& c : conns) c->stream.reset();
     for (uint16_t q = 0; q < nb_rx_queues; ++q) {
         env.platform.unregister_poller(q);
     }
     pollers.clear();
 #else
-    for (auto& c : conns) {
-        if (c->stream) (void)poller->remove(c->stream.get());
-        c->stream.reset();
-    }
     poller.reset();
 #endif
 
