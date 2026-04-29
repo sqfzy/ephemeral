@@ -72,11 +72,16 @@ inline std::string ssl_error_string() {
 /// The BIO callbacks, BioContext, and BIO method are nested inside
 /// TlsSession to avoid namespace-level template complications with
 /// C function pointers used by OpenSSL's BIO interface.
-/// @brief Duck-typed template: any type providing `send`, `poll_rx`, `state` and
-/// related methods compatible with the legacy `TcpTransport` concept works.
-/// The concept constraint was removed because the legacy concept is deleted;
-/// the method-set requirement survives as ordinary template instantiation
-/// errors.
+/// @brief Duck-typed template: any type providing `send`, `poll_rx`, `state`
+/// and related methods compatible with the `eph::net::TcpTransport` concept
+/// works. We do not reference the concept by name in the template-parameter
+/// constraint to keep this header buildable without pulling in the full
+/// concept definition (a minor compile-time-only concern); the
+/// `static_assert(eph::net::TcpTransport<TcpSession<>>, …)` in
+/// `eph-net-dpdk/include/eph/dpdk/tcp.hpp` is the authoritative compliance
+/// check for the in-tree DPDK backend, and the kernel
+/// `eph::net::kernel::detail::ByteSocket` adapter ports the same shape.
+/// Method-set mismatches surface as ordinary template instantiation errors.
 template <class TcpImpl>
 class TlsSession {
 
