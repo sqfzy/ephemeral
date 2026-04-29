@@ -475,6 +475,18 @@ public:
                 wv.error().detail);
             return std::unexpected(wv.error());
         }
+        // TLS sub-config validation. Mirrors KernelTcpStream::create —
+        // catches handshake_timeout <= 0 and client_cert/client_key
+        // mismatch before the EAL bring-up path commits resources to a
+        // doomed handshake.
+        if constexpr (EnableTls) {
+            if (auto tv = cfg.tls.validate(); !tv) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkTcpStream::create: TlsConfig invalid: {}",
+                    tv.error().detail);
+                return std::unexpected(tv.error());
+            }
+        }
         // Reasm capacity: 0 silently falls back to 256 KiB (default) —
         // supports the "just use the default" idiom via designated init.
         // Non-zero-but-tiny values (e.g. 512 bytes) would let the stream
