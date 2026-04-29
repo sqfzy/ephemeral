@@ -164,12 +164,14 @@ conn_count_list            = [5, 20, 100]
 # [dpdk.rss] table because every other scenario expects nb_rx_queues=1
 # (single-stream Pollers registered on queue 0).
 nb_rx_queues_override      = 4
-worker_threads             = 4
-# 5 lcores: lcore 0 idle main + lcores 1..4 reserved (workers run on
-# the dedicated worker_cpus below, *not* on these lcores). Bump if
-# your bench host has a different layout.
-eal_cores_override         = "0,1,2,3,4"
-worker_cpus                = "8,9,10,11"
+# 5 lcores: cpu 0 = main lcore, cpus 8..11 = worker lcores (one per RX
+# queue). EAL itself does the setaffinity from the `--lcores=N@cpu`
+# argv that `init_with_pins` synthesizes; the bench dispatches the
+# per-queue `poll()` onto those workers via `rte_eal_remote_launch`.
+# No separate `pin_thread` / `std::jthread` is involved — that path
+# would collide with EAL's own lcore on the same cpu and bypass
+# RTE_PER_LCORE state setup.
+eal_cores_override         = "0,8,9,10,11"
 
 # ── lat_rss_scaling_ws ────────────────────────────────────────────────
 # WS-over-TLS variant — same scaling sweep as `lat_rss_scaling` but the

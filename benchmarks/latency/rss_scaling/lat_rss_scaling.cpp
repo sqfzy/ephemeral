@@ -21,9 +21,14 @@
 ///      the final summary table.
 ///
 /// Topology mirrors `test_dpdk_rss_fanout` `NStreamsDistributedAcrossQueues`:
-///   - DPDK: nb_rx_queues=4 RSS, 4 worker jthreads each polling one
-///     DpdkPoller. Workers spawn once at startup, persist across all
-///     cells. Socket i pinned to queue (i % nb_q).
+///   - DPDK: nb_rx_queues=4 RSS, 4 EAL **worker lcores** each polling one
+///     DpdkPoller via `rte_eal_remote_launch` (canonical pattern, mirrors
+///     `examples/simple_hft_dpdk_rss.cpp`). Workers re-launched per cell;
+///     setaffinity is done by EAL itself from `--lcores=N@cpu` (driven by
+///     `cpu.eal_cores` → `LcorePin` → `init_with_pins`). Socket i pinned
+///     to queue (i % nb_q). The previous `std::jthread` + `pin_thread`
+///     path is gone — polling DPDK from a non-lcore thread fights EAL
+///     for setaffinity and bypasses RTE_PER_LCORE state setup.
 ///   - Kernel: single thread, single KernelPoller, N sockets bound to
 ///     ephemeral src_ports.
 
@@ -52,6 +57,9 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
+#  include <rte_launch.h>
+#  include <rte_lcore.h>
+
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/udp_socket.hpp"
 #  include "core/dpdk_env.hpp"
@@ -92,32 +100,6 @@ constexpr const char* kSection           = "lat_rss_scaling";
     }
     if (const char* env = std::getenv("BENCH_CONFIG"); env && *env) return env;
     return kDefaultConfigPath;
-}
-
-[[nodiscard, maybe_unused]] std::vector<int>
-parse_csv_ints(std::string_view csv) noexcept {
-    std::vector<int> out;
-    out.reserve(8);
-    std::size_t pos = 0;
-    while (pos <= csv.size()) {
-        std::size_t comma = csv.find(',', pos);
-        std::string_view tok = (comma == std::string_view::npos)
-                                   ? csv.substr(pos) : csv.substr(pos, comma - pos);
-        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
-            tok.remove_prefix(1);
-        while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t'))
-            tok.remove_suffix(1);
-        if (!tok.empty()) {
-            char buf[16] = {};
-            const std::size_t n = std::min(tok.size(), sizeof(buf) - 1);
-            std::memcpy(buf, tok.data(), n);
-            const int v = std::atoi(buf);
-            if (v >= 0) out.push_back(v);
-        }
-        if (comma == std::string_view::npos) break;
-        pos = comma + 1;
-    }
-    return out;
 }
 
 struct ConnDistro {
@@ -166,6 +148,30 @@ struct CellResult {
     ConnDistro                p99_distro;
     ConnDistro                p999_distro;
 };
+
+#if defined(EPH_USE_DPDK)
+/// Per-worker context handed to `rte_eal_remote_launch`. Lifetime is
+/// bounded by the per-cell `run_cell` scope: every launch is matched
+/// by `rte_eal_wait_lcore` before the cell returns.
+struct WorkerCtx {
+    Poller*            poller;
+    std::atomic<bool>* stop;
+};
+
+/// EAL worker entry point. `int(void*)` shape required by
+/// `rte_eal_remote_launch`. EAL has already pinned this thread to its
+/// declared cpu inside `rte_eal_init` (see `cpu.eal_cores` → `LcorePin`
+/// → `init_with_pins` in `load_dpdk_env`); we just poll until told to
+/// stop. Returning 0 hands the lcore back to `eal_thread_loop` so the
+/// next cell can `rte_eal_remote_launch` it again.
+int worker_main(void* arg) noexcept {
+    auto* ctx = static_cast<WorkerCtx*>(arg);
+    while (!ctx->stop->load(std::memory_order_relaxed)) {
+        (void)ctx->poller->poll();
+    }
+    return 0;
+}
+#endif
 
 } // namespace
 
@@ -234,29 +240,14 @@ int main(int argc, char** argv) {
 #if defined(EPH_USE_DPDK)
     const uint16_t nb_rx_queues =
         sc.get_or<uint16_t>("nb_rx_queues_override", 4);
-    const uint16_t worker_threads =
-        sc.get_or<uint16_t>("worker_threads", nb_rx_queues);
     const std::string eal_override =
         sc.get_or<std::string>("eal_cores_override", std::string{});
-    const std::string worker_cpus_csv =
-        sc.get_or<std::string>("worker_cpus", std::string{"0,1,2,3"});
 
-    if (worker_threads != nb_rx_queues) {
-        std::fprintf(stderr,
-                     "lat_rss_scaling: worker_threads (%u) must equal "
-                     "nb_rx_queues_override (%u)\n",
-                     worker_threads, nb_rx_queues);
-        return 1;
-    }
-    auto worker_cpus = parse_csv_ints(worker_cpus_csv);
-    if (worker_cpus.size() < worker_threads) {
-        std::fprintf(stderr,
-                     "lat_rss_scaling: worker_cpus has %zu entries, need %u\n",
-                     worker_cpus.size(), worker_threads);
-        return 1;
-    }
-    worker_cpus.resize(worker_threads);
-
+    // `cpu.eal_cores` (or its `eal_cores_override`) must list main +
+    // every worker cpu. `load_dpdk_env` parses the CSV into LcorePin
+    // entries that EAL itself pins; `rte_eal_remote_launch` then
+    // dispatches the per-queue poll loops onto the worker lcores. The
+    // count check happens after EAL init via `rte_lcore_count()`.
     if (!eal_override.empty()) cfg.cpu.eal_cores = eal_override;
     cfg.dpdk.nb_rx_queues = nb_rx_queues;
 #endif
@@ -294,8 +285,9 @@ int main(int argc, char** argv) {
     }
     std::printf("]\n");
 #if defined(EPH_USE_DPDK)
-    std::printf("dpdk_topo: nb_rx_queues=%u workers=%u worker_cpus=%s\n",
-                nb_rx_queues, worker_threads, worker_cpus_csv.c_str());
+    std::printf("dpdk_topo: nb_rx_queues=%u eal_cores=%s "
+                "(main lcore + %u worker lcore(s) via rte_eal_remote_launch)\n",
+                nb_rx_queues, cfg.cpu.eal_cores.c_str(), nb_rx_queues);
 #endif
     std::fflush(stdout);
 
@@ -316,6 +308,21 @@ int main(int argc, char** argv) {
                      "lat_rss_scaling: Platform reports %u RX queues, "
                      "requested %u\n",
                      env.platform.nb_rx_queues(), nb_rx_queues);
+        return 2;
+    }
+
+    // EAL must have at least nb_rx_queues worker lcores (i.e. lcore
+    // count - 1 main). `cpu.eal_cores` carries the cpu list — extend it
+    // in config.toml if this trips.
+    const unsigned avail_workers =
+        rte_lcore_count() > 0 ? rte_lcore_count() - 1u : 0u;
+    if (avail_workers < nb_rx_queues) {
+        std::fprintf(stderr,
+                     "lat_rss_scaling: EAL has %u worker lcore(s), need %u "
+                     "(set cpu.eal_cores or eal_cores_override to "
+                     "main+nb_rx_queues cpus, e.g. \"0,8,9,10,11\" for "
+                     "nb_rx_queues=4)\n",
+                     avail_workers, nb_rx_queues);
         return 2;
     }
 
@@ -462,38 +469,57 @@ int main(int argc, char** argv) {
         measurement_start_ns.store(measure_at, std::memory_order_relaxed);
 
 #if defined(EPH_USE_DPDK)
+        // Dispatch poll loops onto EAL worker lcores. Each lcore is
+        // already bound to its declared cpu by `rte_eal_init`; no
+        // `pin_thread` here, and no user-spawned `std::jthread` — that
+        // path bypasses EAL setaffinity / RTE_PER_LCORE state and
+        // collides with the lcore that EAL has parked on the same cpu.
         std::atomic<bool> stop_workers{false};
-        std::vector<std::jthread> workers;
-        workers.reserve(nb_rx_queues);
+        std::vector<WorkerCtx> ctxs;
+        ctxs.reserve(nb_rx_queues);
         for (uint16_t q = 0; q < nb_rx_queues; ++q) {
-            const int cpu = worker_cpus[q];
-            Poller* p = pollers[q].get();
-            workers.emplace_back([cpu, p, &stop_workers]() {
-                eph::utils::CpuPinPolicy policy{
-                    .require_isolcpus            = false,
-                    .require_no_sibling_conflict = false,
-                    .require_same_numa           = false,
-                    .warn_irq_overlap            = false,
-                };
-                char tname[16];
-                std::snprintf(tname, sizeof(tname), "rss-w-%d", cpu);
-                auto pin = eph::utils::pin_thread(cpu, tname, policy);
-                if (pin) pin->release();
-                else SPDLOG_WARN("worker pin to cpu {} failed: {}",
-                                 cpu, pin.error());
-                while (!stop_workers.load(std::memory_order_relaxed)) {
-                    (void)p->poll();
-                }
-            });
+            ctxs.push_back(WorkerCtx{pollers[q].get(), &stop_workers});
         }
 
-        while (bench::monotonic_raw_ns() < deadline_ns &&
-               !bench::shutdown_requested()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        bool launch_ok = true;
+        uint16_t worker_idx = 0;
+        unsigned lcore_id;
+        RTE_LCORE_FOREACH_WORKER(lcore_id) {
+            if (worker_idx >= nb_rx_queues) break;
+            if (int rc = rte_eal_remote_launch(worker_main,
+                                               &ctxs[worker_idx],
+                                               lcore_id);
+                rc != 0) {
+                SPDLOG_ERROR("rte_eal_remote_launch(lcore={},queue={}): "
+                             "rc={}", lcore_id, worker_idx, rc);
+                launch_ok = false;
+                break;
+            }
+            SPDLOG_DEBUG("cell n={}: launched worker lcore={} on queue={}",
+                         n, lcore_id, worker_idx);
+            ++worker_idx;
+        }
+        if (launch_ok && worker_idx < nb_rx_queues) {
+            SPDLOG_ERROR("cell n={}: only {} worker lcore(s) launched, "
+                         "need {}", n, worker_idx, nb_rx_queues);
+            launch_ok = false;
         }
 
+        if (launch_ok) {
+            while (bench::monotonic_raw_ns() < deadline_ns &&
+                   !bench::shutdown_requested()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+        }
+
+        // Stop and join every launched worker before any teardown
+        // touches the Pollers. `rte_eal_wait_lcore` returns the lcore
+        // to WAIT state, ready for the next cell's launch.
         stop_workers.store(true, std::memory_order_relaxed);
-        workers.clear();
+        RTE_LCORE_FOREACH_WORKER(lcore_id) {
+            (void)rte_eal_wait_lcore(lcore_id);
+        }
+        if (!launch_ok) return CellResult{n, 0, std::nullopt, {}, {}, {}};
 #else
         while (bench::monotonic_raw_ns() < deadline_ns &&
                !bench::shutdown_requested()) {
