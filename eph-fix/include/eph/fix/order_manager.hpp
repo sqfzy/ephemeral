@@ -246,6 +246,24 @@ public:
             auto last_px  = report.last_px();
 
             if (last_qty && last_px) {
+                // FIX 4.4 Qty / Px are non-negative. Reject negative or
+                // non-finite values BEFORE mutating order state — otherwise
+                // a hostile / corrupted ExecReport can drive filled_qty
+                // negative, push leaves_qty above orig_qty, or NaN-poison
+                // avg_fill_price.
+                if (*last_qty < 0) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
+                        *last_qty, order.cl_ord_id);
+                    return false;
+                }
+                if (*last_px < 0.0 || !std::isfinite(*last_px)) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
+                        *last_px, order.cl_ord_id);
+                    return false;
+                }
+
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
 
@@ -295,6 +313,23 @@ public:
             auto last_px  = report.last_px();
 
             if (last_qty && last_px) {
+                // FIX 4.4 Qty / Px are non-negative — same guard as the
+                // PartialFill / Trade branch above. Reject before any state
+                // mutation so a corrupted full-Fill report cannot transition
+                // the order to OrderState::Filled with garbage filled_qty.
+                if (*last_qty < 0) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
+                        *last_qty, order.cl_ord_id);
+                    return false;
+                }
+                if (*last_px < 0.0 || !std::isfinite(*last_px)) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
+                        *last_px, order.cl_ord_id);
+                    return false;
+                }
+
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
 
