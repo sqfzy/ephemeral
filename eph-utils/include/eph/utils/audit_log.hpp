@@ -269,12 +269,31 @@ public:
         return at(0);
     }
 
-    /// Flush all entries to a binary file. Returns number of entries written.
-    /// Entries are written newest-first.
+    /// Flush all entries to a binary file. Returns number of entries
+    /// the audit log believes it persisted.
+    ///
+    /// Compliance contract: the audit log is part of the MiFID II /
+    /// Reg NMS regulatory trail, so silent loss of buffered writes on
+    /// `fclose` is unacceptable. We explicitly call `fflush(f)` (forces
+    /// the libc buffer to the kernel) and check `fclose(f)` (catches
+    /// kernel-level write-back errors — disk full, ENOSPC, EIO). On
+    /// either failure we ERROR-log the path / errno / actual on-disk
+    /// size and return 0 so the caller treats the flush as a complete
+    /// failure rather than a "we wrote N entries" success that may
+    /// have lost the tail to a partial flush.
+    ///
+    /// The return value semantics are slightly conservative: a partial
+    /// fflush failure where the first K writes did make it to disk
+    /// will still be reported as 0. That's intentional for compliance
+    /// — the operator must re-flush to a fresh file rather than rely
+    /// on guessing which entries survived. For pure observability
+    /// purposes the count is logged separately.
     [[nodiscard]] size_t flush_to_file(std::string_view path) const noexcept {
         FILE* f = std::fopen(std::string(path).c_str(), "wb");
         if (!f) {
-            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),"AuditLog: failed to open '{}' for writing", path);
+            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),
+                "AuditLog: failed to open '{}' for writing (errno={})",
+                path, errno);
             return 0;
         }
 
@@ -287,8 +306,31 @@ public:
             }
         }
 
-        std::fclose(f);
-        SPDLOG_LOGGER_INFO(detail::audit_log_logger(),"AuditLog: flushed {} entries to '{}'", written, path);
+        // Force libc buffer to kernel before close. fflush failure here
+        // is the canonical "ENOSPC / EIO mid-write" surface — fclose
+        // would still return 0 in that scenario on some libcs, leaving
+        // the caller thinking the flush succeeded.
+        bool flush_ok = (std::fflush(f) == 0);
+        const int flush_errno = flush_ok ? 0 : errno;
+        // fclose ALSO needs to be checked even when fflush returned 0:
+        // some libcs defer the final block write to fclose, and it's
+        // the only chance to surface a delayed disk-write failure.
+        bool close_ok = (std::fclose(f) == 0);
+        const int close_errno = close_ok ? 0 : errno;
+
+        if (!flush_ok || !close_ok) {
+            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),
+                "AuditLog: persistence integrity FAILED for '{}' "
+                "(fwrite={} entries, fflush_ok={} errno={}, fclose_ok={} errno={}) "
+                "— treating flush as 0 to force operator re-flush; "
+                "regulatory trail may be incomplete on this file",
+                path, written, flush_ok, flush_errno,
+                close_ok, close_errno);
+            return 0;
+        }
+
+        SPDLOG_LOGGER_INFO(detail::audit_log_logger(),
+            "AuditLog: flushed {} entries to '{}'", written, path);
         return written;
     }
 
