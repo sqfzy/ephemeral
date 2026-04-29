@@ -22,6 +22,7 @@
 #include "mockex/scenarios/ex_md_udp_echo.hpp"
 #include "mockex/scenarios/ex_order_echo.hpp"
 #include "mockex/scenarios/rss_scaling_push.hpp"
+#include "mockex/scenarios/rss_scaling_ws_push.hpp"
 #include "mockex/scenarios/tcp_echo.hpp"
 #include "mockex/scenarios/udp_echo.hpp"
 #include "mockex/scenarios/ws_echo.hpp"
@@ -39,15 +40,16 @@ struct ScenarioEntry {
 /// `section` column mirrors config.toml exactly so a future audit
 /// script can cross-check that every `[scenarios.lat_*]` section has a
 /// handler.
-inline constexpr std::array<ScenarioEntry, 8> kScenarioTable{{
-    {"tcp",          "lat_tcp",          &scenarios::tcp_echo_run},
-    {"udp",          "lat_udp",          &scenarios::udp_echo_run},
-    {"ws",           "lat_ws",           &scenarios::ws_echo_run},
-    {"ex_order",     "lat_ex_order",     &scenarios::ex_order_echo_run},
-    {"ex_md_udp",    "lat_ex_md_udp",    &scenarios::ex_md_udp_echo_run},
-    {"ex_market",    "lat_ex_market",    &scenarios::ex_market_push_run},
-    {"ex_market_2p", "lat_ex_market_2p", &scenarios::ex_market_2p_push_run},
-    {"rss_scaling",  "lat_rss_scaling",  &scenarios::rss_scaling_push_run},
+inline constexpr std::array<ScenarioEntry, 9> kScenarioTable{{
+    {"tcp",            "lat_tcp",            &scenarios::tcp_echo_run},
+    {"udp",            "lat_udp",            &scenarios::udp_echo_run},
+    {"ws",             "lat_ws",             &scenarios::ws_echo_run},
+    {"ex_order",       "lat_ex_order",       &scenarios::ex_order_echo_run},
+    {"ex_md_udp",      "lat_ex_md_udp",      &scenarios::ex_md_udp_echo_run},
+    {"ex_market",      "lat_ex_market",      &scenarios::ex_market_push_run},
+    {"ex_market_2p",   "lat_ex_market_2p",   &scenarios::ex_market_2p_push_run},
+    {"rss_scaling",    "lat_rss_scaling",    &scenarios::rss_scaling_push_run},
+    {"rss_scaling_ws", "lat_rss_scaling_ws", &scenarios::rss_scaling_ws_push_run},
 }};
 
 /// Look up a scenario by its CLI keyword (the same token the `lat`

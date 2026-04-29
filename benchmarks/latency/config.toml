@@ -168,3 +168,33 @@ worker_threads             = 4
 # your bench host has a different layout.
 eal_cores_override         = "0,1,2,3,4"
 worker_cpus                = "8,9,10,11"
+
+# ── lat_rss_scaling_ws ────────────────────────────────────────────────
+# WS-over-TLS variant — same scaling sweep as `lat_rss_scaling` but the
+# transport is `KernelTcpStream<WsCodec, EnableTls=true>` /
+# `DpdkTcpStream<WsCodec, EnableTls=true>` against the `rss_scaling_ws`
+# mock handler (TLS + RFC 6455 server frames). Production HFT WS feeds
+# (binance / okx / coinbase) ride this exact stack.
+[scenarios.lat_rss_scaling_ws]
+port                       = 20009
+ws_path                    = "/rss"
+payload_size               = 256
+duration_seconds           = 30
+warmup_seconds             = 2
+# Lower default than UDP variant: each WS push carries TLS record +
+# WS header + payload (~290 B over the wire) and the mock's blocking
+# SSL_write is heavier than sendto. Empirically 1500 pps/conn keeps
+# the mock CPU below saturation through conn_count=100.
+push_rate_pps_per_conn     = 1500
+conn_count                 = 5
+
+# Enables the mock's SSL_accept/SSL_write path (aws-lc) using the
+# self-signed cert/key from the global [tls] table.
+use_tls                    = true
+
+# Same DPDK overrides as the UDP variant — independent so the two
+# scenarios can be tuned separately if needed.
+nb_rx_queues_override      = 4
+worker_threads             = 4
+eal_cores_override         = "0,1,2,3,4"
+worker_cpus                = "8,9,10,11"

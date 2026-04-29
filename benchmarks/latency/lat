@@ -76,6 +76,7 @@ declare -A SCENARIO_MOCKS=(
     [ex_market]=ex_market
     [ex_market_2p]=ex_market_2p
     [rss_scaling]=rss_scaling
+    [rss_scaling_ws]=rss_scaling_ws
 )
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -105,6 +106,7 @@ SCENARIOS:
   ex_order      exchange N-inflight order RTT
   ex_md_udp     exchange UDP market data push
   rss_scaling   N-conn one-way UDP push (RX scaling vs N)
+  rss_scaling_ws  N-conn one-way WS+TLS+TCP push (RX scaling vs N)
 
 OPTIONS:
   --dpdk              use the DPDK client variant (NIC_B → vfio-pci)
