@@ -173,10 +173,19 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
 /// @param target_ip     The IP we're resolving (host byte order)
 /// @param expected_mac  If set, reject replies whose sender MAC differs (anti-spoof).
 ///                      In HFT colo, the gateway MAC is typically static and known.
+/// @param expected_local_ip  If set, reject replies whose `target_ip` field
+///                           does not match (reflection-style attack mitigation
+///                           — RFC 826's reply.target_ip should be the
+///                           requesting host's IP, i.e. our src_ip).
+///                           `nullopt` keeps the legacy permissive behaviour
+///                           the fuzzer harness exercises. Production callers
+///                           that resolve via `resolve_with_io` get this set
+///                           automatically.
 /// @return Sender MAC if match, std::nullopt otherwise
 [[nodiscard]] inline std::optional<rte_ether_addr>
 parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
-                std::optional<rte_ether_addr> expected_mac = std::nullopt) noexcept {
+                std::optional<rte_ether_addr> expected_mac = std::nullopt,
+                std::optional<uint32_t> expected_local_ip = std::nullopt) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + sizeof(ArpPacket);
     // Defensive: parse_arp_reply is reachable from the fuzzer harness and
     // from the resolve() loop where a nullptr mbuf should never appear
@@ -208,6 +217,29 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
 
     // Check sender IP matches the address we're resolving
     if (net::ntoh32(arp->sender_ip) != target_ip) return std::nullopt;
+
+    // Optional reflection-attack mitigation: ARP reply's `target_ip` field
+    // (RFC 826) should be the requester's IP — our local src_ip. A reply
+    // carrying a different target_ip is either an unsolicited gratuitous
+    // ARP for a different host (legitimate but irrelevant to our resolve)
+    // or a forged/reflected packet whose payload happens to use a real
+    // gateway as `sender_ip`. Either way, accepting it would let an
+    // attacker poison our cache with the gateway's MAC at any time,
+    // bypassing the `expected_mac` allowlist. When `expected_local_ip`
+    // is supplied (the production path) we reject mismatches; the
+    // fuzzer harness leaves this `nullopt` to keep the legacy permissive
+    // shape the corpus was built against.
+    if (expected_local_ip.has_value()) {
+        const uint32_t reply_target = net::ntoh32(arp->target_ip);
+        if (reply_target != *expected_local_ip) {
+            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+                "ARP reply target_ip mismatch: got {}, expected {} — "
+                "possible reflection attack, rejecting",
+                net::format_ipv4(reply_target).data(),
+                net::format_ipv4(*expected_local_ip).data());
+            return std::nullopt;
+        }
+    }
 
     rte_ether_addr result;
     std::memcpy(result.addr_bytes, arp->sender_mac, 6);
@@ -378,7 +410,12 @@ resolve_with_io(uint16_t port_id,
                                        kArpResolveBurstSize);
 
         for (uint16_t i = 0; i < nb_rx; ++i) {
-            auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac);
+            // Pass our `src_ip` as `expected_local_ip` so a reflection-
+            // style reply (forged sender_ip == our gateway, but target_ip
+            // pointing at someone else) is rejected — see parse_arp_reply
+            // doc for the full rationale.
+            auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac,
+                                        /*expected_local_ip=*/src_ip);
             if (mac) {
                 SPDLOG_LOGGER_INFO(log,
                     "ARP resolved: {} -> {} (after {} request(s))",

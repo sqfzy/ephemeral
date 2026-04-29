@@ -420,3 +420,34 @@ TEST_F(ArpResolveTest, AntiSpoof_ExpectedMacMismatchRejected) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("timeout"), std::string::npos);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. Reflection-attack mitigation — reply.target_ip != our src_ip rejected
+// ═══════════════════════════════════════════════════════════════════════
+//
+// An attacker who can sniff the broadcast can craft a reply with the real
+// gateway's IP/MAC as `sender_ip / sender_mac` but with a target_ip
+// pointing at someone else (or zero). The legacy parser accepted such
+// replies because the only IP check was `sender_ip == target_ip`.
+// `resolve_with_io` now passes our `src_ip` as `expected_local_ip` so
+// the reflected reply is rejected — see parse_arp_reply doc.
+TEST_F(ArpResolveTest, Reflection_TargetIpMismatchRejected) {
+    constexpr uint32_t kBystanderIp = 0x0A000099u;  // some other host
+
+    // Reply pretends to answer for kTargetIp (good) from kGatewayMac (good),
+    // but its `target_ip` field points at a third party (kBystanderIp) —
+    // not our kSrcIp. Pre-fix this would have been accepted by
+    // `parse_arp_reply` because the target_ip slot wasn't validated.
+    auto* reply = build_arp_reply(pool_, kGatewayMac, kTargetIp,
+                                   kSrcMac, kBystanderIp);
+    ASSERT_NE(reply, nullptr);
+    FakeNicIo::rx_queue.push_back(reply);
+
+    auto r = arp::resolve_with_io<FakeNicIo>(
+        /*port=*/0, /*queue=*/0, pool_,
+        kSrcMac, kSrcIp, kTargetIp,
+        std::chrono::milliseconds{120});
+
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("timeout"), std::string::npos);
+}
