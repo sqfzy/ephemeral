@@ -42,9 +42,11 @@
 #include <cstdio>
 #include <expected>
 #include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -240,7 +242,37 @@ private:
             if (auto v = node.value<int64_t>(); v) return static_cast<double>(*v);
             return std::unexpected(detail::make_wrong_type(dotted_key, "double"));
         } else if constexpr (std::is_integral_v<T>) {
-            if (auto v = node.value<int64_t>(); v) return static_cast<T>(*v);
+            if (auto v = node.value<int64_t>(); v) {
+                // Range-check before narrowing. Without this, a typo'd
+                // `port = 70000` silently truncates to 4464; `port = -1`
+                // wraps to 65535. Either looks like a network failure
+                // downstream and confuses operators. Surface the
+                // out-of-range case at config-load time with the actual
+                // value baked into the diagnostic.
+                using Limits = std::numeric_limits<T>;
+                if constexpr (std::is_unsigned_v<T>) {
+                    if (*v < 0 ||
+                        static_cast<uint64_t>(*v) >
+                            static_cast<uint64_t>(Limits::max())) [[unlikely]] {
+                        return std::unexpected(detail::make_wrong_type(
+                            dotted_key,
+                            "integer in range [0, " +
+                                std::to_string(Limits::max()) + "] (got " +
+                                std::to_string(*v) + ")"));
+                    }
+                } else {
+                    if (*v < static_cast<int64_t>(Limits::min()) ||
+                        *v > static_cast<int64_t>(Limits::max())) [[unlikely]] {
+                        return std::unexpected(detail::make_wrong_type(
+                            dotted_key,
+                            "integer in range [" +
+                                std::to_string(Limits::min()) + ", " +
+                                std::to_string(Limits::max()) + "] (got " +
+                                std::to_string(*v) + ")"));
+                    }
+                }
+                return static_cast<T>(*v);
+            }
             return std::unexpected(detail::make_wrong_type(dotted_key, "integer"));
         } else if constexpr (requires { typename T::value_type; }) {
             // std::vector<U>
