@@ -1711,11 +1711,20 @@ public:
         rte_mbuf* pkts[kRxBurstSize];
 
         // Limit burst size to prevent upstream reassembly buffer overflow.
-        // Auto-calculate from MSS when max_rx_burst == 0.
+        // Auto-calculate from MSS when max_rx_burst == 0. Defensive against
+        // a contract violation: TcpConfig::validate() rejects `mss == 0`,
+        // but the constructor only logs warnings — a caller that bypasses
+        // validate() could still construct a `mss == 0` session and hit
+        // signed integer division-by-zero UB here. Fall back to the full
+        // burst budget when mss is zero so the session at least keeps
+        // running long enough for the operator to notice via the warning
+        // logs rather than triggering UB on the very first poll.
         const uint16_t burst_limit = config_.max_rx_burst > 0
             ? config_.max_rx_burst
-            : std::min(kRxBurstSize,
-                       static_cast<uint16_t>(TcpConfig::kDefaultRxBudgetBytes / config_.mss));
+            : (config_.mss > 0
+                ? std::min(kRxBurstSize,
+                           static_cast<uint16_t>(TcpConfig::kDefaultRxBudgetBytes / config_.mss))
+                : kRxBurstSize);
 
         uint16_t nb_rx = rte_eth_rx_burst(
             config_.port_id, config_.rx_queue_id, pkts, burst_limit);
