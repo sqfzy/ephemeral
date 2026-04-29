@@ -79,21 +79,35 @@ public:
     ///
     /// Validation clamps obviously-bad values rather than returning an error,
     /// so that a zero-arg default-constructed config is always usable:
+    ///   - `initial_backoff <= 0` is clamped to `kFallbackInitial` (100ms).
+    ///     A non-positive initial backoff would feed the multiplier with a
+    ///     non-positive base every call (-100ms × 2 = -200ms; std::min of
+    ///     that and max_backoff stays negative when max_backoff defaults to
+    ///     a positive cap), marching `current_base_` monotonically more
+    ///     negative until `count() * multiplier` exceeds INT64 range and
+    ///     the `static_cast<int64_t>` reinterpret is UB
+    ///     (per [conv.fpint]). Zero is functionally a hot busy-loop —
+    ///     same fix.
     ///   - `multiplier <= 1.0` is bumped to `2.0`
     ///   - `jitter_factor < 0` is clamped to `0`
     ///   - `jitter_factor >= 1` is clamped to `0.999`
     ///   - `max_backoff < initial_backoff` is set to `initial_backoff`
     explicit ReconnectPolicy(ReconnectPolicyConfig cfg) noexcept
         : cfg_(cfg)
-        , current_base_(cfg.initial_backoff)
+        , current_base_{}
         , attempts_(0)
     {
+        constexpr std::chrono::milliseconds kFallbackInitial{100};
+        if (cfg_.initial_backoff.count() <= 0) {
+            cfg_.initial_backoff = kFallbackInitial;
+        }
         if (cfg_.multiplier <= 1.0) cfg_.multiplier = 2.0;
         if (cfg_.jitter_factor < 0.0) cfg_.jitter_factor = 0.0;
         if (cfg_.jitter_factor >= 1.0) cfg_.jitter_factor = 0.999;
         if (cfg_.max_backoff < cfg_.initial_backoff) {
             cfg_.max_backoff = cfg_.initial_backoff;
         }
+        current_base_ = cfg_.initial_backoff;
     }
 
     /// @brief Whether another attempt is permitted.

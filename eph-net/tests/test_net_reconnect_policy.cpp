@@ -44,6 +44,59 @@ TEST(ReconnectPolicy, ClampsMaxBelowInitial) {
     EXPECT_EQ(p.config().max_backoff, 500ms);
 }
 
+TEST(ReconnectPolicy, ClampsNegativeInitialBackoff) {
+    // Negative initial_backoff would feed back into the multiplier each
+    // iteration: -100ms × 2 = -200ms, then min(-200ms, max_backoff). With
+    // max_backoff defaulted to 1600ms (positive), std::min picks the
+    // negative value and current_base_ marches monotonically more
+    // negative every call — eventually `count() * multiplier` overflows
+    // double range and the static_cast<int64_t> is UB. Treat any
+    // non-positive initial_backoff as a configuration error and clamp to
+    // the documented default (100ms) so the policy stays well-defined.
+    en::ReconnectPolicyConfig cfg{.initial_backoff = -100ms};
+    en::ReconnectPolicy p{cfg};
+    EXPECT_GT(p.config().initial_backoff.count(), 0)
+        << "initial_backoff must be clamped to a positive value";
+    // And the first emitted backoff must also be positive.
+    EXPECT_GT(p.next_backoff().count(), 0);
+}
+
+TEST(ReconnectPolicy, ClampsZeroInitialBackoff) {
+    // Zero initial_backoff is effectively a busy loop — sleep_for(0) on
+    // most platforms yields once and immediately retries, hammering the
+    // remote endpoint at line rate. Treat as configuration error.
+    en::ReconnectPolicyConfig cfg{.initial_backoff = 0ms};
+    en::ReconnectPolicy p{cfg};
+    EXPECT_GT(p.config().initial_backoff.count(), 0);
+}
+
+TEST(ReconnectPolicy, UnboundedMaxBackoffDoesNotOverflow) {
+    // With max_backoff = milliseconds::max() and multiplier = 2, the
+    // pre-fix code computed `current_base_.count() * 2.0` once
+    // current_base_ approached INT64_MAX, producing a double value
+    // > INT64_MAX, and `static_cast<int64_t>(huge)` is UB per
+    // [conv.fpint]. Cap the growth defensively so we never feed the
+    // cast a value out of int64_t range.
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = std::chrono::milliseconds::max(),
+        .multiplier      = 2.0,
+        .jitter_factor   = 0.0,
+    };
+    en::ReconnectPolicy p{cfg};
+    // 100 iterations is already well past INT64_MAX/2 in the pre-fix
+    // math (~63 doublings exhausts the range). The post-fix code must
+    // run cleanly without UB and the returned value must stay
+    // non-negative on every iteration.
+    for (int i = 0; i < 100; ++i) {
+        auto v = p.next_backoff();
+        EXPECT_GE(v.count(), 0)
+            << "iteration " << i << " produced a negative backoff "
+            << v.count() << "ms — likely int64 overflow from "
+            << "unbounded exponential growth";
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Attempts / should_reconnect
 // ---------------------------------------------------------------------------
