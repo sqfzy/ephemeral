@@ -179,6 +179,21 @@ TEST(WsHandshake, AcceptDigestMatchesRfc6455Vector) {
     EXPECT_EQ(got, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 }
 
+// REGRESSION: ws_compute_accept must accept an empty client_key without
+// dereferencing a null `data()`. The implementation guards `n1 > 0`
+// before memcpy; this test pins that contract so any future refactor
+// (e.g. dropping the guard) is caught here rather than as an ASan
+// crash on the first attacker that sends `Sec-WebSocket-Key:`.
+TEST(WsHandshake, ComputeAcceptHandlesEmptyKey) {
+    std::string got = ws_compute_accept("");
+    // SHA-1 of just the magic GUID is well-defined; the digest is 28
+    // base64 chars (160 bits → 20 bytes → 28 base64 chars including
+    // the trailing '='). We don't pin the exact value because empty
+    // key is an out-of-spec input — the property we care about is
+    // "no UB and a sane shape".
+    EXPECT_EQ(got.size(), 28u);
+}
+
 // REGRESSION: ws_compute_accept must not overflow its scratch buffer when
 // fed an adversarial-length client_key. The function previously copied
 // `min(key.size(), 32)` bytes plus the 36-byte magic GUID into a 64-byte
