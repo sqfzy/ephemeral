@@ -195,12 +195,12 @@ public:
 
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send_to(std::span<const uint8_t> app_payload, const SocketAddr& dst) noexcept {
-        if (attached_to_ == nullptr) {
+        if (attached_to_ == nullptr) [[unlikely]] {
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "KernelUdpSocket::send_to called before attach"});
         }
-        if (fd_ < 0) {
+        if (fd_ < 0) [[unlikely]] {
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelUdpSocket::send_to: fd closed"});
@@ -215,7 +215,7 @@ public:
                                     MSG_NOSIGNAL | MSG_DONTWAIT,
                                     reinterpret_cast<struct sockaddr*>(&sa),
                                     sizeof(sa));
-        if (n < 0) {
+        if (n < 0) [[unlikely]] {
             const int err = errno;
             if (err == EAGAIN || err == EWOULDBLOCK) {
                 return std::unexpected(core::ErrorInfo{
