@@ -712,7 +712,21 @@ query_rss_state(uint16_t port_id) noexcept {
     if (state.reta_size == 0) state.reta_size = 128;
     state.reta_size = std::min(state.reta_size,
                                static_cast<uint16_t>(RTE_ETH_RSS_RETA_SIZE_512));
-    const uint16_t groups = state.reta_size / RTE_ETH_RETA_GROUP_SIZE;
+    // Ceiling division: a non-power-of-two `reta_size` (legal per the
+    // DPDK API even though all current production PMDs report 64/128/
+    // 256/512) puts the tail entries in a partial group whose mask
+    // must still be set so `rte_eth_dev_rss_reta_query` populates it.
+    // Truncating-divide here (the prior shape) left the partial
+    // group's mask at 0 and the matching `state.reta[group_n].reta[*]`
+    // bytes at value-init zero — `queue_for_tuple` then silently
+    // routed every tuple landing in that partial group to queue 0,
+    // an ENA / IDPF-class corner case caught by `queue_for_tuple`'s
+    // own POT fallback only because the warn-and-fallback path was
+    // not reached. Note: the reta[] array sizes 8 buckets =
+    // 8 × 64 = 512 entries, the DPDK upper bound — so the loop
+    // bound below cannot overflow even at reta_size = 512.
+    const uint16_t groups = (state.reta_size + RTE_ETH_RETA_GROUP_SIZE - 1)
+                            / RTE_ETH_RETA_GROUP_SIZE;
     for (uint16_t i = 0; i < groups; ++i) state.reta[i].mask = ~uint64_t(0);
     if (int rc = rte_eth_dev_rss_reta_query(port_id, state.reta, state.reta_size); rc != 0) {
         const int err = rte_errno;

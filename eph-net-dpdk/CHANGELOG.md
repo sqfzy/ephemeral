@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed — `query_rss_state` ceiling-divide RETA group count
+
+`query_rss_state` initialises the per-group RETA mask before calling
+`rte_eth_dev_rss_reta_query`, but the group count was computed via
+truncating integer division — `groups = reta_size /
+RTE_ETH_RETA_GROUP_SIZE`. With a non-power-of-two `reta_size`
+(legal per the DPDK API; reported by some IDPF / exotic PMDs),
+the tail of `reta_size` entries falls in a partial group whose
+mask was therefore left at 0. DPDK then declined to populate
+those entries on query, leaving `state.reta[partial_group].reta[*]`
+at the value-init zeros. `queue_for_tuple` subsequently routed
+every 5-tuple whose hash landed in that tail to queue 0 —
+silently, with no diagnostic.
+
+All current production NICs (Mellanox, Intel, ENA) report
+`reta_size ∈ {64,128,256,512}`, so this bug is latent in practice;
+the fix is forward-defensive. Use ceiling division so a partial
+group still gets `mask = ~0` and the query populates every entry.
+Loop bound is bounded by `reta[]`'s 8-slot array (512 entries =
+DPDK upper bound), unchanged.
+
 ### Fixed — `DpdkUdpSocket::process_burst_` codec-error log parity with kernel
 
 A decode failure on an inbound UDP datagram surfaced as a one-line
