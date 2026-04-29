@@ -201,14 +201,14 @@ public:
     {
         // Extract cl_ord_id -- required to locate the order.
         auto cl_id = report.cl_ord_id();
-        if (!cl_id) {
+        if (!cl_id) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: missing cl_ord_id, ignoring");
             return false;
         }
 
         auto it = orders_.find(*cl_id);
-        if (it == orders_.end()) {
+        if (it == orders_.end()) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: unknown cl_ord_id={}", *cl_id);
             return false;
@@ -217,7 +217,7 @@ public:
         auto& order = it->second;
 
         // Don't update terminal orders -- they're done.
-        if (is_terminal(order.state)) {
+        if (is_terminal(order.state)) [[unlikely]] {
             SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: cl_ord_id={} already terminal (state={}), ignoring",
                 order.cl_ord_id, static_cast<int>(order.state));
@@ -225,7 +225,7 @@ public:
         }
 
         auto exec_type = report.exec_type();
-        if (!exec_type) {
+        if (!exec_type) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: cl_ord_id={} missing ExecType", *cl_id);
             return false;
@@ -251,13 +251,13 @@ public:
                 // a hostile / corrupted ExecReport can drive filled_qty
                 // negative, push leaves_qty above orig_qty, or NaN-poison
                 // avg_fill_price.
-                if (*last_qty < 0) {
+                if (*last_qty < 0) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
                         *last_qty, order.cl_ord_id);
                     return false;
                 }
-                if (*last_px < 0.0 || !std::isfinite(*last_px)) {
+                if (*last_px < 0.0 || !std::isfinite(*last_px)) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
                         *last_px, order.cl_ord_id);
@@ -267,7 +267,7 @@ public:
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
 
-                if (*last_qty > (1LL << 53)) {
+                if (*last_qty > (1LL << 53)) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "fill quantity {} exceeds double precision limit (2^53), "
                         "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
@@ -317,13 +317,13 @@ public:
                 // PartialFill / Trade branch above. Reject before any state
                 // mutation so a corrupted full-Fill report cannot transition
                 // the order to OrderState::Filled with garbage filled_qty.
-                if (*last_qty < 0) {
+                if (*last_qty < 0) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
                         *last_qty, order.cl_ord_id);
                     return false;
                 }
-                if (*last_px < 0.0 || !std::isfinite(*last_px)) {
+                if (*last_px < 0.0 || !std::isfinite(*last_px)) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
                         *last_px, order.cl_ord_id);
@@ -333,7 +333,7 @@ public:
                 double fill_qty   = static_cast<double>(*last_qty);
                 double fill_price = *last_px;
 
-                if (*last_qty > (1LL << 53)) {
+                if (*last_qty > (1LL << 53)) [[unlikely]] {
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "fill quantity {} exceeds double precision limit (2^53), "
                         "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
