@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added (2026-04-29) — `StreamSnapshot` unified post-create state view
+
+- `include/eph/net/stream_snapshot.hpp` — `StreamSnapshot` aggregate
+  view of stream / socket state after `create_and_attach`. Sub-structs
+  mirror `StreamConfig` shape (`Endpoint` / `Tcp` / `Keepalive` / `Tls`
+  / `Ws` / `Dpdk`) so reading a snapshot is the same vocabulary as
+  writing the config. By-value, ~120 bytes, cold-path only.
+- New field `Endpoint::src_port_rewritten` exposes whether the library
+  reverse-picked a different src_port for RSS pinning — replaces the
+  one-shot warn pattern with a programmatic query.
+- `Stream::snapshot()` / `Datagram::snapshot()` added on all four
+  backend types: `KernelTcpStream`, `KernelUdpSocket`,
+  `DpdkTcpStream`, `DpdkUdpSocket`. Cross-backend code can now query
+  state without `if constexpr` branching on the backend.
+
 ### Added (2026-04-29) — T3.19 reshape (config sub-structs)
 - `include/eph/net/ws_config.hpp` — `WsConfig` (path / host /
   extra_headers / timeout / permessage_deflate). Backend-shared
