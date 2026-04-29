@@ -483,3 +483,84 @@ TEST(ManagedOrder, OrderStateFormatterInFormat) {
     auto s = std::format("{}", OrderState::PendingNew);
     EXPECT_EQ(s, "PendingNew");
 }
+
+// ===========================================================================
+// Regression: negative LastQty must be rejected.
+//
+// FIX 4.4 LastQty (tag 32) is defined as a Qty (non-negative). A malformed or
+// hostile ExecutionReport with LastQty < 0 must not be allowed to corrupt the
+// tracked order: it would otherwise drive filled_qty negative, push leaves_qty
+// above orig_qty, and break avg_fill_price (potentially producing NaN/inf).
+//
+// Without the guard, on_execution_report() returned true and silently mutated
+// the order's filled_qty/leaves_qty into impossible values.
+// ===========================================================================
+TEST(OrderManager, NegativeLastQtyRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDNEG", "AAPL", '1', 100.0, 150.0));
+
+    // Hostile / corrupted ExecutionReport with LastQty=-50.
+    auto body = make_exec_report_body('1', '1',
+        "ORDNEG", "EXCHN", "EXECN", "AAPL", '1',
+        "150.00", "-50", "150.00", "-50", "150");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+
+    // Must reject the report (return false) and leave the order untouched.
+    EXPECT_FALSE(mgr.on_execution_report(report));
+
+    auto* order = mgr.get("ORDNEG");
+    ASSERT_NE(order, nullptr);
+    // Order state and quantities must remain at their pre-report values.
+    EXPECT_EQ(order->state, OrderState::PendingNew);
+    EXPECT_NEAR(order->filled_qty, 0.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 100.0, kEps);
+    EXPECT_NEAR(order->avg_fill_price, 0.0, kEps);
+}
+
+// Same guard for ExecType=Trade ('F') and full-Fill ('2') paths.
+TEST(OrderManager, NegativeLastQtyOnFullFillRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDFNEG", "MSFT", '2', 50.0, 300.0));
+
+    auto body = make_exec_report_body('2', '2',
+        "ORDFNEG", "EXCHN", "EXECN", "MSFT", '2',
+        "300.00", "-25", "300.00", "-25", "0");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+
+    EXPECT_FALSE(mgr.on_execution_report(report));
+
+    auto* order = mgr.get("ORDFNEG");
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(order->state, OrderState::PendingNew);
+    EXPECT_NEAR(order->filled_qty, 0.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 50.0, kEps);
+}
+
+// Negative LastPx must also be rejected — FIX Px is non-negative and a
+// negative price would drive avg_fill_price downward in nonsensical ways.
+TEST(OrderManager, NegativeLastPxRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDPNEG", "AAPL", '1', 100.0, 150.0));
+
+    auto body = make_exec_report_body('1', '1',
+        "ORDPNEG", "EXCHN", "EXECN", "AAPL", '1',
+        "-150.00", "50", "-150.00", "50", "50");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+
+    EXPECT_FALSE(mgr.on_execution_report(report));
+
+    auto* order = mgr.get("ORDPNEG");
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(order->state, OrderState::PendingNew);
+    EXPECT_NEAR(order->filled_qty, 0.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 100.0, kEps);
+}
