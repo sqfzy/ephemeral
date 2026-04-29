@@ -103,9 +103,6 @@ ws_path          = "/ws/order"
 # (max serial throughput) can't hit the cap before the deadline.
 order_count      = 20000000
 duration_seconds = 300
-# Inflights sweep — lat_ex_order driver cycles through each N, running
-# each for duration_seconds, recording per-N percentiles.
-inflights        = [1, 4, 16, 64]
 
 [scenarios.lat_ex_md_udp]
 port             = 20005
