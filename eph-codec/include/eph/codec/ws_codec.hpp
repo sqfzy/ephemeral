@@ -312,14 +312,18 @@ public:
 
         // Start of a new message — if we had a partial reassembly from a
         // previous message, drop it (stale state, not recoverable).
+        // Note: frag_opcode_ is the authoritative "in-flight fragment"
+        // signal. A non-empty frag_buf_ with frag_opcode_==0 is just
+        // retained scratch from the previous (cleanly delivered) message
+        // — clear silently without the WARN.
         if (!is_continuation) {
-            if (!frag_buf_.empty()) {
+            if (frag_opcode_ != 0) {
                 SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: new message started while {} bytes "
                     "of previous fragment pending, discarding",
                     frag_buf_.size());
-                frag_buf_.clear();
             }
+            frag_buf_.clear();
             frag_opcode_ = frame.opcode;
             // RFC 7692 §6: only the first frame of a message carries
             // the per-message-compressed bit (RSV1). Continuation
@@ -338,8 +342,18 @@ public:
                     "WsCodec::decode: compressed frame without "
                     "permessage-deflate negotiation"});
             }
-        } else if (frag_buf_.empty() && frag_opcode_ == 0) {
-            // Continuation without a prior starting frame = protocol violation.
+        } else if (frag_opcode_ == 0) {
+            // Continuation without a prior in-flight fragmented message =
+            // protocol violation. NOTE: we check frag_opcode_ alone — not
+            // frag_buf_.empty() — because the FIN of the previous fragmented
+            // message resets frag_opcode_ but deliberately leaves frag_buf_
+            // populated so the returned span stays valid until the caller
+            // makes the next decode() call. A stale-but-non-empty frag_buf_
+            // is therefore not a signal that a message is in flight; an
+            // orphan continuation arriving in that window must still be
+            // rejected, otherwise its payload would be appended to the
+            // previous message's bytes and delivered to the application
+            // as a corrupted "reassembly".
             SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: continuation frame without initial "
                 "data frame");

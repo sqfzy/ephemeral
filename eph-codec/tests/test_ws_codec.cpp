@@ -261,6 +261,47 @@ TEST(WsCodec, OrphanContinuationIsRejected) {
     EXPECT_EQ(r.error().code, Error::WsFrameBad);
 }
 
+// Regression: after a fragmented message has been delivered, frag_buf_ is
+// deliberately retained (so the returned span stays valid until the next
+// decode() call) but frag_opcode_ is reset to 0. A subsequent orphan
+// continuation must still be rejected — earlier code conjuncted the two
+// signals (`frag_buf_.empty() && frag_opcode_ == 0`) and silently appended
+// the orphan payload to the stale buffer, delivering a corrupted message
+// to the application.
+TEST(WsCodec, OrphanContinuationAfterFragmentedMessageIsRejected) {
+    auto f1 = mk_frame(kOpBinary,       /*fin=*/false, {'A', 'B'});
+    auto f2 = mk_frame(kOpContinuation, /*fin=*/true,  {'C', 'D'});
+    auto orphan = mk_frame(kOpContinuation, /*fin=*/true, {'X', 'Y'});
+
+    std::vector<uint8_t> wire;
+    wire.insert(wire.end(), f1.begin(), f1.end());
+    wire.insert(wire.end(), f2.begin(), f2.end());
+    wire.insert(wire.end(), orphan.begin(), orphan.end());
+
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[16]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    WsCodec codec;
+
+    // First fragment buffers, returns None.
+    auto r1 = codec.decode(view, out);
+    ASSERT_TRUE(r1.has_value());
+    EXPECT_FALSE(r1->has_value());
+
+    // Final fragment delivers reassembled "ABCD".
+    auto r2 = codec.decode(view, out);
+    ASSERT_TRUE(r2.has_value());
+    ASSERT_TRUE(r2->has_value());
+    EXPECT_EQ((**r2).size(), 4u);
+
+    // Orphan continuation that follows MUST be rejected as a protocol
+    // violation, not silently accumulated onto the stale frag_buf_.
+    auto r3 = codec.decode(view, out);
+    ASSERT_FALSE(r3.has_value());
+    EXPECT_EQ(r3.error().code, Error::WsFrameBad);
+}
+
 // ---------------------------------------------------------------------------
 // Malformed / protocol violations
 // ---------------------------------------------------------------------------
