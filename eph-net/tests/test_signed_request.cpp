@@ -325,6 +325,55 @@ TEST(StaticGuarantees, NonCopyable) {
     SUCCEED();
 }
 
+// REGRESSION: SignedHeaderBundle's `headers[i].value` are string_views into
+// `bundle.storage[i]`. Copying the bundle clones storage to a new vector
+// with new std::string objects — but `headers` is also copied, with each
+// HttpHeader's value still pointing at the ORIGINAL bundle's storage.
+// Once the original goes out of scope the copy holds dangling views (use-
+// after-free). The fix is to make SignedHeaderBundle non-copyable so the
+// API mistake is caught at compile time.
+//
+// (Move is fine: vector<string> move is O(1) ptr-swap and individual
+// string objects keep their addresses; the views remain valid against the
+// moved-into bundle.)
+TEST(StaticGuarantees, BundleNonCopyableButMovable) {
+    using Bundle = ::eph::net::SignedHeaderBundle;
+    static_assert(!std::is_copy_constructible_v<Bundle>,
+                  "SignedHeaderBundle must not be copyable — copies create "
+                  "dangling string_views in headers");
+    static_assert(!std::is_copy_assignable_v<Bundle>,
+                  "SignedHeaderBundle must not be copy-assignable");
+    static_assert(std::is_nothrow_move_constructible_v<Bundle>,
+                  "SignedHeaderBundle must be nothrow movable for the "
+                  "factory return path");
+    SUCCEED();
+}
+
+// REGRESSION: end-to-end round-trip — build a bundle, move it twice,
+// verify the views still point at live memory containing the expected
+// signature/timestamp content. This exercises the move path that
+// production callers use when stashing a bundle into a queue or a
+// caller-owned container.
+TEST(Move, BundleSurvivesMultipleMoves) {
+    SignedRequest<BybitSignTraits> sr{HmacSha256Key{std::string_view{"k"}}};
+    auto b1 = sr.headers_for_bybit("KEY", "1700000000000", "5000", "x=1");
+    // Snapshot expected content before any move.
+    auto sig_before = std::string{find_header(b1.headers, "X-BAPI-SIGN")};
+    auto ts_before  = std::string{find_header(b1.headers, "X-BAPI-TIMESTAMP")};
+    auto rw_before  = std::string{find_header(b1.headers, "X-BAPI-RECV-WINDOW")};
+    EXPECT_EQ(sig_before.size(), 64u);
+    EXPECT_EQ(ts_before, "1700000000000");
+    EXPECT_EQ(rw_before, "5000");
+
+    // Move chain: b1 → b2 → b3. Each step must keep header views valid.
+    auto b2 = std::move(b1);
+    auto b3 = std::move(b2);
+
+    EXPECT_EQ(find_header(b3.headers, "X-BAPI-SIGN"),         sig_before);
+    EXPECT_EQ(find_header(b3.headers, "X-BAPI-TIMESTAMP"),    ts_before);
+    EXPECT_EQ(find_header(b3.headers, "X-BAPI-RECV-WINDOW"),  rw_before);
+}
+
 TEST(StaticGuarantees, MovableNoexcept) {
     static_assert(std::is_nothrow_move_constructible_v<SignedRequest<BinanceSignTraits>>);
     static_assert(std::is_nothrow_move_constructible_v<SignedRequest<OkxSignTraits>>);
