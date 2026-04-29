@@ -1460,8 +1460,13 @@ public:
         s.tcp.local_mss           = cfg_.dpdk.tcp_low_level.mss;
         s.tcp.effective_mss       = sess_.effective_mss();
         s.tcp.peer_mss_negotiated = sess_.peer_mss_negotiated();
-        s.tcp.peer_mss            = s.tcp.peer_mss_negotiated
-                                        ? sess_.effective_mss() : 0;
+        // peer_mss is the *raw* SYN-ACK advertisement (per
+        // StreamSnapshot's contract). Reporting effective_mss here would
+        // lie after an ICMP Frag Needed shrink, where effective < peer's
+        // actual advertisement. TcpSession::peer_mss() preserves the raw
+        // value through PMTU shrinks; it returns 0 when the peer omitted
+        // the option, which is exactly what the snapshot field documents.
+        s.tcp.peer_mss            = sess_.peer_mss();
         s.tcp.icmp_pmtu_shrunk    =
             sess_.tcp_stats().icmp_frag_needed_received > 0;
 

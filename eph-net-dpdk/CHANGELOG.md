@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed — StreamSnapshot.tcp.peer_mss now reports the raw peer advertisement
+
+`DpdkTcpStream::snapshot().tcp.peer_mss` previously returned
+`TcpSession::effective_mss()`, which is the **clamped** value
+(`min(local, peer SYN-ACK MSS)` further reduced by ICMP Frag Needed).
+After an ICMP PMTU shrink, `effective_mss < peer's actual SYN-ACK
+advertisement`, so the snapshot field contradicted its documented
+contract ("MSS from peer SYN-ACK, 0 if not negotiated"). Operators
+diagnosing path-MTU issues lost the ability to distinguish "peer
+advertised X, router shrank us to Y" from "peer never advertised at
+all" without an additional probe.
+
+`TcpSession` now records the raw peer MSS at SYN-ACK time
+(`TcpSession::peer_mss()`) and the snapshot reads from there, leaving
+`effective_mss` to track the post-clamp/post-ICMP value. No public
+DPDK API surface changed; the fix is observable only in
+`StreamSnapshot::Tcp::peer_mss` semantics.
+
 ### BREAKING CHANGES — StreamSnapshot unification + enable_rss removal (2026-04-29)
 
 Stream-level diagnostic getters and the `PlatformConfig::enable_rss`

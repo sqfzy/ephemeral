@@ -588,6 +588,7 @@ public:
         , rcv_wnd_(other.rcv_wnd_)
         , snd_wnd_(other.snd_wnd_)
         , effective_mss_(other.effective_mss_)
+        , peer_mss_(other.peer_mss_)
         , peer_mss_negotiated_(other.peer_mss_negotiated_)
         , reorder_count_(other.reorder_count_)
         , stats_(other.stats_)
@@ -620,6 +621,7 @@ public:
             rcv_wnd_ = other.rcv_wnd_;
             snd_wnd_ = other.snd_wnd_;
             effective_mss_ = other.effective_mss_;
+            peer_mss_ = other.peer_mss_;
             peer_mss_negotiated_ = other.peer_mss_negotiated_;
             reorder_count_ = other.reorder_count_;
             for (uint8_t i = 0; i < reorder_count_; ++i)
@@ -696,6 +698,7 @@ public:
         // the configured local MSS; a fresh SYN-ACK negotiation below may
         // clamp it further.
         effective_mss_       = config_.mss;
+        peer_mss_            = 0;
         peer_mss_negotiated_ = false;
         last_rx_tsc_         = 0;
         last_keepalive_tsc_  = 0;
@@ -825,6 +828,10 @@ public:
                     auto peer_opts = net::parse_tcp_options(parsed);
                     if (peer_opts.has_mss && peer_opts.mss > 0) {
                         const uint16_t before = effective_mss_;
+                        // Record peer's *raw* advertisement before any
+                        // local clamping — survives later ICMP shrinks
+                        // so snapshot.tcp.peer_mss reports the truth.
+                        peer_mss_ = peer_opts.mss;
                         effective_mss_ =
                             std::min(effective_mss_, peer_opts.mss);
                         peer_mss_negotiated_ = true;
@@ -1818,6 +1825,12 @@ public:
     /// @brief True iff the peer advertised an MSS option in SYN-ACK.
     ///        When false, effective_mss_ equals the configured local MSS.
     [[nodiscard]] bool peer_mss_negotiated() const noexcept { return peer_mss_negotiated_; }
+    /// @brief Peer's raw SYN-ACK MSS advertisement, untouched by local
+    ///        clamping. 0 when the peer omitted the option (in which
+    ///        case `peer_mss_negotiated()` is also false). Distinct from
+    ///        `effective_mss()` because ICMP PMTU feedback can shrink
+    ///        the latter while leaving this field at its handshake value.
+    [[nodiscard]] uint16_t peer_mss() const noexcept { return peer_mss_; }
     /// @brief Access the session's TcpConfig.
     [[nodiscard]] const TcpConfig& config() const noexcept { return config_; }
     /// @brief Copy of the current statistics snapshot.
@@ -1995,6 +2008,12 @@ private:
     // Never grows — that would require a second round-trip signal we don't
     // implement. Resets to config_.mss at every connect() attempt.
     uint16_t effective_mss_;
+    // Peer's *raw* SYN-ACK MSS option, recorded **before** clamping into
+    // effective_mss_. Distinct from effective_mss_ because the latter can
+    // shrink further on ICMP Frag Needed; reporting effective_mss as
+    // "peer_mss" in StreamSnapshot would lie post-shrink. 0 when peer
+    // omitted the option (peer_mss_negotiated_ stays false in that case).
+    uint16_t peer_mss_         = 0;
     bool     peer_mss_negotiated_ = false;
 
     ReorderEntry reorder_buf_[ReorderSlots]{};
