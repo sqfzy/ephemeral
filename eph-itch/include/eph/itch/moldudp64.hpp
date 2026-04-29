@@ -150,7 +150,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
     // not overflow uint64_t.  With message_count <= 65534, the worst case
     // addition is UINT64_MAX - 65533, so this check is almost never triggered
     // in practice but prevents silent wraparound on malformed packets.
-    if (hdr.sequence_number > UINT64_MAX - hdr.message_count) {
+    if (hdr.sequence_number > UINT64_MAX - hdr.message_count) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
             "MoldUDP64: sequence number near overflow ({} + {}), dropping packet",
             hdr.sequence_number, hdr.message_count);
@@ -159,7 +159,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
 
     // Early reject: each message needs at least a 2-byte length prefix,
     // so the buffer must hold the header plus 2 * message_count bytes minimum.
-    if (len < moldudp64::kHeaderLen + hdr.message_count * size_t{2}) {
+    if (len < moldudp64::kHeaderLen + hdr.message_count * size_t{2}) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
             "MoldUDP64: buffer too small for {} messages (need >= {} bytes, have {})",
             hdr.message_count, moldudp64::kHeaderLen + hdr.message_count * size_t{2}, len);
@@ -171,7 +171,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
 
     for (uint16_t i = 0; i < hdr.message_count; ++i) {
         // Need at least 2 bytes for the message length prefix
-        if (offset + 2 > len) {
+        if (offset + 2 > len) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
                 "MoldUDP64: truncated message length prefix at message {}/{}, "
                 "offset={} available={}",
@@ -183,7 +183,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
         offset += 2;
 
         // Verify the full message body is available
-        if (offset + msg_len > len) {
+        if (offset + msg_len > len) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
                 "MoldUDP64: truncated message body at message {}/{}, "
                 "need {} bytes but only {} available",

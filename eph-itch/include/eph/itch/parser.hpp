@@ -182,13 +182,13 @@ parse(const uint8_t* data, size_t len) noexcept {
     const uint8_t type = data[0];
     const size_t  expected = message_size(type);
 
-    if (expected == 0) {
+    if (expected == 0) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
             "ITCH parse: unknown message type=0x{:02x} ('{:c}'), len={}",
             type, static_cast<char>(type), len);
         return std::unexpected(ParseError::kUnknownType);
     }
-    if (len < expected) {
+    if (len < expected) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
             "ITCH parse: truncated {} message: have {} bytes, need {}",
             message_type_name(type), len, expected);
