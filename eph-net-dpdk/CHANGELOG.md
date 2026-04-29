@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed — AsyncDnsResolverT auto-detaches from Poller on destruction (UAF)
+
+`AsyncDnsResolverT` had no destructor. The lifetime doc claimed both
+destruction orders were safe ("optionally remove() before destruction;
+the Poller's destructor also calls notify_detached_"), but only the
+Poller-first order was actually handled. If the resolver was destroyed
+while still attached (resolver-first ordering), the Poller's
+`entries_` array kept a `void*` to the freed resolver — the next
+`poll()` cycle dispatching a stray DNS reply would invoke the
+`process_burst_fn` thunk on a dead pointer (use-after-free).
+
+`~AsyncDnsResolverT` now calls `attached_to_->remove(this)` when still
+attached, symmetric with `~DpdkTcpStream` and `~DpdkUdpSocket`. The
+`attached_to_` field type changed from `void*` to
+`::eph::net::dpdk::DpdkPoller<void>*` (still implicitly accepted by
+the `notify_attached_` concept arg) so the dtor can call back into
+the Poller. `dns.hpp` now includes `eph/net/dpdk/poller.hpp` for the
+full type — no circular dependency (poller.hpp does not include dns.hpp).
+
 ### Fixed — TcpSession::operator=(&&) now matches dtor RST-on-overwrite policy
 
 Move-assigning into a live `TcpSession` (target in `Established` /

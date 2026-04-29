@@ -35,6 +35,7 @@
 #include "eph/core/error.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/net/dpdk/flow_steering.hpp"  // query_rss_state / queue_for_tuple — RSS-aware src_port selection
+#include "eph/net/dpdk/poller.hpp"  // DpdkPoller<void> — needed for ~AsyncDnsResolverT auto-detach
 #include "eph/utils/time.hpp"  // TSC::now() — canonical timer per CLAUDE.md
 
 namespace eph::dpdk::dns {
@@ -746,9 +747,15 @@ enum class ResolveStatus : uint8_t {
 ///   - Drive via the Poller (preferred) OR call `process_burst_` /
 ///     `on_poll_tick_` directly.
 ///   - Inspect `status()` and `result()`.
-///   - When done, optionally `remove()` from the Poller before destruction;
-///     the Poller's destructor also calls `notify_detached_` so leak is
-///     handled.
+///   - When done, `remove()` from the Poller is optional. Both destruction
+///     orders are safe:
+///       (a) Poller-first  → ~DpdkPoller calls `notify_detached_` on every
+///                           still-attached resolver, clearing `attached_to_`.
+///       (b) Resolver-first → ~AsyncDnsResolverT calls `attached_to_->remove
+///                           (this)`, removing itself from the Poller's
+///                           `entries_` array before the resolver storage
+///                           is freed. (Pre-fix this leaked a dangling
+///                           void* in `entries_` — UAF on the next poll.)
 ///
 /// Thread safety: not MT-safe. Like the rest of `DpdkPollable`, one driver
 /// (lcore or app thread) owns the resolver.
@@ -790,6 +797,31 @@ public:
             "AsyncDnsResolver ctor: port={} queue={} ns={} timeout={}ms",
             port_id_, queue_id_, net::format_ipv4(cfg_.nameserver_ip).data(),
             cfg_.timeout.count());
+    }
+
+    /// @brief Auto-detach from any still-attached Poller before destruction.
+    ///
+    /// Symmetric with `~DpdkTcpStream` / `~DpdkUdpSocket`. Without this,
+    /// the documented usage pattern "remove() optionally before destruction"
+    /// is unsafe: if the Resolver dies before the Poller while still
+    /// attached, the Poller's `entries_` array retains a void* to a freed
+    /// resolver and the next `poll()` cycle dispatches an mbuf into it
+    /// (use-after-free). The Poller's own dtor handles the inverse
+    /// (Poller-first) ordering via `notify_detached_`, so both directions
+    /// are now covered.
+    ~AsyncDnsResolverT() {
+        if (attached_to_ != nullptr) {
+            SPDLOG_LOGGER_DEBUG(detail::dns_logger(),
+                "~AsyncDnsResolverT: auto-detach (resolver outlived Poller "
+                "registration without an explicit remove())");
+            auto r = attached_to_->remove(this);
+            if (!r) {
+                SPDLOG_LOGGER_WARN(detail::dns_logger(),
+                    "~AsyncDnsResolverT: auto-detach failed: {} — possible "
+                    "Poller/Resolver lifecycle mismatch",
+                    r.error().detail ? r.error().detail : "unknown");
+            }
+        }
     }
 
     AsyncDnsResolverT(const AsyncDnsResolverT&)            = delete;
@@ -1088,11 +1120,16 @@ public:
         *proto    = eph::dpdk::net::kIpProtoUdp;
     }
 
-    /// @brief Poller attach / detach hooks. Stored only for diagnostics —
-    ///        AsyncDnsResolver does not currently need to call back into
-    ///        the Poller (no auto-detach on Ready, since the caller may
-    ///        want to inspect status one more time before remove()).
-    void notify_attached_(void* p) noexcept { attached_to_ = p; }
+    /// @brief Poller attach / detach hooks. The `attached_to_` pointer is
+    ///        retained so `~AsyncDnsResolverT` can auto-detach safely
+    ///        when the resolver dies before the Poller (UAF prevention) —
+    ///        symmetric with `DpdkTcpStream` / `DpdkUdpSocket`. The
+    ///        signature uses `DpdkPoller<void>*` (matching the concept
+    ///        contract) rather than the previous bare `void*` so the
+    ///        dtor can call back via `attached_to_->remove(this)`.
+    void notify_attached_(::eph::net::dpdk::DpdkPoller<void>* p) noexcept {
+        attached_to_ = p;
+    }
     void notify_detached_() noexcept { attached_to_ = nullptr; }
 
     /// @brief Diagnostic — true iff currently attached to a Poller.
@@ -1170,7 +1207,11 @@ private:
     uint64_t              resolve_duration_tsc_{0};
 
     // ── Poller bookkeeping ──
-    void*                 attached_to_ {nullptr};
+    /// Tracks the Poller this resolver is registered with (nullptr when
+    /// not attached). Dtor uses this for auto-detach to prevent the
+    /// Poller's `entries_` array from holding a stale `void*` to a freed
+    /// resolver when the resolver outlives its Poller registration.
+    ::eph::net::dpdk::DpdkPoller<void>* attached_to_ {nullptr};
 };
 
 /// @brief Default production typedef using the real NIC TX shim.
