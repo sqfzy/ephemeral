@@ -605,6 +605,23 @@ private:
         constexpr std::size_t kMaxPong = ws::kMaxFrameHeaderLen + ws::kMaxControlPayloadLen;
         uint8_t scratch[kMaxPong];
 
+        // Cross-check the cross-function invariant: `decode_frame` rejects
+        // control frames with `payload_len > 125` (RFC 6455 §5.5), but the
+        // unmask stack buffer below blindly indexes by `ping.payload_len`,
+        // so a future refactor that relaxed `decode_frame`'s control-cap
+        // would silently overflow `unmask_buf` here. Surface the invariant
+        // explicitly: a violation drops the pong (the connection will be
+        // torn down anyway) instead of corrupting the stack.
+        if (ping.payload_len > ws::kMaxControlPayloadLen) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                "WsCodec::emit_pong: ping.payload_len={} exceeds "
+                "kMaxControlPayloadLen={} — invariant violated, dropping pong",
+                ping.payload_len, ws::kMaxControlPayloadLen);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad,
+                "WsCodec::emit_pong: control payload exceeds 125 bytes"});
+        }
+
         // If the incoming ping was masked, we need the UNMASKED payload for
         // the pong echo. Copy and unmask into a small stack buffer first.
         uint8_t  unmask_buf[ws::kMaxControlPayloadLen];
