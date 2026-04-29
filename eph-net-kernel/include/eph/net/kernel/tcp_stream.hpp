@@ -695,14 +695,41 @@ public:
         // The plaintext API is still bytes-in / bytes-out — the caller
         // has already encoded their frames via `WsCodec::encode` etc.
         if constexpr (EnableTls) {
+            // Fail-fast on a previously latched TLS desync (see below).
+            if (tls_corrupt_) [[unlikely]] {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Disconnected,
+                    "KernelTcpStream::send: TLS write seq corrupted; "
+                    "stream must be reconnected"});
+            }
             tx_ciphertext_.clear();
             auto enc = tls_.encrypt_for_send(app_payload.data(), app_payload.size(),
                                               tx_ciphertext_);
             if (!enc) {
                 return std::unexpected(enc.error());
             }
+            // `encrypt_for_send` advanced the TLS write sequence number
+            // to cover the full plaintext. If the underlying socket send
+            // delivers only some of the ciphertext bytes (the
+            // ByteSocket::send loop returns Timeout / Disconnected with
+            // partial progress when poll(POLLOUT) elapses past
+            // kSendBackpressurePollMs), the peer will read an incomplete
+            // record at the AEAD-aware seq we already burnt, then merge
+            // it with the next record's bytes and AEAD-open will fail
+            // permanently. Latch `tls_corrupt_` so any further send /
+            // RX path surfaces Disconnected and the reconnect loop
+            // replaces the session — same fix the DPDK backend has
+            // (DpdkTcpStream::send, see kTlsSendDesyncs there).
             auto sr = sock_.send(tx_ciphertext_);
-            if (!sr) return std::unexpected(sr.error());
+            if (!sr) {
+                tls_corrupt_ = true;
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream::send(TLS): socket send failed "
+                    "({}) — latching tls_corrupt_ since TLS write seq "
+                    "was already advanced; reconnect required",
+                    sr.error().detail);
+                return std::unexpected(sr.error());
+            }
             inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
             // Return plaintext byte count (the API contract is plaintext-len).
             return app_payload.size();
@@ -1559,6 +1586,20 @@ private:
     ///        permessage-deflate negotiation. Surfaced via
     ///        `snapshot().ws.permessage_deflate_active`.
     bool                        ws_deflate_active_{false};
+    /// @brief Latched TLS-write-sequence-corruption flag. Set when a
+    ///        ciphertext send only partially reached the wire after the
+    ///        TLS write seq was already advanced (the
+    ///        `encrypt_for_send` step bumps the seq counter to cover the
+    ///        full plaintext, so a partial socket send leaves the peer's
+    ///        AEAD nonce/sequence permanently out of sync with ours).
+    ///        Once set, every subsequent `send()` returns
+    ///        `Error::Disconnected` so the reconnect orchestrator
+    ///        replaces the session. Mirrors the DPDK backend's
+    ///        `tls_corrupt_` field (see DpdkTcpStream::send /
+    ///        kTlsSendDesyncs there). Only ever non-zero in the
+    ///        `EnableTls=true` instantiation; the if-constexpr in
+    ///        `send()` keeps the field unobserved on plaintext streams.
+    bool                        tls_corrupt_{false};
 };
 
 } // namespace eph::net::kernel
