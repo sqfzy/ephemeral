@@ -291,6 +291,74 @@ TEST(RiskChecker, ProjectedExposureCorrectWithReducingOrder)
 }
 
 // ---------------------------------------------------------------------------
+// Invalid Side handling
+//
+// Regression for batch-4 protocol bug: RiskChecker silently treated any
+// non-'1' side byte as Sell when computing the signed qty for position /
+// exposure projections. So a caller that passed Binance-style 'B'/'S'
+// (or any garbage byte) would get a Buy projected as a Sell, which can
+// hide a real position-qty / exposure breach in a Buy-direction order.
+//
+// PositionTracker::on_fill already validates side ∈ {'1','2'} and refuses
+// to update on anything else; the matching invariant must hold here too,
+// otherwise the projected Position used by check_order drifts away from
+// the on_fill state machine.
+// ---------------------------------------------------------------------------
+
+TEST(RiskChecker, InvalidSideRejectedAsInvalidInput) {
+    // Side is the FIX 4.4 single-char code: '1' = Buy, '2' = Sell.
+    // Anything else (e.g. Binance 'B'/'S', empty NUL, garbage) is malformed
+    // and must be flagged at the risk gate, not silently coerced to Sell.
+    RiskLimits limits;
+    limits.max_order_qty = 100.0;
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    // 'B' (binance buy) — accidentally passing exchange-native code instead
+    // of the FIX code. Must be rejected, not silently treated as Sell.
+    EXPECT_EQ(checker.check_order("AAPL", 'B', 50.0, 150.0, positions),
+              RiskRejectReason::kInvalidInput)
+        << "side='B' is not a valid FIX Side; risk checker must reject "
+           "rather than silently treating as Sell";
+
+    // 'S' (binance sell) — same rationale.
+    EXPECT_EQ(checker.check_order("AAPL", 'S', 50.0, 150.0, positions),
+              RiskRejectReason::kInvalidInput);
+
+    // NUL byte — uninitialized buffer / zeroed struct.
+    EXPECT_EQ(checker.check_order("AAPL", '\0', 50.0, 150.0, positions),
+              RiskRejectReason::kInvalidInput);
+
+    // ASCII '0' is *not* a side — only '1' (buy) or '2' (sell) are valid.
+    EXPECT_EQ(checker.check_order("AAPL", '0', 50.0, 150.0, positions),
+              RiskRejectReason::kInvalidInput);
+}
+
+TEST(RiskChecker, InvalidSideDoesNotMaskBuyDirectionExposureBreach) {
+    // Concrete demonstration of why the lenient ternary is dangerous: a
+    // Buy that would breach max_position_qty must be rejected. If 'B' is
+    // silently treated as Sell, the projection sees a *short* position
+    // and passes — a real production breach.
+    RiskLimits limits;
+    limits.max_position_qty = 100.0;  // tight cap
+    RiskChecker checker(limits);
+    PositionTracker positions;
+    // Existing long 80; a buy of 30 would project qty 110 — breach.
+    positions.on_fill("AAPL", '1', 80.0, 150.0);
+
+    // Sanity: with a *correct* FIX side, the breach is detected.
+    EXPECT_EQ(checker.check_order("AAPL", '1', 30.0, 150.0, positions),
+              RiskRejectReason::kPositionQtyExceeded);
+
+    // With a Binance-native 'B', the same logical buy must STILL be
+    // detected as a breach (the ternary used to map 'B' → -1, projecting
+    // qty = |80 - 30| = 50, which slipped under the 100 cap).
+    EXPECT_NE(checker.check_order("AAPL", 'B', 30.0, 150.0, positions),
+              RiskRejectReason::kOk)
+        << "exchange-native 'B' must NOT silently slip a position breach";
+}
+
+// ---------------------------------------------------------------------------
 // RiskLimits Config API tests
 // ---------------------------------------------------------------------------
 
