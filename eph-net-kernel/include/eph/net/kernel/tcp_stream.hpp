@@ -308,6 +308,21 @@ public:
                 core::Error::InvalidConfig,
                 "KernelTcpStream::create: reasm_capacity must be > 0"});
         }
+        // Reject obviously-uninitialised `remote`. Letting kernel
+        // `connect(2)` surface this as ECONNREFUSED / EADDRNOTAVAIL is
+        // a misleading diagnostic — operators reading the WARN log see a
+        // remote-side problem when the actual cause is a forgotten
+        // `cfg.remote = ...` in the call site. Surface the foot-gun at
+        // the config boundary the same way `cfg.connect_timeout <= 0`
+        // is.
+        if (cfg.remote.port == 0) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::create: cfg.remote.port == 0 "
+                "(uninitialised SocketAddr?) — rejecting before connect");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelTcpStream::create: cfg.remote.port must be non-zero"});
+        }
 
         // Timeout fields must be strictly positive. Previously a zero /
         // negative `connect_timeout` or `ws_timeout` slipped through and
