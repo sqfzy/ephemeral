@@ -75,6 +75,7 @@ declare -A SCENARIO_MOCKS=(
     [ex_md_udp]=ex_md_udp
     [ex_market]=ex_market
     [ex_market_2p]=ex_market_2p
+    [rss_scaling]=rss_scaling
 )
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ SCENARIOS:
   ex_market     exchange bookTicker push (one-way)
   ex_order      exchange N-inflight order RTT
   ex_md_udp     exchange UDP market data push
+  rss_scaling   N-conn one-way UDP push (RX scaling vs N)
 
 OPTIONS:
   --dpdk              use the DPDK client variant (NIC_B → vfio-pci)

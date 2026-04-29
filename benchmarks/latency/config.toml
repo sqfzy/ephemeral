@@ -135,3 +135,36 @@ use_tls          = true
 mockex_params    = "benchmarks/mockex/fixtures/ex_market_2p_params.toml"
 mockex_payload   = "benchmarks/mockex/fixtures/ex_market_2p_sample.jsonl"
 mockex_seed      = 42
+
+# ── lat_rss_scaling ───────────────────────────────────────────────────
+# Multi-connection one-way RX latency. Probes the AWS Nitro NIC's
+# multi-flow dispatch path: even with 4 lcores polling 4 RSS queues in
+# parallel, P50 RX latency grows ~0.6 µs per added connection on c7g
+# (5 → 100 conns ≈ +50–60 µs). Pairs with `scripts/run_rss_scaling.sh`
+# which sweeps conn_count ∈ {5, 20, 100} for both backends and
+# tabulates the slope.
+#
+# Override conn_count at run time with `BENCH_CONN_COUNT=<n>`.
+[scenarios.lat_rss_scaling]
+port                       = 20008
+payload_size               = 256
+duration_seconds           = 30
+warmup_seconds             = 2
+# 2000 pps/conn keeps the kernel mock pusher's syscall budget tractable
+# at conn_count=100 (200k pps total). 5000 pps/conn pushed the mock past
+# its single-thread sendto rate around 500k pps and the resulting CPU
+# saturation showed up in the bench as a systemic 20 ms P99.9 spike on
+# every conn — masking the actual scaling property under test.
+push_rate_pps_per_conn     = 2000
+conn_count                 = 5
+
+# DPDK-only knobs. The override fields don't touch the global
+# [dpdk.rss] table because every other scenario expects nb_rx_queues=1
+# (single-stream Pollers registered on queue 0).
+nb_rx_queues_override      = 4
+worker_threads             = 4
+# 5 lcores: lcore 0 idle main + lcores 1..4 reserved (workers run on
+# the dedicated worker_cpus below, *not* on these lcores). Bump if
+# your bench host has a different layout.
+eal_cores_override         = "0,1,2,3,4"
+worker_cpus                = "8,9,10,11"
