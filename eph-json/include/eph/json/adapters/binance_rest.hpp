@@ -139,9 +139,22 @@ parse_depth_levels(std::string_view raw) noexcept {
         std::string_view qty_sv(qty_start, static_cast<size_t>(p - qty_start));
         ++p; // skip closing quote
 
-        // Skip to closing ']' of inner array
+        // Skip to closing ']' of inner array. Must observe ']' before
+        // EOF — otherwise the response was truncated mid-element and
+        // we'd silently emit a level that was never fully on the wire
+        // (network clip / half-close during recv). Surface the truncation
+        // as an error so the caller refuses the entire response rather
+        // than mixing phantom levels into the book.
         while (p < end && *p != ']') ++p;
-        if (p < end) ++p; // skip ']'
+        if (p >= end) {
+            SPDLOG_LOGGER_WARN(log,
+                "parse_depth_levels: truncated input — inner array missing "
+                "closing ']' (raw_size={}, parsed_levels_so_far={})",
+                raw.size(), levels.size());
+            return std::unexpected(std::string(
+                "Truncated depth response: inner array missing closing ']'"));
+        }
+        ++p; // skip ']'
 
         // Convert strings to doubles
         auto price = parse_double(price_sv);
@@ -156,6 +169,22 @@ parse_depth_levels(std::string_view raw) noexcept {
         }
 
         levels.push_back(DepthLevel{*price, *qty});
+    }
+
+    // After exiting the per-element loop, p must point at the outer
+    // array's closing ']' (we leave it unconsumed so a future caller
+    // could chain). If p reached `end` without finding ']', the outer
+    // array was also truncated — same silent-corruption surface as
+    // inner truncation, surface it explicitly. We tolerate "trailing
+    // whitespace before ']' is missing" only because the caller passes
+    // us a string_view that the JSON parser already trimmed.
+    if (p >= end) {
+        SPDLOG_LOGGER_WARN(log,
+            "parse_depth_levels: truncated input — outer array missing "
+            "closing ']' (raw_size={}, parsed_levels={})",
+            raw.size(), levels.size());
+        return std::unexpected(std::string(
+            "Truncated depth response: outer array missing closing ']'"));
     }
 
     SPDLOG_LOGGER_TRACE(log, "parse_depth_levels: parsed {} levels", levels.size());

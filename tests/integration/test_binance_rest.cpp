@@ -244,28 +244,28 @@ TEST(BinanceRestDepthLevels, NotAnArrayReturnsError) {
 // "valid" levels that were never on the wire.
 //
 // Expected behaviour: any truncation that prevents the parser from
-// observing the inner ']' must surface as an error so the caller
-// (HttpClient / book adapter) refuses the response.
+// observing the closing ']' (inner OR outer) must surface as an error
+// so the caller (HttpClient / book adapter) refuses the response.
 TEST(BinanceRestDepthLevels, TruncatedArrayMidElementRejected) {
-    // Outer '[' but no inner '[' or closing — completely empty body
-    // should already be 0 levels, but this is "we started parsing".
+    // Bare '[' with no closing — we started parsing but never reached
+    // the close. Truncation, must error rather than be confused with
+    // a legitimate empty array (the legitimate empty form is "[]" and
+    // is covered by EmptyArray above).
     auto r1 = detail::parse_depth_levels(R"([)");
-    EXPECT_TRUE(r1.has_value());  // empty array — fine
-    EXPECT_TRUE(r1->empty());
+    ASSERT_FALSE(r1.has_value())
+        << "truncated outer array (bare '[') must error";
 
     // Closed inner bracket missing — the price/qty strings are
     // complete but the inner ']' never arrives. Today this returns
     // 1 level; the contract is "must error".
     auto r2 = detail::parse_depth_levels(R"([["1.0","2.0")");
     ASSERT_FALSE(r2.has_value())
-        << "truncated inner array (no closing ']') must error, got "
-           "{ size=" << r2->size() << " }";
+        << "truncated inner array (no closing ']') must error";
 
     // Closing inner ']' but missing outer ']' — same problem at the
     // outer level.
     auto r3 = detail::parse_depth_levels(R"([["1.0","2.0"])");
     ASSERT_FALSE(r3.has_value())
-        << "truncated outer array (no closing ']') must error, got "
-           "{ size=" << r3->size() << " }";
+        << "truncated outer array (no closing ']') must error";
 }
 
