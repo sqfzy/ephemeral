@@ -502,3 +502,65 @@ TEST(ArrayBookTest, NanPriceIsIgnored) {
     book.update_bid(std::nan(""), 0.0);
     EXPECT_EQ(book.bid_depth(), 1u);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: NaN qty must NOT corrupt an existing or new level.
+//
+// update_side guards against NaN price (line 273) but NOT NaN qty: a
+// `qty == NaN` slips past
+//   if (qty < 0.0) [[unlikely]] { qty = 0.0; }
+// because every comparison with NaN is false, then past the
+//   if (qty <= 0.0) { remove ... }
+// branch (also false for NaN), and writes NaN straight into
+// levels[i].qty (in-place update path) or appends a brand-new level
+// holding NaN (insert path).
+//
+// Downstream consequences:
+//   - total_bid_qty() / total_ask_qty() returns NaN — every signal
+//     (vwap, depth_ratio, order_imbalance) cascades NaN forever.
+//   - is_crossed() / is_locked() get NaN comparisons that always
+//     return false, hiding real crossed-book conditions.
+//   - mid_price() / spread() produce NaN once a NaN level reaches
+//     index 0 (because the BBO query reads .price unconditionally).
+//
+// Treat NaN qty as "remove level if it exists, otherwise no-op" —
+// the same fail-soft policy as NaN price. The book's invariant
+// (only finite prices/qtys) is what the entire signal layer relies
+// on; admitting a single NaN sample makes the book unrecoverable
+// without an external clear().
+// ---------------------------------------------------------------------------
+TEST(ArrayBookTest, NanQtyDoesNotCorruptExistingLevel) {
+    ArrayBook<5> book;
+    book.update_bid(100.0, 10.0);
+    ASSERT_EQ(book.bid_depth(), 1u);
+    ASSERT_NEAR(book.total_bid_qty(), 10.0, kEps);
+
+    // The NaN qty update on the *same* price must not poison the level.
+    // Two acceptable behaviours: (a) treat NaN as remove, depth → 0; or
+    // (b) hold the existing qty unchanged. Either way total_bid_qty()
+    // must remain finite.
+    book.update_bid(100.0, std::nan(""));
+    EXPECT_FALSE(std::isnan(book.total_bid_qty()))
+        << "NaN qty must not corrupt the level — every signal that "
+           "reads total_*_qty() would otherwise return NaN forever";
+    EXPECT_FALSE(std::isnan(book.best_bid()->qty))
+        << "BBO qty must not be NaN — downstream microprice / "
+           "weighted_mid divide by it";
+}
+
+TEST(ArrayBookTest, NanQtyOnNewPriceDoesNotInsertNanLevel) {
+    ArrayBook<5> book;
+    book.update_ask(200.0, 5.0);
+
+    // Inserting a NaN-qty at a *new* price slipped through the
+    // `qty <= 0.0` removal branch (NaN <= 0.0 is false), so the
+    // level was appended with qty=NaN. The book's BBO ordering
+    // would then contain a level whose .qty is NaN.
+    book.update_ask(199.0, std::nan(""));
+    EXPECT_FALSE(std::isnan(book.total_ask_qty()))
+        << "appending a NaN-qty level corrupts total_*_qty() forever";
+    for (const auto& lvl : book.asks()) {
+        EXPECT_FALSE(std::isnan(lvl.qty))
+            << "no level qty may be NaN";
+    }
+}
