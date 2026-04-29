@@ -84,7 +84,15 @@ TEST(BinanceBookAdapter, BasicBboUpdate) {
     EXPECT_NEAR(ask->qty, 2.30, kEps);
 }
 
-/// Multiple updates — book tracks the latest values.
+/// Multiple updates — book tracks the latest BBO.
+///
+/// `bookTicker` is a BBO **snapshot** stream (see Binance Spot WS docs:
+/// "Pushes any update to the best bid or ask's price or quantity in
+/// real-time"). Each message replaces the prior best bid/ask; it is NOT
+/// an incremental delta. When the price moves, the previous BBO level is
+/// no longer the top of book on the venue and must not linger in the
+/// adapter's view either — otherwise consumers see a phantom BBO that
+/// only exists in our local state.
 TEST(BinanceBookAdapter, MultipleUpdatesTrackLatest) {
     BinanceBookAdapter<20> adapter;
 
@@ -94,7 +102,7 @@ TEST(BinanceBookAdapter, MultipleUpdatesTrackLatest) {
         "3200.60", "15.0");
     ASSERT_TRUE(feed_ticker(adapter, json1));
 
-    // Second tick — prices moved
+    // Second tick — prices moved (bid up, ask up).
     auto json2 = make_bookticker_json("ETHUSDT",
         "3201.00", "12.5",
         "3201.10", "8.0");
@@ -102,9 +110,8 @@ TEST(BinanceBookAdapter, MultipleUpdatesTrackLatest) {
 
     const auto& book = adapter.book();
 
-    // Both ticks inserted at different prices, so the book accumulates levels.
-    // Best bid is highest (3201.00 from tick 2), best ask is lowest (3200.60
-    // from tick 1, qty unchanged since it's a different price from tick 2).
+    // BBO snapshot semantics: only the latest BBO survives — the prior
+    // 3200.50 / 3200.60 levels were replaced, not merged.
     auto bid = book.best_bid();
     ASSERT_TRUE(bid.has_value());
     EXPECT_NEAR(bid->price, 3201.00, kEps);
@@ -112,12 +119,53 @@ TEST(BinanceBookAdapter, MultipleUpdatesTrackLatest) {
 
     auto ask = book.best_ask();
     ASSERT_TRUE(ask.has_value());
-    EXPECT_NEAR(ask->price, 3200.60, kEps);
-    EXPECT_NEAR(ask->qty, 15.0, kEps);  // unchanged from tick 1
+    EXPECT_NEAR(ask->price, 3201.10, kEps);
+    EXPECT_NEAR(ask->qty, 8.0, kEps);
 
-    // Should have 2 bid levels and 2 ask levels
-    EXPECT_EQ(book.bid_depth(), 2u);
-    EXPECT_EQ(book.ask_depth(), 2u);
+    EXPECT_EQ(book.bid_depth(), 1u);
+    EXPECT_EQ(book.ask_depth(), 1u);
+}
+
+/// Regression: bookTicker is a snapshot, not a delta — old BBO must not
+/// remain in the book when the price moves on the next tick. Without
+/// snapshot semantics the adapter would accumulate every historical BBO
+/// price (best_bid would still be the highest *ever-seen* bid even after
+/// the venue moved away from it), giving consumers a stale top-of-book
+/// that does not correspond to any live order on Binance. This is the
+/// case that motivated wiring the previous-BBO removal into the adapter.
+TEST(BinanceBookAdapter, BookTickerIsBboSnapshotNotIncremental) {
+    BinanceBookAdapter<20> adapter;
+
+    // BBO drops twice (bid going down, ask going up — i.e. the spread
+    // widens). A naive accumulating implementation would keep the old
+    // bid 100.00 as the best bid even though Binance's actual top-of-book
+    // is 98.00.
+    ASSERT_TRUE(feed_ticker(adapter, make_bookticker_json(
+        "BTCUSDT", "100.00", "1.0", "101.00", "1.0", /*update_id=*/1)));
+    ASSERT_TRUE(feed_ticker(adapter, make_bookticker_json(
+        "BTCUSDT", "99.00",  "1.0", "102.00", "1.0", /*update_id=*/2)));
+    ASSERT_TRUE(feed_ticker(adapter, make_bookticker_json(
+        "BTCUSDT", "98.00",  "1.0", "103.00", "1.0", /*update_id=*/3)));
+
+    const auto& book = adapter.book();
+
+    // Only the most-recent BBO should be visible.
+    EXPECT_EQ(book.bid_depth(), 1u);
+    EXPECT_EQ(book.ask_depth(), 1u);
+
+    auto bid = book.best_bid();
+    ASSERT_TRUE(bid.has_value());
+    EXPECT_NEAR(bid->price, 98.00, kEps);
+
+    auto ask = book.best_ask();
+    ASSERT_TRUE(ask.has_value());
+    EXPECT_NEAR(ask->price, 103.00, kEps);
+
+    // And the spread reflects the most-recent tick — not some historical
+    // tighter spread that was already replaced upstream.
+    auto spread = book.spread();
+    ASSERT_TRUE(spread.has_value());
+    EXPECT_NEAR(*spread, 5.00, kEps);
 }
 
 /// Zero quantity bid — level is removed from the book.
