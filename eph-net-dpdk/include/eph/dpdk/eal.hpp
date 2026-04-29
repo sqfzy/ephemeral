@@ -290,6 +290,29 @@ EalGuard::init_with_pins(EalConfig                 cfg,
             "exclusive in one call)");
     }
 
+    // Same mutual-exclusion contract for the raw `extra_args` escape
+    // hatch: a user who hand-writes "--lcores=..." into extra_args AND
+    // also supplies typed pins would end up with two `--lcores=...`
+    // tokens in the EAL argv. DPDK silently keeps only the last one,
+    // so the user's raw escape hatch would be discarded without any
+    // diagnostic — exactly the "silent surprise" the typed path was
+    // introduced to prevent. Reject up front with a clear message
+    // instead of letting `build_eal_argv` assemble a duplicated argv.
+    // We accept either spelling (`--lcores=...` or `--lcores ...`,
+    // although the latter is the unusual two-token form).
+    if (!pins.empty()) {
+        for (const auto& a : cfg.extra_args) {
+            if (a == "--lcores" ||
+                a.rfind("--lcores=", 0) == 0) {
+                return std::unexpected(
+                    "init_with_pins: cfg.extra_args already contains "
+                    "--lcores=...; cannot combine with typed pins (the "
+                    "typed path would append a second --lcores token "
+                    "which DPDK would silently override the raw one with)");
+            }
+        }
+    }
+
     // Step 1: pre-EAL pin registration. This is where SMT / NUMA / IRQ
     // / duplicate-cpu policy is enforced. Failure here means no DPDK
     // resources have been touched yet.

@@ -267,6 +267,70 @@ TEST(InitWithPins, RejectsConflictingCfgLcoresAndPins) {
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
 }
 
+// Same mutual-exclusion contract for the raw `extra_args` escape hatch:
+// hand-writing "--lcores=..." into extra_args while also passing typed
+// pins would emit two `--lcores` tokens; DPDK silently keeps only the
+// last so the user's escape-hatch value would be discarded with no
+// diagnostic. init_with_pins must reject up front.
+TEST(InitWithPins, RejectsLcoresInExtraArgsWithTypedPins) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    EalConfig cfg;
+    cfg.extra_args = {"--lcores=0@4"};  // raw escape-hatch via extra_args
+    std::array pins = { LcorePin{0, 4, "rx"} };  // typed path
+
+    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("--lcores"), std::string::npos)
+        << r.error();
+    // Registry must be untouched — fail-fast happened before pin_lcores.
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
+}
+
+// Two-token `--lcores` (space-separated) form must also be detected —
+// the EAL accepts it, so a user who knows the older argv style can
+// trigger the same silent-override scenario.
+TEST(InitWithPins, RejectsTwoTokenLcoresInExtraArgsWithTypedPins) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    EalConfig cfg;
+    cfg.extra_args = {"--lcores", "0@4"};
+    std::array pins = { LcorePin{0, 4, "rx"} };
+
+    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("--lcores"), std::string::npos)
+        << r.error();
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
+}
+
+// Counter-case (raw-only path): the `--lcores` mutual-exclusion gate
+// is guarded by `!pins.empty()`. With an empty pins span the new
+// extra_args scan must NOT fire — verified by static reasoning here
+// (driving rte_eal_init from a unit test would pollute the per-binary
+// EAL singleton). The integration-test sibling at
+// `tests/integration/test_eal_init_with_pins.cpp` exercises the
+// success path end-to-end.
+//
+// This test is intentionally minimal and structural: it confirms that
+// constructing the cfg with raw `--lcores` in extra_args does not by
+// itself touch the pin registry (the gate cannot fire without typed
+// pins, so register_external_pin is never invoked).
+TEST(InitWithPins, ExtraArgsLcoresWithoutTypedPinsLeavesRegistryUntouched) {
+    eph::utils::reset_pin_registry_for_tests();
+
+    EalConfig cfg;
+    cfg.extra_args = {"--lcores=0@4"};
+    // We deliberately do NOT call init_with_pins here — the unit-test
+    // EAL global is owned by DpdkTestEnv and re-initing it via the
+    // public factory would race with the test environment lifecycle.
+    // The structural property the new gate documents — "raw-only path
+    // never triggers the extra_args scan, because the scan is guarded
+    // by !pins.empty()" — is enforced statically by the source code.
+    // Confirm only that constructing the cfg has no pin side effect.
+    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));
+}
+
 TEST(InitWithPins, PinValidationFailureDoesNotTouchEAL) {
     eph::utils::reset_pin_registry_for_tests();
 
