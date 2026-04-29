@@ -1426,13 +1426,25 @@ public:
                 }
             }
 
-            // FIN handling — only process in-order FINs (seq == rcv_nxt_).
-            // An out-of-order FIN with zero payload bypasses the reorder path
-            // above (which guards on payload_len > 0), so the explicit sequence
-            // check here prevents a premature state transition. The sender will
-            // retransmit the FIN once the gap is filled and rcv_nxt_ advances.
+            // FIN handling — RFC 793 §3.5: a FIN-bearing segment may also
+            // carry payload data. The FIN consumes one sequence number AT
+            // `seg_seq + payload_len`, not at `seg_seq`. The in-order delivery
+            // block above has already advanced rcv_nxt_ by payload_len when
+            // the segment was in-order; the FIN is in-order iff it now sits
+            // at exactly the new rcv_nxt_. Equivalently:
+            //   parsed.seq() + parsed.payload_len == rcv_nxt_
+            // An out-of-order FIN-only segment (payload_len==0) bypasses the
+            // reorder buffer (which gates on payload_len > 0) and lands here
+            // with parsed.seq() != rcv_nxt_ — drop it and let the peer
+            // retransmit once the gap is filled. The previous comparison
+            // `parsed.seq() == rcv_nxt_` was correct only for FIN-only
+            // segments; a normal graceful close that piggy-backs FIN onto
+            // the last data segment was silently dropped (regression covered
+            // by FaultTolerance.FinWithData* tests).
             if (parsed.has_flag(net::kTcpFin)) {
-                if (parsed.seq() == rcv_nxt_) {
+                const uint32_t fin_seq =
+                    parsed.seq() + parsed.payload_len;
+                if (fin_seq == rcv_nxt_) {
                     // Only advance rcv_nxt_ and ACK for states where a FIN
                     // is expected. Incrementing the sequence counter in an
                     // unexpected state (e.g. CloseWait where we already
@@ -1486,8 +1498,10 @@ public:
                     }
                 } else {
                     SPDLOG_LOGGER_DEBUG(log,
-                        "Out-of-order FIN dropped: seq={}, rcv_nxt_={}",
-                        parsed.seq(), rcv_nxt_);
+                        "Out-of-order FIN dropped: fin_seq={}, "
+                        "seg_seq={}, payload_len={}, rcv_nxt_={}",
+                        fin_seq, parsed.seq(),
+                        parsed.payload_len, rcv_nxt_);
                 }
             }
 

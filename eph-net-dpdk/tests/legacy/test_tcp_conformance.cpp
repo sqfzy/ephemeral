@@ -424,14 +424,13 @@ const std::vector<Row> kRows = {
      TcpState::TimeWait, true, 1, 0},
 
     // ═══════ Payload + FIN in same segment ═══════
-    {"ESTABLISHED: PSH+ACK+FIN with payload drops FIN (seq mismatch)",
+    {"ESTABLISHED: PSH+ACK+FIN with payload consumes both (RFC 793 §3.5)",
      TcpState::Established, 1000, 1000, 2000,
      2000, 1000, static_cast<uint8_t>(F_ACK | F_PSH | F_FIN), 50,
-     // FIN handler checks parsed.seq() == rcv_nxt_, but after we process
-     // the payload rcv_nxt_ has advanced to 2050 while parsed.seq() is
-     // still 2000 — so the FIN is treated as out-of-order and dropped.
-     // We stay Established (the FIN never applies).
-     TcpState::Established, true, 50, 0},
+     // FIN-bearing data segment: payload occupies seq 2000..2049 and FIN
+     // sits at seq 2050. After delivery rcv_nxt_ advances by 50 (payload)
+     // + 1 (FIN) = 51, and the connection moves Established → CloseWait.
+     TcpState::CloseWait, true, 51, 0},
 
     // ═══════ Additional RST-windowing pins ═══════
     {"ESTABLISHED: RST at rcv_nxt + 1 byte closes",
