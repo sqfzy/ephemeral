@@ -462,8 +462,19 @@ public:
                 return {};
             }
         }
+        // Stage the MAC, then push to the NIC. On a NIC-level failure,
+        // roll back the in-process count so it stays in lock-step with
+        // what the NIC accepted; otherwise the next join_multicast
+        // would treat the failed MAC as already-joined and silently
+        // skip pushing a real (different) group later. Same rollback
+        // pattern as MulticastReceiver::join_group in multicast.hpp.
         mcast_macs_[mcast_count_++] = mac;
-        return apply_mcast_list_();
+        if (auto r = apply_mcast_list_(); !r) {
+            --mcast_count_;
+            mcast_macs_[mcast_count_] = rte_ether_addr{};
+            return std::unexpected(std::move(r.error()));
+        }
+        return {};
     }
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
@@ -477,12 +488,34 @@ public:
         const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_be);
         for (std::size_t i = 0; i < mcast_count_; ++i) {
             if (std::memcmp(&mcast_macs_[i], &mac, sizeof(mac)) == 0) {
-                // Compact the array.
+                // Snapshot the slot for rollback before compacting:
+                // if apply_mcast_list_ rejects (NIC ENOSPC / ENOTSUP /
+                // -EAGAIN), the in-process list must continue to claim
+                // the group is joined — otherwise a follow-up join of
+                // the same group would no-op (the membership check
+                // wouldn't find it) while the NIC still has the
+                // filter installed, and the operator's view diverges
+                // from reality. Symmetric with join_multicast's
+                // rollback above.
+                const auto saved = mcast_macs_[i];
+                const std::size_t leave_idx = i;
                 for (std::size_t j = i; j + 1 < mcast_count_; ++j) {
                     mcast_macs_[j] = mcast_macs_[j + 1];
                 }
                 --mcast_count_;
-                return apply_mcast_list_();
+                mcast_macs_[mcast_count_] = rte_ether_addr{};
+                if (auto r = apply_mcast_list_(); !r) {
+                    // Re-insert at the original slot. Shift entries
+                    // [leave_idx..mcast_count_) one back to make room,
+                    // then restore the saved MAC and bump the count.
+                    for (std::size_t j = mcast_count_; j > leave_idx; --j) {
+                        mcast_macs_[j] = mcast_macs_[j - 1];
+                    }
+                    mcast_macs_[leave_idx] = saved;
+                    ++mcast_count_;
+                    return std::unexpected(std::move(r.error()));
+                }
+                return {};
             }
         }
         // Not joined — be idempotent.
