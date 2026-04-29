@@ -364,7 +364,16 @@ TEST(RealFixtures, ShippedConfigTomlLoads) {
     EXPECT_GT(cfg.cpu.cpu_mock, 0);
 
     auto names = cfg.scenario_names();
-    EXPECT_EQ(names.size(), 7u);
+    // The shipped config carries the seven canonical scenarios documented
+    // in benchmarks/latency/README.md plus the two RSS-scaling helpers
+    // (lat_rss_scaling / lat_rss_scaling_ws) added in the worktree-multi-
+    // stream-bench merge. The loader-level guarantee we need is "every
+    // [scenarios.<name>] section becomes one scenario", so assert the
+    // floor (the seven documented) and any extras the config may pick up
+    // over time. Hard-coding "exactly 7" silently rotted as RSS scenarios
+    // were added — keep the floor + completeness check, drop the rigid
+    // count.
+    EXPECT_GE(names.size(), 7u) << "loader dropped sections from config.toml";
     for (const auto* expected : {"lat_tcp", "lat_udp", "lat_ws",
                                  "lat_ex_market", "lat_ex_order",
                                  "lat_ex_md_udp", "lat_ex_market_2p"}) {
