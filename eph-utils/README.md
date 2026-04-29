@@ -173,6 +173,17 @@ cpu doesn't have active IRQs in `/proc/interrupts`. Relaxed with
 `pin_thread(cpu)` overload exists for the common "no name, default
 policy" case.
 
+**For DPDK EAL lcore threads, use `eph::dpdk::pin_lcore` /
+`pin_lcores` / `EalGuard::init_with_pins` (in `eph-net-dpdk/include/
+eph/dpdk/lcore_pin.hpp`) instead** — worker lcores are spawned *inside*
+`rte_eal_init`, so the right pattern is "register the cpu pre-EAL, let
+EAL do the actual setaffinity from `--lcores=N@cpu`". The dpdk path
+shares this same process-wide pin registry, so a strict `pin_thread`
+on a non-lcore worker continues to detect SMT / NUMA conflicts against
+running EAL lcores. See
+[`eph-net-dpdk/docs/lcore-pin-integration.md`](../eph-net-dpdk/docs/lcore-pin-integration.md)
+for the full rationale and escape-hatch rules.
+
 ### Huge pages
 
 ```cpp

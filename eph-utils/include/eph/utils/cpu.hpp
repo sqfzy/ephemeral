@@ -535,6 +535,17 @@ inline void cpu_relax() noexcept {
 
 // ──────────────────────────────────────────────────────────────────────
 // Thread pinning with optional topology validation (formerly cpu_pin.hpp)
+//
+// Scope: arbitrary user-spawned threads (mockex / latency client / app
+// worker / bench harness). For **DPDK EAL lcore threads** prefer the
+// purpose-built `eph::dpdk::pin_lcore` / `pin_lcores` /
+// `EalGuard::init_with_pins` API in `eph/dpdk/lcore_pin.hpp` — EAL itself
+// performs the `pthread_setaffinity_np` (the worker lcore thread doesn't
+// exist yet at the point you'd want to pin it), so the dpdk path is
+// "register the cpu pre-EAL, let `rte_eal_init` do the bind". Both paths
+// share this file's process-wide pin registry, so a strict `pin_thread`
+// on a non-lcore worker still detects SMT / NUMA conflicts against
+// running EAL lcores. See `eph-net-dpdk/docs/lcore-pin-integration.md`.
 // ──────────────────────────────────────────────────────────────────────
 
 /// @brief Policy controlling which topology checks `pin_thread` enforces.
@@ -710,6 +721,19 @@ private:
 ///         failure. The pthread affinity is left in whatever state the
 ///         OS reports — see the policy comment in the body for the
 ///         post-`pthread_setaffinity_np` failure mode.
+///
+/// @note **Do NOT use this for DPDK EAL lcore threads.** Worker lcore
+///       threads are `pthread_create`d *inside* `rte_eal_init`, so you
+///       can't call `pin_thread` on them from the control thread, and
+///       calling it from inside the lcore body races EAL's own affinity
+///       setup. Use `eph::dpdk::pin_lcore` / `pin_lcores` /
+///       `EalGuard::init_with_pins` instead — they validate against
+///       this same registry pre-EAL and let `rte_eal_init` perform the
+///       actual `setaffinity` from the `--lcores=N@cpu` argv. Mixing
+///       the two paths still composes correctly: `pin_thread` on a
+///       non-lcore worker will see lcore cpus as occupied (SMT / NUMA
+///       conflict diagnostics included). Full rationale and escape-
+///       hatch rules: `eph-net-dpdk/docs/lcore-pin-integration.md`.
 [[nodiscard]] inline std::expected<PinGuard, std::string>
 pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     if (cpu < 0) {

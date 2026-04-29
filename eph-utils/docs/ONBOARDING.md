@@ -337,6 +337,18 @@ p.require_isolcpus = false;
 eph::utils::pin_thread(2, "poll", p);
 ```
 
+### Q: How do I pin a DPDK lcore thread?
+
+Don't use `pin_thread` for that — worker lcores are spawned inside
+`rte_eal_init` and the control thread cannot reach them. Use the
+typed `eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
+`eph/dpdk/lcore_pin.hpp` / `eph/dpdk/eal.hpp`. It registers the cpu
+into this same registry pre-EAL, then lets EAL do the actual
+`setaffinity` from `--lcores=N@cpu`. A subsequent strict `pin_thread`
+on a non-lcore worker will still see the lcore cpus as occupied
+(SMT / NUMA conflicts diagnosed). Full story:
+`eph-net-dpdk/docs/lcore-pin-integration.md`.
+
 ### Q: I added a test but xmake doesn't build it
 
 `xmake.lua` globs `tests/**.cpp` at configure time. Re-run
