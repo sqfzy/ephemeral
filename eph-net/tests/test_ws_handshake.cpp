@@ -179,6 +179,46 @@ TEST(WsHandshake, AcceptDigestMatchesRfc6455Vector) {
     EXPECT_EQ(got, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 }
 
+// REGRESSION: ws_compute_accept must not overflow its scratch buffer when
+// fed an adversarial-length client_key. The function previously copied
+// `min(key.size(), 32)` bytes plus the 36-byte magic GUID into a 64-byte
+// scratch buffer — total up to 68 bytes → 4-byte stack-buffer overflow on
+// any key in [29..32] bytes. Production callers in `ws_handshake.hpp`
+// always feed a fixed-length 24-byte base64 nonce, but server-side users
+// (`mockex/ws_server.hpp::accept_handshake`) extract the key directly
+// from the client's HTTP request without length validation, so the over-
+// flow was reachable from attacker-controlled bytes. The fix sizes the
+// scratch from `kWsMagicGuid.size() + max client-key budget` and asserts
+// the bound at compile time, eliminating both the overflow and the
+// implicit-bound mismatch between the `min(_, 32)` and `scratch[64]`.
+TEST(WsHandshake, ComputeAcceptDoesNotOverflowOnLongKey) {
+    // 32-byte key — at the previous (buggy) clamp.
+    {
+        std::string key(32, 'A');
+        // Must not crash / corrupt stack. Result content is unspecified
+        // (the function will still compute SHA-1 over whatever bytes
+        // it deems "the key"); we only verify no UB and a sane base64
+        // length.
+        std::string got = ws_compute_accept(key);
+        EXPECT_EQ(got.size(), 28u);  // base64(SHA1(...)) = 28 chars
+    }
+    // 64-byte key — well past any RFC 6455 §4.1 expectation. A correct
+    // implementation must either truncate or hash the over-long input
+    // into the same fixed 64-byte SHA-1 input block; either way no UB.
+    {
+        std::string key(64, 'B');
+        std::string got = ws_compute_accept(key);
+        EXPECT_EQ(got.size(), 28u);
+    }
+    // 1024-byte key — pathological; must still terminate and produce a
+    // 28-char base64 digest with no buffer overflow.
+    {
+        std::string key(1024, 'C');
+        std::string got = ws_compute_accept(key);
+        EXPECT_EQ(got.size(), 28u);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 3. Non-101 status rejected
 // ═══════════════════════════════════════════════════════════════════════
