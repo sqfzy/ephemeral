@@ -1127,7 +1127,7 @@ public:
     /// `on_message` once per decoded frame. Returns the number of frames
     /// delivered.
     std::size_t poll_once_() noexcept {
-        if (state_ != TcpState::Established) return 0;
+        if (state_ != TcpState::Established) [[unlikely]] return 0;
         // Fail-fast on a previously latched TLS desync: send() has
         // already burned a TLS write seq we couldn't fully drain to the
         // wire, so any inbound record's AEAD-open from the peer's
@@ -1144,7 +1144,7 @@ public:
                 return 0;
             }
         }
-        if (!on_message) {
+        if (!on_message) [[unlikely]] {
             // No sink — still drain to avoid stalling the peer, but skip
             // the decode path (codec.decode would be wasted work).
             //
@@ -1191,7 +1191,7 @@ public:
         // growing. No-op if head_ == 0.
         rx_bytes_.compact();
 
-        if (rx_bytes_.writable_capacity() == 0) {
+        if (rx_bytes_.writable_capacity() == 0) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: reasm buffer full; "
                 "dropping connection");
@@ -1201,7 +1201,7 @@ public:
         }
 
         auto rr = sock_.recv(rx_bytes_.writable_ptr(), rx_bytes_.writable_capacity());
-        if (!rr) {
+        if (!rr) [[unlikely]] {
             const auto& err = rr.error();
             if (err.code == core::Error::WouldBlock) {
                 // Epoll is level-triggered: returning the already-drained
