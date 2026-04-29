@@ -235,3 +235,37 @@ TEST(BinanceRestDepthLevels, NotAnArrayReturnsError) {
     ASSERT_FALSE(result.has_value());
 }
 
+// Truncated input (missing trailing `]]`) currently silently emits
+// a "successfully parsed" level with whatever happens to be in the
+// price/qty quoted strings up to the point the buffer ended. A REST
+// response that was clipped by the network — for instance after a
+// truncated `Content-Length` boundary — must not look indistinguishable
+// from a complete response, otherwise the order book picks up phantom
+// "valid" levels that were never on the wire.
+//
+// Expected behaviour: any truncation that prevents the parser from
+// observing the inner ']' must surface as an error so the caller
+// (HttpClient / book adapter) refuses the response.
+TEST(BinanceRestDepthLevels, TruncatedArrayMidElementRejected) {
+    // Outer '[' but no inner '[' or closing — completely empty body
+    // should already be 0 levels, but this is "we started parsing".
+    auto r1 = detail::parse_depth_levels(R"([)");
+    EXPECT_TRUE(r1.has_value());  // empty array — fine
+    EXPECT_TRUE(r1->empty());
+
+    // Closed inner bracket missing — the price/qty strings are
+    // complete but the inner ']' never arrives. Today this returns
+    // 1 level; the contract is "must error".
+    auto r2 = detail::parse_depth_levels(R"([["1.0","2.0")");
+    ASSERT_FALSE(r2.has_value())
+        << "truncated inner array (no closing ']') must error, got "
+           "{ size=" << r2->size() << " }";
+
+    // Closing inner ']' but missing outer ']' — same problem at the
+    // outer level.
+    auto r3 = detail::parse_depth_levels(R"([["1.0","2.0"])");
+    ASSERT_FALSE(r3.has_value())
+        << "truncated outer array (no closing ']') must error, got "
+           "{ size=" << r3->size() << " }";
+}
+
