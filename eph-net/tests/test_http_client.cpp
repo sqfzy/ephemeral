@@ -408,6 +408,62 @@ TEST_F(ClientFixture, MultipleRequestsOnSameStream) {
     EXPECT_EQ(calls.load(), 3);
 }
 
+// REGRESSION: HttpClient::Response::headers must outlive subsequent
+// request() calls on the same client. The previous implementation kept
+// the deep-copied header strings in a HttpClient-owned `headers_storage_`
+// member that was cleared at the start of every request(), so any
+// Response the caller still held after a second request() saw its
+// header views point at destroyed std::string objects (use-after-free).
+// The fix moves the owned storage INSIDE Response. This test holds the
+// first response across a second request() and verifies the first
+// response's headers still read correctly.
+TEST_F(ClientFixture, ResponseHeadersSurviveNextRequest) {
+    std::atomic<int> calls{0};
+    setup_with_handler([&calls](std::string_view) -> std::string {
+        const int n = ++calls;
+        // Distinct header content per call so we can confirm the held
+        // response sees its OWN headers, not the second request's.
+        const std::string body = "b-" + std::to_string(n);
+        return "HTTP/1.1 200 OK\r\n"
+               "X-Call-N: " + std::to_string(n) + "\r\n"
+               "Content-Type: text/plain\r\n"
+               "Content-Length: " + std::to_string(body.size()) + "\r\n"
+               "\r\n" + body;
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp1 = client->request(req, poll_fn(), std::chrono::milliseconds{500});
+    ASSERT_TRUE(rsp1.has_value()) << rsp1.error().detail;
+    // Snapshot the header values into separately-owned strings BEFORE
+    // the second request runs — but ALSO keep the original string_views
+    // inside rsp1.headers and assert they still point at live storage
+    // after the second request finishes.
+    const std::string ct_first    = std::string{header_lookup(rsp1->headers, "Content-Type")};
+    const std::string n_first_hdr = std::string{header_lookup(rsp1->headers, "X-Call-N")};
+    EXPECT_EQ(ct_first,    "text/plain");
+    EXPECT_EQ(n_first_hdr, "1");
+
+    // Issue a second request that forces the client to reuse its rx
+    // buffer + materialize a new Response. If the old fix (client-owned
+    // headers_storage_) is still in effect, this clears rsp1's backing
+    // strings and the assertion below reads UAF memory — under ASan
+    // this would diagnose; on release the result is silently corrupt.
+    auto rsp2 = client->request(req, poll_fn(), std::chrono::milliseconds{500});
+    ASSERT_TRUE(rsp2.has_value()) << rsp2.error().detail;
+    EXPECT_EQ(header_lookup(rsp2->headers, "X-Call-N"), "2");
+
+    // The held response's header views must STILL match what we observed
+    // before the second request — owned storage lives inside rsp1.
+    EXPECT_EQ(header_lookup(rsp1->headers, "Content-Type"), ct_first);
+    EXPECT_EQ(header_lookup(rsp1->headers, "X-Call-N"),    n_first_hdr);
+    EXPECT_EQ(body_str(*rsp1), "b-1");
+}
+
 // =============================================================================
 // 4. TimeoutOnHangingServer — server accepts, never replies. Client times out.
 // =============================================================================
