@@ -172,14 +172,34 @@ public:
         std::span<const uint8_t>      body;     ///< empty for GET-style
     };
 
-    /// @brief Application-layer response. All fields are owned (no aliasing
-    ///        of internal buffers) — the response outlives the next
-    ///        `request()` call.
+    /// @brief Application-layer response. All fields are owned by the
+    ///        Response itself — the response outlives the next `request()`
+    ///        call independently of the HttpClient.
+    ///
+    /// `headers[i]` are zero-copy views into `headers_storage` which is
+    /// owned by THIS Response (one std::string per header name + one per
+    /// header value, in the order they appeared on the wire). The struct
+    /// is non-copyable because copying would clone `headers_storage` to
+    /// fresh std::string objects with different addresses while leaving
+    /// the views pointing at the originals — copy-after-destroy of the
+    /// source would yield dangling views (use-after-free). Move is
+    /// O(1) ptr-swap on the underlying vectors so individual std::string
+    /// objects keep their addresses across moves.
     struct Response {
         int                           status_code{0};
-        std::vector<HttpHeader>       headers;  ///< name/value views into
-                                                ///< `headers_storage_`
+        /// Names/values are views into `headers_storage`.
+        std::vector<HttpHeader>       headers;
         std::vector<uint8_t>          body;
+        /// Owned backing storage for `headers`. Two entries per header
+        /// (name, value), in arrival order. Treat as opaque from the
+        /// caller side — read through `headers`.
+        std::vector<std::string>      headers_storage;
+
+        Response() = default;
+        Response(const Response&)            = delete;
+        Response& operator=(const Response&) = delete;
+        Response(Response&&)            noexcept = default;
+        Response& operator=(Response&&) noexcept = default;
     };
 
     /// @brief Construct around an attached, ready-to-use stream.
@@ -477,9 +497,9 @@ private:
     HttpClientConfig         cfg_;
     std::vector<uint8_t>     rx_buffer_;        ///< accumulator for incoming bytes
     std::vector<uint8_t>     request_buffer_;   ///< scratch for build_http_request
-    /// Owned storage for response headers — names/values are deep-copied
-    /// from the parser's views so the caller can outlive the next request.
-    std::vector<std::string> headers_storage_;
+    // Note: response header storage now lives inside the returned Response
+    // itself (Response::headers_storage), so each Response owns its own
+    // backing strings independently of the client. See materialize_response_.
 
     /// @brief Local case-insensitive ASCII compare (avoids dragging in
     ///        a public utility just for the keep-alive defaulting).
@@ -497,25 +517,30 @@ private:
     }
 
     /// @brief Deep-copy parsed headers + body into the owned Response so it
-    ///        outlives subsequent rx_buffer_ mutations.
+    ///        outlives subsequent rx_buffer_ mutations *and* subsequent
+    ///        request() calls on the same client.
     ///
     /// The parser returns `string_view` headers aliasing `rx_buffer_`; if we
     /// returned those directly the caller would see dangling views as soon
-    /// as the next request() trims rx_buffer_. Allocate a dedicated
-    /// `headers_storage_` (vector<string>, one entry per name + value) and
-    /// rebind the returned `HttpHeader` views into that storage.
+    /// as the next request() trims rx_buffer_. The previous implementation
+    /// staged the deep copies into a HttpClient-owned `headers_storage_`
+    /// member, but that introduced a different UAF: the next request()
+    /// call cleared the same storage, invalidating string_views in any
+    /// previously-returned Response the caller still held. The fix is to
+    /// place the owned storage INSIDE `Response`, so each Response owns
+    /// its own header backing buffer independently of the client.
     void materialize_response_(Response&           out,
                                const HttpResponse& parsed) noexcept {
-        // Stable strings backing each header's name + value.
-        headers_storage_.clear();
-        headers_storage_.reserve(parsed.headers.size() * 2);
+        // Stable strings backing each header's name + value live on `out`.
+        out.headers_storage.clear();
+        out.headers_storage.reserve(parsed.headers.size() * 2);
         out.headers.clear();
         out.headers.reserve(parsed.headers.size());
         for (const auto& h : parsed.headers) {
-            headers_storage_.emplace_back(h.name);
-            std::string& nm = headers_storage_.back();
-            headers_storage_.emplace_back(h.value);
-            std::string& vl = headers_storage_.back();
+            out.headers_storage.emplace_back(h.name);
+            std::string& nm = out.headers_storage.back();
+            out.headers_storage.emplace_back(h.value);
+            std::string& vl = out.headers_storage.back();
             out.headers.push_back(
                 HttpHeader{std::string_view{nm}, std::string_view{vl}});
         }
