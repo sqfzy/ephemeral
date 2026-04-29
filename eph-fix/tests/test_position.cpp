@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <format>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
@@ -370,4 +371,61 @@ TEST(Position, FormatterProducesDump) {
     auto formatted = std::format("{}", pos);
     EXPECT_NE(formatted.find("Position"), std::string::npos);
     EXPECT_NE(formatted.find("42"), std::string::npos);
+}
+
+// ===========================================================================
+// Regression: NaN qty must be rejected.
+//
+// `qty <= 0.0` evaluates to false for NaN (every NaN comparison is false), so
+// without an explicit isfinite() guard a NaN fill quantity would slip past
+// validation and poison every downstream field: signed_qty=NaN → new_qty=NaN
+// → avg_price=NaN → notional=NaN → realized_pnl=NaN. After the guard, the
+// fill is silently rejected and the position state stays at its prior value.
+// ===========================================================================
+TEST(PositionTracker, NaNQtyRejected)
+{
+    PositionTracker tracker;
+
+    // Seed a healthy position first.
+    tracker.on_fill("AAPL", '1', 100.0, 150.0);
+    const Position before = tracker.get("AAPL");
+    ASSERT_DOUBLE_EQ(before.qty, 100.0);
+    ASSERT_DOUBLE_EQ(before.avg_price, 150.0);
+
+    // Inject a NaN qty fill — must be rejected with no state change.
+    tracker.on_fill("AAPL", '1',
+                    std::numeric_limits<double>::quiet_NaN(), 151.0);
+
+    const Position after = tracker.get("AAPL");
+    EXPECT_DOUBLE_EQ(after.qty, before.qty);
+    EXPECT_DOUBLE_EQ(after.avg_price, before.avg_price);
+    EXPECT_DOUBLE_EQ(after.notional, before.notional);
+    EXPECT_DOUBLE_EQ(after.realized_pnl, before.realized_pnl);
+    // trade_count must NOT advance for rejected fills.
+    EXPECT_EQ(after.trade_count, before.trade_count);
+
+    // No NaN must be observable anywhere in the position state.
+    EXPECT_TRUE(std::isfinite(after.qty));
+    EXPECT_TRUE(std::isfinite(after.avg_price));
+    EXPECT_TRUE(std::isfinite(after.notional));
+    EXPECT_TRUE(std::isfinite(after.realized_pnl));
+}
+
+// Inf qty has the same risk: arithmetic with inf produces inf and silently
+// bypasses the `qty <= 0.0` reject branch (inf > 0).
+TEST(PositionTracker, InfQtyRejected)
+{
+    PositionTracker tracker;
+
+    tracker.on_fill("MSFT", '1', 50.0, 300.0);
+    const Position before = tracker.get("MSFT");
+
+    tracker.on_fill("MSFT", '2',
+                    std::numeric_limits<double>::infinity(), 305.0);
+
+    const Position after = tracker.get("MSFT");
+    EXPECT_DOUBLE_EQ(after.qty, before.qty);
+    EXPECT_DOUBLE_EQ(after.avg_price, before.avg_price);
+    EXPECT_DOUBLE_EQ(after.realized_pnl, before.realized_pnl);
+    EXPECT_EQ(after.trade_count, before.trade_count);
 }
