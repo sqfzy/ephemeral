@@ -66,6 +66,16 @@
 
 namespace eph::net {
 
+// The parser arithmetic uses `size_t{1} << 60` as an overflow guard inside
+// `parse_decimal`; that shift is well-defined only when size_t holds at
+// least 61 bits. Every supported target (Linux/macOS x86-64 and Linux
+// aarch64) has 64-bit size_t, but make the implicit assumption explicit
+// so a future port to a 32-bit target fails at compile time rather than
+// silently invokes UB the first time a 200-byte Content-Length is
+// parsed.
+static_assert(sizeof(std::size_t) >= 8,
+              "eph::net HTTP parser requires 64-bit size_t");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
