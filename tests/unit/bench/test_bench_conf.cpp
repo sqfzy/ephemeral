@@ -246,6 +246,41 @@ port = "not-a-number"
     EXPECT_EQ(port_r.error().code, ConfigError::WrongType);
 }
 
+// Out-of-range integer values silently truncate via `static_cast<T>(int64)`.
+// The caller asks for a uint16_t; if the user typo'd `port = 70000` (or
+// `port = -1`), today's code returns 4464 / 65535 with no diagnostic.
+// Both produce a confusing "wrong port" connect failure later.
+//
+// The fix-side commit will surface these as ConfigError::WrongType with
+// an actionable detail string. Pinning here as a failing regression test.
+TEST(BenchConf, ScenarioIntegerOutOfRangeSilentTruncation) {
+    TmpToml f_high{std::string{kMinimalValid} + R"(
+[scenarios.lat_tcp]
+port = 70000
+)"};
+    auto r_high = load_bench_conf(f_high.path.string());
+    ASSERT_TRUE(r_high.has_value()) << format_error(r_high.error());
+    auto tcp_h = r_high->scenario("lat_tcp");
+    ASSERT_NE(tcp_h, nullptr);
+    auto port_high = tcp_h->get<uint16_t>("port");
+    EXPECT_FALSE(port_high.has_value())
+        << "uint16_t port=70000 must reject (overflow), got value="
+        << (port_high ? *port_high : 0);
+
+    TmpToml f_neg{std::string{kMinimalValid} + R"(
+[scenarios.lat_tcp]
+port = -1
+)"};
+    auto r_neg = load_bench_conf(f_neg.path.string());
+    ASSERT_TRUE(r_neg.has_value()) << format_error(r_neg.error());
+    auto tcp_n = r_neg->scenario("lat_tcp");
+    ASSERT_NE(tcp_n, nullptr);
+    auto port_neg = tcp_n->get<uint16_t>("port");
+    EXPECT_FALSE(port_neg.has_value())
+        << "uint16_t port=-1 must reject (underflow), got value="
+        << (port_neg ? *port_neg : 0);
+}
+
 TEST(BenchConf, MovedBenchConfigKeepsScenariosValid) {
     TmpToml f{std::string{kMinimalValid} + R"(
 [scenarios.lat_tcp]
