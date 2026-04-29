@@ -413,31 +413,49 @@ public:
         auto* log = detail::tcp_stream_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "DpdkTcpStream::create: tls={} src={}:{} dst={}:{}", EnableTls,
-            cfg.legacy.tuple.src_ip, cfg.legacy.tuple.src_port,
-            cfg.legacy.tuple.dst_ip, cfg.legacy.tuple.dst_port);
+            cfg.dpdk.tcp_low_level.tuple.src_ip,
+            cfg.dpdk.tcp_low_level.tuple.src_port,
+            cfg.dpdk.tcp_low_level.tuple.dst_ip,
+            cfg.dpdk.tcp_low_level.tuple.dst_port);
 
-        // Validate the legacy TcpConfig first — it carries all the DPDK
+        // Lower the public KeepaliveConfig into the wire-level TcpConfig
+        // BEFORE validation so `tcp_low_level.validate()` sees the same
+        // bytes the PMD will consume. The KeepaliveConfig contract bounds
+        // probes to [1, 10] when interval > 0, which is exactly what
+        // TcpConfig::validate enforces — but only one of the two layers
+        // needs to be the source of truth, and the public one wins.
+        if (auto kv = cfg.keepalive.validate(); !kv) {
+            SPDLOG_LOGGER_WARN(log,
+                "DpdkTcpStream::create: KeepaliveConfig invalid: {}",
+                kv.error().detail);
+            return std::unexpected(kv.error());
+        }
+        if (!cfg.keepalive.empty()) {
+            cfg.dpdk.tcp_low_level.keepalive_interval = cfg.keepalive.interval;
+            cfg.dpdk.tcp_low_level.keepalive_probes   = cfg.keepalive.probes;
+        }
+
+        // Validate the wire-level TcpConfig — it carries all the DPDK
         // wiring (port/queue/MAC/mempool-adjacent parameters) and knows
         // exactly which invariants it needs. We convert the string error
         // to an ErrorInfo so the error contract holds.
-        auto verr = cfg.legacy.validate();
+        auto verr = cfg.dpdk.tcp_low_level.validate();
         if (!verr.empty()) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: legacy validate failed: {}", verr);
+                "DpdkTcpStream::create: tcp_low_level validate failed: {}", verr);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: TcpConfig invalid"});
         }
-        if (cfg.pool == nullptr) {
+        if (cfg.dpdk.pool == nullptr) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: pool must not be null"});
         }
         // Validate timeout values up front so a caller passing zero or
-        // negative `connect_timeout` / `ws_timeout` fails at the config
-        // boundary instead of emerging much later as a cryptic
-        // `Error::Timeout`. Parity with the kernel backend fix (MED-2 /
-        // commit 7aa19b6) so the two backends reject identical bad configs.
+        // negative `connect_timeout` fails at the config boundary instead
+        // of emerging much later as a cryptic `Error::Timeout`. Parity
+        // with the kernel backend (MED-2 / commit 7aa19b6).
         if (cfg.connect_timeout <= std::chrono::milliseconds::zero()) {
             SPDLOG_LOGGER_WARN(log,
                 "DpdkTcpStream::create: connect_timeout={}ms must be > 0",
@@ -446,15 +464,14 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: connect_timeout must be > 0"});
         }
-        if (!cfg.ws_path.empty() &&
-            cfg.ws_timeout <= std::chrono::milliseconds::zero()) {
+        // Delegate WS sub-config validation. Empty `cfg.ws.path` is the
+        // disabled state and always validates; non-empty path requires a
+        // strictly positive timeout. See `eph/net/ws_config.hpp`.
+        if (auto wv = cfg.ws.validate(); !wv) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: ws_timeout={}ms must be > 0 when "
-                "ws_path is non-empty",
-                cfg.ws_timeout.count());
-            return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
-                "DpdkTcpStream::create: ws_timeout must be > 0"});
+                "DpdkTcpStream::create: WsConfig invalid: {}",
+                wv.error().detail);
+            return std::unexpected(wv.error());
         }
         // Reasm capacity: 0 silently falls back to 256 KiB (default) —
         // supports the "just use the default" idiom via designated init.
@@ -475,21 +492,10 @@ public:
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: reasm_capacity too small"});
         }
-        // HTTP CONNECT proxies are unsupported on DPDK. HFT colo
-        // deployments don't use proxies, and a DPDK client bypasses the
-        // kernel userland stack that a proxy would be reachable through.
-        // Reject up-front with a clear diagnostic so users who accidentally
-        // reuse a kernel StreamConfig get an actionable error.
-        if (cfg.proxy.has_value()) {
-            SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: HTTP CONNECT proxy not supported "
-                "on DPDK backend (host={}, port={})",
-                cfg.proxy->host, cfg.proxy->port);
-            return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
-                "DpdkTcpStream::create: HTTP CONNECT proxy not supported "
-                "on DPDK backend"});
-        }
+        // HTTP CONNECT proxy ghost field was removed from DpdkStreamConfig
+        // in T3.19. Users who try to set a proxy now get a compile-time
+        // error pointing them to the kernel backend, which is the only
+        // place CONNECT is supported.
 
         // Construct the stream first so the TcpSession is rooted inside
         // its final storage location (TcpSession is move-constructible
@@ -537,11 +543,11 @@ public:
 
         // Optional WebSocket HTTP Upgrade. Same contract as
         // KernelTcpStream: empty ws_path skips entirely.
-        if (!stream->cfg_.ws_path.empty()) {
+        if (!stream->cfg_.ws.path.empty()) {
             std::string host_storage;
             std::string_view host_sv;
-            if (!stream->cfg_.ws_host.empty()) {
-                host_sv = stream->cfg_.ws_host;
+            if (!stream->cfg_.ws.host.empty()) {
+                host_sv = stream->cfg_.ws.host;
             } else if constexpr (EnableTls) {
                 if (!stream->cfg_.tls.hostname.empty()) {
                     host_sv = stream->cfg_.tls.hostname;
@@ -556,7 +562,7 @@ public:
                 // "10.0.0.1") in WS Host: headers when neither ws_host
                 // nor tls.hostname was supplied. The fix reuses
                 // `format_ipv4` which already handles host-order.
-                const auto& t = stream->cfg_.legacy.tuple;
+                const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
                 auto ip_buf = ::eph::dpdk::net::format_ipv4(t.dst_ip);
                 host_storage = std::string(ip_buf.data()) + ":" +
                                std::to_string(t.dst_port);
@@ -565,7 +571,7 @@ public:
 
             std::vector<uint8_t> leftover;
             ::eph::net::detail::WsHandshakeDeflate deflate_state{
-                .request                      = stream->cfg_.ws_permessage_deflate,
+                .request                      = stream->cfg_.ws.permessage_deflate,
                 .negotiated                   = false,
                 .server_no_context_takeover   = false,
             };
@@ -573,18 +579,18 @@ public:
             if constexpr (EnableTls) {
                 detail::TlsDpdkWsSink sink(&stream->sess_, &stream->tls_);
                 hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws_path,
+                    sink, host_sv, stream->cfg_.ws.path,
                     std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws_extra_headers),
-                    stream->cfg_.ws_timeout,
+                        stream->cfg_.ws.extra_headers),
+                    stream->cfg_.ws.timeout,
                     &leftover, &deflate_state);
             } else {
                 detail::PlainDpdkWsSink sink(&stream->sess_);
                 hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws_path,
+                    sink, host_sv, stream->cfg_.ws.path,
                     std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws_extra_headers),
-                    stream->cfg_.ws_timeout,
+                        stream->cfg_.ws.extra_headers),
+                    stream->cfg_.ws.timeout,
                     &leftover, &deflate_state);
             }
             if (!hs_result) {
@@ -626,26 +632,26 @@ public:
             }
             SPDLOG_LOGGER_INFO(log,
                 "DpdkTcpStream::create: WS upgrade OK path='{}'",
-                stream->cfg_.ws_path);
+                stream->cfg_.ws.path);
         }
 
         SPDLOG_LOGGER_INFO(log,
             "DpdkTcpStream::create: connected src=0x{:08x}:{} -> dst=0x{:08x}:{}",
-            stream->cfg_.legacy.tuple.src_ip, stream->cfg_.legacy.tuple.src_port,
-            stream->cfg_.legacy.tuple.dst_ip, stream->cfg_.legacy.tuple.dst_port);
+            stream->cfg_.dpdk.tcp_low_level.tuple.src_ip, stream->cfg_.dpdk.tcp_low_level.tuple.src_port,
+            stream->cfg_.dpdk.tcp_low_level.tuple.dst_ip, stream->cfg_.dpdk.tcp_low_level.tuple.dst_port);
         return stream;
     }
 
     /// @brief Turnkey factory: create a stream and attach it to the
     /// per-queue Poller already registered with `platform`. Honours
-    /// `cfg.pin_to_queue` and the platform's `dispatch_mode()` to pick
+    /// `cfg.dpdk.pin_to_queue` and the platform's `dispatch_mode()` to pick
     /// the correct RX queue (and, in RSS+pin mode, to rebind the
     /// ephemeral src_port so the connection's hash lands on the target
     /// queue). Pre-conditions:
     ///   * the relevant `DpdkPoller<>` is already registered with
     ///     `platform.register_poller(qid, poller)` for every queue this
     ///     stream might land on;
-    ///   * `cfg.legacy.tuple.dst_ip` / `dst_port` carry the remote
+    ///   * `cfg.dpdk.tcp_low_level.tuple.dst_ip` / `dst_port` carry the remote
     ///     endpoint, `src_ip` is the local ip, and `src_port` is either
     ///     a pre-chosen ephemeral port or 0 (the helper rebinds it in
     ///     the RSS+pin case anyway).
@@ -674,15 +680,15 @@ public:
         bool defer_queue_selection = false;
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
-            if (cfg.pin_to_queue && *cfg.pin_to_queue != 0) {
+            if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue != 0 in Software mode"});
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
-            if (cfg.pin_to_queue) {
-                const uint16_t want = *cfg.pin_to_queue;
+            if (cfg.dpdk.pin_to_queue) {
+                const uint16_t want = *cfg.dpdk.pin_to_queue;
                 if (want >= nb_q) {
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
@@ -695,7 +701,7 @@ public:
                 // (b67b1ef4 and earlier) the helper put sp in the
                 // src_port slot, transposing two Toeplitz inputs and
                 // producing a wrong-queue prediction ~75% of the time.
-                const auto& t = cfg.legacy.tuple;
+                const auto& t = cfg.dpdk.tcp_low_level.tuple;
                 auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                     platform.port_id(), want,
                     /*remote_ip=*/  t.dst_ip,
@@ -709,11 +715,11 @@ public:
                         core::Error::InvalidConfig,
                         "create_and_attach: find_src_port_for_queue exhausted"});
                 }
-                cfg.legacy.tuple.src_port = *sp;
+                cfg.dpdk.tcp_low_level.tuple.src_port = *sp;
                 target_qid = want;
-                // Critical: align cfg.legacy.{rx,tx}_queue_id with target_qid.
+                // Critical: align cfg.dpdk.tcp_low_level.{rx,tx}_queue_id with target_qid.
                 // TStream::create() drives the SYN/SYN-ACK/ACK handshake by
-                // calling rte_eth_rx_burst(port, cfg.legacy.rx_queue_id, ...).
+                // calling rte_eth_rx_burst(port, cfg.dpdk.tcp_low_level.rx_queue_id, ...).
                 // Without this assignment, rx_queue_id stays at whatever the
                 // caller's TcpConfig defaulted to (0), so the handshake polls
                 // queue 0 while SYN-ACK actually lands on queue=want per the
@@ -721,8 +727,8 @@ public:
                 // 10-second handshake timeouts on every pin_to_queue!=0
                 // attach, surfaced as the fan-out integration test's Test 2
                 // before this fix.
-                cfg.legacy.rx_queue_id = want;
-                cfg.legacy.tx_queue_id = want;
+                cfg.dpdk.tcp_low_level.rx_queue_id = want;
+                cfg.dpdk.tcp_low_level.tx_queue_id = want;
                 SPDLOG_LOGGER_INFO(log,
                     "create_and_attach: RSS pin → src_port={} hashes to queue={}",
                     *sp, want);
@@ -731,7 +737,7 @@ public:
                 defer_queue_selection = true;
             }
         } else {  // FlowDirector
-            if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
+            if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue >= nb_q) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
@@ -739,16 +745,16 @@ public:
             // KNOWN LIMITATION (FlowDirector handshake race):
             // Unlike the RssPartitioned branch above — which engineers a
             // src_port that hashes to target_qid via find_src_port_for_queue
-            // and then aligns cfg.legacy.{rx,tx}_queue_id = target_qid so the
+            // and then aligns cfg.dpdk.tcp_low_level.{rx,tx}_queue_id = target_qid so the
             // SYN/SYN-ACK/ACK loop in TStream::create() polls the right queue
-            // — the FlowDirector branch does NOT touch cfg.legacy.{rx,tx}_
+            // — the FlowDirector branch does NOT touch cfg.dpdk.tcp_low_level.{rx,tx}_
             // queue_id here. The reason is timing: the rte_flow rule that
             // would steer this 5-tuple to target_qid is only installed AFTER
             // create() returns (post-handshake), so during the handshake the
             // PMD's default RSS routes the SYN-ACK to whichever queue its
             // hash picks — typically NOT target_qid. Setting rx_queue_id to
             // target_qid here would make the handshake poll an empty queue.
-            // Today's behaviour: the handshake polls cfg.legacy.rx_queue_id
+            // Today's behaviour: the handshake polls cfg.dpdk.tcp_low_level.rx_queue_id
             // (caller default, usually 0) and works iff default RSS happens
             // to route the SYN-ACK to that same queue. On NICs that
             // round-robin RSS without a steering rule (e.g. Mellanox, some
@@ -771,8 +777,8 @@ public:
             // has guaranteed `qlo < qhi` (sentinel `{0,0}` is normalised by
             // `effective_rx_queue_range`), so no runtime fallback is needed
             // here.
-            if (cfg.pin_to_queue) {
-                target_qid = *cfg.pin_to_queue;
+            if (cfg.dpdk.pin_to_queue) {
+                target_qid = *cfg.dpdk.pin_to_queue;
             } else {
                 static std::atomic<uint16_t> rr_counter{0};
                 const auto [qlo, qhi] = platform.effective_rx_queue_range();
@@ -795,15 +801,15 @@ public:
 
         // ── Optional: resolve per-lcore mempool hint ─────────────────────────
         //
-        // When `cfg.pool_lcore_hint >= 0`, override `cfg.pool` with the
+        // When `cfg.dpdk.pool_lcore_hint >= 0`, override `cfg.dpdk.pool` with the
         // Platform's per-lcore pool for that lcore id. This is the
         // NUMA-aware allocation path (T2.9). When the hint is -1 (default)
-        // we leave `cfg.pool` untouched — backwards compatible with every
+        // we leave `cfg.dpdk.pool` untouched — backwards compatible with every
         // call site that pre-dates per-lcore pools and populates pool by
         // hand from `platform.mempool()`.
-        if (cfg.pool_lcore_hint >= 0) {
+        if (cfg.dpdk.pool_lcore_hint >= 0) {
             const auto lcore_id =
-                static_cast<uint16_t>(cfg.pool_lcore_hint);
+                static_cast<uint16_t>(cfg.dpdk.pool_lcore_hint);
             auto* p = platform.pool_for_lcore(lcore_id);
             if (p == nullptr) {
                 SPDLOG_LOGGER_WARN(log,
@@ -814,7 +820,7 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: pool_for_lcore lookup returned nullptr"});
             }
-            cfg.pool = p;
+            cfg.dpdk.pool = p;
         }
 
         // ── Phase 2: actual stream construction (TCP handshake + TLS + WS) ──
@@ -829,7 +835,7 @@ public:
 
         // Resolve queue id from the final post-connect 5-tuple if we deferred.
         if (defer_queue_selection) {
-            const auto& t = stream->cfg_.legacy.tuple;
+            const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
             auto qr = ::eph::net::dpdk::predict_rss_queue(
                 platform.port_id(),
                 /*src_ip=*/t.dst_ip,
@@ -865,7 +871,7 @@ public:
         // and move it into the stream so RAII destruction (~FlowRule →
         // rte_flow_destroy) cleans up at stream teardown.
         if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
-            const auto& t = stream->cfg_.legacy.tuple;
+            const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
             ::eph::dpdk::net::ConnectionTuple fl_tuple{
                 .src_ip   = t.src_ip,   .dst_ip   = t.dst_ip,
                 .src_port = t.src_port, .dst_port = t.dst_port};
@@ -917,7 +923,7 @@ public:
         // response happens to land on. The returned RAII handle auto-
         // unregisters on ~DpdkTcpStream.
         auto icmp_reg = platform.register_icmp_target(
-            stream->cfg_.legacy.tuple,
+            stream->cfg_.dpdk.tcp_low_level.tuple,
             eph::dpdk::net::kIpProtoTcp,
             stream.get(),
             &DpdkTcpStream::on_icmp_mtu_thunk_);
@@ -1521,7 +1527,7 @@ public:
     void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
                             uint16_t* src_port, uint16_t* dst_port,
                             uint8_t*  proto) noexcept {
-        const auto& t = cfg_.legacy.tuple;
+        const auto& t = cfg_.dpdk.tcp_low_level.tuple;
         *src_ip   = t.src_ip;
         *dst_ip   = t.dst_ip;
         *src_port = t.src_port;
@@ -1694,12 +1700,12 @@ public:
         // Minimally fill the legacy TcpConfig so the session constructor
         // doesn't trip internal asserts — validity of the values is
         // irrelevant, we never drive the session to Established.
-        cfg.legacy.tuple.src_ip   = 0x0A000001;
-        cfg.legacy.tuple.dst_ip   = 0x0A000002;
-        cfg.legacy.tuple.src_port = 12345;
-        cfg.legacy.tuple.dst_port = 443;
-        cfg.legacy.mss            = 1460;
-        cfg.legacy.recv_window    = 65535;
+        cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
+        cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
+        cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
+        cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
+        cfg.dpdk.tcp_low_level.mss            = 1460;
+        cfg.dpdk.tcp_low_level.recv_window    = 65535;
         return std::unique_ptr<DpdkTcpStream>(
             new DpdkTcpStream(std::move(cfg)));
     }
@@ -1720,7 +1726,7 @@ public:
 private:
     explicit DpdkTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg))
-        , sess_(cfg_.legacy, cfg_.pool)
+        , sess_(cfg_.dpdk.tcp_low_level, cfg_.dpdk.pool)
         , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024) {}
 
     /// @brief Translate an RX-side session error into the stream-layer

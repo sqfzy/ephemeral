@@ -458,12 +458,12 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     ed::StreamConfig cfg{};
-    cfg.legacy          = env.make_tcp_config(bench::random_src_port(),
+    cfg.dpdk.tcp_low_level          = env.make_tcp_config(bench::random_src_port(),
                                               endpoint.port);
-    cfg.pool            = env.pool;
+    cfg.dpdk.pool            = env.pool;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = effective_ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
+    cfg.ws.path         = effective_ws_path;
+    cfg.ws.timeout      = std::chrono::seconds{10};
 
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
         std::fprintf(stderr, "lat_ex_market_2p: register_poller failed: %s\n",

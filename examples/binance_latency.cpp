@@ -498,23 +498,23 @@ int main(int argc, char** argv) {
         //        one call. Failure here is what the reconnect loop is
         //        here for.
         edpdk::StreamConfig scfg{};
-        scfg.legacy.tuple.src_ip = app_cfg.local_ip;
-        scfg.legacy.tuple.dst_ip = dst_ip;
-        scfg.legacy.tuple.src_port = src_port;
-        scfg.legacy.tuple.dst_port = app_cfg.port;
-        scfg.legacy.src_mac = src_mac;
-        scfg.legacy.dst_mac = gw_mac;
-        scfg.legacy.port_id = port_id;
-        scfg.legacy.tx_queue_id = 0;
-        scfg.legacy.rx_queue_id = 0;
-        scfg.legacy.mss = eph::dpdk::net::kDefaultMss;
-        scfg.legacy.recv_window = 65535;
-        scfg.pool = pool;
+        scfg.dpdk.tcp_low_level.tuple.src_ip = app_cfg.local_ip;
+        scfg.dpdk.tcp_low_level.tuple.dst_ip = dst_ip;
+        scfg.dpdk.tcp_low_level.tuple.src_port = src_port;
+        scfg.dpdk.tcp_low_level.tuple.dst_port = app_cfg.port;
+        scfg.dpdk.tcp_low_level.src_mac = src_mac;
+        scfg.dpdk.tcp_low_level.dst_mac = gw_mac;
+        scfg.dpdk.tcp_low_level.port_id = port_id;
+        scfg.dpdk.tcp_low_level.tx_queue_id = 0;
+        scfg.dpdk.tcp_low_level.rx_queue_id = 0;
+        scfg.dpdk.tcp_low_level.mss = eph::dpdk::net::kDefaultMss;
+        scfg.dpdk.tcp_low_level.recv_window = 65535;
+        scfg.dpdk.pool = pool;
         scfg.connect_timeout = 5s;
         scfg.tls.hostname = app_cfg.host;  // SNI
-        scfg.ws_path = app_cfg.ws_path;
-        scfg.ws_host = app_cfg.host;
-        scfg.ws_timeout = 10s;
+        scfg.ws.path = app_cfg.ws_path;
+        scfg.ws.host = app_cfg.host;
+        scfg.ws.timeout = 10s;
         scfg.reasm_capacity = 256 * 1024;
 
         auto sr = Stream::create(std::move(scfg));

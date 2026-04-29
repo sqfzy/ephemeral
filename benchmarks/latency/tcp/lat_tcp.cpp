@@ -208,8 +208,8 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     ed::StreamConfig cfg{};
-    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
-    cfg.pool            = env.pool;
+    cfg.dpdk.tcp_low_level          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.dpdk.pool            = env.pool;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
 
     // Register Poller with Platform so Stream::create_and_attach can find

@@ -68,16 +68,16 @@ static_assert(eph::net::dpdk::DpdkPollable<TlsRawStream>,
 
 static edpk::StreamConfig make_config_with_pool(::rte_mempool* pool) {
     edpk::StreamConfig cfg{};
-    cfg.legacy.tuple.src_ip   = 0x0A000001;
-    cfg.legacy.tuple.dst_ip   = 0x0A000002;
-    cfg.legacy.tuple.src_port = 12345;
-    cfg.legacy.tuple.dst_port = 443;
-    cfg.legacy.mss            = 1460;
-    cfg.legacy.recv_window    = 65535;
-    cfg.legacy.port_id        = 0;
-    cfg.legacy.tx_queue_id    = 0;
-    cfg.legacy.rx_queue_id    = 0;
-    cfg.pool = pool;
+    cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
+    cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
+    cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
+    cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
+    cfg.dpdk.tcp_low_level.mss            = 1460;
+    cfg.dpdk.tcp_low_level.recv_window    = 65535;
+    cfg.dpdk.tcp_low_level.port_id        = 0;
+    cfg.dpdk.tcp_low_level.tx_queue_id    = 0;
+    cfg.dpdk.tcp_low_level.rx_queue_id    = 0;
+    cfg.dpdk.pool = pool;
     return cfg;
 }
 
@@ -119,23 +119,17 @@ TEST(DpdkTcpStream, TlsTypeIsAvailable) {
     EXPECT_TRUE((eph::net::Stream<S>));
 }
 
-TEST(DpdkTcpStream, ProxyConfigRejectedWithInvalidConfig) {
-    auto cfg = make_config_with_pool(nullptr);  // pool doesn't matter, proxy is checked after pool
-    cfg.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // non-null placeholder
-    cfg.proxy = eph::net::ProxyConfig{"proxy.example.com", 8080};
-    auto r = PlainRawStream::create(cfg);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
-}
-
-TEST(DpdkTcpStream, DefaultStreamConfigHasNoProxy) {
-    edpk::StreamConfig cfg{};
-    EXPECT_FALSE(cfg.proxy.has_value());
-}
+// Post-T3.19: HTTP CONNECT proxy is no longer reachable on the DPDK
+// backend — the `proxy` field was removed from `DpdkStreamConfig`
+// entirely. Misuse is now a compile error rather than a runtime
+// `Error::InvalidConfig`. The previous `ProxyConfigRejectedWithInvalidConfig`
+// and `DefaultStreamConfigHasNoProxy` tests are intentionally
+// retired; users wanting a proxy must switch to the kernel backend.
 
 TEST(DpdkTcpStream, DefaultStreamConfigHasEmptyWsPath) {
     edpk::StreamConfig cfg{};
-    EXPECT_TRUE(cfg.ws_path.empty());
+    EXPECT_TRUE(cfg.ws.path.empty());
+    EXPECT_TRUE(cfg.ws.empty());
 }
 
 TEST(DpdkTcpStream, DefaultConnectTimeoutIs3000ms) {
@@ -156,23 +150,23 @@ TEST(DpdkTcpStream, DefaultReasmCapacityIs256K) {
 namespace {
 edpk::StreamConfig valid_cfg_with_pool_sentinel() {
     edpk::StreamConfig cfg{};
-    cfg.legacy.tuple.src_ip   = 0x0A000001;
-    cfg.legacy.tuple.dst_ip   = 0x0A000002;
-    cfg.legacy.tuple.src_port = 12345;
-    cfg.legacy.tuple.dst_port = 443;
-    cfg.legacy.mss            = 1460;
-    cfg.legacy.recv_window    = 65535;
-    cfg.legacy.port_id        = 0;
-    cfg.legacy.tx_queue_id    = 0;
-    cfg.legacy.rx_queue_id    = 0;
-    cfg.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // fails later; fine
+    cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
+    cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
+    cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
+    cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
+    cfg.dpdk.tcp_low_level.mss            = 1460;
+    cfg.dpdk.tcp_low_level.recv_window    = 65535;
+    cfg.dpdk.tcp_low_level.port_id        = 0;
+    cfg.dpdk.tcp_low_level.tx_queue_id    = 0;
+    cfg.dpdk.tcp_low_level.rx_queue_id    = 0;
+    cfg.dpdk.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // fails later; fine
     return cfg;
 }
 } // namespace
 
 TEST(DpdkTcpStream, ZeroSrcPortFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.legacy.tuple.src_port = 0;
+    cfg.dpdk.tcp_low_level.tuple.src_port = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -180,7 +174,7 @@ TEST(DpdkTcpStream, ZeroSrcPortFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroDstPortFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.legacy.tuple.dst_port = 0;
+    cfg.dpdk.tcp_low_level.tuple.dst_port = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -188,7 +182,7 @@ TEST(DpdkTcpStream, ZeroDstPortFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroMssFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.legacy.mss = 0;
+    cfg.dpdk.tcp_low_level.mss = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -196,7 +190,7 @@ TEST(DpdkTcpStream, ZeroMssFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, MssExceedingJumboFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.legacy.mss = 9001;  // one past the 9000-byte jumbo cap
+    cfg.dpdk.tcp_low_level.mss = 9001;  // one past the 9000-byte jumbo cap
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -204,7 +198,7 @@ TEST(DpdkTcpStream, MssExceedingJumboFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroRecvWindowFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.legacy.recv_window = 0;
+    cfg.dpdk.tcp_low_level.recv_window = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -244,7 +238,7 @@ TEST(DpdkTcpStream, ReasmCapacityAboveFloorPassesValidation) {
     // further down (we use nullptr here instead of a dangling sentinel
     // so connect() cannot be reached and segfault on the fake pool).
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.pool = nullptr;
+    cfg.dpdk.pool = nullptr;
     cfg.reasm_capacity = 4096;  // exactly at floor, should pass reasm check
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());

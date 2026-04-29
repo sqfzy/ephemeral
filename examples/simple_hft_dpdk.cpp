@@ -6,7 +6,7 @@
 /// Scope of this demo: plain TCP (`DpdkTcpStream<C, /*EnableTls=*/false>`)
 /// with a hand-built `StreamConfig::legacy` tuple and the strict
 /// `DpdkTcpStream::create(cfg)` factory. It is intentionally a *skeleton* —
-/// `scfg.pool` is left null so `create` fails fast with `InvalidConfig` on
+/// `scfg.dpdk.pool` is left null so `create` fails fast with `InvalidConfig` on
 /// a smoke-boot without a real mempool, and the rest of the code
 /// demonstrates the error surface only.
 ///
@@ -123,16 +123,16 @@ int main(int argc, char** argv) {
                                   // surface only.
 
     edpdk::StreamConfig scfg{};
-    scfg.legacy.tuple.src_ip   = src_ip;
-    scfg.legacy.tuple.dst_ip   = dst_ip;
-    scfg.legacy.tuple.src_port = src_port;
-    scfg.legacy.tuple.dst_port = dst_port;
-    scfg.legacy.port_id        = dpdk_port_id;
-    scfg.legacy.tx_queue_id    = 0;
-    scfg.legacy.rx_queue_id    = 0;
-    scfg.legacy.mss            = eph::dpdk::net::kDefaultMss;
-    scfg.legacy.recv_window    = 65535;
-    scfg.pool                  = pool;
+    scfg.dpdk.tcp_low_level.tuple.src_ip   = src_ip;
+    scfg.dpdk.tcp_low_level.tuple.dst_ip   = dst_ip;
+    scfg.dpdk.tcp_low_level.tuple.src_port = src_port;
+    scfg.dpdk.tcp_low_level.tuple.dst_port = dst_port;
+    scfg.dpdk.tcp_low_level.port_id        = dpdk_port_id;
+    scfg.dpdk.tcp_low_level.tx_queue_id    = 0;
+    scfg.dpdk.tcp_low_level.rx_queue_id    = 0;
+    scfg.dpdk.tcp_low_level.mss            = eph::dpdk::net::kDefaultMss;
+    scfg.dpdk.tcp_low_level.recv_window    = 65535;
+    scfg.dpdk.pool                  = pool;
     scfg.connect_timeout       = 3s;
 
     using Stream = edpdk::DpdkTcpStream<ec::RawStreamCodec, /*Tls=*/false>;
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
         spdlog::warn(
             "simple_hft_dpdk_v3: DpdkTcpStream::create failed (expected on a "
             "smoke-boot without a real mempool): {}", sr.error().detail);
-        spdlog::info("simple_hft_dpdk: populate `scfg.pool` with a real "
+        spdlog::info("simple_hft_dpdk: populate `scfg.dpdk.pool` with a real "
                      "rte_pktmbuf_pool_create() output to drive the loop.");
         return 0;
     }

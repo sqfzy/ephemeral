@@ -367,10 +367,10 @@ TEST(PlatformRss, CreateAndAttachSoftwareModeE2E) {
     // Build StreamConfig pointing at the kernel TCP echo mock.
     using TStream = ed::DpdkTcpStream<::eph::codec::RawStreamCodec, false>;
     ed::StreamConfig scfg{};
-    scfg.legacy = benv.make_tcp_config(
+    scfg.dpdk.tcp_low_level = benv.make_tcp_config(
         next_src_port(),
         ::eph::dpdk::test_e2e::kTcpEchoPort);
-    scfg.pool = benv.pool;
+    scfg.dpdk.pool = benv.pool;
     scfg.connect_timeout = 10s;  // generous; first-packet warmup over VPC
     // pin_to_queue=0 in Software mode is the only valid value; nullopt
     // is also valid and would land on queue 0.

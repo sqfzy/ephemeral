@@ -298,12 +298,12 @@ TEST(PlatformRssFanout, NStreamsSameQueueSameEndpoint) {
     // Attach kFanout streams pinned to the same queue.
     for (uint16_t i = 0; i < kFanout; ++i) {
         ed::StreamConfig scfg{};
-        scfg.legacy = benv.make_tcp_config(
+        scfg.dpdk.tcp_low_level = benv.make_tcp_config(
             initial_src_port(i),
             ::eph::dpdk::test_e2e::kTcpEchoPort);
-        scfg.pool = benv.pool;
+        scfg.dpdk.pool = benv.pool;
         scfg.connect_timeout = 10s;
-        scfg.pin_to_queue = kTargetQueue;
+        scfg.dpdk.pin_to_queue = kTargetQueue;
 
         auto stream_r = TStream::create_and_attach(std::move(scfg), platform);
         ASSERT_TRUE(stream_r.has_value())
@@ -442,12 +442,12 @@ TEST(PlatformRssFanout, NStreamsDistributedAcrossQueues) {
         const uint16_t q = i % nb_q;
 
         ed::StreamConfig scfg{};
-        scfg.legacy = benv.make_tcp_config(
+        scfg.dpdk.tcp_low_level = benv.make_tcp_config(
             static_cast<uint16_t>(46000 + i),
             ::eph::dpdk::test_e2e::kTcpEchoPort);
-        scfg.pool = benv.pool;
+        scfg.dpdk.pool = benv.pool;
         scfg.connect_timeout = 10s;
-        scfg.pin_to_queue = q;
+        scfg.dpdk.pin_to_queue = q;
 
         auto stream_r = TStream::create_and_attach(std::move(scfg), platform);
         ASSERT_TRUE(stream_r.has_value())

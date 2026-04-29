@@ -212,11 +212,11 @@ int main(int argc, char** argv) {
 
 #if defined(EPH_USE_DPDK)
     ed::StreamConfig cfg{};
-    cfg.legacy          = env.make_tcp_config(bench::random_src_port(), port);
-    cfg.pool            = env.pool;
+    cfg.dpdk.tcp_low_level          = env.make_tcp_config(bench::random_src_port(), port);
+    cfg.dpdk.pool            = env.pool;
     cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws_path         = ws_path;
-    cfg.ws_timeout      = std::chrono::seconds{10};
+    cfg.ws.path         = ws_path;
+    cfg.ws.timeout      = std::chrono::seconds{10};
 #else
     ek::StreamConfig cfg{};
     cfg.remote          = remote;
