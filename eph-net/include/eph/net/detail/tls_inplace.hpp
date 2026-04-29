@@ -118,6 +118,12 @@ public:
         : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
         std::memcpy(iv_, other.iv_, 12);
         other.init_ = false;
+        // Cleanse both halves of the secret state so the moved-from
+        // instance does not retain expanded AES round keys (held inside
+        // EVP_AEAD_CTX for aws-lc AES-GCM) or the static IV. The
+        // move-assignment operator below already does this; the
+        // move-ctor was previously asymmetric and left ctx_ intact.
+        OPENSSL_cleanse(&other.ctx_, sizeof(other.ctx_));
         OPENSSL_cleanse(other.iv_, sizeof(other.iv_));
     }
     TlsInPlaceDecryptor& operator=(TlsInPlaceDecryptor&& other) noexcept {
