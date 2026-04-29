@@ -1279,7 +1279,13 @@ public:
         if constexpr (EnableTls) {
             s.tls.enabled       = true;
             s.tls.was_resumed   = tls_.was_resumed();
-            // send_desynced: DPDK-only (TLS in-place AEAD); kernel always false.
+            // Mirrors DpdkTcpStream::snapshot: post-tls_corrupt_ latch the
+            // stream cannot be used further and the orchestrator must
+            // reconnect. Pre-fix this field was hard-coded false on the
+            // kernel backend because partial-send desync wasn't latched;
+            // now that send() latches `tls_corrupt_` the snapshot has
+            // a real signal to surface.
+            s.tls.send_desynced = tls_corrupt_;
             s.tls.sni           = cfg_.tls.hostname;
         }
 

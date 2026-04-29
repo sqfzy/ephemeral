@@ -78,8 +78,10 @@ struct StreamSnapshot {
     /// `sni` echoes the hostname sent in ClientHello (= cfg.tls.hostname).
     /// `was_resumed` is true if the just-completed handshake used a
     /// TLS 1.3 NewSessionTicket. `send_desynced` flips on a TLS
-    /// partial-send sequence corruption (DPDK only; kernel always
-    /// reports false). After `send_desynced=true` the stream rejects
+    /// partial-send sequence corruption — both backends now latch this
+    /// (kernel via `KernelTcpStream::send`'s `tls_corrupt_` flag, DPDK
+    /// via `DpdkTcpStream::send`'s `tls_corrupt_` field; both bump
+    /// `kTlsSendDesyncs`). After `send_desynced=true` the stream rejects
     /// further send/recv and expects a reconnect.
     struct Tls {
         bool             enabled       = false;
