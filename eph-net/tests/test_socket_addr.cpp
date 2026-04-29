@@ -123,6 +123,48 @@ TEST(Ipv4Addr, ParseRejectsTooManyDigits) {
 }
 
 // ---------------------------------------------------------------------------
+// Security: leading zeros must be rejected (CVE-2021-29921 class).
+//
+// Different IPv4 parsers disagree on what `01.2.3.4` means: `inet_aton(3)`
+// treats "01" as octal `1`, modern Python (>=3.9.5) and Go reject it
+// outright, and a naive decimal parser (like ours pre-fix) silently
+// accepts it as decimal `1`. The disagreement is the bug — when one
+// component of a stack agrees a payload identifies host A while another
+// resolves it to host B, attackers chain SSRF / auth-bypass primitives
+// across the boundary. Rejecting leading zeros eliminates the parser-
+// disagreement attack surface entirely.
+//
+// "0" alone is the only legitimate way for a component to start with
+// '0'; anything longer that begins with '0' (e.g. "01", "007", "010")
+// must be rejected.
+// ---------------------------------------------------------------------------
+TEST(Ipv4Addr, ParseRejectsLeadingZeroOctet) {
+    for (const char* s : {
+            // Two-digit leading zero in each position.
+            "01.2.3.4", "1.02.3.4", "1.2.03.4", "1.2.3.04",
+            // Three-digit leading zero forms (some are octal-valid like
+            // "007"=7 in inet_aton, "010"=8, "0177"=127 — the disagreement
+            // is exactly the attack we're closing).
+            "001.2.3.4", "010.20.30.40", "007.0.0.1",
+            // Edge: every octet starting with '0' but not just "0".
+            "01.02.03.04",
+        }) {
+        auto r = en::Ipv4Addr::parse(s);
+        ASSERT_FALSE(r.has_value())
+            << "leading zero must be rejected (CVE-2021-29921 class): " << s;
+        EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    }
+}
+
+// "0" alone is the canonical zero octet and must keep working.
+TEST(Ipv4Addr, ParseAcceptsBareZeroOctet) {
+    for (const char* s : {"0.0.0.0", "0.1.2.3", "1.0.2.3", "1.2.0.3", "1.2.3.0"}) {
+        auto r = en::Ipv4Addr::parse(s);
+        ASSERT_TRUE(r.has_value()) << s;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Ipv4Addr — equality
 // ---------------------------------------------------------------------------
 
