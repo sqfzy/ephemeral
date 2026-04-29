@@ -128,6 +128,17 @@ struct UdpConfig {
             w.emplace_back("dst_ip is in 127.0.0.0/8 (loopback) -- "
                            "DPDK bypasses the kernel, loopback traffic "
                            "will not reach the NIC");
+        // Same src and dst IP likely means self-send. Mirror TcpConfig
+        // so UDP callers get the same misconfig signal — DPDK's userspace
+        // PMD has no kernel-loopback fallback, so a self-send produces a
+        // frame the NIC sends out and the (different) NIC port at the
+        // peer never receives, which is the kind of silent drop that
+        // wastes hours to diagnose.
+        if (src_ip != 0 && src_ip == dst_ip)
+            w.emplace_back(std::format(
+                "src_ip == dst_ip ({}) -- self-send is unusual for DPDK "
+                "and will not loop back through the kernel",
+                net::format_ipv4(src_ip).data()));
         // Zero MACs survive validate (it only checks IPs / ports / pool)
         // but produce frames the switch silently drops. Surface as advisory
         // so the operator sees it before chasing a "no traffic on the wire"

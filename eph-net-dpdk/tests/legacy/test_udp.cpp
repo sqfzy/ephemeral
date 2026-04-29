@@ -746,6 +746,13 @@ TEST(UdpConfig, WarningsHwCksum) {
     UdpConfig cfg{
         .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
         .src_port = 12345, .dst_port = 5000,
+        // Provide non-zero MACs so the all-zero advisories don't fire
+        // and we can assert exactly the hw_cksum warning. The tests
+        // were silently passing before warnings() picked up the
+        // zero-MAC checks; populating MACs here keeps the assertion
+        // honest.
+        .src_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        .dst_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}},
         .pool = &fake_pool, .hw_cksum = true};
     auto w = cfg.warnings();
     EXPECT_EQ(w.size(), 1);
@@ -757,6 +764,36 @@ TEST(UdpConfig, WarningsEmptyNoHwCksum) {
     UdpConfig cfg{
         .src_ip = 0x0A000001, .dst_ip = 0x0A000002,
         .src_port = 12345, .dst_port = 5000,
+        // See WarningsHwCksum: non-zero MACs are required for the
+        // empty-warnings expectation to hold under the post-symmetry
+        // warnings() implementation.
+        .src_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        .dst_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}},
         .pool = &fake_pool, .hw_cksum = false};
     EXPECT_TRUE(cfg.warnings().empty());
+}
+
+// Self-send: same src and dst IP. DPDK PMDs have no kernel-loopback
+// fallback, so self-send produces a frame the NIC actually transmits
+// (and the peer never receives) — surface as advisory, mirrors the
+// equivalent TcpConfig::warnings entry.
+TEST(UdpConfig, WarningsSelfSendSrcEqualsDst) {
+    rte_mempool fake_pool{};
+    UdpConfig cfg{
+        .src_ip = 0x0A000005, .dst_ip = 0x0A000005,  // intentional self-send
+        .src_port = 12345, .dst_port = 5000,
+        // Provide MACs so the all-zero advisories don't fire.
+        .src_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}},
+        .dst_mac = {{0x02, 0x00, 0x00, 0x00, 0x00, 0x02}},
+        .pool = &fake_pool, .hw_cksum = false};
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("src_ip == dst_ip") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "expected self-send warning, got " << w.size()
+                       << " warnings";
 }
