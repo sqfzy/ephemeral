@@ -9,9 +9,9 @@
 /// against. Stay on the mock.
 ///
 ///   * Single-file scenario binary that reads `[lat_ws]` from bench.conf
-///     (port / ws_path / payload_size / duration_seconds) plus the
-///     lowercase global `mock_ip`, `warmup_samples`.
-///   * Uses `KernelTcpStream<WsCodec, false>` + `KernelPoller`
+///     (port / ws_path / payload_size / duration_seconds / use_tls)
+///     plus the lowercase global `mock_ip`, `warmup_samples`.
+///   * Uses `KernelTcpStream<WsCodec, EnableTls>` + `KernelPoller`
 ///     API directly — no raw socket() calls.
 ///   * `StreamConfig.ws_path` is set — this triggers the transparent
 ///     WebSocket handshake inside `KernelTcpStream::create()`,
@@ -27,6 +27,12 @@
 /// `WsCodec::encode` and reuse that buffer for every RTT sample. Decode
 /// on the RX side IS driven through the codec (by the poller), so the
 /// `on_message` callback fires once per decoded payload.
+///
+/// TLS: when `[scenarios.lat_ws].use_tls = true` (the default), the
+/// bench loop instantiates `Stream<EnableTls=true>` so the WS
+/// handshake rides on TLS 1.3. `verify_peer = false` because the mock
+/// uses a self-signed cert (benchmarks/mockex/fixtures/tls/server.crt).
+/// The DPDK variant uses `DpdkTcpStream`'s in-place mbuf TLS decrypt.
 ///
 /// A second target `lat_ws_dpdk` is produced by the xmake auto-glob loop
 /// with `EPH_USE_DPDK=1`.
@@ -50,9 +56,6 @@
 #include "eph/utils/recorder.hpp"
 
 #if defined(EPH_USE_DPDK)
-// DpdkTcpStream<WsCodec> measurement loop. Structure mirrors lat_tcp
-// exactly with `WsCodec` + `cfg.ws_path` set so the DpdkTcpStream::create
-// path performs the RFC 6455 handshake during setup.
 #  include "eph/net/dpdk/poller.hpp"
 #  include "eph/net/dpdk/tcp_stream.hpp"
 #else
@@ -76,17 +79,16 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using Stream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ed::DpdkPoller<>;
+template <bool EnableTls>
+using StreamT = ed::DpdkTcpStream<ec::WsCodec, EnableTls>;
+using Poller  = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
-using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ek::KernelPoller;
+template <bool EnableTls>
+using StreamT = ek::KernelTcpStream<ec::WsCodec, EnableTls>;
+using Poller  = ek::KernelPoller;
 #endif
 
-/// Default bench.conf path if no `--config <path>` is passed. The `lat`
-/// wrapper always passes `--config` via argv; this default only applies
-/// when the binary is invoked directly (loopback smoke tests).
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
 [[nodiscard, maybe_unused]] const char* parse_config_path(int argc, char** argv) noexcept {
@@ -101,94 +103,26 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
     return kDefaultConfigPath;
 }
 
-} // namespace
+/// Templated bench body. EnableTls flips the stream type (and the
+/// TlsConfig population in cfg). Same body for both transports.
+template <bool EnableTls>
+int run_ws(const bench::BenchConfig& bench_cfg,
+           [[maybe_unused]] const en::SocketAddr& remote,
+           const std::string& mock_ip_str,
+           [[maybe_unused]] uint16_t port,
+           const std::string& ws_path,
+           std::size_t payload_size,
+           uint64_t duration_s,
+           uint64_t warmup_samples) {
+    using Stream = StreamT<EnableTls>;
 
-int main(int argc, char** argv) {
-    spdlog::set_level(spdlog::level::info);
-
-    const char* conf_path = parse_config_path(argc, argv);
-
-    // ── Load config.toml into structured BenchConfig.
-    auto cfg_r = bench::load_bench_conf(conf_path);
-    if (!cfg_r) {
-        std::fprintf(stderr, "lat_ws: %s\n",
-                     bench::format_error(cfg_r.error()).c_str());
-        return 1;
-    }
-    const bench::BenchConfig& bench_cfg = *cfg_r;
-    const bench::Scenario* sc = bench_cfg.scenario("lat_ws");
-    if (sc == nullptr) {
-        std::fprintf(stderr, "lat_ws: [scenarios.lat_ws] not found in %s\n",
-                     conf_path);
-        return 1;
-    }
-    const bench::Scenario& scenario = *sc;
-
-    bench::pin_client_from_cfg(bench_cfg, "lat_ws");
-
-    // Required: port.
-    auto port_r = scenario.get<uint16_t>("port");
-    if (!port_r) {
-        std::fprintf(stderr, "lat_ws: %s\n",
-                     bench::format_error(port_r.error()).c_str());
-        return 1;
-    }
-    const uint16_t port = *port_r;
-
-    // Optional with defaults.
-    const std::string ws_path =
-        scenario.get_or<std::string>("ws_path", "/echo");
-
-    const std::size_t payload_size =
-        scenario.get_or<uint32_t>("payload_size", 64);
-
-    // 24 B timestamp-block header requirement.
-    if (payload_size < bench::kTimestampBlockSize) {
-        std::fprintf(stderr,
-                     "lat_ws: payload_size=%zu < kTimestampBlockSize=%zu "
-                     "(TX/RX leg protocol requires a 24 B header)\n",
-                     payload_size, bench::kTimestampBlockSize);
-        return 1;
-    }
-
-    const uint64_t duration_s =
-        scenario.get_or<uint32_t>("duration_seconds", 10);
-    const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
-
-    const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
-                                        ? std::string{"127.0.0.1"}
-                                        : bench_cfg.networking.server_ip;
-    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
-    if (!ip_r) {
-        std::fprintf(stderr, "lat_ws: invalid mock_ip '%s': %s\n",
-                     mock_ip_str.c_str(), ip_r.error().detail);
-        return 1;
-    }
-    const en::SocketAddr remote{ip_r.value(), port};
-
-    std::printf("=== lat_ws ===\n");
-    std::printf("config: mock=%s port=%u ws_path=%s payload_size=%zu "
-                "duration=%llus warmup_samples=%llu\n",
-                mock_ip_str.c_str(),
-                static_cast<unsigned>(port),
-                ws_path.c_str(),
-                payload_size,
-                static_cast<unsigned long long>(duration_s),
-                static_cast<unsigned long long>(warmup_samples));
-    std::fflush(stdout);
-
-    bench::install_signal_handler();
-
-    // Construct the Recorders early so their TSC::init() calibration
-    // spins (~1 second on process start) happen before we hit the WS
-    // handshake. For an RTT scenario this is less critical than for
-    // one-way lat_ex_market, but it keeps the two binaries symmetric.
-    const char* backend =
+    constexpr const char* backend =
 #if defined(EPH_USE_DPDK)
-        "dpdk";
+        EnableTls ? "dpdk_tls" : "dpdk";
 #else
-        "kernel";
+        EnableTls ? "kernel_tls" : "kernel";
 #endif
+
     eu::Recorder rec_rtt{std::string{"lat_ws_"} + backend + "_rtt"};
     eu::Recorder rec_tx {std::string{"lat_ws_"} + backend + "_tx" };
     eu::Recorder rec_rx {std::string{"lat_ws_"} + backend + "_rx" };
@@ -224,18 +158,21 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 #else
-    // StreamConfig.ws_path triggers the transparent WebSocket handshake
-    // inside KernelTcpStream::create(). The returned stream is
-    // already past the 101 Switching Protocols response and ready to
-    // exchange WS frames.
     ek::StreamConfig cfg{};
     cfg.remote          = remote;
     cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
     cfg.connect_timeout = std::chrono::milliseconds{3000};
     cfg.ws_path         = ws_path;
-    // ws_host left empty → handshake falls back to remote.to_string().
     cfg.ws_timeout      = std::chrono::seconds{10};
 #endif
+
+    if constexpr (EnableTls) {
+        // Bench-only: self-signed cert from benchmarks/mockex/fixtures/tls/.
+        // Production code would set ca_cert_path or pin SPKI; here we
+        // trust the IP-pinned mockex.
+        cfg.tls.hostname    = mock_ip_str;
+        cfg.tls.verify_peer = false;
+    }
 
 #if defined(EPH_USE_DPDK)
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
@@ -254,16 +191,6 @@ int main(int argc, char** argv) {
     }
     auto stream = std::move(stream_r.value());
 
-    // One decoded WS-binary frame per on_message call. We track a simple
-    // "got a frame" flag: each RTT sample sends exactly one frame and
-    // waits for exactly one response. Using a frame counter (vs a byte
-    // counter like lat_tcp) is correct here because the codec delivers
-    // the reassembled message in a single callback regardless of how
-    // many TCP segments carried it.
-    //
-    // Copy the first 24 B of the decoded payload into `ts_buf` for leg
-    // decomposition. `on_message` gets plaintext (post-unmask) from the
-    // WsCodec, so this is just a memcpy.
     bool got_echo = false;
     std::array<uint8_t, bench::kTimestampBlockSize> ts_buf{};
     std::size_t ts_filled = 0;
@@ -285,12 +212,6 @@ int main(int argc, char** argv) {
     }
 #endif
 
-    // We must re-encode a new WS frame for every sample because the
-    // client MUST mask each frame with a fresh (or at
-    // least per-frame) masking key per RFC 6455 §5.3, and the masking
-    // interleaves with the timestamp bytes we overwrite each sample.
-    // Re-encoding is cheap (a small memcpy + XOR over payload_size B)
-    // and keeps the protocol compliant.
     std::vector<uint8_t> payload(payload_size, 0xAB);
     std::vector<uint8_t> frame(ec::WsCodec::max_overhead + payload_size);
     ec::WsCodec encoder{};
@@ -298,7 +219,6 @@ int main(int argc, char** argv) {
     const uint64_t t_start    = bench::monotonic_raw_ns();
     const uint64_t t_deadline = t_start + duration_s * 1'000'000'000ull;
     uint64_t       t_measure_start = 0;
-    // Per-sample timeout: if the mock dies we bail rather than spin.
     constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
 
     uint64_t sample_idx = 0;
@@ -374,4 +294,88 @@ int main(int argc, char** argv) {
     poller.reset();
 
     return timed_out ? 4 : 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    spdlog::set_level(spdlog::level::info);
+
+    const char* conf_path = parse_config_path(argc, argv);
+
+    auto cfg_r = bench::load_bench_conf(conf_path);
+    if (!cfg_r) {
+        std::fprintf(stderr, "lat_ws: %s\n",
+                     bench::format_error(cfg_r.error()).c_str());
+        return 1;
+    }
+    const bench::BenchConfig& bench_cfg = *cfg_r;
+    const bench::Scenario* sc = bench_cfg.scenario("lat_ws");
+    if (sc == nullptr) {
+        std::fprintf(stderr, "lat_ws: [scenarios.lat_ws] not found in %s\n",
+                     conf_path);
+        return 1;
+    }
+    const bench::Scenario& scenario = *sc;
+
+    bench::pin_client_from_cfg(bench_cfg, "lat_ws");
+
+    auto port_r = scenario.get<uint16_t>("port");
+    if (!port_r) {
+        std::fprintf(stderr, "lat_ws: %s\n",
+                     bench::format_error(port_r.error()).c_str());
+        return 1;
+    }
+    const uint16_t port = *port_r;
+
+    const std::string ws_path =
+        scenario.get_or<std::string>("ws_path", "/echo");
+
+    const std::size_t payload_size =
+        scenario.get_or<uint32_t>("payload_size", 64);
+
+    if (payload_size < bench::kTimestampBlockSize) {
+        std::fprintf(stderr,
+                     "lat_ws: payload_size=%zu < kTimestampBlockSize=%zu "
+                     "(TX/RX leg protocol requires a 24 B header)\n",
+                     payload_size, bench::kTimestampBlockSize);
+        return 1;
+    }
+
+    const uint64_t duration_s =
+        scenario.get_or<uint32_t>("duration_seconds", 10);
+    const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
+    const bool use_tls = scenario.get_or<bool>("use_tls", false);
+
+    const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
+                                        ? std::string{"127.0.0.1"}
+                                        : bench_cfg.networking.server_ip;
+    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
+    if (!ip_r) {
+        std::fprintf(stderr, "lat_ws: invalid mock_ip '%s': %s\n",
+                     mock_ip_str.c_str(), ip_r.error().detail);
+        return 1;
+    }
+    const en::SocketAddr remote{ip_r.value(), port};
+
+    std::printf("=== lat_ws ===\n");
+    std::printf("config: mock=%s port=%u ws_path=%s payload_size=%zu "
+                "duration=%llus warmup_samples=%llu tls=%s\n",
+                mock_ip_str.c_str(),
+                static_cast<unsigned>(port),
+                ws_path.c_str(),
+                payload_size,
+                static_cast<unsigned long long>(duration_s),
+                static_cast<unsigned long long>(warmup_samples),
+                use_tls ? "yes" : "no");
+    std::fflush(stdout);
+
+    bench::install_signal_handler();
+
+    if (use_tls) {
+        return run_ws<true>(bench_cfg, remote, mock_ip_str, port, ws_path,
+                            payload_size, duration_s, warmup_samples);
+    }
+    return run_ws<false>(bench_cfg, remote, mock_ip_str, port, ws_path,
+                         payload_size, duration_s, warmup_samples);
 }

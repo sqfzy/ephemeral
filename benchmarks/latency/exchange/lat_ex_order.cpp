@@ -72,12 +72,14 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using Stream = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ed::DpdkPoller<>;
+template <bool EnableTls>
+using StreamT = ed::DpdkTcpStream<ec::WsCodec, EnableTls>;
+using Poller  = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
-using Stream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using Poller = ek::KernelPoller;
+template <bool EnableTls>
+using StreamT = ek::KernelTcpStream<ec::WsCodec, EnableTls>;
+using Poller  = ek::KernelPoller;
 #endif
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
@@ -136,6 +138,7 @@ int main(int argc, char** argv) {
     const uint64_t duration_s =
         scenario.get_or<uint32_t>("duration_seconds", 30);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
+    const bool use_tls = scenario.get_or<bool>("use_tls", false);
 
     const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
                                         ? std::string{"127.0.0.1"}
@@ -150,16 +153,20 @@ int main(int argc, char** argv) {
 
     std::printf("=== lat_ex_order ===\n");
     std::printf("config: mock=%s port=%u ws_path=%s order_count=%llu "
-                "duration=%llus warmup_samples=%llu\n",
+                "duration=%llus warmup_samples=%llu tls=%s\n",
                 mock_ip_str.c_str(),
                 static_cast<unsigned>(port),
                 ws_path.c_str(),
                 static_cast<unsigned long long>(order_count),
                 static_cast<unsigned long long>(duration_s),
-                static_cast<unsigned long long>(warmup_samples));
+                static_cast<unsigned long long>(warmup_samples),
+                use_tls ? "yes" : "no");
     std::fflush(stdout);
 
     bench::install_signal_handler();
+
+    auto run = [&]<bool EnableTls>() -> int {
+        using Stream = StreamT<EnableTls>;
 
     // Construct the Recorders BEFORE Stream::create so that TSC::init's
     // ~1 s calibration spin runs at startup, not while the WS handshake
@@ -170,11 +177,11 @@ int main(int argc, char** argv) {
     // `t_mock_recv` / `t_mock_send`) rather than a binary 24 B prefix
     // — WS text-ish JSON wouldn't survive a binary header, so we
     // extract via the existing scan_json_uint_field.
-    const char* backend =
+    constexpr const char* backend =
 #if defined(EPH_USE_DPDK)
-        "dpdk";
+        EnableTls ? "dpdk_tls" : "dpdk";
 #else
-        "kernel";
+        EnableTls ? "kernel_tls" : "kernel";
 #endif
     eu::Recorder rec_rtt{std::string{"lat_ex_order_"} + backend + "_rtt"};
     eu::Recorder rec_tx {std::string{"lat_ex_order_"} + backend + "_tx" };
@@ -219,6 +226,11 @@ int main(int argc, char** argv) {
     cfg.ws_path         = ws_path;
     cfg.ws_timeout      = std::chrono::seconds{10};
 #endif
+
+    if constexpr (EnableTls) {
+        cfg.tls.hostname    = mock_ip_str;
+        cfg.tls.verify_peer = false;
+    }
 
 #if defined(EPH_USE_DPDK)
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
@@ -434,4 +446,8 @@ int main(int argc, char** argv) {
     if (send_failed) return 4;
     if (timed_out)   return 5;
     return 0;
+    };  // end of run<EnableTls>() lambda
+
+    return use_tls ? run.template operator()<true>()
+                   : run.template operator()<false>();
 }

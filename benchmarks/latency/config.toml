@@ -60,6 +60,17 @@ nb_rx_queues    = 1
 enable_rss      = false
 lcore_per_queue = "4,5,6,7"
 
+# ── TLS (mock self-signed cert) ───────────────────────────────────────
+#
+# Used when a scenario sets `use_tls = true`. The cert/key are
+# regeneratable via benchmarks/mockex/fixtures/tls/gen.sh.
+# Bench-only: client side runs `verify_peer = false`. Do not use this
+# cert anywhere production-adjacent.
+
+[tls]
+cert_path = "benchmarks/mockex/fixtures/tls/server.crt"
+key_path  = "benchmarks/mockex/fixtures/tls/server.key"
+
 # ── Scenarios ─────────────────────────────────────────────────────────
 # Each [scenarios.lat_<name>] section drives one lat_<name> binary.
 # Required keys (port) must be present; optional keys
@@ -69,6 +80,7 @@ lcore_per_queue = "4,5,6,7"
 port             = 20000
 payload_size     = 256
 duration_seconds = 300
+use_tls          = true
 
 [scenarios.lat_udp]
 port             = 20001
@@ -80,11 +92,13 @@ port             = 20002
 ws_path          = "/echo"
 payload_size     = 256
 duration_seconds = 300
+use_tls          = true
 
 [scenarios.lat_ex_market]
 port             = 20003
 ws_path          = "/ws/bookticker"
 duration_seconds = 300
+use_tls          = true
 # Phase 3 mockex push parameters. Replace the *_sample.jsonl with a
 # real capture (tools/capture_binance.py --stream btcusdt@bookTicker)
 # and refit params.toml to get realistic traffic shape.
@@ -103,6 +117,7 @@ ws_path          = "/ws/order"
 # (max serial throughput) can't hit the cap before the deadline.
 order_count      = 20000000
 duration_seconds = 300
+use_tls          = true
 
 [scenarios.lat_ex_md_udp]
 port             = 20005
@@ -116,6 +131,7 @@ duration_seconds = 300
 burst_size       = 10
 symbols          = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
 mode             = "twophase"
+use_tls          = true
 mockex_params    = "benchmarks/mockex/fixtures/ex_market_2p_params.toml"
 mockex_payload   = "benchmarks/mockex/fixtures/ex_market_2p_sample.jsonl"
 mockex_seed      = 42

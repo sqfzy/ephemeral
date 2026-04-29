@@ -82,7 +82,10 @@ namespace en = eph::net;
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
 using Stream    = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using StreamTls = Stream;  // DPDK path doesn't support wss://
+// DPDK supports TLS via DpdkTcpStream's in-place mbuf decrypt; used
+// for `[scenarios.lat_ex_market_2p].use_tls = true` (mock+TLS).
+// The wss:// real-server flow stays kernel-only.
+using StreamTls = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 using Poller    = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
@@ -339,6 +342,7 @@ int main(int argc, char** argv) {
     const Mode mode = parse_mode(mode_str);
 
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
+    const bool     use_tls = scenario.get_or<bool>("use_tls", false);
 
     // Phase 4: resolve endpoint (mock or wss://…).
     auto endpoint_r = bench::resolve_endpoint(bench_cfg, scenario);
@@ -421,9 +425,9 @@ int main(int argc, char** argv) {
     // Construct Recorder early so TSC calibration happens before connection.
     const char* backend =
 #if defined(EPH_USE_DPDK)
-        "dpdk";
+        use_tls ? "dpdk_tls" : "dpdk";
 #else
-        "kernel";
+        (endpoint.is_real_server || use_tls) ? "kernel_tls" : "kernel";
 #endif
     eu::Recorder rec{std::string{"lat_ex_market_2p_"} + backend +
                      "_" + mode_label + "_oneway"};
@@ -466,16 +470,31 @@ int main(int argc, char** argv) {
                      rr.error().detail);
         return 3;
     }
-    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
-    if (!stream_r) {
-        std::fprintf(stderr,
-                     "lat_ex_market_2p: Stream::create_and_attach failed: %s\n",
-                     stream_r.error().detail);
-        return 3;
+    int rc;
+    if (use_tls) {
+        cfg.tls.hostname    = endpoint.host;
+        cfg.tls.verify_peer = false;
+        auto stream_r = StreamTls::create_and_attach(std::move(cfg), env.platform);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market_2p: StreamTls::create_and_attach failed: %s\n",
+                         stream_r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, mode, burst_size, duration_s,
+                             warmup_samples, mode_label, backend);
+    } else {
+        auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
+        if (!stream_r) {
+            std::fprintf(stderr,
+                         "lat_ex_market_2p: Stream::create_and_attach failed: %s\n",
+                         stream_r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, mode, burst_size, duration_s,
+                             warmup_samples, mode_label, backend);
     }
-    const int rc = run_measurement(std::move(stream_r.value()), poller,
-                                   rec, mode, burst_size, duration_s,
-                                   warmup_samples, mode_label, backend);
     poller.reset();
     return rc;
 #else
@@ -514,6 +533,19 @@ int main(int argc, char** argv) {
                 endpoint.host.c_str(), endpoint.port,
                 effective_ws_path.c_str(),
                 stream_r.error().detail);
+            return 3;
+        }
+        rc = attach_and_run(std::move(stream_r.value()));
+    } else if (use_tls) {
+        // Mock+TLS: KernelTcpStream<WsCodec,true> against the self-signed
+        // mockex cert. verify_peer=false because the cert isn't in any CA bundle.
+        cfg.remote          = remote;
+        cfg.tls.hostname    = endpoint.host;
+        cfg.tls.verify_peer = false;
+        auto stream_r = StreamTls::create(cfg);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market_2p: mock+TLS StreamTls::create failed: %s\n",
+                         stream_r.error().detail);
             return 3;
         }
         rc = attach_and_run(std::move(stream_r.value()));

@@ -79,7 +79,10 @@ namespace en = eph::net;
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
 using Stream    = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/false>;
-using StreamTls = Stream;  // DPDK path does not support the wss:// endpoint
+// DPDK supports TLS via DpdkTcpStream's in-place mbuf decrypt; used
+// only for `[scenarios.lat_ex_market].use_tls = true` (mock+TLS).
+// The `endpoint = wss://...` real-server flow stays kernel-only.
+using StreamTls = ed::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 using Poller    = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
@@ -221,6 +224,7 @@ int main(int argc, char** argv) {
         scenario.get_or<uint32_t>("push_rate_hz", 100000);
 
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
+    const bool     use_tls = scenario.get_or<bool>("use_tls", false);
 
     // Phase 4: resolve the endpoint. `mock` (default) keeps the legacy
     // server_ip:port/ws_path wiring; `wss://host[:port]/path` switches to
@@ -321,9 +325,9 @@ int main(int argc, char** argv) {
     // alongside the leg files from the other 5 RTT scenarios.
     const char* backend =
 #if defined(EPH_USE_DPDK)
-        "dpdk";
+        use_tls ? "dpdk_tls" : "dpdk";
 #else
-        "kernel";
+        (endpoint.is_real_server || use_tls) ? "kernel_tls" : "kernel";
 #endif
     eu::Recorder rec{std::string{"lat_ex_market_"} + backend + "_oneway"};
 
@@ -364,14 +368,30 @@ int main(int argc, char** argv) {
                      rr.error().detail);
         return 3;
     }
-    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
-    if (!stream_r) {
-        std::fprintf(stderr, "lat_ex_market: Stream::create_and_attach failed: %s\n",
-                     stream_r.error().detail);
-        return 3;
+    int rc;
+    if (use_tls) {
+        // Mock+TLS via DpdkTcpStream<WsCodec, EnableTls=true>. Self-signed
+        // mock cert → verify_peer=false. SNI takes the mock IP string.
+        cfg.tls.hostname    = endpoint.host;
+        cfg.tls.verify_peer = false;
+        auto stream_r = StreamTls::create_and_attach(std::move(cfg), env.platform);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market: StreamTls::create_and_attach failed: %s\n",
+                         stream_r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, warmup_samples, duration_s, backend);
+    } else {
+        auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market: Stream::create_and_attach failed: %s\n",
+                         stream_r.error().detail);
+            return 3;
+        }
+        rc = run_measurement(std::move(stream_r.value()), poller,
+                             rec, warmup_samples, duration_s, backend);
     }
-    const int rc = run_measurement(std::move(stream_r.value()), poller,
-                                   rec, warmup_samples, duration_s, backend);
 #else
     // Kernel backend: pick the TLS-enabled stream typedef when the
     // endpoint is a real exchange (wss://...), plain otherwise. The
@@ -398,9 +418,10 @@ int main(int argc, char** argv) {
     };
 
     if (endpoint.is_real_server) {
-        // TLS path. SNI + Host header both take the user-facing
-        // hostname (not the resolved IP) so the server routes to the
-        // right vhost and the certificate matches.
+        // TLS path to a real exchange. SNI + Host header both take the
+        // user-facing hostname (not the resolved IP) so the server routes
+        // to the right vhost and the certificate matches. verify_peer
+        // stays at its default (true) — real CA cert chain expected.
         cfg.remote          = remote;
         cfg.tls.hostname    = endpoint.host;
         cfg.ws_host         = endpoint.host;
@@ -411,6 +432,20 @@ int main(int argc, char** argv) {
                 endpoint.host.c_str(), endpoint.port,
                 effective_ws_path.c_str(),
                 stream_r.error().detail);
+            return 3;
+        }
+        rc = attach_and_run(std::move(stream_r.value()));
+    } else if (use_tls) {
+        // Mock+TLS: same KernelTcpStream<WsCodec,true> as the real-server
+        // path, but verify_peer=false because the mock ships a self-signed
+        // cert (benchmarks/mockex/fixtures/tls/server.crt).
+        cfg.remote          = remote;
+        cfg.tls.hostname    = endpoint.host;
+        cfg.tls.verify_peer = false;
+        auto stream_r = StreamTls::create(cfg);
+        if (!stream_r) {
+            std::fprintf(stderr, "lat_ex_market: mock+TLS StreamTls::create failed: %s\n",
+                         stream_r.error().detail);
             return 3;
         }
         rc = attach_and_run(std::move(stream_r.value()));

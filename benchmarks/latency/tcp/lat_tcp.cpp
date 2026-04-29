@@ -66,12 +66,14 @@ namespace en = eph::net;
 
 #if defined(EPH_USE_DPDK)
 namespace ed = eph::net::dpdk;
-using Stream = ed::DpdkTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
-using Poller = ed::DpdkPoller<>;
+template <bool EnableTls>
+using StreamT = ed::DpdkTcpStream<ec::RawStreamCodec, EnableTls>;
+using Poller  = ed::DpdkPoller<>;
 #else
 namespace ek = eph::net::kernel;
-using Stream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
-using Poller = ek::KernelPoller;
+template <bool EnableTls>
+using StreamT = ek::KernelTcpStream<ec::RawStreamCodec, EnableTls>;
+using Poller  = ek::KernelPoller;
 #endif
 
 /// Default bench.conf path if no `--config <path>` is passed. The `lat`
@@ -146,6 +148,7 @@ int main(int argc, char** argv) {
         scenario.get_or<uint32_t>("duration_seconds", 10);
     const uint64_t warmup_samples =
         bench_cfg.measurement.warmup_samples;
+    const bool use_tls = scenario.get_or<bool>("use_tls", false);
 
     // Mock IP: server_ip from [networking]; falls back to 127.0.0.1 if empty.
     const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
@@ -161,16 +164,23 @@ int main(int argc, char** argv) {
 
     std::printf("=== lat_tcp ===\n");
     std::printf("config: mock=%s port=%u payload_size=%zu duration=%llus "
-                "warmup_samples=%llu\n",
+                "warmup_samples=%llu tls=%s\n",
                 mock_ip_str.c_str(),
                 static_cast<unsigned>(port),
                 payload_size,
                 static_cast<unsigned long long>(duration_s),
-                static_cast<unsigned long long>(warmup_samples));
+                static_cast<unsigned long long>(warmup_samples),
+                use_tls ? "yes" : "no");
     std::fflush(stdout);
 
     // ── Signal handler: SIGINT/SIGTERM flip `bench::shutdown_requested()`.
     bench::install_signal_handler();
+
+    // Dispatch to the templated bench body. EnableTls flips the
+    // KernelTcpStream / DpdkTcpStream type so the TLS handshake is
+    // wired statically. Bench-only mock cert → verify_peer=false.
+    auto run = [&]<bool EnableTls>() -> int {
+        using Stream = StreamT<EnableTls>;
 
 #if defined(EPH_USE_DPDK)
     // ── DPDK bootstrap: EAL + Platform + ARP resolve via shared helper.
@@ -214,13 +224,21 @@ int main(int argc, char** argv) {
                      rr.error().detail);
         return 3;
     }
-    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
 #else
     ek::StreamConfig cfg{};
     cfg.remote          = remote;
     cfg.reasm_capacity  = std::max<std::size_t>(64 * 1024, payload_size * 4);
     cfg.connect_timeout = std::chrono::milliseconds{3000};
+#endif
 
+    if constexpr (EnableTls) {
+        cfg.tls.hostname    = mock_ip_str;
+        cfg.tls.verify_peer = false;
+    }
+
+#if defined(EPH_USE_DPDK)
+    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
+#else
     auto stream_r = Stream::create(cfg);
 #endif
 
@@ -275,11 +293,11 @@ int main(int argc, char** argv) {
     // backends; TX/RX break down the wire legs so the operator can see
     // where DPDK's win comes from.
     std::vector<uint8_t> payload(payload_size, 0xAB);
-    const char* backend =
+    constexpr const char* backend =
 #if defined(EPH_USE_DPDK)
-        "dpdk";
+        EnableTls ? "dpdk_tls" : "dpdk";
 #else
-        "kernel";
+        EnableTls ? "kernel_tls" : "kernel";
 #endif
     eu::Recorder rec_rtt{std::string{"lat_tcp_"} + backend + "_rtt"};
     eu::Recorder rec_tx {std::string{"lat_tcp_"} + backend + "_tx" };
@@ -369,4 +387,8 @@ int main(int argc, char** argv) {
     poller.reset();
 
     return timed_out ? 4 : 0;
+    };  // end of run<EnableTls>() lambda
+
+    return use_tls ? run.template operator()<true>()
+                   : run.template operator()<false>();
 }
