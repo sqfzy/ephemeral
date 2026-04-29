@@ -69,10 +69,15 @@ public:
     /// @param mtu     Next-hop MTU from the ICMP Type 3 Code 4 message.
     using MtuCallback = void(*)(void* stream, uint16_t mtu) noexcept;
 
-    /// Linear-scan cap. 64 covers every realistic HFT topology
-    /// (one or two lcores × a few streams each). Bumping requires
-    /// no ABI change; the scan is only on ICMP (a cold path).
-    static constexpr std::size_t kMaxTargets = 64;
+    /// Linear-scan cap. 256 covers high-fanout HFT topologies
+    /// (e.g. multi-lcore market-data fan-outs and the bench's 100-conn
+    /// rss_scaling_ws sweep). Bumping requires no ABI change; the scan
+    /// is only on ICMP (a cold path) and at 256 entries the linear
+    /// probe is still ~1 µs even on Graviton. Memory cost: 256 × ~48 B
+    /// Entry ≈ 14 KiB per IcmpRegistry instance — negligible relative
+    /// to a Platform's lifetime. Original cap was 64; bumped when the
+    /// rss_scaling_ws sweep at conn_count=100 exhausted the registry.
+    static constexpr std::size_t kMaxTargets = 256;
 
     // ── RAII Handle ──────────────────────────────────────────────────────
     //
