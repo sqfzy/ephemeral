@@ -35,6 +35,12 @@ for _, file in ipairs(os.files(path.join(os.scriptdir(), "tests/test_*.cpp"))) d
         add_includedirs("include")
         add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
         add_deps("eph-core", "eph-utils", "eph-net")
+        -- Runtime exec dep: tests fork+execl the mockex binary at
+        -- MOCKEX_BINARY_PATH (defined below). Without this `add_deps`,
+        -- `xmake build -g tests` won't pull mockex (it lives in
+        -- group=benchmarks), so the test target builds green but
+        -- `xmake run` blows up at execl with ENOENT.
+        add_deps("mockex")
         add_packages("spdlog", "tomlplusplus")
         -- Pass the mockex build target's output directory at configure time so
         -- the test can fork the child without searching $PATH. xmake provides
