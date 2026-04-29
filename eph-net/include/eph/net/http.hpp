@@ -328,7 +328,7 @@ parse_header_block(std::span<const uint8_t> buf,
         }
         // Bare LF at line start is an injection attempt (some proxies accept
         // lone LF as a line terminator; we do not).
-        if (buf[pos] == '\n') {
+        if (buf[pos] == '\n') [[unlikely]] {
             SPDLOG_WARN("http: header block: bare LF (offset {})", pos);
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "bare LF at header start"});
@@ -356,7 +356,7 @@ parse_header_block(std::span<const uint8_t> buf,
 
         // Scan for bare LF inside the line (would be an injection).
         for (size_t i = line_start; i < crlf; ++i) {
-            if (buf[i] == '\n') {
+            if (buf[i] == '\n') [[unlikely]] {
                 SPDLOG_WARN("http: header line: bare LF (offset {})", i);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "bare LF inside header line"});
@@ -370,20 +370,20 @@ parse_header_block(std::span<const uint8_t> buf,
 
         // Split on the first ':'.
         auto colon = line.find(':');
-        if (colon == std::string_view::npos) {
+        if (colon == std::string_view::npos) [[unlikely]] {
             SPDLOG_WARN("http: header line missing ':' (len={})", line.size());
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "header line missing ':'"});
         }
         auto raw_name = line.substr(0, colon);
         auto name     = trim_field_name(raw_name);
-        if (!is_valid_token(name)) {
+        if (!is_valid_token(name)) [[unlikely]] {
             SPDLOG_WARN("http: invalid header field-name");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "invalid header field-name"});
         }
         auto value = trim_ows(line.substr(colon + 1));
-        if (!is_valid_field_value(value)) {
+        if (!is_valid_field_value(value)) [[unlikely]] {
             SPDLOG_WARN("http: invalid header field-value (CTL char)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "invalid header field-value"});
@@ -391,7 +391,7 @@ parse_header_block(std::span<const uint8_t> buf,
 
         // ── Smuggling defenses ──────────────────────────────────────────
         // 1. Any Transfer-Encoding header → rejected outright (D-1).
-        if (iequal(name, "Transfer-Encoding")) {
+        if (iequal(name, "Transfer-Encoding")) [[unlikely]] {
             SPDLOG_WARN("http: Transfer-Encoding header present — rejecting (D-1)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad,
@@ -400,13 +400,13 @@ parse_header_block(std::span<const uint8_t> buf,
         // 2. Content-Length: strict digit-only, all values must agree.
         if (iequal(name, "Content-Length")) {
             size_t cl = 0;
-            if (!parse_decimal(value, cl)) {
+            if (!parse_decimal(value, cl)) [[unlikely]] {
                 SPDLOG_WARN("http: Content-Length non-numeric ('{}')",
                             value);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "Content-Length not numeric"});
             }
-            if (cl > kMaxBodySize) {
+            if (cl > kMaxBodySize) [[unlikely]] {
                 SPDLOG_WARN("http: Content-Length {} exceeds max {}",
                             cl, kMaxBodySize);
                 return std::unexpected(core::ErrorInfo{
@@ -414,7 +414,7 @@ parse_header_block(std::span<const uint8_t> buf,
             }
             if (cl_parsed_count == 0) {
                 first_cl_value = cl;
-            } else if (cl != first_cl_value) {
+            } else if (cl != first_cl_value) [[unlikely]] {
                 SPDLOG_WARN("http: conflicting Content-Length headers ({} vs {})",
                             first_cl_value, cl);
                 return std::unexpected(core::ErrorInfo{
