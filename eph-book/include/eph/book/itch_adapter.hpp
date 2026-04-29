@@ -215,6 +215,14 @@ private:
 
         SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrder ref={} side={} shares={} price={}", ref, side, shares, price);
 
+        // ITCH 5.0 §4 says order_ref is session-unique, but real feeds
+        // occasionally retransmit AddOrder for the same ref during
+        // gap-recovery / cancel-replace races. Treat re-add as
+        // remove-old + add-new so the per-price aggregation map and
+        // orders_ map stay consistent — the previous unconditional
+        // orders_[ref] = ... left phantom qty on the old level.
+        evict_existing_ref(ref, "AddOrder");
+
         orders_[ref] = Order{price, static_cast<double>(shares), side};
         add_qty(price, static_cast<double>(shares), side);
         return true;
@@ -228,6 +236,9 @@ private:
         const double   price = eph::itch::add_order_mpid::price(msg);
 
         SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrderMPID ref={} side={} shares={} price={}", ref, side, shares, price);
+
+        // Same duplicate-ref guard as handle_add_order — see comment there.
+        evict_existing_ref(ref, "AddOrderMPID");
 
         orders_[ref] = Order{price, static_cast<double>(shares), side};
         add_qty(price, static_cast<double>(shares), side);
@@ -381,11 +392,40 @@ private:
         orders_.erase(it);
         sub_qty(old_price, old_qty, side);
 
+        // Defensive: if new_ref aliases another live order (buggy /
+        // adversarial feed), evict that order's qty from the book first
+        // — same phantom-qty bug as handle_add_order otherwise.
+        evict_existing_ref(new_ref, "OrderReplace.new_ref");
+
         // Insert the new order and add qty to new level.
         orders_[new_ref] = Order{new_price, static_cast<double>(shares), side};
         add_qty(new_price, static_cast<double>(shares), side);
 
         return true;
+    }
+
+    // ----------------------------------------------------------------------
+    // Helper: drain phantom qty if `ref` is already a live order.
+    //
+    // Keeps the per-price aggregation map (`bid_qty_` / `ask_qty_`) in
+    // lockstep with `orders_` even when the feed re-adds a known ref or
+    // a replace's new_ref collides with an existing order. Without this
+    // step the old level keeps `remaining_qty` in the aggregation map
+    // forever, since no future delete/cancel touches the *old* (price,
+    // side) any more — they will route through the new state.
+    void evict_existing_ref(uint64_t ref, const char* origin) noexcept {
+        auto it = orders_.find(ref);
+        if (it == orders_.end()) return;
+        const double old_price = it->second.price;
+        const double old_qty   = it->second.remaining_qty;
+        const char   old_side  = it->second.side;
+        SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+            "{} ref={} already live at price={} side={} qty={} — "
+            "evicting old level before applying new state to avoid "
+            "phantom qty in the aggregation map",
+            origin, ref, old_price, old_side, old_qty);
+        orders_.erase(it);
+        sub_qty(old_price, old_qty, old_side);
     }
 };
 
