@@ -428,6 +428,19 @@ struct ParsedIcmp {
     const uint16_t pkt_len = rte_pktmbuf_data_len(mbuf);
     const auto* data = rte_pktmbuf_mtod(mbuf, const uint8_t*);
     const uint16_t icmp_offset = kEtherHeaderLen + ip_hdr.ihl;
+    // Defense-in-depth (RFC 791 §3.2): cross-check ip->total_length with
+    // pkt_len AND with the bytes the parser is about to walk. Without
+    // this, an attacker who controls the L2 segment can craft a frame
+    // whose ip->total_length excludes the ICMP footer (claims "no IP
+    // payload" while the buffer contains a full Type 3 Code 4 message);
+    // the parser would still walk the trailing bytes and surface a
+    // forged next_hop_mtu / embedded 4-tuple to TcpSession::on_icmp_
+    // frag_needed. parse_tcp_from_ip / parse_udp_from_ip already enforce
+    // analogous total_length invariants — this aligns parse_icmp with the
+    // rest of the parser family.
+    const uint16_t ip_total = ntoh16(ip_hdr.ip->total_length);
+    if (static_cast<uint32_t>(kEtherHeaderLen) + ip_total > pkt_len) return {};
+    if (ip_total < ip_hdr.ihl + 8u) return {};
     // ICMP minimum header is 8 bytes; Type 3 extends to include the
     // next-hop MTU at offset 6..7.
     if (static_cast<uint32_t>(icmp_offset) + 8u > pkt_len) return {};

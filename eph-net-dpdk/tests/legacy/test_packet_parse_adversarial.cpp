@@ -530,12 +530,20 @@ TEST(PacketParseAdv, IcmpFragNeededTruncatedAfterIcmpHeaderReturnsCoreFields) {
     // Truncated so only the 8-byte ICMP header fits. parse_icmp still
     // returns type/code/next_hop_mtu (those are in the 8-byte header),
     // but the embedded_* fields stay default-zeroed because the nested
-    // IP header doesn't fit.
+    // IP header doesn't fit. A real router truncating ICMP MUST update
+    // ip->total_length to match (RFC 791 §3.2); we mirror that here so
+    // the parser's defense-in-depth ip_total cross-check (added in the
+    // batch-2 round-2 fix) sees a self-consistent IP header.
     uint8_t buf[256];
     const size_t min_len = kEtherHeaderLen + kIpv4HeaderLen + 8;
     const size_t len = build_icmp_frag_needed(
         buf, /*mtu=*/900, /*embedded_proto=*/kIpProtoTcp,
         /*embedded_ihl_words=*/5, /*truncate_embedded_to=*/min_len);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // Update ip->total_length to reflect the truncation (IP header + 8B
+    // ICMP). Without this update the IP header would lie about how many
+    // bytes follow it, which the parser correctly rejects as malformed.
+    ip->total_length = hton16(static_cast<uint16_t>(kIpv4HeaderLen + 8));
     auto mbuf = make_mbuf(buf, len);
     auto parsed = parse_icmp(&mbuf);
     ASSERT_TRUE(parsed);
