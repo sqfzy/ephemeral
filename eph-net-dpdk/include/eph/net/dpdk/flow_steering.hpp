@@ -244,15 +244,29 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
             num_queues, dev_info.max_rx_queues));
     }
 
-    // Build RSS configuration
+    // Build RSS configuration. Hash on TCP **and** UDP IPv4 (plus the
+    // bare-IPv4 catch-all), matching `Platform::create`'s pre-configure
+    // eth_conf.rx_adv_conf.rss_conf.rss_hf set (platform.hpp around
+    // line 1112-1116). Stripping UDP here (the prior TCP-only flag
+    // set) silently broke multicast / UDP RSS distribution on PMDs
+    // where `rte_eth_dev_rss_hash_update` overrides the earlier
+    // configure-time mask: every UDP packet then landed on queue 0
+    // (or the un-hashed default) instead of distributing — and only
+    // TCP streams saw multi-queue RSS. The caller-visible symptom was
+    // "MulticastReceiver bound to rx_queue=N drops everything" under
+    // RssPartitioned mode. The shared mask keeps the two code paths
+    // in lock-step.
     rte_eth_rss_conf rss_conf{};
     rss_conf.rss_key = nullptr;  // Use default hash key
     rss_conf.rss_key_len = 0;
     rss_conf.rss_hf = dev_info.flow_type_rss_offloads &
-                       (RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_IPV4);
+                       (RTE_ETH_RSS_NONFRAG_IPV4_TCP |
+                        RTE_ETH_RSS_NONFRAG_IPV4_UDP |
+                        RTE_ETH_RSS_IPV4);
 
     if (rss_conf.rss_hf == 0) {
-        return std::unexpected("NIC does not support TCP RSS hash");
+        return std::unexpected(
+            "NIC does not support IPv4 TCP/UDP RSS hash");
     }
 
     int ret = rte_eth_dev_rss_hash_update(port_id, &rss_conf);
