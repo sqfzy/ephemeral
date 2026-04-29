@@ -19,9 +19,13 @@
 ///     The probed-key path lights up on ENA where the PMD rejects
 ///     `rte_eth_dev_rss_hash_update`; we read back the NIC's own key via
 ///     `rte_eth_dev_rss_hash_conf_get` and use that for `predict_rss_queue`.
-///   * One `DpdkPoller` per owned RX queue (registered with
-///     `Platform::register_poller`), driven sequentially from one lcore.
-///     A real production deploy would pin one Poller per lcore.
+///   * **One `DpdkPoller` per RX queue, polled by a dedicated EAL lcore**
+///     (`rte_eal_remote_launch` for workers; lcore 0 / main thread polls
+///     queue 0). Each worker lcore was pinned to its cpu inside
+///     `rte_eal_init` via `EalGuard::init_with_pins(pins)` — the typed
+///     entry already routes through `pin_lcore` and the registry.
+///     This is the multi-lcore production pattern; the previous version
+///     of this example used main-thread round-robin and is now replaced.
 ///   * `DpdkUdpSocket::create_and_attach` with `pin_to_queue = q` for
 ///     each connection — the helper reverse-picks an ephemeral
 ///     `src_port` so the inbound 5-tuple Toeplitz-hashes back to `q`.
@@ -52,6 +56,13 @@
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
 /// See `eph-net-dpdk/scripts/dpdk-setup.sh`.
 ///
+/// **Required**: the number of `--pin` lcores must equal `--nb-queues`
+/// (one lcore per RSS RX queue). The mapping is positional:
+/// the i-th `--pin` becomes lcore i, polling queue i. Mismatch is rejected
+/// at startup. `--lcores '<raw EAL spec>'` (escape hatch) is only valid
+/// when its lcore-count happens to match `--nb-queues`; if you use the raw
+/// path you're on the hook to make the layout match.
+///
 /// Usage:
 ///
 ///   sudo ./simple_hft_dpdk_rss --
@@ -74,6 +85,10 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <rte_eal.h>
+#include <rte_launch.h>
+#include <rte_lcore.h>
 
 #include <spdlog/spdlog.h>
 
@@ -177,6 +192,36 @@ AppArgs parse_args(int argc, char** argv) {
     return out;
 }
 
+/// Per-worker context handed to `rte_eal_remote_launch`. Shared across
+/// all workers (no per-worker mutable state besides the ctor-time bound
+/// `poller`). Lifetime: outlives every worker — both `running` and
+/// `pollers[]` storage are owned by `main`'s scope, and the workers are
+/// joined via `rte_eal_wait_lcore` before main returns.
+struct WorkerCtx {
+    edpdk::DpdkPoller<>*       poller;        ///< this worker's queue Poller
+    uint16_t                   queue_id;      ///< for log lines only
+    std::atomic<bool>*         running;       ///< shared stop flag
+};
+
+/// Entry point for every worker lcore (`rte_eal_remote_launch` requires
+/// `int (*)(void*)`). Tight burst-poll loop until `*ctx->running` clears
+/// — no allocations, no syscalls (other than what the PMD does inside
+/// `rte_eth_rx_burst`). Returns 0 unconditionally; the lcore goes back
+/// to `eal_thread_loop()` to wait for the next launch (or for cleanup).
+int worker_main(void* arg) noexcept {
+    auto* ctx = static_cast<WorkerCtx*>(arg);
+    const unsigned lcore = rte_lcore_id();
+    const unsigned cpu   = rte_lcore_to_cpu_id(static_cast<int>(lcore));
+    spdlog::info("simple_hft_dpdk_rss: worker lcore={} cpu={} queue={} entering poll loop",
+                 lcore, cpu, ctx->queue_id);
+    while (ctx->running->load(std::memory_order_acquire)) {
+        (void)ctx->poller->poll();
+    }
+    spdlog::info("simple_hft_dpdk_rss: worker lcore={} queue={} exited",
+                 lcore, ctx->queue_id);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -206,6 +251,17 @@ int main(int argc, char** argv) {
     if (!typed_pins && !raw_lcores) {
         spdlog::error("simple_hft_dpdk_rss: provide either --pin lcore=cpu[:role] "
                       "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
+        return 1;
+    }
+    // Multi-lcore launch is positional: --pin[i] runs queue[i]. Mismatch
+    // between #pins and #queues would either leave queues unpolled or
+    // leave lcores idle in eal_thread_loop. Reject early. Raw --lcores
+    // bypasses this check (we have no way to count its lcores without
+    // re-parsing DPDK's set-of-sets syntax).
+    if (typed_pins && args.pins.size() != args.nb_rx_queues) {
+        spdlog::error("simple_hft_dpdk_rss: --pin count ({}) must equal "
+                      "--nb-queues ({}) — one lcore per RSS queue",
+                      args.pins.size(), args.nb_rx_queues);
         return 1;
     }
 
@@ -277,10 +333,12 @@ int main(int argc, char** argv) {
     }
 
     // ── 4) One Poller per owned RX queue, registered with Platform ───────
-    // Single-lcore demo: we drive every Poller from this thread's loop in
-    // round-robin. A production deploy would create one std::thread per
-    // queue, pin it to its own cpu (via eph::utils::pin_thread), and run
-    // poll() in a tight burst loop.
+    // Each Poller is constructed and registered from the main thread; the
+    // `poll()` calls themselves are dispatched per-lcore in step 6 via
+    // `rte_eal_remote_launch`. Pollers are NOT thread-local — they're
+    // owned here in `pollers[]`, and each worker just receives a raw
+    // pointer through its WorkerCtx. The PMD requires one polling thread
+    // per RX queue, which the queue-id ↔ lcore-id mapping enforces.
     std::vector<std::unique_ptr<edpdk::DpdkPoller<>>> pollers;
     pollers.reserve(qr.second - qr.first);
     for (uint16_t q = qr.first; q < qr.second; ++q) {
@@ -358,16 +416,92 @@ int main(int argc, char** argv) {
     spdlog::info("simple_hft_dpdk_rss: {}/{} sockets attached",
                  sockets.size(), args.connections);
 
-    // ── 6) Drive every Poller in a single-lcore round-robin for N seconds ─
-    // Production code would split this across lcores (one thread per
-    // queue, each pinned to its own cpu). Round-robin on one lcore keeps
-    // the example small while still exercising every queue's burst path.
-    spdlog::info("simple_hft_dpdk_rss: entering poll loop for {}s",
-                 args.run_seconds.count());
+    // ── 6) Multi-lcore launch — one EAL lcore per RX queue ───────────────
+    // Mapping: queue[i] is polled by lcore[i]. Lcore 0 (the main lcore =
+    // *this* thread) polls queue 0; lcores 1..N-1 are workers launched
+    // via `rte_eal_remote_launch(lcore_id, worker_main, &ctxs[i])`.
+    //
+    // EAL has already pinned every worker thread to its declared cpu
+    // inside `rte_eal_init` (driven by `--pin` → `init_with_pins` →
+    // `--lcores=...` argv). That setaffinity is invisible from this
+    // call site; what we control here is which work each lcore runs.
+    //
+    // `worker_main` returns when the shared `g_running` flag clears.
+    // `rte_eal_wait_lcore` joins each worker before main returns so the
+    // RAII teardown of `pollers[]` doesn't race with a still-polling
+    // worker (use-after-free hazard).
+    const uint16_t nb_pollers = static_cast<uint16_t>(pollers.size());
+    if (nb_pollers == 0) {
+        spdlog::error("simple_hft_dpdk_rss: no pollers registered — bailing");
+        return 6;
+    }
+    std::vector<WorkerCtx> ctxs;
+    ctxs.reserve(nb_pollers);
+    for (uint16_t i = 0; i < nb_pollers; ++i) {
+        ctxs.push_back(WorkerCtx{
+            .poller   = pollers[i].get(),
+            .queue_id = static_cast<uint16_t>(qr.first + i),
+            .running  = &g_running,
+        });
+    }
+
+    // Spawn workers for lcore 1..N-1. RTE_LCORE_FOREACH_WORKER walks
+    // every EAL lcore that is NOT the main lcore. The `i` index into
+    // pollers[] starts at 1 (lcore 0 keeps queue 0 for itself).
+    uint16_t worker_idx = 1;
+    unsigned lcore_id;
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        if (worker_idx >= nb_pollers) {
+            spdlog::error(
+                "simple_hft_dpdk_rss: more EAL worker lcores than queues "
+                "({} > {}); pin/queue layout must be 1:1",
+                static_cast<unsigned>(worker_idx) + 1, nb_pollers);
+            g_running.store(false, std::memory_order_release);
+            break;
+        }
+        // rte_eal_remote_launch returns 0 on success, -EBUSY if the
+        // target lcore is already running a function (shouldn't happen
+        // — this is a fresh init), or -EINVAL on a bad lcore id.
+        if (int rc = rte_eal_remote_launch(worker_main,
+                                           &ctxs[worker_idx],
+                                           lcore_id);
+            rc != 0) {
+            spdlog::error("simple_hft_dpdk_rss: rte_eal_remote_launch(lcore={}, "
+                          "queue={}) failed: rc={}",
+                          lcore_id, ctxs[worker_idx].queue_id, rc);
+            g_running.store(false, std::memory_order_release);
+            break;
+        }
+        spdlog::info("simple_hft_dpdk_rss: launched worker on lcore={} "
+                     "for queue={}", lcore_id, ctxs[worker_idx].queue_id);
+        ++worker_idx;
+    }
+
+    // ── 7) Main lcore polls queue 0 until SIGINT or deadline ─────────────
+    spdlog::info("simple_hft_dpdk_rss: main lcore={} cpu={} polling queue={} "
+                 "for {}s (workers polling queues 1..{})",
+                 rte_lcore_id(),
+                 rte_lcore_to_cpu_id(static_cast<int>(rte_lcore_id())),
+                 ctxs[0].queue_id, args.run_seconds.count(),
+                 nb_pollers - 1);
     const auto deadline = std::chrono::steady_clock::now() + args.run_seconds;
     while (g_running.load(std::memory_order_acquire)
            && std::chrono::steady_clock::now() < deadline) {
-        for (auto& p : pollers) (void)p->poll();
+        (void)ctxs[0].poller->poll();
+    }
+
+    // ── 8) Stop workers and join ─────────────────────────────────────────
+    // Once g_running is false, every worker_main loop will exit on its
+    // next iteration. rte_eal_wait_lcore blocks until the worker returns
+    // and then re-arms the lcore for a future launch (we don't reuse it).
+    // This MUST run before pollers / sockets / platform are destroyed —
+    // otherwise a worker still inside poll() would crash on freed memory.
+    spdlog::info("simple_hft_dpdk_rss: signalling workers to stop");
+    g_running.store(false, std::memory_order_release);
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        const int rc = rte_eal_wait_lcore(lcore_id);
+        spdlog::info("simple_hft_dpdk_rss: lcore={} joined (rc={})",
+                     lcore_id, rc);
     }
 
     spdlog::info("simple_hft_dpdk_rss: shutting down — RAII teardown order: "

@@ -12,8 +12,18 @@
 /// `eph-net-dpdk/include/eph/dpdk/{eal,platform,arp,dns}.hpp`.
 ///
 /// Full JSON payloads are emitted at spdlog DEBUG. The event-loop thread
-/// is pinned via `--pin-cpu` (default 2 — must be one of the lcores passed
-/// to EAL via `-l <list>` and ideally on `isolcpus`).
+/// is the EAL main lcore (lcore 0); its CPU affinity is set by
+/// `rte_eal_init` based on `--pin 0=<cpu>`, and the cpu is registered into
+/// the process-wide pin registry by `init_with_pins` BEFORE EAL runs (so
+/// any later `eph::utils::pin_thread` collision surfaces loudly). No
+/// separate application-thread pin is needed.
+///
+/// EAL bring-up uses `lcore_pin.hpp`: `--pin lcore_id=cpu_id[:role]`
+/// (repeatable) goes through `EalGuard::init_with_pins`, which validates
+/// each pin against `CpuPinPolicy` (warn_irq_overlap is enabled here so
+/// IRQ-affinity overlap on the WS lcore is logged). `--lcores '<raw EAL
+/// spec>'` is the escape hatch for syntax `LcorePin` cannot express
+/// (set-of-sets / coremask); mutually exclusive with `--pin` in one call.
 ///
 /// Reconnect behaviour: the stream lifecycle is wrapped in an
 /// `eph::net::ReconnectPolicy` exponential-backoff loop with ±25% jitter.
@@ -25,15 +35,21 @@
 /// `--reconnect-initial-ms` / `--reconnect-max-ms` / `--reconnect-max-attempts`.
 ///
 /// Usage:
-///   sudo ./binance_latency <EAL args> --
+///   sudo ./binance_latency --
+///        --pci 0000:28:00.0 --pin 0=2:ws-latency
 ///        --local-ip 10.0.0.16 --gateway-ip 10.0.0.1
 ///        --host stream.binance.com [--dst-ip 52.193.255.60]
 ///        [--nameserver 8.8.8.8] [--dpdk-port 0]
 ///        [--src-port 40001] [--port 9443]
 ///        [--path /ws/btcusdt@aggTrade] [--duration 30]
-///        [--pin-cpu 2] [--log-level info]
+///        [--log-level info]
 ///        [--reconnect-initial-ms 250] [--reconnect-max-ms 10000]
 ///        [--reconnect-max-attempts 0]
+///
+///   # raw escape hatch (range / set-of-sets):
+///   sudo ./binance_latency --
+///        --pci 0000:28:00.0 --lcores '2-3'
+///        --local-ip 10.0.0.16 --gateway-ip 10.0.0.1 ...
 ///
 /// `--dst-ip` skips the DPDK-native DNS path (useful to pin a known
 /// TLS-1.3-capable Binance backend). When absent, `eph::dpdk::dns::resolve`
@@ -43,6 +59,7 @@
 /// `--reconnect-max-attempts 0` means unlimited retries; the loop is
 /// bounded by `--duration` and SIGINT / SIGTERM instead.
 
+#include <pthread.h>
 #include <time.h>
 
 #include <atomic>
@@ -73,6 +90,7 @@
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
 #include "eph/dpdk/packet_core.hpp"  // net::parse_ipv4, net::format_ipv4, kDefaultMss
 #include "eph/dpdk/platform.hpp"
 
@@ -86,13 +104,9 @@
 #include "eph/utils/time.hpp"
 
 namespace edpdk = eph::net::dpdk;
+namespace ed    = eph::dpdk;
 namespace ec = eph::codec;
 using namespace std::chrono_literals;
-
-// Default pin CPU; overridden by `--pin-cpu N`. On a DPDK box this should
-// be one of the lcores passed to EAL via `-l <list>` and ideally on
-// isolcpus so the burst loop isn't scheduled against anything else.
-static constexpr int kDefaultPinCpu = 2;
 
 // Defaults target Binance's spot WebSocket endpoint. aggTrade carries a
 // trade-time `T` field (ms since epoch) which is what we subtract from
@@ -117,6 +131,32 @@ static int split_at_dash_dash(int argc, char** argv) noexcept {
     return argc;
 }
 
+// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
+// Mirrors `simple_hft_dpdk_mp.cpp::parse_pin_spec`.
+[[nodiscard]] static std::expected<ed::LcorePin, std::string>
+parse_pin_spec(std::string_view s) {
+    auto eq = s.find('=');
+    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
+        return std::unexpected(std::string{
+            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
+    }
+    auto col = s.find(':', eq + 1);
+    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
+    auto lcore_str = std::string(s.substr(0, eq));
+    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
+    int  lcore     = std::atoi(lcore_str.c_str());
+    int  cpu       = std::atoi(cpu_str.c_str());
+    if (lcore < 0 || cpu < 0) {
+        return std::unexpected(std::string{
+            "--pin: lcore_id and cpu_id must be non-negative, got '"}
+            + std::string{s} + "'");
+    }
+    std::string role = (col == std::string_view::npos)
+                           ? std::string{}
+                           : std::string(s.substr(col + 1));
+    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
+}
+
 // Pretty-print an rte_ether_addr (used for logging only).
 [[nodiscard]] static std::string mac_to_string(const rte_ether_addr& m) {
     char buf[18];
@@ -138,7 +178,6 @@ struct AppConfig {
     std::uint16_t src_port = 0;  // 0 = ask DpdkPoller::pick_src_port
     std::uint16_t dpdk_port_id = 0;
     int duration_s = 30;
-    int pin_cpu = kDefaultPinCpu;
     spdlog::level::level_enum log_level = spdlog::level::info;
 
     std::uint32_t local_ip = 0;        // required
@@ -152,6 +191,15 @@ struct AppConfig {
     int reconnect_initial_ms = 250;
     int reconnect_max_ms     = 10000;
     std::uint32_t reconnect_max_attempts = 0;  // 0 = unlimited
+
+    // ── EAL bring-up (lcore_pin.hpp typed path) ─────────────────────────
+    // `pci` -> EalConfig::allowed_devs (`-a` passthrough). Empty = no -a.
+    // `pins` -> EalGuard::init_with_pins (typed lcore→cpu map).
+    // `lcores_raw` -> EalConfig::lcores (raw `-l` escape; mutually exclusive
+    //                 with `pins` per init_with_pins's contract).
+    std::string                   pci;
+    std::vector<ed::LcorePin>     pins;
+    std::string                   lcores_raw;
 };
 
 [[nodiscard]] static std::optional<AppConfig>
@@ -209,14 +257,23 @@ parse_app_args(int argc, char** argv) {
             cfg.src_port = static_cast<std::uint16_t>(std::atoi(next));
         } else if (a == "--dpdk-port" && need("--dpdk-port")) {
             cfg.dpdk_port_id = static_cast<std::uint16_t>(std::atoi(next));
-        } else if (a == "--pin-cpu" && need("--pin-cpu")) {
-            cfg.pin_cpu = std::atoi(next);
         } else if (a == "--reconnect-initial-ms" && need("--reconnect-initial-ms")) {
             cfg.reconnect_initial_ms = std::atoi(next);
         } else if (a == "--reconnect-max-ms" && need("--reconnect-max-ms")) {
             cfg.reconnect_max_ms = std::atoi(next);
         } else if (a == "--reconnect-max-attempts" && need("--reconnect-max-attempts")) {
             cfg.reconnect_max_attempts = static_cast<std::uint32_t>(std::atoi(next));
+        } else if (a == "--pci" && need("--pci")) {
+            cfg.pci = next;
+        } else if (a == "--lcores" && need("--lcores")) {
+            cfg.lcores_raw = next;
+        } else if (a == "--pin" && need("--pin")) {
+            auto p = parse_pin_spec(next);
+            if (!p) {
+                spdlog::error("{}", p.error());
+                return std::nullopt;
+            }
+            cfg.pins.push_back(std::move(*p));
         } else {
             spdlog::warn("ignoring unknown app argument: {}", a);
         }
@@ -267,28 +324,66 @@ int main(int argc, char** argv) {
     AppConfig app_cfg = *app_cfg_opt;
     spdlog::set_level(app_cfg.log_level);
 
-    // ── 2) EAL init (must be first, and exactly once) ─────────────────────
-    auto eal = eph::dpdk::EalGuard::init(eal_end, argv);
+    // ── 2) EAL init via lcore_pin.hpp typed path (or raw escape) ─────────
+    // Pre-`--` argv is no longer fed to EAL; everything (PCI, lcore pins)
+    // flows through post-`--` flags so the registry-aware `init_with_pins`
+    // can validate before `rte_eal_init` fires.
+    const bool typed_pins = !app_cfg.pins.empty();
+    const bool raw_lcores = !app_cfg.lcores_raw.empty();
+    if (typed_pins && raw_lcores) {
+        spdlog::error("binance_latency: --pin and --lcores are mutually "
+                      "exclusive (typed vs raw EAL paths); pick one");
+        return 1;
+    }
+    if (!typed_pins && !raw_lcores) {
+        spdlog::error("binance_latency: provide either --pin lcore=cpu[:role] "
+                      "(preferred typed path) or --lcores '<raw EAL spec>'");
+        return 1;
+    }
+
+    ed::EalConfig eal_cfg{};
+    eal_cfg.program_name = "binance_latency";
+    if (!app_cfg.pci.empty())   eal_cfg.allowed_devs = {app_cfg.pci};
+    if (raw_lcores)             eal_cfg.lcores       = {app_cfg.lcores_raw};
+
+    // Relaxed everything except IRQ overlap — preserves the warning
+    // surfaced by the previous standalone `pin_thread(... warn_irq_overlap=
+    // true)` call. validate_pin_policy runs against every LcorePin inside
+    // pin_lcores so the warning fires on the WS event-loop lcore.
+    eph::utils::CpuPinPolicy pin_policy{
+        .require_isolcpus            = false,
+        .require_no_sibling_conflict = false,
+        .require_same_numa           = false,
+        .warn_irq_overlap            = true,
+    };
+
+    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
+    if (typed_pins) {
+        spdlog::info("binance_latency: EAL init via init_with_pins ({} pin(s))",
+                     app_cfg.pins.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, app_cfg.pins, pin_policy);
+    } else {
+        spdlog::info("binance_latency: EAL init via raw lcores='{}' "
+                     "(legacy path; consider --pin for typed validation)",
+                     app_cfg.lcores_raw);
+        auto argv_owned = ed::build_eal_argv(eal_cfg);
+        std::vector<char*> argv_ptrs;
+        argv_ptrs.reserve(argv_owned.size());
+        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
+        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
+                                 argv_ptrs.data());
+    }
     if (!eal) {
         spdlog::error("EAL init failed: {}", eal.error());
         return 2;
     }
 
-    // ── 3) Hardcoded CPU pin + TSC bring-up ────────────────────────────────
-    // Done AFTER EAL because EAL fiddles with the calling thread's affinity
-    // mask; pinning before EAL init has no effect on arm64 / DPDK 24.x.
-    eph::utils::CpuPinPolicy pin_policy{};
-    pin_policy.require_isolcpus = false;
-    pin_policy.require_no_sibling_conflict = false;
-    pin_policy.require_same_numa = false;
-    pin_policy.warn_irq_overlap = true;
-    if (auto r =
-            eph::utils::pin_thread(app_cfg.pin_cpu, "ws-latency", pin_policy);
-        !r) {
-        spdlog::error("pin_thread(cpu={}) failed: {}", app_cfg.pin_cpu,
-                      r.error());
-        return 3;
-    }
+    // ── 3) Thread name + TSC bring-up ─────────────────────────────────────
+    // The main thread's CPU affinity is already set by `rte_eal_init` to
+    // the EAL main lcore's cpu (`--pin 0=<cpu>`), and that cpu is in the
+    // pin registry via `init_with_pins`. We only need a readable thread
+    // name for `top -H` / `perf` output; no separate pin call is needed.
+    pthread_setname_np(pthread_self(), "ws-latency");
     if (!eph::utils::TSC::is_initialized() && !eph::utils::TSC::init()) {
         spdlog::error("TSC::init failed — recorder would be unusable");
         return 3;
@@ -452,10 +547,10 @@ int main(int argc, char** argv) {
     // noise to a latency probe, and the L2 gateway is stable.
     spdlog::info(
         "binance_latency (dpdk): host={} -> dst={}:{} path={} "
-        "pin_cpu={} duration={}s reconnect[initial={}ms max={}ms attempts={}]",
+        "duration={}s reconnect[initial={}ms max={}ms attempts={}]",
         app_cfg.host,
         eph::dpdk::net::format_ipv4(dst_ip).data(), app_cfg.port,
-        app_cfg.ws_path, app_cfg.pin_cpu, app_cfg.duration_s,
+        app_cfg.ws_path, app_cfg.duration_s,
         app_cfg.reconnect_initial_ms, app_cfg.reconnect_max_ms,
         app_cfg.reconnect_max_attempts);
 

@@ -207,7 +207,12 @@ TEST(PinThreadDup, PinThreadThenExternalPinSameCpuRejected) {
     int cpu = pick_non_isolated_cpu();
     if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
 
-    ASSERT_TRUE(pin_thread(cpu, "app-thread").has_value());
+    // Hold the PinGuard alive in scope: a temporary
+    // `pin_thread(...).has_value()` would destruct the guard immediately,
+    // unregistering the cpu before register_external_pin runs and turning
+    // the conflict into a false positive.
+    auto a = pin_thread(cpu, "app-thread");
+    ASSERT_TRUE(a.has_value()) << (a ? "" : a.error());
 
     auto r = register_external_pin(cpu, "lcore-0");
     ASSERT_FALSE(r.has_value());
@@ -240,4 +245,87 @@ TEST(ExternalPin, ResetForTestsClearsBothMaps) {
     // duplicate from a stale role-map entry).
     auto r = register_external_pin(8, "lcore-3");
     EXPECT_TRUE(r.has_value()) << (r ? "" : r.error());
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// PinGuard — RAII move/release semantics on top of the registry
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(PinGuard, DefaultConstructedIsEmptyAndDestructsCleanly) {
+    PinGuard g;
+    EXPECT_TRUE(g.empty());
+    EXPECT_LT(g.cpu(), 0);
+    // Going out of scope: dtor must be a no-op (cpu_ == -1).
+}
+
+TEST(PinGuard, AdoptThenDestructUnregisters) {
+    reset_pin_registry_for_tests();
+    ASSERT_TRUE(register_external_pin(60, "x").has_value());
+    EXPECT_TRUE(is_cpu_externally_pinned(60));
+    {
+        auto g = PinGuard::adopt(60);
+        EXPECT_FALSE(g.empty());
+        EXPECT_EQ(g.cpu(), 60);
+    }  // dtor unregisters
+    EXPECT_FALSE(is_cpu_externally_pinned(60));
+}
+
+TEST(PinGuard, MoveCtorTransfersOwnership) {
+    reset_pin_registry_for_tests();
+    ASSERT_TRUE(register_external_pin(61, "x").has_value());
+
+    auto orig = PinGuard::adopt(61);
+    {
+        PinGuard moved = std::move(orig);
+        EXPECT_TRUE(orig.empty());           // moved-from is empty
+        EXPECT_EQ(moved.cpu(), 61);          // new owner has the cpu
+        EXPECT_TRUE(is_cpu_externally_pinned(61));
+    }  // moved destructs -> cpu released
+    EXPECT_FALSE(is_cpu_externally_pinned(61));
+}
+
+TEST(PinGuard, MoveAssignReleasesPriorOwnership) {
+    reset_pin_registry_for_tests();
+    ASSERT_TRUE(register_external_pin(70, "a").has_value());
+    ASSERT_TRUE(register_external_pin(71, "b").has_value());
+
+    auto guard_a = PinGuard::adopt(70);
+    auto guard_b = PinGuard::adopt(71);
+    EXPECT_TRUE(is_cpu_externally_pinned(70));
+    EXPECT_TRUE(is_cpu_externally_pinned(71));
+
+    guard_a = std::move(guard_b);  // assigning over guard_a must release cpu 70
+    EXPECT_FALSE(is_cpu_externally_pinned(70))
+        << "move-assign must unregister the prior cpu";
+    EXPECT_TRUE(is_cpu_externally_pinned(71))
+        << "move-assign target now owns the moved-in cpu";
+}
+
+TEST(PinGuard, ReleaseSkipsUnregistration) {
+    reset_pin_registry_for_tests();
+    ASSERT_TRUE(register_external_pin(80, "x").has_value());
+    {
+        auto g = PinGuard::adopt(80);
+        g.release();
+        EXPECT_TRUE(g.empty());
+        // After release, destruction must not unregister.
+    }
+    EXPECT_TRUE(is_cpu_externally_pinned(80))
+        << "release() should leave registry untouched";
+
+    // Cleanup so the next test isn't polluted.
+    unregister_external_pin(80);
+}
+
+TEST(PinGuard, PinThreadReturnsLiveGuardThatUnregistersOnDrop) {
+    reset_pin_registry_for_tests();
+    int cpu = pick_non_isolated_cpu();
+    if (cpu < 0) GTEST_SKIP() << "no non-isolated cpu available";
+    {
+        auto r = pin_thread(cpu, "scoped");
+        ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+        EXPECT_EQ(r->cpu(), cpu);
+        EXPECT_TRUE(is_cpu_externally_pinned(cpu));
+    }  // r out of scope -> registry entry gone
+    EXPECT_FALSE(is_cpu_externally_pinned(cpu));
 }

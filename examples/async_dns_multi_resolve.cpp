@@ -38,13 +38,25 @@
 /// surface only. With a real NIC + ARP'd gateway, the same flow drives
 /// real queries.
 ///
+/// EAL bring-up uses `lcore_pin.hpp`: `--pin lcore_id=cpu_id[:role]`
+/// (repeatable) goes through `EalGuard::init_with_pins`, registering the
+/// EAL lcore cpus into the process-wide pin registry. `--lcores '<raw>'`
+/// is the escape hatch for syntax `LcorePin` cannot express; mutually
+/// exclusive with `--pin`.
+///
 /// Usage:
-///   sudo ./async_dns_multi_resolve -a 0000:28:00.0 -l 4-7 --
+///   sudo ./async_dns_multi_resolve --
+///        --pci 0000:28:00.0 --pin 0=4 --pin 1=5
 ///        --local-ip 10.0.0.16 --gateway-mac aa:bb:cc:dd:ee:ff
 ///        --nameserver 8.8.8.8
 ///        [--host stream.binance.com] [--host ws.okx.com]
 ///        [--host stream.bybit.com]   [--host ws-feed.exchange.coinbase.com]
 ///        [--smoke]
+///
+///   # raw escape hatch (range / set-of-sets):
+///   sudo ./async_dns_multi_resolve --
+///        --pci 0000:28:00.0 --lcores '4-7'
+///        --local-ip 10.0.0.16 --gateway-mac aa:bb:cc:dd:ee:ff [--smoke]
 ///
 /// `--host` may be passed multiple times. Default set is the four
 /// canonical crypto venue WS endpoints. `--smoke` forces the no-NIC
@@ -56,6 +68,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <expected>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -68,24 +81,55 @@
 
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
 #include "eph/dpdk/packet_core.hpp"  // net::format_ipv4, parse_ipv4
 #include "eph/net/dpdk/poller.hpp"
+#include "eph/utils/cpu.hpp"        // CpuPinPolicy
 #include "eph/utils/time.hpp"        // TSC::init() — the resolver's deadline
                                      // logic relies on a calibrated TSC.
 
 namespace edpdk = eph::net::dpdk;
+namespace ed    = eph::dpdk;
 namespace edns  = eph::dpdk::dns;
 using namespace std::chrono_literals;
 
 static std::atomic<bool> g_running{true};
 static void on_signal(int) { g_running.store(false, std::memory_order_release); }
 
-// Helper — split argv at the first "--" so EAL gets the EAL args.
+// Helper — split argv at the first "--" so EAL/app args stay separate.
+// Pre-`--` argv is currently unused (EAL config comes from post-`--` flags)
+// but the marker is preserved so existing wrapper scripts keep working.
 static int split_eal(int argc, char** argv) noexcept {
     for (int i = 1; i < argc; ++i) {
         if (std::string_view(argv[i]) == "--") return i;
     }
     return argc;
+}
+
+// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
+// Mirrors `simple_hft_dpdk_mp.cpp::parse_pin_spec`.
+[[nodiscard]] static std::expected<ed::LcorePin, std::string>
+parse_pin_spec(std::string_view s) noexcept {
+    auto eq = s.find('=');
+    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
+        return std::unexpected(std::string{
+            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
+    }
+    auto col = s.find(':', eq + 1);
+    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
+    auto lcore_str = std::string(s.substr(0, eq));
+    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
+    int  lcore     = std::atoi(lcore_str.c_str());
+    int  cpu       = std::atoi(cpu_str.c_str());
+    if (lcore < 0 || cpu < 0) {
+        return std::unexpected(std::string{
+            "--pin: lcore_id and cpu_id must be non-negative, got '"}
+            + std::string{s} + "'");
+    }
+    std::string role = (col == std::string_view::npos)
+                           ? std::string{}
+                           : std::string(s.substr(col + 1));
+    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
 }
 
 // Parse "aa:bb:cc:dd:ee:ff" — returns false on any malformed input rather
@@ -128,23 +172,21 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);
     spdlog::set_level(spdlog::level::info);
 
-    // ── 1) EAL init ──────────────────────────────────────────────────────
+    // ── 1) Parse app args (everything after "--") ─────────────────────────
     const int eal_end = split_eal(argc, argv);
-    auto eal = eph::dpdk::EalGuard::init(eal_end, argv);
-    if (!eal) {
-        spdlog::error("async_dns_multi_resolve: EAL init failed: {}", eal.error());
-        return 1;
-    }
     int    app_argc = argc - (eal_end == argc ? eal_end : eal_end + 1);
     char** app_argv = argv + (eal_end == argc ? eal_end : eal_end + 1);
 
-    // ── 2) Parse app args ────────────────────────────────────────────────
     std::vector<std::string> hosts;
     uint16_t dpdk_port_id = 0;
     uint32_t local_ip     = 0x0A000010;        // 10.0.0.16
     uint32_t nameserver   = 0x08080808;        // 8.8.8.8
     rte_ether_addr gw_mac{};                   // zero — must be set via flag
     bool smoke = false;
+
+    std::string                  pci_bdf;
+    std::vector<ed::LcorePin>    pins;
+    std::string                  lcores_raw;
 
     for (int i = 0; i < app_argc; ++i) {
         std::string_view a = app_argv[i];
@@ -158,6 +200,16 @@ int main(int argc, char** argv) {
             if (auto ip = eph::dpdk::net::parse_ipv4(app_argv[++i]); ip != 0) nameserver = ip;
         }
         else if (a == "--gateway-mac"&& i + 1 < app_argc) (void)parse_mac(app_argv[++i], gw_mac);
+        else if (a == "--pci"        && i + 1 < app_argc) pci_bdf      = app_argv[++i];
+        else if (a == "--lcores"     && i + 1 < app_argc) lcores_raw   = app_argv[++i];
+        else if (a == "--pin"        && i + 1 < app_argc) {
+            auto p = parse_pin_spec(app_argv[++i]);
+            if (!p) {
+                spdlog::error("async_dns_multi_resolve: {}", p.error());
+                return 1;
+            }
+            pins.push_back(std::move(*p));
+        }
         else if (a == "--smoke")                          smoke = true;
     }
     if (hosts.empty()) {
@@ -165,6 +217,48 @@ int main(int argc, char** argv) {
                  "ws.okx.com",
                  "stream.bybit.com",
                  "ws-feed.exchange.coinbase.com"};
+    }
+
+    // ── 2) EAL init via lcore_pin.hpp typed path (or raw escape) ─────────
+    const bool typed_pins = !pins.empty();
+    const bool raw_lcores = !lcores_raw.empty();
+    if (typed_pins && raw_lcores) {
+        spdlog::error("async_dns_multi_resolve: --pin and --lcores are mutually "
+                      "exclusive (typed vs raw EAL paths); pick one");
+        return 1;
+    }
+    if (!typed_pins && !raw_lcores) {
+        spdlog::error("async_dns_multi_resolve: provide either "
+                      "--pin lcore=cpu[:role] (preferred typed path) or "
+                      "--lcores '<raw EAL spec>'");
+        return 1;
+    }
+
+    ed::EalConfig eal_cfg{};
+    eal_cfg.program_name = "async_dns_multi_resolve";
+    if (!pci_bdf.empty()) eal_cfg.allowed_devs = {pci_bdf};
+    if (raw_lcores)       eal_cfg.lcores       = {lcores_raw};
+
+    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
+    if (typed_pins) {
+        spdlog::info("async_dns_multi_resolve: EAL init via init_with_pins "
+                     "({} pin(s))", pins.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, pins,
+                                           eph::utils::CpuPinPolicy{});
+    } else {
+        spdlog::info("async_dns_multi_resolve: EAL init via raw lcores='{}' "
+                     "(legacy path; consider --pin for typed validation)",
+                     lcores_raw);
+        auto argv_owned = ed::build_eal_argv(eal_cfg);
+        std::vector<char*> argv_ptrs;
+        argv_ptrs.reserve(argv_owned.size());
+        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
+        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
+                                 argv_ptrs.data());
+    }
+    if (!eal) {
+        spdlog::error("async_dns_multi_resolve: EAL init failed: {}", eal.error());
+        return 1;
     }
 
     // The resolver's deadline arithmetic uses TSC (per project convention).

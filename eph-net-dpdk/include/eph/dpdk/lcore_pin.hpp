@@ -47,7 +47,7 @@ inline spdlog::logger* lcore_pin_logger() {
 /// ~20 characters for readable conflict errors.
 ///
 /// Validation (cpu_id >= 0, no duplicate lcore_id, no duplicate cpu_id,
-/// SMT/NUMA/IRQ checks) is the job of `register_lcore_pins` (stage 5);
+/// SMT/NUMA/IRQ checks) is the job of `pin_lcore` / `pin_lcores`;
 /// `build_lcore_argv` itself does *no* semantic checking.
 struct LcorePin {
     std::uint16_t lcore_id;   ///< EAL-visible logical core id (0..RTE_MAX_LCORE-1)
@@ -70,7 +70,7 @@ struct LcorePin {
 ///
 /// @note Pure function: no validation, no registry side effects, no logging.
 ///       `lcore_id` collisions / negative `cpu_id` / 1:N mappings are not
-///       detected here — `register_lcore_pins` is the validation gate.
+///       detected here — `pin_lcores` is the validation gate.
 ///
 /// @param pins  span of LcorePin entries (any size, including zero)
 /// @return single argv token, or empty string if `pins` is empty
@@ -92,146 +92,88 @@ build_lcore_argv(std::span<LcorePin const> pins) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// register_lcore_pins + RegisteredLcoreGuard
+// pin_lcore + pin_lcores — registry-only counterparts to eph::utils::pin_thread.
+//
+// Both functions are placeholder-registration only: they validate and
+// claim cpu(s) in the process-wide registry BEFORE rte_eal_init. The
+// actual setaffinity happens later, inside rte_eal_init, when EAL either
+// repurposes the calling thread (main lcore) or pthread_create-s a new
+// worker thread (worker lcores). See examples/simple_hft_dpdk_rss.cpp
+// for the multi-lcore launch pattern.
+//
+// Both return eph::utils::PinGuard (the same RAII type pin_thread uses)
+// so EalGuard::pin_guards_ can hold them in a vector. The role string
+// written to the registry is "lcore-{lcore_id}({label})" — the prefix
+// is automatic, so caller-side conflict errors read e.g.
+// "pin_thread: cpu 4 already pinned by lcore-0(rx-worker)".
 // ──────────────────────────────────────────────────────────────────────
 
-/// @brief Move-only RAII guard for a batch of `register_external_pin` writes.
+/// @brief Pre-EAL: validate one LcorePin under @p policy and register its
+///        cpu into the process-wide pin registry. Single-pin primitive.
 ///
-/// Holds the cpu ids that `register_lcore_pins` successfully registered;
-/// destruction (or move-from) unregisters them in one sweep. This lets
-/// the caller treat lcore registration as a transaction: either every
-/// requested cpu is in the registry, or none of them are. Specifically
-/// covers the EalGuard::init_with_pins path (stage 6) where registration
-/// must roll back if `rte_eal_init` fails after we already touched the
-/// registry.
+/// Returns a `PinGuard` on success: destruction unregisters the cpu;
+/// `.release()` opts out of RAII (used by `pin_lcores` for transactional
+/// rollback handling and by `EalGuard::init_with_pins` to transfer
+/// ownership into the guard vector that lives as long as EAL).
 ///
-/// Move semantics: a moved-from guard owns nothing and its destructor
-/// is a no-op. `release()` is the explicit equivalent — the only intended
-/// caller is `EalGuard::init_with_pins` after a successful EAL init,
-/// where the guard's responsibility transfers into the EalGuard's
-/// owned `pin_guard_` field.
-class RegisteredLcoreGuard {
-public:
-    RegisteredLcoreGuard() noexcept = default;
-
-    ~RegisteredLcoreGuard() noexcept {
-        for (int cpu : registered_cpus_) {
-            eph::utils::unregister_external_pin(cpu);
-        }
+/// @param lcore_id  EAL-visible lcore id; only affects the registry role
+///                  label "lcore-{lcore_id}({label})", not setaffinity.
+/// @param cpu       physical cpu id (must be >= 0)
+/// @param label     short diagnostic role (e.g. "rx-worker"); empty allowed
+/// @param policy    isolcpus / SMT / NUMA / IRQ checks; default relaxed
+[[nodiscard]] inline std::expected<eph::utils::PinGuard, std::string>
+pin_lcore(std::uint16_t lcore_id, int cpu, std::string_view label,
+          eph::utils::CpuPinPolicy policy = {}) {
+    if (cpu < 0) {
+        return std::unexpected(std::format(
+            "pin_lcore: lcore={} has invalid cpu_id={}", lcore_id, cpu));
     }
-
-    RegisteredLcoreGuard(RegisteredLcoreGuard&& other) noexcept
-        : registered_cpus_(std::move(other.registered_cpus_)) {
-        other.registered_cpus_.clear();
+    if (auto v = eph::utils::detail::validate_pin_policy(cpu, policy); !v) {
+        return std::unexpected(std::format(
+            "pin_lcore: lcore={},cpu={}: {}", lcore_id, cpu, v.error()));
     }
-
-    RegisteredLcoreGuard& operator=(RegisteredLcoreGuard&& other) noexcept {
-        if (this != &other) {
-            for (int cpu : registered_cpus_) {
-                eph::utils::unregister_external_pin(cpu);
-            }
-            registered_cpus_ = std::move(other.registered_cpus_);
-            other.registered_cpus_.clear();
-        }
-        return *this;
+    std::string role = std::format("lcore-{}({})", lcore_id, label);
+    if (auto r = eph::utils::register_external_pin(cpu, std::move(role)); !r) {
+        return std::unexpected(std::format(
+            "pin_lcore: lcore={},cpu={}: {}", lcore_id, cpu, r.error()));
     }
+    return eph::utils::PinGuard::adopt(cpu);
+}
 
-    RegisteredLcoreGuard(RegisteredLcoreGuard const&)            = delete;
-    RegisteredLcoreGuard& operator=(RegisteredLcoreGuard const&) = delete;
-
-    /// Number of cpus this guard would unregister on destruction.
-    [[nodiscard]] std::size_t size() const noexcept { return registered_cpus_.size(); }
-
-    /// Empty? (moved-from / default-constructed)
-    [[nodiscard]] bool empty() const noexcept { return registered_cpus_.empty(); }
-
-    /// Read-only view of the cpus this guard owns. Useful for diagnostics
-    /// and test verification; do NOT mutate via this view.
-    [[nodiscard]] std::span<int const> registered_cpus() const noexcept {
-        return registered_cpus_;
-    }
-
-    /// Relinquish ownership without unregistering anything. After release,
-    /// destruction is a no-op. Intended for EalGuard::init_with_pins to
-    /// transfer ownership; general callers should prefer move semantics.
-    void release() noexcept { registered_cpus_.clear(); }
-
-private:
-    friend std::expected<RegisteredLcoreGuard, std::string>
-    register_lcore_pins(std::span<LcorePin const>, eph::utils::CpuPinPolicy);
-
-    explicit RegisteredLcoreGuard(std::vector<int>&& cpus) noexcept
-        : registered_cpus_(std::move(cpus)) {}
-
-    std::vector<int> registered_cpus_;
-};
-
-/// @brief Pre-EAL: validate every LcorePin under @p policy, then register
-///        their cpus into the process-wide pin registry.
+/// @brief Pre-EAL: validate every LcorePin under @p policy and register
+///        their cpus. Transactional batch wrapper around `pin_lcore`.
 ///
 /// Transaction semantics:
-///   - If every pin passes `eph::utils::detail::validate_pin_policy`
-///     (isolcpus / SMT sibling / NUMA / IRQ checks per `policy`) **and**
-///     every cpu is registerable (not already in the registry), the
-///     returned guard owns all of them and destruction releases them.
-///   - If any check or registration fails, every cpu staged so far is
-///     rolled back via `unregister_external_pin`, and the function
-///     returns `unexpected` with a message naming the offending pin.
+///   - On full success: returns a `vector<PinGuard>` with one entry per
+///     pin; the vector's destruction unregisters every cpu (RAII via
+///     each PinGuard) — equivalent to the previous `RegisteredLcoreGuard`
+///     batch behaviour.
+///   - On any failure: every previously-staged guard is dropped (RAII
+///     unregister) before returning `unexpected`. The error message names
+///     the offending pin index and inherits the diagnostic from `pin_lcore`.
 ///
-/// The role label written into the registry is `"lcore-{lcore_id}({role})"`,
-/// so subsequent `pin_thread` conflict errors read `cpu N already pinned by
-/// lcore-0(rx-worker)`.
-///
-/// @param pins    span of LcorePin entries; empty span returns an empty guard
-/// @param policy  validation strictness (default: relaxed, matches CpuPinPolicy{})
-/// @return guard on full success; unexpected with diagnostic on first failure
-[[nodiscard]] inline std::expected<RegisteredLcoreGuard, std::string>
-register_lcore_pins(std::span<LcorePin const> pins,
-                    eph::utils::CpuPinPolicy policy = {}) {
+/// Used by `EalGuard::init_with_pins`. Empty span returns an empty vector.
+[[nodiscard]] inline std::expected<std::vector<eph::utils::PinGuard>, std::string>
+pin_lcores(std::span<LcorePin const> pins,
+           eph::utils::CpuPinPolicy policy = {}) {
     [[maybe_unused]] auto* log = detail::lcore_pin_logger();
-    std::vector<int> staged;
-    staged.reserve(pins.size());
-
-    auto rollback = [&staged]() noexcept {
-        for (int c : staged) eph::utils::unregister_external_pin(c);
-        staged.clear();
-    };
+    std::vector<eph::utils::PinGuard> guards;
+    guards.reserve(pins.size());
 
     for (std::size_t i = 0; i < pins.size(); ++i) {
         auto const& p = pins[i];
-
-        if (p.cpu_id < 0) {
-            rollback();
+        auto g = pin_lcore(p.lcore_id, p.cpu_id, p.role, policy);
+        if (!g) {
+            // `guards` going out of scope here unregisters every staged cpu.
             return std::unexpected(std::format(
-                "register_lcore_pins: pin[{}] (lcore={}) has invalid cpu_id={}",
-                i, p.lcore_id, p.cpu_id));
+                "pin_lcores: pin[{}]: {}", i, g.error()));
         }
-
-        // Same four checks pin_thread runs (isolcpus / SMT sibling / NUMA /
-        // IRQ-warn). Reuses the helper so policy semantics stay coherent
-        // across both registrars.
-        if (auto v = eph::utils::detail::validate_pin_policy(p.cpu_id, policy);
-            !v) {
-            rollback();
-            return std::unexpected(std::format(
-                "register_lcore_pins: pin[{}] (lcore={},cpu={}): {}",
-                i, p.lcore_id, p.cpu_id, v.error()));
-        }
-
-        std::string role = std::format("lcore-{}({})", p.lcore_id, p.role);
-        if (auto r = eph::utils::register_external_pin(p.cpu_id, std::move(role));
-            !r) {
-            rollback();
-            return std::unexpected(std::format(
-                "register_lcore_pins: pin[{}] (lcore={},cpu={}): {}",
-                i, p.lcore_id, p.cpu_id, r.error()));
-        }
-        staged.push_back(p.cpu_id);
+        guards.push_back(std::move(*g));
     }
 
     SPDLOG_LOGGER_DEBUG(log,
-        "register_lcore_pins: registered {} lcore(s)", staged.size());
-    return RegisteredLcoreGuard{std::move(staged)};
+        "pin_lcores: registered {} lcore(s)", guards.size());
+    return guards;
 }
 
 } // namespace eph::dpdk

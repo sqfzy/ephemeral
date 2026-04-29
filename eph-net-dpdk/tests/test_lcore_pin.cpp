@@ -1,10 +1,14 @@
 /// @file eph-net-dpdk/tests/test_lcore_pin.cpp
 /// Unit tests for `eph::dpdk::LcorePin`, `build_lcore_argv`,
-/// `register_lcore_pins`, and `RegisteredLcoreGuard`.
+/// `pin_lcore`, and `pin_lcores`.
 ///
-/// EalGuard::init_with_pins integration (stage 6) lives in
-/// tests/integration/test_eal_init_with_pins.cpp because it requires
-/// real DPDK runtime / hugepages / vfio.
+/// PinGuard's own move/release semantics live in eph-utils/tests/
+/// test_cpu_pin.cpp — vector<PinGuard> from pin_lcores inherits its
+/// move behaviour from stdlib and doesn't need separate coverage.
+///
+/// EalGuard::init_with_pins integration (success path with real EAL init)
+/// lives in tests/integration/test_eal_init_with_pins.cpp because it
+/// requires real DPDK runtime / hugepages / vfio.
 
 #include <array>
 #include <span>
@@ -95,26 +99,48 @@ TEST(LcorePin, IsAggregateConstructible) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// register_lcore_pins / RegisteredLcoreGuard
+// pin_lcore (single) / pin_lcores (batch)
 // ──────────────────────────────────────────────────────────────────────
 
-TEST(RegisterLcorePins, EmptySpanReturnsEmptyGuard) {
+TEST(PinLcore, SinglePinRegistersAndRoleIsLcoreWrapped) {
+    eph::utils::reset_pin_registry_for_tests();
+    auto g = pin_lcore(7, 50, "fancy-rx");
+    ASSERT_TRUE(g.has_value()) << (g ? "" : g.error());
+    EXPECT_EQ(g->cpu(), 50);
+    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(50));
+
+    // Forcing a duplicate via register_external_pin surfaces the stored
+    // role string — verify the "lcore-N(label)" prefix is automatic.
+    auto dup = eph::utils::register_external_pin(50, "x");
+    ASSERT_FALSE(dup.has_value());
+    EXPECT_NE(dup.error().find("lcore-7(fancy-rx)"), std::string::npos)
+        << dup.error();
+}
+
+TEST(PinLcore, NegativeCpuRejected) {
+    eph::utils::reset_pin_registry_for_tests();
+    auto g = pin_lcore(0, -1, "x");
+    ASSERT_FALSE(g.has_value());
+    EXPECT_NE(g.error().find("invalid cpu_id"), std::string::npos);
+}
+
+TEST(PinLcores, EmptySpanReturnsEmptyVector) {
     eph::utils::reset_pin_registry_for_tests();
     std::array<LcorePin, 0> none{};
-    auto g = register_lcore_pins(std::span<LcorePin const>{none});
+    auto g = pin_lcores(std::span<LcorePin const>{none});
     ASSERT_TRUE(g.has_value()) << (g ? "" : g.error());
     EXPECT_TRUE(g->empty());
     EXPECT_EQ(g->size(), 0u);
 }
 
-TEST(RegisterLcorePins, HappyPathThreePinsAllRegistered) {
+TEST(PinLcores, HappyPathThreePinsAllRegistered) {
     eph::utils::reset_pin_registry_for_tests();
     std::array pins = {
         LcorePin{0, 4, "rx"},
         LcorePin{1, 5, "tx"},
         LcorePin{2, 6, "control"},
     };
-    auto g = register_lcore_pins(std::span<LcorePin const>{pins});
+    auto g = pin_lcores(std::span<LcorePin const>{pins});
     ASSERT_TRUE(g.has_value()) << (g ? "" : g.error());
     EXPECT_EQ(g->size(), 3u);
     EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(4));
@@ -122,30 +148,30 @@ TEST(RegisterLcorePins, HappyPathThreePinsAllRegistered) {
     EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(6));
 }
 
-TEST(RegisterLcorePins, GuardDestructorUnregistersAll) {
+TEST(PinLcores, VectorDestructorUnregistersAll) {
     eph::utils::reset_pin_registry_for_tests();
     std::array pins = {
         LcorePin{0, 10, "a"},
         LcorePin{1, 11, "b"},
     };
     {
-        auto g = register_lcore_pins(std::span<LcorePin const>{pins});
+        auto g = pin_lcores(std::span<LcorePin const>{pins});
         ASSERT_TRUE(g.has_value()) << (g ? "" : g.error());
         EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(10));
         EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(11));
-    }  // <-- guard destructs here
+    }  // <-- vector<PinGuard> destructs here, each guard unregisters
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(10));
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(11));
 }
 
-TEST(RegisterLcorePins, NegativeCpuRollsBackEarlierStaged) {
+TEST(PinLcores, NegativeCpuRollsBackEarlierStaged) {
     eph::utils::reset_pin_registry_for_tests();
     std::array pins = {
         LcorePin{0, 20, "ok-1"},
         LcorePin{1, 21, "ok-2"},
         LcorePin{2, -1, "broken"},  // <-- must reject and roll back
     };
-    auto g = register_lcore_pins(std::span<LcorePin const>{pins});
+    auto g = pin_lcores(std::span<LcorePin const>{pins});
     ASSERT_FALSE(g.has_value());
     EXPECT_NE(g.error().find("pin[2]"), std::string::npos)
         << "error must point to the offending index: " << g.error();
@@ -156,14 +182,14 @@ TEST(RegisterLcorePins, NegativeCpuRollsBackEarlierStaged) {
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(21));
 }
 
-TEST(RegisterLcorePins, DuplicateCpuRollsBackEarlierStaged) {
+TEST(PinLcores, DuplicateCpuRollsBackEarlierStaged) {
     eph::utils::reset_pin_registry_for_tests();
     std::array pins = {
         LcorePin{0, 30, "first"},
         LcorePin{1, 31, "second"},
         LcorePin{2, 30, "dup"},  // <-- same cpu as pin[0]
     };
-    auto g = register_lcore_pins(std::span<LcorePin const>{pins});
+    auto g = pin_lcores(std::span<LcorePin const>{pins});
     ASSERT_FALSE(g.has_value());
     EXPECT_NE(g.error().find("pin[2]"), std::string::npos);
     EXPECT_NE(g.error().find("already occupied"), std::string::npos);
@@ -172,82 +198,16 @@ TEST(RegisterLcorePins, DuplicateCpuRollsBackEarlierStaged) {
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(31));
 }
 
-TEST(RegisterLcorePins, ConflictWithExistingPinThreadDetected) {
+TEST(PinLcores, ConflictWithExistingExternalPinDetected) {
     eph::utils::reset_pin_registry_for_tests();
     ASSERT_TRUE(eph::utils::register_external_pin(40, "external-mock").has_value());
 
     std::array pins = { LcorePin{0, 40, "rx"} };
-    auto g = register_lcore_pins(std::span<LcorePin const>{pins});
+    auto g = pin_lcores(std::span<LcorePin const>{pins});
     ASSERT_FALSE(g.has_value());
     EXPECT_NE(g.error().find("already occupied"), std::string::npos);
     EXPECT_NE(g.error().find("external-mock"), std::string::npos)
         << "error should name the prior owner: " << g.error();
-}
-
-TEST(RegisterLcorePins, RoleFormattedAsLcoreIdAndUserLabel) {
-    eph::utils::reset_pin_registry_for_tests();
-    std::array pins = { LcorePin{7, 50, "fancy-rx"} };
-    auto g = register_lcore_pins(std::span<LcorePin const>{pins});
-    ASSERT_TRUE(g.has_value()) << (g ? "" : g.error());
-
-    // Force a duplicate to surface the stored role string in the error.
-    auto dup = eph::utils::register_external_pin(50, "x");
-    ASSERT_FALSE(dup.has_value());
-    EXPECT_NE(dup.error().find("lcore-7(fancy-rx)"), std::string::npos)
-        << dup.error();
-}
-
-TEST(RegisteredLcoreGuard, MoveCtorTransfersOwnership) {
-    eph::utils::reset_pin_registry_for_tests();
-    std::array pins = { LcorePin{0, 60, "x"} };
-    auto orig = register_lcore_pins(std::span<LcorePin const>{pins});
-    ASSERT_TRUE(orig.has_value()) << (orig ? "" : orig.error());
-
-    {
-        RegisteredLcoreGuard moved = std::move(*orig);
-        EXPECT_TRUE(orig->empty());        // moved-from is empty
-        EXPECT_EQ(moved.size(), 1u);       // new owner has the cpu
-        EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(60));
-    }  // moved destructs -> cpu released
-
-    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(60));
-
-    // Original guard going out of scope here is a no-op (already moved).
-}
-
-TEST(RegisteredLcoreGuard, MoveAssignReleasesPriorOwnership) {
-    eph::utils::reset_pin_registry_for_tests();
-    std::array pins_a = { LcorePin{0, 70, "a"} };
-    std::array pins_b = { LcorePin{1, 71, "b"} };
-
-    auto guard_a = register_lcore_pins(std::span<LcorePin const>{pins_a});
-    auto guard_b = register_lcore_pins(std::span<LcorePin const>{pins_b});
-    ASSERT_TRUE(guard_a.has_value() && guard_b.has_value());
-    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(70));
-    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(71));
-
-    *guard_a = std::move(*guard_b);  // assigning over guard_a must release cpu 70
-
-    EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(70))
-        << "move-assign must unregister the prior cpu";
-    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(71))
-        << "move-assign target now owns the moved-in cpu";
-}
-
-TEST(RegisteredLcoreGuard, ReleaseSkipsUnregistration) {
-    eph::utils::reset_pin_registry_for_tests();
-    std::array pins = { LcorePin{0, 80, "x"} };
-    {
-        auto g = register_lcore_pins(std::span<LcorePin const>{pins});
-        ASSERT_TRUE(g.has_value());
-        g->release();
-        // After release, destruction must not unregister.
-    }
-    EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(80))
-        << "release() should leave registry untouched";
-
-    // Cleanup so the next test isn't polluted.
-    eph::utils::unregister_external_pin(80);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -279,7 +239,7 @@ TEST(InitWithPins, RejectsConflictingCfgLcoresAndPins) {
 TEST(InitWithPins, PinValidationFailureDoesNotTouchEAL) {
     eph::utils::reset_pin_registry_for_tests();
 
-    // Pre-occupy cpu 4 by an unrelated owner so register_lcore_pins fails.
+    // Pre-occupy cpu 4 by an unrelated owner so pin_lcores fails.
     ASSERT_TRUE(eph::utils::register_external_pin(4, "occupant").has_value());
 
     EalConfig cfg;

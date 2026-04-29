@@ -77,6 +77,9 @@ void pin_to_cpu(int cpu_id) noexcept {
                     cpu_id, res.error());
         return;
     }
+    // mockex process runs to completion of the bench scenario then
+    // exits — permanent pin, detach guard.
+    res->release();
     SPDLOG_INFO("[mockex] pinned to CPU {}", cpu_id);
 }
 

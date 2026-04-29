@@ -36,10 +36,15 @@
 
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/dpdk/udp.hpp"
+
+#include <span>
+
+#include "eph/utils/cpu.hpp"
 
 namespace eph::dpdk::test {
 
@@ -164,6 +169,81 @@ struct DpdkBenchEnv {
         pcfg.port_id = dpdk_port_id;
         return create_full(argc, argv, server_ip_str, local_ip_str,
                            gateway_ip_str, pcfg);
+    }
+
+    /// Same end-state as `create_full(...)`, but EAL init is routed through
+    /// `EalGuard::init_with_pins` so the EAL lcore→cpu mapping participates
+    /// in the process-wide pin registry (collisions with later `pin_thread`
+    /// calls are detected loudly instead of silently fighting EAL).
+    ///
+    /// `eal_cfg.lcores` must be empty when @p pins is non-empty (typed/raw
+    /// mutual exclusion enforced by `init_with_pins`). Empty `pins` is
+    /// equivalent to the legacy `init` path — the registry just stays empty.
+    [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
+    create_full_with_pins(eph::dpdk::EalConfig eal_cfg,
+                          std::span<eph::dpdk::LcorePin const> pins,
+                          eph::utils::CpuPinPolicy pin_policy,
+                          const std::string& server_ip_str,
+                          const std::string& local_ip_str,
+                          const std::string& gateway_ip_str,
+                          const eph::dpdk::PlatformConfig& pcfg_template) {
+        // ── 1. EAL init via typed pin path ────────────────────────────
+        auto eal = eph::dpdk::EalGuard::init_with_pins(
+            std::move(eal_cfg), pins, pin_policy);
+        if (!eal) return std::unexpected("EAL init: " + eal.error());
+
+        // ── 2. Platform (caller-supplied config) ──────────────────────
+        auto plat = eph::dpdk::Platform::create(pcfg_template);
+        if (!plat) return std::unexpected("Platform: " + plat.error());
+
+        uint16_t port_id = plat->port_id();
+        rte_mempool* pool = plat->mempool();
+
+        // ── 3. Parse IPs (host byte order) ────────────────────────────
+        auto parse_ip = [](const std::string& s) -> std::expected<uint32_t, std::string> {
+            in_addr addr{};
+            if (inet_pton(AF_INET, s.c_str(), &addr) != 1) {
+                return std::unexpected("invalid IP: " + s);
+            }
+            return ntohl(addr.s_addr);
+        };
+        auto src_ip = parse_ip(local_ip_str);
+        if (!src_ip) return std::unexpected(src_ip.error());
+        auto dst_ip = parse_ip(server_ip_str);
+        if (!dst_ip) return std::unexpected(dst_ip.error());
+        auto gw_ip = parse_ip(gateway_ip_str);
+        if (!gw_ip) return std::unexpected(gw_ip.error());
+
+        // ── 4. Local MAC ──────────────────────────────────────────────
+        rte_ether_addr src_mac{};
+        if (int rc = rte_eth_macaddr_get(port_id, &src_mac); rc != 0) {
+            return std::unexpected("rte_eth_macaddr_get failed: " +
+                                   std::to_string(rc));
+        }
+        spdlog::info("dpdk_env: local MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     src_mac.addr_bytes[0], src_mac.addr_bytes[1],
+                     src_mac.addr_bytes[2], src_mac.addr_bytes[3],
+                     src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
+
+        // ── 5. ARP resolve gateway MAC ────────────────────────────────
+        auto gw_mac_result = eph::dpdk::arp::resolve(
+            port_id, pool,
+            src_mac, *src_ip, *gw_ip,
+            std::chrono::seconds{3});
+        if (!gw_mac_result) {
+            return std::unexpected("ARP resolve gateway: " + gw_mac_result.error());
+        }
+        spdlog::info("dpdk_env: gateway MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     gw_mac_result->addr_bytes[0], gw_mac_result->addr_bytes[1],
+                     gw_mac_result->addr_bytes[2], gw_mac_result->addr_bytes[3],
+                     gw_mac_result->addr_bytes[4], gw_mac_result->addr_bytes[5]);
+
+        return DpdkBenchEnv{
+            std::move(*eal), std::move(*plat),
+            *src_ip, *dst_ip, *gw_ip,
+            src_mac, *gw_mac_result,
+            port_id, pool
+        };
     }
 
     /// Create a UdpSender configured for this environment.

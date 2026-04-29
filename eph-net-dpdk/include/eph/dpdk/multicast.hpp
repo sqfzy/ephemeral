@@ -744,8 +744,17 @@ private:
     // ─────────────────────────────────────────────────────────────────────
 
     void rx_loop() {
+        // Pin local to this thread's loop scope: when rx_loop returns
+        // (thread is exiting anyway), guard's destructor unregisters the
+        // cpu — the OS implicitly releases the pthread's affinity at
+        // thread death, so registry cleanup at the same point is correct.
+        eph::utils::PinGuard pin_guard;
         if (config_.rx_cpu >= 0) {
-            [[maybe_unused]] auto affinity_ok = eph::utils::pin_thread(config_.rx_cpu, "multicast_rx");
+            if (auto r = eph::utils::pin_thread(config_.rx_cpu, "multicast_rx"); r) {
+                pin_guard = std::move(*r);
+            }
+            // else: best-effort — log inside pin_thread already covers
+            // the failure; we continue without a registry entry.
         }
 
         [[maybe_unused]] auto* log = detail::multicast_logger();

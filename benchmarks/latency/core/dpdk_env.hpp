@@ -31,7 +31,10 @@
 
 #include "core/bench_conf.hpp"
 
+#include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/test/dpdk_env.hpp"
+#include "eph/utils/cpu.hpp"
 
 namespace bench {
 
@@ -96,8 +99,57 @@ synthesize_eal_argv(std::string_view cores_csv,
     return dist(rng);
 }
 
+/// Parse a comma-separated CPU list (e.g. `"0,1"` or `"0, 4, 5"`) into a
+/// vector of `LcorePin` with sequential `lcore_id`s 0..N-1 and role
+/// `"bench-eal"`. Whitespace around each token is trimmed; empty tokens
+/// (`",,"`) are skipped. Negative values surface as `std::unexpected`.
+///
+/// This is the typed replacement for the legacy `-l <csv>` argv path:
+/// CSV `"0,4"` lowers to `[LcorePin{0,0,"bench-eal"}, LcorePin{1,4,"bench-eal"}]`
+/// which builds `--lcores=0@0,1@4` — byte-equivalent to the EAL semantics
+/// of `-l 0,4` (lcore 0 on cpu 0, lcore 1 on cpu 4) but participates in
+/// the process-wide pin registry.
+[[nodiscard]] inline std::expected<std::vector<eph::dpdk::LcorePin>, std::string>
+parse_eal_cores_csv(std::string_view csv) {
+    std::vector<eph::dpdk::LcorePin> pins;
+    std::uint16_t next_lcore = 0;
+    std::size_t pos = 0;
+    while (pos <= csv.size()) {
+        std::size_t comma = csv.find(',', pos);
+        std::string_view tok = (comma == std::string_view::npos)
+                                   ? csv.substr(pos)
+                                   : csv.substr(pos, comma - pos);
+        // Strip surrounding whitespace.
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t'))
+            tok.remove_prefix(1);
+        while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t'))
+            tok.remove_suffix(1);
+        if (!tok.empty()) {
+            int cpu = std::atoi(std::string{tok}.c_str());
+            if (cpu < 0) {
+                return std::unexpected(std::string{
+                    "parse_eal_cores_csv: negative cpu in token '"}
+                    + std::string{tok} + "'");
+            }
+            pins.push_back(eph::dpdk::LcorePin{
+                next_lcore++, cpu, std::string{"bench-eal"}});
+        }
+        if (comma == std::string_view::npos) break;
+        pos = comma + 1;
+    }
+    return pins;
+}
+
 /// Read DPDK bootstrap fields from config.toml-backed `BenchConfig` and
 /// construct a fully-initialized `DpdkBenchEnv`.
+///
+/// EAL init goes through `EalGuard::init_with_pins`: the CSV
+/// `cpu.eal_cores` is parsed into typed `LcorePin` specs, validated against
+/// the process-wide pin registry (relaxed policy for shared dev hosts —
+/// `cpu_client` collisions surface loudly), then lowered to
+/// `--lcores=<lcore>@<cpu>,...` argv. The legacy `synthesize_eal_argv`
+/// (`-l <csv>`) helper remains for unit-test coverage but is no longer
+/// the bench bring-up path.
 ///
 /// Required fields (validated by `load_bench_conf()`):
 ///   - networking.server_ip   — destination (kernel mock on NIC_A)
@@ -105,12 +157,13 @@ synthesize_eal_argv(std::string_view cores_csv,
 ///   - networking.gateway_ip  — default GW for ARP resolve
 ///   - networking.nic_b_pci   — NIC_B PCI BDF (required for DPDK bring-up)
 /// Optional:
-///   - cpu.eal_cores          — comma-separated lcore list (default "0,1")
+///   - cpu.eal_cores          — comma-separated cpu list (default "0,1")
 ///   - dpdk.rss.nb_rx_queues  — default 1; > 1 auto-engages RSS/FD bring-up
 ///
 /// Failure modes (all surface as `std::unexpected(std::string)`):
 ///   - "load_dpdk_env: networking.nic_b_pci is required ..."
-///   - "load_dpdk_env: create_full: <reason>"
+///   - "load_dpdk_env: parse_eal_cores_csv: <reason>"
+///   - "load_dpdk_env: create_full_with_pins: <reason>"
 [[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
 load_dpdk_env(const BenchConfig& cfg,
               uint16_t dpdk_port_id = 0) noexcept try {
@@ -131,15 +184,25 @@ load_dpdk_env(const BenchConfig& cfg,
         eal_cores = "0,1";
     }
 
-    auto argv_storage = synthesize_eal_argv(eal_cores, dpdk_pci);
-    std::vector<char*> argv;
-    argv.reserve(argv_storage.size());
-    for (auto& s : argv_storage) argv.push_back(s.data());
-    const int argc = static_cast<int>(argv.size());
+    auto pins_r = parse_eal_cores_csv(eal_cores);
+    if (!pins_r) {
+        return std::unexpected("load_dpdk_env: " + pins_r.error());
+    }
+    auto pins = std::move(*pins_r);
+
+    eph::dpdk::EalConfig eal_cfg{};
+    eal_cfg.program_name = "lat_bench";
+    eal_cfg.allowed_devs = {dpdk_pci};
+    // --proc-type=auto and --log-level filter were the previous defaults
+    // from synthesize_eal_argv. EalConfig has no first-class field for
+    // either, so route them through extra_args. init_with_pins appends
+    // its own `--lcores=...` token on top of these.
+    eal_cfg.extra_args   = {std::string{"--proc-type=auto"},
+                            std::string{"--log-level=lib.eal:warning"}};
 
     spdlog::info(
-        "load_dpdk_env: EAL argv synthesized: {} cores={} pci={}",
-        argc, eal_cores, dpdk_pci);
+        "load_dpdk_env: EAL init via init_with_pins: pins={} cpus_csv={} pci={}",
+        pins.size(), eal_cores, dpdk_pci);
 
     eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id      = dpdk_port_id;
@@ -152,10 +215,22 @@ load_dpdk_env(const BenchConfig& cfg,
             pcfg.nb_rx_queues);
     }
 
-    auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full(
-        argc, argv.data(), mock_ip, client_ip, gateway_ip, pcfg);
+    // Relaxed CpuPinPolicy (matches pin_client_from_cfg): the bench runs
+    // on shared dev hosts where isolcpus / NUMA / SMT-sibling enforcement
+    // would gate the run on cluster topology rather than the property
+    // we actually care about (every measurement thread on a *fixed* cpu).
+    eph::utils::CpuPinPolicy pin_policy{
+        .require_isolcpus            = false,
+        .require_no_sibling_conflict = false,
+        .require_same_numa           = false,
+        .warn_irq_overlap            = false,
+    };
+
+    auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full_with_pins(
+        std::move(eal_cfg), pins, pin_policy,
+        mock_ip, client_ip, gateway_ip, pcfg);
     if (!env_r) {
-        return std::unexpected("load_dpdk_env: create_full: " + env_r.error());
+        return std::unexpected("load_dpdk_env: create_full_with_pins: " + env_r.error());
     }
     return std::move(*env_r);
 } catch (const std::exception& e) {

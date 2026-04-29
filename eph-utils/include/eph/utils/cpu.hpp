@@ -626,6 +626,64 @@ validate_pin_policy(int cpu, CpuPinPolicy const& policy) {
 
 } // namespace detail
 
+// Forward decls so PinGuard's destructor can call unregister_external_pin.
+inline void unregister_external_pin(int cpu) noexcept;
+
+/// @brief Move-only RAII guard for a single cpu in the process-wide pin
+/// registry. Destruction calls `unregister_external_pin(cpu)`; `release()`
+/// detaches ownership so the registry entry survives.
+///
+/// The guard does NOT undo `pthread_setaffinity_np` — the OS-level affinity
+/// stays in effect on the thread that called `pin_thread`. Only the
+/// **registry** entry is reverted. This matches the contract the registry
+/// promises: it tracks "who claims this cpu", not "is the kernel scheduler
+/// limited to this cpu". A thread that wants to truly un-pin itself must
+/// pin to the original mask separately.
+///
+/// Empty / default-constructed guards (`cpu_ == -1`) are no-ops — useful
+/// for "maybe pin" patterns (`PinGuard g; if (...) g = std::move(*r);`).
+class PinGuard {
+public:
+    PinGuard() noexcept = default;
+    PinGuard(PinGuard&& other) noexcept : cpu_(other.cpu_) { other.cpu_ = -1; }
+    PinGuard& operator=(PinGuard&& other) noexcept {
+        if (this != &other) {
+            if (cpu_ >= 0) unregister_external_pin(cpu_);
+            cpu_       = other.cpu_;
+            other.cpu_ = -1;
+        }
+        return *this;
+    }
+    PinGuard(const PinGuard&)            = delete;
+    PinGuard& operator=(const PinGuard&) = delete;
+
+    ~PinGuard() noexcept {
+        if (cpu_ >= 0) unregister_external_pin(cpu_);
+    }
+
+    [[nodiscard]] int  cpu()   const noexcept { return cpu_; }
+    [[nodiscard]] bool empty() const noexcept { return cpu_ < 0; }
+
+    /// Detach ownership: destructor becomes a no-op, registry entry stays.
+    /// Use when the pin should outlive the guard scope (e.g. a worker
+    /// thread that runs for the whole program — the OS affinity sticks
+    /// regardless, and we want the registry to reflect that).
+    void release() noexcept { cpu_ = -1; }
+
+    /// Wrap an already-registered cpu into a guard. Used by `pin_thread`
+    /// and `eph::dpdk::pin_lcore` once they've successfully registered.
+    /// **Caller must have written to the registry first** — `adopt` does
+    /// not check the registry state.
+    [[nodiscard]] static PinGuard adopt(int cpu) noexcept {
+        PinGuard g;
+        g.cpu_ = cpu;
+        return g;
+    }
+
+private:
+    int cpu_ = -1;
+};
+
 /// @brief Pin the calling thread to @p cpu with policy-driven validation.
 ///
 /// Steps, in order (Linux path):
@@ -642,8 +700,12 @@ validate_pin_policy(int cpu, CpuPinPolicy const& policy) {
 /// @param cpu     logical cpu id (must be >= 0)
 /// @param name    short thread label (≤ 15 chars for pthread_setname_np)
 /// @param policy  which checks to enforce (default: all relaxed)
-/// @return `{}` on success, error string on any failure
-[[nodiscard]] inline std::expected<void, std::string>
+/// @return `PinGuard` on success (RAII unregister-on-drop; call
+///         `.release()` for permanent-pin semantics); error string on
+///         failure. The pthread affinity is left in whatever state the
+///         OS reports — see the policy comment in the body for the
+///         post-`pthread_setaffinity_np` failure mode.
+[[nodiscard]] inline std::expected<PinGuard, std::string>
 pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     if (cpu < 0) {
         return std::unexpected("pin_thread: cpu must be >= 0");
@@ -697,13 +759,15 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     detail::set_thread_name(name);
 
     spdlog::info("pin_thread: '{}' pinned to cpu {} (verified)", name, cpu);
-    return {};
+    return PinGuard::adopt(cpu);
 #elif defined(__APPLE__)
     (void)policy;
     detail::set_thread_name(name);
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     spdlog::info("pin_thread: '{}' QoS set (macOS has no hard affinity)", name);
-    return {};
+    // No registry entry on macOS (no hard affinity to track) — return
+    // an empty guard so callers' API shape stays consistent.
+    return PinGuard{};
 #else
     (void)name; (void)policy;
     return std::unexpected(
@@ -715,7 +779,7 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
 ///
 /// Equivalent to `pin_thread(cpu, "", CpuPinPolicy{})`. Convenience for
 /// microbenchmarks and quick scripts that don't care about role tags.
-[[nodiscard]] inline std::expected<void, std::string>
+[[nodiscard]] inline std::expected<PinGuard, std::string>
 pin_thread(int cpu) noexcept {
     return pin_thread(cpu, std::string_view{}, CpuPinPolicy{});
 }

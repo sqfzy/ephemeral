@@ -28,7 +28,7 @@
 /// What it covers (only adds value beyond test_lcore_pin's pre-EAL paths):
 ///   * EAL succeeds and pin_guard is alive — registry has the cpus.
 ///   * EalGuard moves out of scope → eal_cleanup runs first, then
-///     pin_guard_ destructor unregisters the cpus from the registry.
+///     pin_guards_ destructor unregisters the cpus from the registry.
 ///
 /// Failure paths (mutual-exclusion / pre-EAL conflict / batch rollback)
 /// are already covered by test_lcore_pin without touching DPDK runtime,
@@ -116,10 +116,10 @@ TEST(InitWithPinsIntegration, SuccessPathRegistersAndCleansUp) {
 
         EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(0));
         EXPECT_TRUE(eph::utils::is_cpu_externally_pinned(1));
-    }  // <-- ~EalGuard runs eal_cleanup() then pin_guard_ unregisters
+    }  // <-- ~EalGuard runs eal_cleanup() then pin_guards_ unregisters
 
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(0))
-        << "pin_guard_ in EalGuard must unregister cpu 0 on destruction";
+        << "pin_guards_ in EalGuard must unregister cpu 0 on destruction";
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(1))
-        << "pin_guard_ in EalGuard must unregister cpu 1 on destruction";
+        << "pin_guards_ in EalGuard must unregister cpu 1 on destruction";
 }

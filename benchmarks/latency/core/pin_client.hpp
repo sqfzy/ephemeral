@@ -62,6 +62,10 @@ pin_client_from_cfg(const BenchConfig& cfg,
                     thread_name, cpu, source, res.error());
         return;
     }
+    // Permanent pin: bench process lives until measurement ends, then
+    // exits — no scope where un-registering would help. Detach the
+    // guard so the registry entry sticks around for the program's life.
+    res->release();
     SPDLOG_INFO("[{}] pinned to CPU {} (source: {})",
                 thread_name, cpu, source);
 }
