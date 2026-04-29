@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed — `~DpdkUdpSocket` now clears multicast MAC filters on the NIC
+
+`DpdkUdpSocket::join_multicast()` pushes MAC filters into the NIC's
+multicast filter table, but the destructor only auto-detached from
+the Poller — it never tore the filters back down. Stale entries
+survived socket destruction; after enough socket churn the NIC's
+finite filter table (commonly 8-16 slots on AWS ENA) was exhausted,
+and operators inspecting the running NIC saw filters that no longer
+mapped to any owning socket.
+
+`~DpdkUdpSocket` now mirrors `~MulticastReceiver::leave_all_groups()`:
+when `mcast_count_ > 0`, it zeroes the in-process list and best-effort
+calls `apply_mcast_list_()` (return-value ignored — dtor cannot
+propagate). Symmetric with the existing auto-detach contract.
+
 ### Fixed — AsyncDnsResolverT auto-detaches from Poller on destruction (UAF)
 
 `AsyncDnsResolverT` had no destructor. The lifetime doc claimed both

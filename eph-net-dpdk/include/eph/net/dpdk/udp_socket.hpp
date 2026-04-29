@@ -374,6 +374,28 @@ public:
                     r.error().detail ? r.error().detail : "unknown");
             }
         }
+        // Symmetric with `~MulticastReceiver::leave_all_groups()`: any
+        // multicast MAC filters this socket pushed to the NIC via
+        // `join_multicast()` must be torn down here. Without this the
+        // filters survive socket destruction; the next process / user
+        // joining on the same port faces stale state, and after enough
+        // socket churn the NIC's finite mcast filter table (commonly
+        // 8-16 slots on AWS ENA) is exhausted.
+        if (mcast_count_ > 0) {
+            SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+                "~DpdkUdpSocket: clearing {} multicast MAC filter(s)",
+                mcast_count_);
+            mcast_count_ = 0;
+            // Wipe the slot bytes so `mcast_macs_` no longer reports
+            // stale MACs to anything that might inspect it (defensive —
+            // the dtor is the last reader, but match the join/leave
+            // pattern that zeroes evicted slots).
+            for (auto& m : mcast_macs_) m = rte_ether_addr{};
+            // Best effort — return-value ignored. We're in a dtor and
+            // a failing teardown is logged inside apply_mcast_list_()
+            // via its WARN path; no caller could act on a dtor return.
+            (void)apply_mcast_list_();
+        }
     }
 
     DpdkUdpSocket(const DpdkUdpSocket&)            = delete;
