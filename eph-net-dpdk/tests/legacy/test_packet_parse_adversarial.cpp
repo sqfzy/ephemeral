@@ -594,6 +594,75 @@ TEST(PacketParseAdv, IcmpProtocolMismatchRejected) {
     EXPECT_FALSE(static_cast<bool>(parsed));
 }
 
+TEST(PacketParseAdv, IcmpRejectsWhenIpTotalLengthSmallerThanIcmpFooter) {
+    // Defense-in-depth (RFC 791 §3.2): IP `total_length` is the source of
+    // truth for how many bytes follow the IP header. `parse_icmp` validates
+    // the ICMP header / Type-3-Code-4 footer / embedded IP+L4 against
+    // `pkt_len` (the mbuf data_len) but does NOT cross-check against
+    // `ip->total_length`. A crafted frame whose pkt_len is large (e.g. 70B
+    // — possibly arrived padded by NIC/router) but whose IP total_length
+    // claims only the bare IP header (20B, no payload) is still walked by
+    // the parser as if the trailing ICMP+embedded fields were legitimate.
+    //
+    // Impact: an attacker on the L2 segment who can deliver such a packet
+    // can inject arbitrary `next_hop_mtu` and embedded 4-tuple values into
+    // the ICMP dispatch path, potentially triggering MSS shrinks on
+    // unrelated active flows that match the spoofed embedded 4-tuple.
+    //
+    // Expected behaviour: parse_icmp rejects the packet wholesale because
+    // ip->total_length is incompatible with the ICMP footer the bytes
+    // claim to encode.
+    uint8_t buf[256];
+    const size_t pkt_len = build_icmp_frag_needed(buf, /*mtu=*/1280);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // Claim only the bare IP header (20B) — no ICMP payload at all per
+    // ip->total_length, even though the buffer carries the full 56B
+    // ICMP-T3C4 + embedded headers afterwards.
+    ip->total_length = hton16(static_cast<uint16_t>(kIpv4HeaderLen));
+    auto mbuf = make_mbuf(buf, pkt_len);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed))
+        << "parse_icmp accepted a packet whose ip->total_length excludes "
+           "the ICMP footer — defense-in-depth gap";
+}
+
+TEST(PacketParseAdv, IcmpRejectsWhenIpTotalLengthExceedsPktLen) {
+    // Symmetric defense: ip->total_length must not claim MORE bytes than
+    // the mbuf actually carries. `parse_ip_header` does not enforce this
+    // (it only checks `ihl`); without a matching gate in parse_icmp, a
+    // sender can lie in the upward direction and have the parser still
+    // succeed because pkt_len happens to cover the ICMP+embedded reads.
+    uint8_t buf[256];
+    const size_t pkt_len = build_icmp_frag_needed(buf, /*mtu=*/1280);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    // Claim a total_length larger than pkt_len permits — even if the
+    // ICMP footer "fits" in the buffer, the IP header is internally
+    // inconsistent and must not be trusted.
+    ip->total_length = hton16(static_cast<uint16_t>(pkt_len));  // exceeds payload
+    // Trim mbuf to less than ip total_length claims.
+    auto mbuf = make_mbuf(buf, pkt_len - 4);
+    auto parsed = parse_icmp(&mbuf);
+    EXPECT_FALSE(static_cast<bool>(parsed))
+        << "parse_icmp accepted a packet whose ip->total_length exceeds "
+           "pkt_len — defense-in-depth gap";
+}
+
+TEST(PacketParseAdv, IcmpAcceptsConsistentIpTotalLength) {
+    // Regression guard: the well-formed case must continue to parse so
+    // the new bounds checks don't reject legitimate router-originated
+    // Type 3 Code 4 messages.
+    uint8_t buf[256];
+    const size_t pkt_len = build_icmp_frag_needed(buf, /*mtu=*/1400);
+    // build_icmp_frag_needed already sets ip->total_length consistently;
+    // verify the round-trip parses fully.
+    auto mbuf = make_mbuf(buf, pkt_len);
+    auto parsed = parse_icmp(&mbuf);
+    ASSERT_TRUE(static_cast<bool>(parsed));
+    EXPECT_TRUE(parsed.is_frag_needed());
+    EXPECT_EQ(parsed.next_hop_mtu, 1400);
+    EXPECT_TRUE(parsed.embedded_valid);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // IP fragmentation — our L4 parsers assume the TCP/UDP/ICMP header sits
 // immediately after the IP header, which is only true for the *first*
