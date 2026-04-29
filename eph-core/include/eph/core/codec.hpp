@@ -76,7 +76,12 @@ public:
     /// @return BufferFull on overflow, Ok otherwise.
     [[nodiscard]] std::expected<void, ErrorInfo>
     append(std::span<const uint8_t> src) noexcept {
-        if (len_ + src.size() > cap_) {
+        // Overflow-safe form: a hostile / malformed `src.size()` near
+        // SIZE_MAX would wrap `len_ + src.size()` to a small value that
+        // silently passes the < cap_ test; reorder so the LHS is the
+        // unsigned-safe `cap_ - len_` (non-negative under the codec's
+        // `len_ <= cap_` invariant).
+        if (src.size() > cap_ - len_) {
             return std::unexpected(ErrorInfo{Error::BufferFull,
                                              "OutputBuffer::append: capacity exceeded"});
         }
@@ -95,7 +100,8 @@ public:
     /// @return BufferFull when fewer than `n` bytes are available.
     [[nodiscard]] std::expected<void, ErrorInfo>
     reserve(std::size_t n) noexcept {
-        if (len_ + n > cap_) {
+        // Same overflow-safe shape as append(). See that function's comment.
+        if (n > cap_ - len_) {
             return std::unexpected(ErrorInfo{Error::BufferFull,
                                              "OutputBuffer::reserve: insufficient capacity"});
         }
@@ -108,7 +114,8 @@ public:
     /// fewer than `n` bytes are available, returns nullptr so the caller can
     /// fall back to an error path.
     [[nodiscard]] uint8_t* writable_tail(std::size_t n) noexcept {
-        if (len_ + n > cap_) {
+        // Same overflow-safe shape as append(). See that function's comment.
+        if (n > cap_ - len_) {
             return nullptr;
         }
         return base_ + len_;
