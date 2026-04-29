@@ -575,8 +575,24 @@ public:
             return std::unexpected("No packet callback registered");
         }
 
+        // Set running_ BEFORE the std::thread ctor so the lambda's first
+        // load sees true (the lambda runs `while (running_.load(acquire))`).
+        // If the thread ctor throws on resource exhaustion (rare — pthread
+        // EAGAIN, ENOMEM), restore running_ to false so a follow-up start()
+        // is not permanently rejected as "Already running" against a thread
+        // that does not exist. Pre-fix the inconsistency was unrecoverable.
         running_.store(true, std::memory_order_release);
-        thread_ = std::thread([this] { rx_loop(); });
+        try {
+            thread_ = std::thread([this] { rx_loop(); });
+        } catch (const std::system_error& e) {
+            running_.store(false, std::memory_order_release);
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "MulticastReceiver::start: std::thread ctor failed: {} "
+                "(code={}); running_ rolled back so start() may be retried",
+                e.what(), e.code().value());
+            return std::unexpected(std::format(
+                "MulticastReceiver::start: thread ctor failed: {}", e.what()));
+        }
 
         SPDLOG_LOGGER_INFO(detail::multicast_logger(),
             "MulticastReceiver started: {} active groups, port={}, queue={}",
