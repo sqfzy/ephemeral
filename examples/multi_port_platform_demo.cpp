@@ -1,0 +1,278 @@
+/// @file multi_port_platform_demo.cpp
+///
+/// DPDK aggregator example: one process, *N* physical NIC ports, each
+/// owned by an independent `eph::dpdk::Platform`, all wrapped under a
+/// single `eph::dpdk::MultiPortPlatform`. The canonical use case is
+/// "MD on NIC A, OE on NIC B" or "redundant feeds on NIC A and NIC B"
+/// — two coarse-grained roles in one process, no fused state across
+/// them.
+///
+/// What's demonstrated:
+///
+///   * `MultiPortPlatform::create(span<PlatformConfig>)` — atomic N-port
+///     bringup with rollback. Pre-validates every config (validate_config
+///     + distinct port_id check) before any DPDK state is touched, then
+///     calls `Platform::create_primary` per port. If port K fails, ports
+///     `[0, K)` are reaped via the local vector's RAII before the error
+///     surfaces.
+///   * `num_ports()` / `port(i)` indexed access — the slot index is the
+///     position in the input span, NOT the DPDK `port_id`. The example
+///     prints both side-by-side so the distinction is unambiguous.
+///   * `find_index_by_port_id(dpdk_port_id)` — cold linear scan that
+///     translates an externally-known DPDK port id into an aggregator
+///     slot. We exercise it once after bringup as a sanity check.
+///   * One `DpdkPoller` per port (single queue each, queue 0), driven
+///     sequentially from the main lcore. Production code would split
+///     across lcores; this keeps the demo's main() short.
+///
+/// What's deliberately out of scope:
+///
+///   * RSS multi-queue per port — see `examples/simple_hft_dpdk_rss.cpp`.
+///     `MultiPortPlatform` is orthogonal to RSS: each owned Platform can
+///     independently turn on `enable_rss + nb_rx_queues > 1`. We pin
+///     `nb_rx_queues = 1` here to keep the focus on the aggregator.
+///   * Cross-port ICMP routing or fused multi-port Poller — by design.
+///     See the file header on `eph/dpdk/multi_port_platform.hpp` for the
+///     full rationale.
+///   * Real traffic. Each port gets a Poller and a brief poll() loop
+///     just to exercise the per-port hot path; no streams are attached.
+///     A real app would wire `DpdkTcpStream::create_and_attach` per
+///     port (passing `mp.port(i)` as the Platform reference).
+///
+/// Required environment: every PCI address passed via `--pci` must be
+/// bound to vfio-pci with hugepages backing it. This demo needs *at
+/// least two* PCI args — a single port is the dominant case and goes
+/// through `Platform::create_primary` directly, no aggregator needed.
+///
+/// Usage:
+///
+///   sudo ./multi_port_platform_demo --
+///        --pci 0000:28:00.0 --pci 0000:28:00.1
+///        --pin 0=4 --pin 1=5
+///        --seconds 3
+///
+/// `--pci <addr>` is repeatable; the K-th occurrence becomes
+/// `port_id = K` in DPDK's port enumeration (allowlist order). The
+/// example builds one `PlatformConfig` per port, with `port_id`
+/// matching the slot index 1:1.
+
+#include <atomic>
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstdlib>
+#include <expected>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <spdlog/spdlog.h>
+
+#include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/lcore_pin.hpp"
+#include "eph/dpdk/multi_port_platform.hpp"
+#include "eph/dpdk/platform.hpp"
+#include "eph/net/dpdk/flow_steering.hpp"
+#include "eph/net/dpdk/poller.hpp"
+#include "eph/utils/cpu.hpp"
+
+namespace edpdk = eph::net::dpdk;
+namespace ed    = eph::dpdk;
+using namespace std::chrono_literals;
+
+static std::atomic<bool> g_running{true};
+static void on_signal(int) { g_running.store(false, std::memory_order_release); }
+
+namespace {
+
+struct AppArgs {
+    std::vector<std::string>  pci_addrs;     // -a passthrough, repeatable
+    std::vector<ed::LcorePin> pins;
+    std::string               lcores;
+    std::chrono::seconds      run_seconds = 3s;
+};
+
+std::expected<ed::LcorePin, std::string>
+parse_pin_spec(std::string_view s) {
+    auto eq = s.find('=');
+    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size())
+        return std::unexpected(std::string{"--pin: expected 'lcore=cpu[:role]', got '"}
+                               + std::string{s} + "'");
+    auto col = s.find(':', eq + 1);
+    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
+    int lcore = std::atoi(std::string(s.substr(0, eq)).c_str());
+    int cpu   = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
+    if (lcore < 0 || cpu < 0)
+        return std::unexpected(std::string{"--pin: lcore/cpu must be non-negative: "}
+                               + std::string{s});
+    std::string role = (col == std::string_view::npos) ? "" : std::string(s.substr(col + 1));
+    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
+}
+
+int split_app_args(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::string_view(argv[i]) == "--") return i;
+    return argc;
+}
+
+AppArgs parse_args(int argc, char** argv) {
+    AppArgs out;
+    const int sep = split_app_args(argc, argv);
+    for (int i = sep + 1; i < argc; ++i) {
+        std::string_view a = argv[i];
+        if      (a == "--pci"     && i + 1 < argc) out.pci_addrs.emplace_back(argv[++i]);
+        else if (a == "--lcores"  && i + 1 < argc) out.lcores = argv[++i];
+        else if (a == "--pin"     && i + 1 < argc) {
+            auto p = parse_pin_spec(argv[++i]);
+            if (!p) { spdlog::error("multi_port_platform_demo: {}", p.error()); std::exit(1); }
+            out.pins.push_back(std::move(*p));
+        }
+        else if (a == "--seconds" && i + 1 < argc) out.run_seconds = std::chrono::seconds(std::atoi(argv[++i]));
+    }
+    return out;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::signal(SIGINT,  on_signal);
+    std::signal(SIGTERM, on_signal);
+    spdlog::set_level(spdlog::level::info);
+
+    const AppArgs args = parse_args(argc, argv);
+    if (args.pci_addrs.size() < 2) {
+        spdlog::error("multi_port_platform_demo: need at least 2 --pci entries "
+                      "(single-port case goes through Platform::create_primary "
+                      "directly — see simple_hft_dpdk.cpp)");
+        return 1;
+    }
+    const bool typed_pins = !args.pins.empty();
+    const bool raw_lcores = !args.lcores.empty();
+    if (typed_pins && raw_lcores) {
+        spdlog::error("multi_port_platform_demo: --pin and --lcores are mutually exclusive");
+        return 1;
+    }
+    if (!typed_pins && !raw_lcores) {
+        spdlog::error("multi_port_platform_demo: provide --pin lcore=cpu[:role] "
+                      "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
+        return 1;
+    }
+
+    // ── 1) EAL init ───────────────────────────────────────────────────────
+    // Every --pci entry is forwarded as an EAL allowlist (-a) entry. DPDK
+    // enumerates the allowed devs in the order they appear, so the first
+    // --pci becomes port_id=0, the second port_id=1, etc.
+    ed::EalConfig eal_cfg{};
+    eal_cfg.program_name = "multi_port_platform_demo";
+    if (raw_lcores) eal_cfg.lcores = {args.lcores};
+    eal_cfg.allowed_devs.assign(args.pci_addrs.begin(), args.pci_addrs.end());
+
+    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
+    if (typed_pins) {
+        spdlog::info("multi_port_platform_demo: EAL init via init_with_pins ({} pin(s))",
+                     args.pins.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
+                                           eph::utils::CpuPinPolicy{});
+    } else {
+        spdlog::info("multi_port_platform_demo: EAL init via raw lcores='{}'",
+                     args.lcores);
+        auto argv_owned = ed::build_eal_argv(eal_cfg);
+        std::vector<char*> argv_ptrs;
+        argv_ptrs.reserve(argv_owned.size());
+        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
+        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+    }
+    if (!eal) {
+        spdlog::error("multi_port_platform_demo: EAL init failed: {}", eal.error());
+        return 2;
+    }
+
+    // ── 2) One PlatformConfig per --pci, port_id = slot index ─────────────
+    // `nb_rx_queues = 1` keeps the demo's focus on the aggregator. To
+    // overlap with RSS, set `nb_rx_queues > 1` and `enable_rss = true`
+    // per port — the aggregator imposes no policy.
+    std::vector<ed::PlatformConfig> port_cfgs;
+    port_cfgs.reserve(args.pci_addrs.size());
+    for (std::size_t i = 0; i < args.pci_addrs.size(); ++i) {
+        ed::PlatformConfig pcfg{};
+        pcfg.port_id      = static_cast<uint16_t>(i);
+        pcfg.nb_rx_queues = 1;
+        pcfg.nb_tx_queues = 1;
+        pcfg.enable_rss   = false;
+        port_cfgs.push_back(pcfg);
+    }
+
+    // ── 3) Atomic N-port bringup with rollback ────────────────────────────
+    auto mp_r = ed::MultiPortPlatform::create(
+        std::span<const ed::PlatformConfig>(port_cfgs));
+    if (!mp_r) {
+        spdlog::error("multi_port_platform_demo: MultiPortPlatform::create failed: {}",
+                      mp_r.error().detail);
+        return 3;
+    }
+    auto mp = std::move(*mp_r);
+    spdlog::info("multi_port_platform_demo: aggregator ready, num_ports={}",
+                 mp->num_ports());
+
+    // ── 4) Per-port summary ───────────────────────────────────────────────
+    // Slot index ≠ DPDK port_id in the general case (the user may pass
+    // `--pci` in any order, and DPDK's eth dev enumeration may differ
+    // from PCI bus order on some firmware). Print both columns so the
+    // mapping is transparent.
+    for (std::size_t i = 0; i < mp->num_ports(); ++i) {
+        const auto& p = mp->port(i);
+        const auto qr = p.effective_rx_queue_range();
+        spdlog::info("  port[slot={}]: dpdk_port_id={}, nb_rx_queues={}, "
+                     "dispatch_mode={}, is_rss_active={}, "
+                     "rx_queue_range=[{},{})",
+                     i, p.port_id(), p.nb_rx_queues(),
+                     edpdk::rx_dispatch_mode_name(p.dispatch_mode()),
+                     p.is_rss_active(), qr.first, qr.second);
+    }
+
+    // Sanity-check the reverse lookup helper. Picks slot 0's DPDK port_id
+    // and asks the aggregator to find it; result must equal slot 0.
+    if (mp->num_ports() > 0) {
+        const uint16_t pid = mp->port(0).port_id();
+        const std::size_t idx = mp->find_index_by_port_id(pid);
+        spdlog::info("multi_port_platform_demo: find_index_by_port_id({}) → {} "
+                     "(expected 0)", pid, idx);
+    }
+
+    // ── 5) One Poller per port; sequential round-robin poll loop ─────────
+    std::vector<std::unique_ptr<edpdk::DpdkPoller<>>> pollers;
+    pollers.reserve(mp->num_ports());
+    for (std::size_t i = 0; i < mp->num_ports(); ++i) {
+        edpdk::PollerConfig pcfg{};
+        pcfg.port_id     = mp->port(i).port_id();
+        pcfg.rx_queue_id = 0;
+        auto pr = edpdk::DpdkPoller<>::create(pcfg);
+        if (!pr) {
+            spdlog::error("multi_port_platform_demo: DpdkPoller::create(port={}) "
+                          "failed: {}", pcfg.port_id, pr.error().detail);
+            return 4;
+        }
+        if (auto r = mp->port(i).register_poller(0, pr->get()); !r) {
+            spdlog::error("multi_port_platform_demo: register_poller(slot={}, "
+                          "queue=0) failed: {}", i, r.error().detail);
+            return 5;
+        }
+        pollers.emplace_back(std::move(*pr));
+    }
+
+    spdlog::info("multi_port_platform_demo: entering poll loop for {}s "
+                 "(no streams attached — this just exercises each port's "
+                 "burst RX path)", args.run_seconds.count());
+    const auto deadline = std::chrono::steady_clock::now() + args.run_seconds;
+    while (g_running.load(std::memory_order_acquire)
+           && std::chrono::steady_clock::now() < deadline) {
+        for (auto& p : pollers) (void)p->poll();
+    }
+
+    spdlog::info("multi_port_platform_demo: shutting down — RAII teardown:"
+                 " pollers → MultiPortPlatform (each owned Platform "
+                 "destroyed in reverse order) → eal");
+    return 0;
+}

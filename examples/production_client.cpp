@@ -87,9 +87,34 @@ static bool run_one_session(en::StreamConfig& cfg,
             next_publish = now + 1s;
         }
     }
-    // Session ended — clean up before returning so the next create()
-    // gets a fresh fd.
+    // ── Graceful shutdown path ────────────────────────────────────────────
+    // If we exited the loop because the operator hit Ctrl-C while the
+    // session was still Established (the typical end-of-day shape), ride
+    // through `drain(timeout)` so:
+    //   1. Anything still buffered in our send-side socket buffer flushes
+    //      to the peer.
+    //   2. We send our own FIN (`shutdown(SHUT_WR)`).
+    //   3. We block until the peer's FIN-ACK comes back (or the timeout
+    //      bumps `kRxSessionResets` and we tear the session down).
+    //
+    // We must `poller.remove()` *before* `drain()` because drain is
+    // synchronous and inherently single-threaded — it can't share the fd
+    // with a Poller that's still poll()-ing it. After drain returns we
+    // exit run_one_session; the unique_ptr destructor is a no-op since
+    // the fd is already closed.
+    //
+    // For loss-of-connectivity (state() != Established when the loop
+    // exits), drain() would return InvalidConfig — we skip it and just
+    // remove from the Poller.
     (void)poller.remove(stream.get());
+    if (stream->state() == eph::net::TcpState::Established) {
+        if (auto dr = stream->drain(2s); !dr) {
+            spdlog::warn("drain failed: {} (peer FIN may be lost; closing "
+                         "socket regardless)", dr.error().detail);
+        } else {
+            spdlog::info("drain ok — peer FIN received, session orderly-closed");
+        }
+    }
     return !g_running.load(std::memory_order_acquire);
 }
 
