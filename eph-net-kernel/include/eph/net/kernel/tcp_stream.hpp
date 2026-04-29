@@ -723,6 +723,7 @@ public:
             auto sr = sock_.send(tx_ciphertext_);
             if (!sr) {
                 tls_corrupt_ = true;
+                inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
                 SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::send(TLS): socket send failed "
                     "({}) — latching tls_corrupt_ since TLS write seq "
