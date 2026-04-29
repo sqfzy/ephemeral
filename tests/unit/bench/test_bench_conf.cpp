@@ -341,9 +341,10 @@ TEST(RealFixtures, ShippedConfigTomlLoads) {
 
     const auto* ord = cfg.scenario("lat_ex_order");
     ASSERT_NE(ord, nullptr);
-    auto inf = ord->get<std::vector<int>>("inflights");
-    ASSERT_TRUE(inf.has_value()) << format_error(inf.error());
-    EXPECT_EQ(*inf, (std::vector<int>{1, 4, 16, 64}));
+    // `inflights` was removed from config.toml in commit d1fbe4a9 — the
+    // bench driver only honours `duration_seconds` and never consumed
+    // the array. Verify the section still exists with its real keys.
+    EXPECT_TRUE(ord->get<uint32_t>("duration_seconds").has_value());
 }
 
 TEST(RealFixtures, MmppParamsTomlLoads) {
