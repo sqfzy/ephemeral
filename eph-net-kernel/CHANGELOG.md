@@ -1,6 +1,39 @@
 # eph-net-kernel changelog
 
-## [Unreleased] — Cross-module additions catch-up (2026-04-28)
+## [Unreleased]
+
+### BREAKING CHANGES — StreamConfig reshape (2026-04-29, T3.19)
+
+`KernelTcpStream::StreamConfig` field paths changed to a backend-symmetric
+shape with shared `WsConfig` / `KeepaliveConfig` sub-configs and a
+`Kernel` sub-struct for kernel-only knobs. Migration:
+
+| Old field                       | New field                          |
+|---------------------------------|------------------------------------|
+| `cfg.ws_path`                   | `cfg.ws.path`                      |
+| `cfg.ws_host`                   | `cfg.ws.host`                      |
+| `cfg.ws_extra_headers`          | `cfg.ws.extra_headers`             |
+| `cfg.ws_timeout`                | `cfg.ws.timeout`                   |
+| `cfg.ws_permessage_deflate`     | `cfg.ws.permessage_deflate`        |
+| `cfg.tcp_nodelay`               | `cfg.kernel.tcp_nodelay`           |
+| `cfg.local`                     | `cfg.kernel.local_bind`            |
+| (new)                           | `cfg.keepalive` — `KeepaliveConfig`|
+
+**TCP keepalive** is now a public knob on the kernel surface
+(previously DPDK-only). `KernelTcpStream::create` wires
+`SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT` when
+`cfg.keepalive.interval > 0`; `interval` is rounded up to seconds for
+the syscall (kernel TCP keepalive is second-grained). Default
+disabled.
+
+`KernelTcpStream::create` validation now delegates to
+`cfg.ws.validate()` and `cfg.keepalive.validate()` for sub-config
+checks; the resulting `ErrorInfo::detail` strings come from those
+sub-configs (e.g. "WsConfig: timeout must be > 0 when path is set"
+instead of the legacy "ws_timeout must be > 0"). One assertion in
+`tests/test_stream_config_validation.cpp` was updated to match.
+
+## [Unreleased earlier] — Cross-module additions catch-up (2026-04-28)
 
 ### Added (cross-module work that landed on `KernelTcpStream`)
 - **`KernelTcpStream::drain(std::chrono::milliseconds)`** (commit

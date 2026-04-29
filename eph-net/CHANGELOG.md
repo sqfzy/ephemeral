@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added (2026-04-29) — T3.19 reshape (config sub-structs)
+- `include/eph/net/ws_config.hpp` — `WsConfig` (path / host /
+  extra_headers / timeout / permessage_deflate). Backend-shared
+  sub-config consumed by both `eph::net::kernel::StreamConfig::ws`
+  and `eph::net::dpdk::StreamConfig::ws`; `validate()` returns
+  `InvalidConfig` only when `path` is non-empty AND `timeout <= 0`,
+  so default-constructed = disabled = always valid. Tests:
+  8 cases in `tests/test_ws_config.cpp`.
+- `include/eph/net/keepalive_config.hpp` — `KeepaliveConfig` (interval
+  + probes). Lifted from the DPDK-only `cfg.legacy.keepalive_*`
+  pair to a public top-level sub-config used by both backends.
+  Kernel backend now wires `setsockopt(SO_KEEPALIVE / TCP_KEEPIDLE
+  / TCP_KEEPINTVL / TCP_KEEPCNT)` when `interval > 0` (previously
+  unavailable on the kernel surface). DPDK backend lowers it back
+  into the wire-level TcpConfig for the PMD machinery.
+  `validate()` enforces `probes ∈ [1, 10]` when `interval > 0`.
+  Tests: 7 cases in `tests/test_keepalive_config.cpp`.
+
 ### Added (2026-04-26 .. 2026-04-28)
 - `include/eph/net/reconnect_orchestrator.hpp` — `ReconnectOrchestrator
   <Stream>` (~830 LOC, header-only). Owns the connect → connected →

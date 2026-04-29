@@ -1,8 +1,7 @@
 # eph TODO
 
-> 最后更新：2026-04-28（review + T1/T2/T3 全链 ship 后快照）
-> 当前 main：`71e72903`（origin/main 同步）
-> **核心遗留 = 0**。所有 review meta-plan "必做"项已 ship 到 main。本表是"做了更好 / 有特定触发条件再做"的清单。
+> 最后更新：2026-04-29（T3.19 配置入口收敛 ship 后快照）
+> **核心遗留 = 1**：T3.16 硬件 RX 时间戳（独立 feat，与 T3.19 解耦后可单独施工）。其余皆 "做了更好 / 有特定触发条件再做"。
 >
 > 相关产物：
 > - `.artifacts/decision-20260428-093206.md` — 22 项 ADR（review + T1/T2/T3 决策链）
@@ -11,12 +10,12 @@
 
 ---
 
-## A. review meta-plan 内 — 2 项未做
+## A. review meta-plan 内 — 1 项未做
 
 | # | 任务 | 工作量 | 风险 / 拦路 |
 |---|------|--------|------------|
-| **T3.16** | 硬件 RX 时间戳（`PKT_RX_TIMESTAMP`，DPDK only；NIC 不支持时降级 TSC） | 中 | 与 T2.8 / T2.9 / T2.12 在 poller / platform / tcp_stream 层有潜在 merge-conflict（原本因此延后） |
-| **T3.19** | 配置入口统一（StreamConfig / TlsConfig / ProxyConfig 收敛） | 小-中 | 跨 eph-net / eph-net-kernel / eph-net-dpdk 多 config 表面，易引连锁改动 |
+| **T3.16** | 硬件 RX 时间戳（`PKT_RX_TIMESTAMP`，DPDK only；NIC 不支持时降级 TSC） | 中 | 与 T3.19 的 StreamConfig/PlatformConfig 表面冲突已解除（T3.19 完成）；现可独立施工。本机 ENA 不支持 PKT_RX_TIMESTAMP，需外部 NIC 或 dynfield mock 测试。 |
+| ~~T3.19~~ | ~~配置入口统一（StreamConfig / TlsConfig / ProxyConfig 收敛）~~ | ~~小-中~~ | **已 ship**（2026-04-29）— commits `66f5f143` (eph-net WsConfig/KeepaliveConfig 抽出) + `b1de859f` (kernel reshape, breaking) + `321c85d6` (dpdk reshape + 删除 ghost proxy + 提升 keepalive 到顶层, breaking)。详见三个模块 CHANGELOG 的 "T3.19 reshape" 条目。 |
 
 ---
 

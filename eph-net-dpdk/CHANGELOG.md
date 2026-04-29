@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+### BREAKING CHANGES — StreamConfig reshape (2026-04-29, T3.19)
+
+`DpdkTcpStream::StreamConfig` reorganized into a backend-symmetric shape
+with shared `WsConfig` / `KeepaliveConfig` sub-configs and a `Dpdk`
+sub-struct collecting all PMD-only knobs. Migration map:
+
+| Old field                              | New field                          |
+|----------------------------------------|------------------------------------|
+| `cfg.legacy`                           | `cfg.dpdk.tcp_low_level`           |
+| `cfg.pool`                             | `cfg.dpdk.pool`                    |
+| `cfg.pin_to_queue`                     | `cfg.dpdk.pin_to_queue`            |
+| `cfg.pool_lcore_hint`                  | `cfg.dpdk.pool_lcore_hint`         |
+| `cfg.ws_path`                          | `cfg.ws.path`                      |
+| `cfg.ws_host`                          | `cfg.ws.host`                      |
+| `cfg.ws_extra_headers`                 | `cfg.ws.extra_headers`             |
+| `cfg.ws_timeout`                       | `cfg.ws.timeout`                   |
+| `cfg.ws_permessage_deflate`            | `cfg.ws.permessage_deflate`        |
+| `cfg.legacy.keepalive_interval`        | `cfg.keepalive.interval`           |
+| `cfg.legacy.keepalive_probes`          | `cfg.keepalive.probes`             |
+| `cfg.proxy`                            | **REMOVED** — see below            |
+
+The `legacy` rename to `tcp_low_level` is intentional: this struct is
+the wire-level `TcpConfig` the PMD ingests, not a deprecated holdover.
+
+**Keepalive** is now a public top-level knob (`cfg.keepalive`,
+`KeepaliveConfig`) — `DpdkTcpStream::create` lowers it back into
+`cfg.dpdk.tcp_low_level.keepalive_*` for the existing PMD machinery
+(`TcpSession::tick_keepalive`). User code that previously set
+`cfg.legacy.keepalive_interval / probes` should set `cfg.keepalive`
+instead. The kernel backend now honours the same sub-config too.
+
+**Proxy field removed**. The `cfg.proxy` field on the DPDK
+`StreamConfig` was a "ghost" — present so user code could write
+generic config-construction helpers that compiled against both
+backends, but rejected at runtime with `Error::InvalidConfig`. T3.19
+removes it from the DPDK `StreamConfig` entirely; misuse is now a
+compile-time error pointing users at the kernel backend, which is
+the only backend that supports HTTP CONNECT. Two tests in
+`test_dpdk_tcp_stream.cpp` (the `ProxyConfigRejectedWithInvalidConfig`
+runtime check and the `DefaultStreamConfigHasNoProxy` shape check) are
+intentionally retired — the compile error is the new contract.
+
+UdpConfig is intentionally **unchanged** in T3.19. It has no WS / TLS
+/ proxy duplication with the kernel UDP config and revisiting it now
+is ROI-negative; future reshape can align it if symmetry becomes
+useful.
+
+`DpdkTcpStream::create` factory order changed slightly: keepalive
+validation/lowering happens BEFORE `tcp_low_level.validate()` so the
+PMD sees the final lowered values. Validation strings now come from
+the public `WsConfig::validate()` / `KeepaliveConfig::validate()`.
+
 ### BREAKING CHANGES — RSS bring-up reshape (2026-04-28)
 
 `Platform::create` no longer silently degrades multi-queue configurations

@@ -25,11 +25,18 @@ The scope decisions for the current feature set are archived in
   `Transfer-Encoding` / cookies / redirect / `Expect: 100-continue` — HFT exchanges
   do not use them and they are substantial attack surface.
 - `eph::net::HmacSha256` with typed `Key` (RAII-clearing) and `Tag` wrappers.
-- `eph::net::HttpConnectConfig` + `StreamConfig::proxy` — HTTP CONNECT proxy, kernel
-  backend only (DPDK rejects with `Error::InvalidConfig`).
-- `StreamConfig::ws_path` / `ws_extra_headers` / `ws_timeout` — non-empty `ws_path`
+- `eph::net::ProxyConfig` + kernel `StreamConfig::proxy` — HTTP CONNECT proxy.
+  Kernel backend only; the field has been removed from the DPDK `StreamConfig`
+  entirely (post-T3.19) — misuse on DPDK is a compile error.
+- `eph::net::WsConfig` (`cfg.ws.path` / `host` / `extra_headers` / `timeout` /
+  `permessage_deflate`) — backend-shared sub-config. Non-empty `ws.path`
   transparently performs the RFC 6455 client handshake inside `TcpStream::create()`
   on both backends.
+- `eph::net::KeepaliveConfig` (`cfg.keepalive.interval` / `probes`) —
+  backend-shared sub-config; default disabled. Kernel wires `setsockopt
+  (SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`; DPDK lowers
+  to `cfg.dpdk.tcp_low_level.keepalive_*` for the PMD's `TcpSession::
+  tick_keepalive`. Replaces the DPDK-only `cfg.legacy.keepalive_*` path.
 - `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
 - `eph::core::MetricsSink` concept + `NullSink` / `eph::utils::ConsoleSink` — the
@@ -45,11 +52,15 @@ The scope decisions for the current feature set are archived in
   `examples/observability_demo.cpp`. The 13 entries include 7 TCP/ICMP
   session-level metrics (`net.stream.tcp.*` + `net.stream.icmp.*`) exposed
   by `DpdkTcpStream::metric` via lazy-read from `TcpSession::Stats`.
-- `eph::dpdk::TcpConfig::keepalive_interval` / `keepalive_probes` + the
-  caller-driven `TcpSession::tick_keepalive(now_tsc)` — optional TCP keepalive
-  (default off). In DPDK production (`DpdkPoller::poll`) the tick fires on
-  every poll cycle via the `on_poll_tick_` hook; single-stream users driving
-  `poll_once_` directly must tick themselves.
+- DPDK keepalive — public surface is now `cfg.keepalive.interval` /
+  `probes` (post-T3.19, see above). The wire-level
+  `eph::dpdk::TcpConfig::keepalive_interval / keepalive_probes` and the
+  caller-driven `TcpSession::tick_keepalive(now_tsc)` are still the
+  underlying mechanism; `DpdkTcpStream::create` lowers `cfg.keepalive`
+  into the wire-level fields at factory time. In DPDK production
+  (`DpdkPoller::poll`) the tick fires on every poll cycle via the
+  `on_poll_tick_` hook; single-stream users driving `poll_once_`
+  directly must tick themselves.
 - `eph::dpdk::Platform::rss_using_probed_key()` — diagnostic getter
   reflecting which RSS bring-up path resolved. `Platform::create` for
   `enable_rss=true && nb_rx_queues>1` first tries `configure_rss`

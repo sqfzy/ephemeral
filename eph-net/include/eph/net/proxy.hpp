@@ -16,10 +16,11 @@
 ///     testing, and restricted-network operator environments where CONNECT
 ///     is the lowest-common-denominator tunneling protocol.
 ///
-///   * **Kernel-only** — the DPDK backend rejects `StreamConfig.proxy` with
-///     `Error::InvalidConfig` at `create()` time. The struct still exists on
-///     the DPDK `StreamConfig` so user code can write generic config
-///     construction that compiles against both backends.
+///   * **Kernel-only** — the DPDK `StreamConfig` does not have a `proxy`
+///     field at all (post-T3.19). Misuse is a compile-time error pointing
+///     users at the kernel backend, which is the only place CONNECT is
+///     supported. The previous "field exists but rejects at runtime"
+///     compatibility hack was retired with the T3.19 reshape.
 ///
 ///   * **Basic auth only** — the CONNECT tunnel carries a single
 ///     `Proxy-Authorization: Basic base64(user:pass)` header. Digest /
@@ -47,9 +48,10 @@ namespace eph::net {
 
 /// @brief Configuration for an HTTP CONNECT proxy tunnel.
 ///
-/// Only consumed by the kernel backend (`KernelTcpStream::create`). The DPDK
-/// backend rejects any non-empty `StreamConfig.proxy` with
-/// `Error::InvalidConfig`.
+/// Only consumed by the kernel backend (`KernelTcpStream::create`). The
+/// DPDK `StreamConfig` does not expose a `proxy` field — using a proxy
+/// with a DPDK stream is a compile error rather than a runtime
+/// `InvalidConfig`.
 ///
 /// Validation semantics (see `validate()`):
 ///   * `host` must be non-empty

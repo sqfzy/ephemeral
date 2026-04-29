@@ -176,19 +176,19 @@ ek::StreamConfig make_stream_config(uint16_t port, std::string_view sni) {
     cfg.remote                = en::SocketAddr{en::Ipv4Addr{/*…*/}, port};
     cfg.reasm_capacity        = 64 * 1024;     // WsCodec reassembly window
     cfg.connect_timeout       = 2s;
-    cfg.tcp_nodelay           = true;
+    cfg.kernel.tcp_nodelay    = true;
     cfg.tls.hostname          = std::string{sni};
     cfg.tls.verify_peer       = true;          // false ONLY for in-process test certs
     cfg.tls.handshake_timeout = 2s;
-    cfg.ws_path               = "/ws/v5/public";
-    cfg.ws_host               = std::string{sni};
-    cfg.ws_timeout            = 2s;
-    cfg.ws_permessage_deflate = false;         // most venues don't echo deflate
+    cfg.ws.path               = "/ws/v5/public";
+    cfg.ws.host               = std::string{sni};
+    cfg.ws.timeout            = 2s;
+    cfg.ws.permessage_deflate = false;         // most venues don't echo deflate
     return cfg;
 }
 ```
 
-A non-empty `cfg.ws_path` triggers the RFC 6455 client handshake
+A non-empty `cfg.ws.path` triggers the RFC 6455 client handshake
 **inside `KernelTcpStream::create()`** — you do not call it yourself.
 On return, the stream is post-TLS, post-upgrade, and ready to send the
 first application frame.

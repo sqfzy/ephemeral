@@ -45,7 +45,7 @@ cfg.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
 **Combined streams** (multiple symbols, one connection):
 ```cpp
 // Up to 1024 streams per connection
-cfg.ws_path = "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker";
+cfg.ws.path = "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker";
 
 // Use frame filter for latest-per-symbol delivery
 cfg.on_frame_filter = eph::net::make_twophase_filter(

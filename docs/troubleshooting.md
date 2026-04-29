@@ -45,7 +45,7 @@ and reconnection paths driven by `eph::net::ReconnectPolicy`.
 | `detail` substring | Fix |
 |--------------------|-----|
 | `remote address empty` | Set `cfg.remote` to a valid `SocketAddr` |
-| `ws_path set but ws_host empty` | Set `cfg.ws_host` for the RFC 6455 `Host:` header |
+| `ws.path set but ws.host empty` | Set `cfg.ws.host` for the RFC 6455 `Host:` header |
 | `proxy.host empty` | Either clear `cfg.proxy` or fill `host` + `port` |
 | `tls.hostname empty with verify_peer=true` | Set `cfg.tls.hostname` for SNI / cert verify |
 | `client_cert without client_key` | Set both fields or neither (mTLS) |
@@ -179,9 +179,9 @@ if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
 
 | HTTP status (in `detail`) | Meaning | Fix |
 |---------------------------|---------|-----|
-| `400` | Malformed request | Check `cfg.ws_path`, `cfg.ws_extra_headers` |
+| `400` | Malformed request | Check `cfg.ws.path`, `cfg.ws.extra_headers` |
 | `401` / `403` | Auth required / forbidden | Add auth token to `ws_extra_headers` |
-| `404` | Wrong path | Fix `cfg.ws_path` |
+| `404` | Wrong path | Fix `cfg.ws.path` |
 | `426` | Upgrade required (rare) | Server expects different protocol; check vendor docs |
 | `429` | Rate limited | Backoff via `ReconnectPolicy`, reduce conn frequency |
 | `503` | Server overloaded | Retry later |
