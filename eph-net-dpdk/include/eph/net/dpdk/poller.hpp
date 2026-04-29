@@ -734,7 +734,7 @@ public:
     ///
     /// Usage:
     ///     auto port = poller->pick_src_port(src_ip, dst_ip, 443).value();
-    ///     cfg.legacy.tuple.src_port = port;
+    ///     cfg.dpdk.tcp_low_level.tuple.src_port = port;
     ///     auto stream = DpdkTcpStream::create(std::move(cfg)).value();
     ///     auto add_r  = poller->add(stream.get());  // authoritative
     ///

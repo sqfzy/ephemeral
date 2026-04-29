@@ -306,8 +306,10 @@ struct PlatformConfig {
     //
     // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
     // `create_and_attach` paths take the source port from the caller-
-    // supplied `cfg.legacy.tuple.src_port` (Software / FlowDirector mode)
-    // or rebind it to one that hashes to the desired queue (RSS-pinned
+    // supplied `cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) /
+    // `cfg.legacy.src_port` (UDP, retained legacy name; see
+    // eph::net::dpdk::UdpConfig) in Software / FlowDirector mode, or
+    // rebind it to one that hashes to the desired queue (RSS-pinned
     // mode via `find_src_port_for_queue`). In a multi-process setup it is
     // therefore the *caller*'s job to ensure that the primary and each
     // secondary draw their source ports from disjoint sub-ranges — the
