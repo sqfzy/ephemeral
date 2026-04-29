@@ -44,6 +44,7 @@
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/stream_metrics.hpp"
+#include "eph/net/stream_snapshot.hpp"
 
 namespace eph::net::kernel {
 
@@ -146,7 +147,7 @@ public:
                 "KernelUdpSocket::create: bind() failed"});
         }
 
-        auto sock = std::unique_ptr<KernelUdpSocket>(new KernelUdpSocket(s));
+        auto sock = std::unique_ptr<KernelUdpSocket>(new KernelUdpSocket(s, cfg.bind));
 
         // Optional connected-UDP mode (source filtering at the kernel).
         if (cfg.connect_to.port != 0) {
@@ -275,7 +276,26 @@ public:
                 core::Error::ConnectFailed,
                 "KernelUdpSocket::connect_to: connect() failed"});
         }
+        connected_peer_ = peer;
+        connected_      = true;
         return {};
+    }
+
+    /// @brief Post-create socket state snapshot.
+    /// @see eph::net::StreamSnapshot for field semantics.
+    /// @note If `connect_to()` was invoked, `endpoint.dst_*` reflects the
+    ///       connected peer; otherwise it stays at zero (unconnected UDP
+    ///       has no fixed destination — `send_to` carries dst per call).
+    [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
+        ::eph::net::StreamSnapshot s{};
+        s.endpoint.src_ip   = bind_addr_.ip.to_be32();
+        s.endpoint.src_port = bind_addr_.port;
+        if (connected_) {
+            s.endpoint.dst_ip   = connected_peer_.ip.to_be32();
+            s.endpoint.dst_port = connected_peer_.port;
+        }
+        // tcp / tls / ws / keepalive / dpdk all stay default (enabled=false).
+        return s;
     }
 
     [[nodiscard]] bool is_attached() const noexcept {
@@ -409,7 +429,8 @@ public:
     }
 
 private:
-    explicit KernelUdpSocket(int fd) noexcept : fd_(fd) {}
+    explicit KernelUdpSocket(int fd, SocketAddr bind_addr) noexcept
+        : fd_(fd), bind_addr_(bind_addr) {}
 
     // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
 
@@ -450,6 +471,14 @@ private:
     int                      fd_{-1};
     [[no_unique_address]] C  codec_{};
     KernelPoller*            attached_to_{nullptr};
+    /// @brief Snapshot bookkeeping: the bind address the socket was
+    ///        created with. Surfaced via `snapshot().endpoint.src_*`.
+    SocketAddr               bind_addr_{};
+    /// @brief Snapshot bookkeeping: the peer address `connect_to()`
+    ///        was called with (if it was). Surfaced via
+    ///        `snapshot().endpoint.dst_*` when `connected_` is true.
+    SocketAddr               connected_peer_{};
+    bool                     connected_{false};
 };
 
 } // namespace eph::net::kernel

@@ -4,7 +4,7 @@
 ///
 /// Scope:
 ///   1. CompileSurface — the public API surface for resumption is present
-///      (template instantiation, `tls_resumption_ticket()`, `tls_was_resumed()`,
+///      (template instantiation, `tls_resumption_ticket()`, `snapshot().tls.was_resumed`,
 ///      `kTlsResumeCount` / `kTlsHandshakeCount` enum entries) and types
 ///      compile clean.
 ///   2. EmptyConfigDefaultIsNoResumption — default `StreamConfig::tls.
@@ -17,7 +17,7 @@
 ///      can be reached and the handshake completes, the captured ticket
 ///      bytes are non-empty after the server delivers a NewSessionTicket.
 ///   5. RestoreTicketCutsOneRtt — second connect with the previously
-///      captured ticket → `tls_was_resumed()` is true and
+///      captured ticket → `snapshot().tls.was_resumed` is true and
 ///      `kTlsResumeCount` increments. Both (4) and (5) GTEST_SKIP if the
 ///      handshake doesn't complete on this host (e.g. cert verify policy
 ///      diverges) so the suite stays green on hostile fixtures.
@@ -137,7 +137,7 @@ TEST(TlsResumption, EmptyConfigDefaultIsNoResumption) {
     EXPECT_TRUE(tcfg.tls_resumption_ticket.empty());
 
     // Non-TLS instantiation: tls_resumption_ticket() returns empty,
-    // tls_was_resumed() returns false. Build a stream that fails to
+    // snapshot().tls.was_resumed returns false. Build a stream that fails to
     // connect (TEST-NET-1 blackhole) so we don't depend on a server.
     ek::StreamConfig cfg{};
     cfg.remote          = en::SocketAddr{en::Ipv4Addr{192, 0, 2, 1}, 443};
@@ -190,8 +190,8 @@ TEST(TlsResumption, CorruptTicketFallback) {
         << "garbage ticket must not be classified as a resume";
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 1u)
         << "garbage ticket must fall back to full handshake (counter=1)";
-    EXPECT_FALSE(stream->tls_was_resumed())
-        << "tls_was_resumed() must be false after fallback";
+    EXPECT_FALSE(stream->snapshot().tls.was_resumed)
+        << "snapshot().tls.was_resumed must be false after fallback";
 
     EXPECT_TRUE(stream->close_gracefully().has_value());
     stream.reset();
@@ -217,7 +217,7 @@ TEST(TlsResumption, CaptureTicketAfterHandshake) {
     // First connection is always a full handshake.
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsResumeCount), 0u);
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 1u);
-    EXPECT_FALSE(stream->tls_was_resumed());
+    EXPECT_FALSE(stream->snapshot().tls.was_resumed);
 
     // The TLS 1.3 server may pack NewSessionTicket(s) into the same
     // flight as ServerFinished (OpenSSL default) — in which case the
@@ -264,7 +264,7 @@ TEST(TlsResumption, RestoreTicketCutsOneRtt) {
                          << r.error().detail;
         }
         auto stream = std::move(*r);
-        EXPECT_FALSE(stream->tls_was_resumed());
+        EXPECT_FALSE(stream->snapshot().tls.was_resumed);
         ticket = stream->tls_resumption_ticket();
         if (ticket.empty()) {
             GTEST_SKIP() << "Server did not deliver NewSessionTicket in "
@@ -293,7 +293,7 @@ TEST(TlsResumption, RestoreTicketCutsOneRtt) {
         auto stream = std::move(*r);
         EXPECT_EQ(stream->state(), en::TcpState::Established);
 
-        if (stream->tls_was_resumed()) {
+        if (stream->snapshot().tls.was_resumed) {
             EXPECT_EQ(stream->metric(en::StreamMetric::kTlsResumeCount), 1u)
                 << "abbreviated handshake must increment kTlsResumeCount";
             EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 0u)

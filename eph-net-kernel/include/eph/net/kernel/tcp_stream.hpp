@@ -56,6 +56,7 @@
 #include "eph/net/kernel/detail/tls_state.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/stream_metrics.hpp"
+#include "eph/net/stream_snapshot.hpp"
 #include "eph/net/tcp_state.hpp"
 
 namespace eph::net::kernel {
@@ -583,6 +584,9 @@ public:
             // the method and the `requires` clause keeps the call out
             // of their template instantiation entirely.
             if (deflate_state.negotiated) {
+                // Snapshot bookkeeping: server accepted the offer regardless
+                // of whether the configured codec can actually inflate.
+                stream->ws_deflate_active_ = true;
                 if constexpr (requires (C& c) {
                     c.enable_permessage_deflate(false);
                 }) {
@@ -1149,14 +1153,42 @@ public:
         }
     }
 
-    /// True when the just-completed handshake was a TLS 1.3 PSK / ticket
-    /// resumption. Always false for `EnableTls=false`.
-    [[nodiscard]] bool tls_was_resumed() const noexcept {
+    /// @brief Post-create stream state snapshot.
+    /// @see eph::net::StreamSnapshot for field semantics.
+    /// @note Kernel backend does not surface app-level MSS / PMTU — those
+    ///       fields stay at their default zero/false. The kernel manages
+    ///       MSS/PMTU internally; querying TCP_MAXSEG via getsockopt
+    ///       requires a syscall and is left to user code if needed.
+    [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
+        ::eph::net::StreamSnapshot s{};
+        s.endpoint.src_ip   = cfg_.kernel.local_bind.ip.to_be32();
+        s.endpoint.src_port = cfg_.kernel.local_bind.port;
+        s.endpoint.dst_ip   = cfg_.remote.ip.to_be32();
+        s.endpoint.dst_port = cfg_.remote.port;
+        // src_port_rewritten: kernel never reverse-picks; always false.
+
+        s.tcp.enabled = true;
+        // recv_window / mss / icmp_pmtu_shrunk left at default zero —
+        // kernel manages them and there is no app-level visibility today.
+
+        s.keepalive.active   = !cfg_.keepalive.empty();
+        s.keepalive.interval = cfg_.keepalive.interval;
+        s.keepalive.probes   = cfg_.keepalive.probes;
+
         if constexpr (EnableTls) {
-            return tls_.was_resumed();
-        } else {
-            return false;
+            s.tls.enabled       = true;
+            s.tls.was_resumed   = tls_.was_resumed();
+            // send_desynced: DPDK-only (TLS in-place AEAD); kernel always false.
+            s.tls.sni           = cfg_.tls.hostname;
         }
+
+        s.ws.enabled                   = !cfg_.ws.path.empty();
+        s.ws.path                      = cfg_.ws.path;
+        s.ws.host                      = cfg_.ws.host;
+        s.ws.permessage_deflate_active = ws_deflate_active_;
+
+        // dpdk.* sub-struct stays at default zero — this is a kernel stream.
+        return s;
     }
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
@@ -1466,6 +1498,10 @@ private:
     /// the first poll that finds `on_message` unset so operators see the
     /// misconfiguration surface once per stream instead of never.
     bool                        no_sink_warned_{false};
+    /// @brief Snapshot bookkeeping: true once the WS handshake confirmed
+    ///        permessage-deflate negotiation. Surfaced via
+    ///        `snapshot().ws.permessage_deflate_active`.
+    bool                        ws_deflate_active_{false};
 };
 
 } // namespace eph::net::kernel
