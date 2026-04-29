@@ -69,6 +69,14 @@ struct WsConfig {
     ///
     /// @return `{}` on success. `ErrorInfo{InvalidConfig, "..."}` when:
     ///   * `timeout <= 0` and `path` non-empty.
+    ///   * `path` is non-empty but does not begin with '/' — RFC 7230
+    ///     request-targets in origin form MUST start with '/' (or be the
+    ///     special-cased '*' for OPTIONS, which is not a valid WS target).
+    ///     Without this guard a misspelled path like "ws/btcusdt" would
+    ///     produce `GET ws/btcusdt HTTP/1.1\r\n` on the wire, which most
+    ///     servers reject with 400 Bad Request — the failure surface
+    ///     becomes a generic WS handshake error instead of a
+    ///     pinpoint config-validation message.
     ///
     /// Empty WsConfig (default-constructed) is always valid — it disables
     /// the upgrade. Backends only need to call this when `!empty()`.
@@ -81,6 +89,12 @@ struct WsConfig {
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig,
                 "WsConfig: timeout must be > 0 when path is set"});
+        }
+        if (path[0] != '/') {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "WsConfig: path must begin with '/' (RFC 7230 origin-form "
+                "request-target)"});
         }
         return {};
     }

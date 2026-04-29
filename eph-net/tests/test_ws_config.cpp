@@ -70,6 +70,23 @@ TEST(WsConfig, EmptyPathIgnoresBadTimeout) {
     EXPECT_TRUE(v.has_value()) << (v ? "" : v.error().detail);
 }
 
+// Path missing leading '/' — RFC 7230 origin-form request-target must
+// start with '/'. Without this guard a "ws/path" typo silently produces
+// GET ws/path HTTP/1.1 on the wire, which most servers reject with 400.
+// Catching the typo at config validation gives a pinpoint error.
+TEST(WsConfig, ActiveCfgPathWithoutLeadingSlashRejected) {
+    WsConfig cfg{.path = "ws/feed", .host = "stream.example.com"};
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
+TEST(WsConfig, ActiveCfgRootSlashAccepted) {
+    WsConfig cfg{.path = "/", .host = "stream.example.com"};
+    auto v = cfg.validate();
+    EXPECT_TRUE(v.has_value()) << (v ? "" : v.error().detail);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // extra_headers carry-through
 // ═══════════════════════════════════════════════════════════════════════════
