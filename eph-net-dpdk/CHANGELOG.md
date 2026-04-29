@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed — `TcpSession::send_batch` reports caller's original count
+
+Pre-fix, `send_batch` clamped the input count to `kMaxBatchSize=32`
+silently — a caller passing 50 segments saw `BatchSendResult{32, 32}`
+on a clean burst, indistinguishable from a clean full success. The
+silent loss of segments 32..49 only surfaced through downstream
+sequence-number drift. Snapshot the caller's original count at entry,
+return it as `requested`, and emit a WARN at the clamp point. Aligns
+the over-batched case with the partial-tx_burst case (NIC
+backpressure), which already truthfully reports `sent < requested`.
+
 ### Docs — `parse_arp_reply` security note refreshed
 
 The pre-existing `@note Security` comment on `eph::dpdk::arp::
