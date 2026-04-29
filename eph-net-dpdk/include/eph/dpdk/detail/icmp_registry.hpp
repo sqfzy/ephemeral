@@ -24,8 +24,14 @@
 ///
 /// The class inherits `enable_shared_from_this` so `register_target`
 /// can hand a `weak_ptr` to each `Handle`. Constructing an
-/// `IcmpRegistry` outside a `std::shared_ptr` is UB (weak_from_this
-/// inside a non-shared instance); use `std::make_shared<IcmpRegistry>()`.
+/// `IcmpRegistry` outside a `std::shared_ptr` is supported but
+/// degraded: `weak_from_this()` returns an empty `weak_ptr` (well-
+/// defined since C++17 — non-throwing, not UB), so the Handle's
+/// destructor finds an expired registry and skips unregister. The
+/// slot in `targets_` is never reclaimed in that case, but no UAF
+/// occurs because the standalone registry has no other strong refs
+/// and dies with its scope. Production code should still use
+/// `std::make_shared<IcmpRegistry>()` so unregister actually runs.
 ///
 /// ## Thread safety
 ///
@@ -151,8 +157,11 @@ public:
     ///         OutOfMemory (registry full).
     /// @note Thread-safe under `mu_`.
     /// @note The returned Handle holds a weak_ptr derived from
-    ///       `weak_from_this()`; calling this on an `IcmpRegistry`
-    ///       not managed by `shared_ptr` is UB.
+    ///       `weak_from_this()`. On an `IcmpRegistry` not managed
+    ///       by `shared_ptr` the weak_ptr is empty (C++17 contract,
+    ///       not UB) and Handle::dtor's unregister call is silently
+    ///       skipped — see the file-level comment for the slot-leak
+    ///       trade-off.
     [[nodiscard]] std::expected<Handle, ::eph::core::ErrorInfo>
     register_target(::eph::dpdk::net::ConnectionTuple tuple,
                     uint8_t     proto,
