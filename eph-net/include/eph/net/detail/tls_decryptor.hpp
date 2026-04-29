@@ -192,11 +192,29 @@ public:
             return false;
         }
 
-        // TLS 1.3: last byte of decrypted data is the inner content type — strip it
-        if (plaintext_len > 0) {
-            if (inner_ct) *inner_ct = out[plaintext_len - 1];
-            plaintext_len--;
+        // TLS 1.3: the last byte of decrypted plaintext is the inner content
+        // type (RFC 8446 §5.2). A zero-length AEAD output therefore violates
+        // the spec — the inner content-type byte MUST be present. Reject
+        // rather than silently leaving `*inner_ct` uninitialized for the
+        // caller to dispatch on (the prior `if (plaintext_len > 0)` skip
+        // path) — this is the same defense-in-depth contract that
+        // `tls_inplace.hpp::open_in_place` enforces; the two implementations
+        // must agree because both feed `inner_ct` into the same Stream
+        // dispatch logic. AES-GCM is CTR-mode (plaintext_len == ciphertext_len)
+        // and the upstream `payload_len < kAuthTagLen + 1` check guarantees
+        // ≥1 byte of ciphertext reaches the AEAD, so this branch is
+        // unreachable today via a well-behaved aws-lc; the guard exists
+        // purely to bound the blast radius of any future EVP_AEAD bug
+        // that misreports output length.
+        if (plaintext_len == 0) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+                "decrypt: AEAD reported zero-length plaintext — TLS 1.3 "
+                "requires the trailing inner content-type byte; rejecting "
+                "as malformed (record_len={}, seq={})", record_len, seq_);
+            return false;
         }
+        if (inner_ct) *inner_ct = out[plaintext_len - 1];
+        plaintext_len--;
 
         out_len = static_cast<uint16_t>(plaintext_len);
         seq_++;
