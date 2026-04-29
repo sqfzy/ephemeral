@@ -273,6 +273,74 @@ rss_scaling_ws_push_run(const ScenarioContext& ctx) noexcept {
                     }
                 }
             }
+
+            // Same cadence: poll ACTIVE subs for incoming Close frames.
+            // Bench client's `close_gracefully` now emits an RFC 6455
+            // §7.1.1 Close frame BEFORE TCP FIN; without this branch
+            // mock keeps SSL_writing into a half-closed peer for many
+            // seconds (kernel TCP sndbuf drains via retransmits even on
+            // a half-closed connection), starving the cell-2 setup of
+            // mbufs and dropping its SYN-ACKs at the NIC.
+            //
+            // Sniff the first byte's low-4-bit opcode rather than
+            // calling `mockex::ws::decode_frame` — decode_frame would
+            // block inside its own SSL_read for the full TLS record,
+            // and our bench client only ever sends a single 8-byte
+            // Close frame post-handshake, so a 16-byte read is enough
+            // to identify it and any tail is harmless to drop.
+            std::vector<struct pollfd> active_pfds;
+            std::vector<size_t> active_idx;
+            active_pfds.reserve(subs.size());
+            active_idx.reserve(subs.size());
+            for (size_t i = 0; i < subs.size(); ++i) {
+                if (!subs[i].dead && subs[i].active) {
+                    active_pfds.push_back(
+                        pollfd{.fd = subs[i].conn->fd(),
+                               .events = POLLIN, .revents = 0});
+                    active_idx.push_back(i);
+                }
+            }
+            if (!active_pfds.empty()) {
+                const int rv = ::poll(active_pfds.data(),
+                                      active_pfds.size(), 0);
+                if (rv > 0) {
+                    for (size_t k = 0; k < active_pfds.size(); ++k) {
+                        if (!(active_pfds[k].revents & POLLIN)) continue;
+                        auto& s = subs[active_idx[k]];
+                        uint8_t scratch[16];
+                        const ssize_t nrd = s.conn->read_some(
+                            scratch, sizeof(scratch));
+                        if (nrd <= 0) {
+                            // Read failure / peer EOF — connection is
+                            // gone. Latch dead, push loop will skip.
+                            SPDLOG_INFO("[rss_scaling_ws] fd={} read on "
+                                        "active sub failed (n={}) — "
+                                        "latching dead after {} pushes",
+                                        s.conn->fd(), nrd,
+                                        s.packets_sent);
+                            s.dead = true;
+                            continue;
+                        }
+                        // First byte: FIN(1) | RSV(3) | opcode(4). Low
+                        // nibble == 0x8 means Close.
+                        const uint8_t opcode = scratch[0] & 0x0F;
+                        if (opcode == ws::kOpcodeClose) {
+                            SPDLOG_INFO("[rss_scaling_ws] fd={} received "
+                                        "WS Close (read {} bytes) — "
+                                        "evicting after {} pushes",
+                                        s.conn->fd(), nrd, s.packets_sent);
+                            s.dead = true;
+                        } else {
+                            // Bench client doesn't send mid-stream
+                            // frames; tolerate but log for diagnosis.
+                            SPDLOG_DEBUG("[rss_scaling_ws] fd={} unexpected "
+                                         "opcode 0x{:x} on active sub, "
+                                         "ignoring", s.conn->fd(),
+                                         static_cast<unsigned>(opcode));
+                        }
+                    }
+                }
+            }
         }
 
         for (auto& s : subs) {

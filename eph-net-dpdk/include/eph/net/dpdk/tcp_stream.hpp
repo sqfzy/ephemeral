@@ -46,6 +46,7 @@
 #include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
@@ -1138,8 +1139,52 @@ public:
         }
     }
 
+    /// @brief Initiate a graceful close — sends WS Close frame (when the
+    ///        codec is WS-aware) then enqueues TCP FIN.
+    ///
+    /// When the codec defines `encode_close` (i.e. is `WsCodec`), prepends
+    /// an RFC 6455 §7.1.1 Close frame onto the TX path BEFORE the TCP
+    /// FIN. The `if constexpr (requires { ... })` branch compiles away
+    /// for non-WS codecs (RawStreamCodec, FixCodec, ...). Caller's
+    /// poller is responsible for draining the peer's Close-ack on RX;
+    /// this method does not wait.
+    ///
+    /// Threading: caller MUST NOT have a `DpdkPoller` actively driving
+    /// this stream from another lcore during the call — the new
+    /// `send()` would race with RX-side codec state. Same contract as
+    /// `drain()` below.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     close_gracefully() noexcept {
+        // WS-Close emission (RFC 6455 §7.1.1). Compiles out for non-WS
+        // codecs. Best-effort — failure here doesn't block TCP FIN.
+        if constexpr (requires {
+            codec_.encode_close(
+                std::declval<uint8_t*>(), std::declval<std::size_t>(),
+                uint16_t{}, std::string_view{});
+        }) {
+            if (sess_.is_established()) {
+                uint8_t close_buf[16];  // 14-byte max header + 2-byte status
+                auto enc = codec_.encode_close(
+                    close_buf, sizeof(close_buf),
+                    eph::net::ws::close_code::kNormal);
+                if (enc) {
+                    auto sr = this->send(
+                        std::span<const uint8_t>(close_buf, *enc));
+                    if (!sr) {
+                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                            "DpdkTcpStream::close_gracefully: "
+                            "WS Close send skipped: {}",
+                            sr.error().detail);
+                    }
+                } else {
+                    SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                        "DpdkTcpStream::close_gracefully: "
+                        "encode_close skipped: {}",
+                        enc.error().detail);
+                }
+            }
+        }
+
         auto r = sess_.close();
         if (!r) {
             SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
