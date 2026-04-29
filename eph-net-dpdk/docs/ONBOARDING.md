@@ -140,7 +140,10 @@ entirely — those are primary-only. Primary callers should use
 Source-port partitioning across MP processes is the **caller's**
 responsibility — `eph-net-dpdk` does not auto-allocate src_port and
 has no global view to enforce disjointness. Allocate disjoint
-sub-ranges per process via `cfg.legacy.tuple.src_port`.
+sub-ranges per process via `cfg.dpdk.tcp_low_level.tuple.src_port`
+(TCP) or `cfg.legacy.src_port` (UDP — the `legacy` substruct is
+intentionally retained on `eph::net::dpdk::UdpConfig` per T3.19's
+TCP-only reshape scope).
 
 See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
 1+N partitioning table, PMD caveats, and the orchestrator script;
