@@ -60,10 +60,20 @@ namespace eph::net {
 ///     both be unset (no "user without password" or vice versa)
 ///   * `timeout` must be strictly positive
 struct ProxyConfig {
-    /// @brief Proxy server hostname or numeric IP (e.g. "proxy.example.com",
-    ///        "10.0.0.1"). The backend will perform a DNS lookup if this is
-    ///        not a dotted-quad literal; resolution happens inside
-    ///        `KernelTcpStream::create` via the normal SocketAddr machinery.
+    /// @brief Proxy server numeric IPv4 address (e.g. "10.0.0.1").
+    ///
+    /// **Must be a dotted-quad IPv4 literal**, not a hostname.
+    /// `KernelTcpStream::create` parses it via `Ipv4Addr::parse` and
+    /// rejects with `Error::InvalidConfig` if the string fails to parse.
+    /// DNS resolution for the proxy host is the caller's responsibility
+    /// — invoke `eph::dpdk::dns::resolve` or another resolver yourself
+    /// and pass the resulting dotted-quad here.
+    ///
+    /// (The pre-T3.19 doc string here advertised "hostname or IP" but
+    /// the implementation has always required the literal form; this
+    /// comment now reflects the implementation rather than the
+    /// intent — see `eph-net-kernel/include/eph/net/kernel/tcp_stream.hpp`
+    /// `KernelTcpStream::create`.)
     std::string                     host{};
 
     /// @brief Proxy server port. Must be non-zero. Typical values: 3128
