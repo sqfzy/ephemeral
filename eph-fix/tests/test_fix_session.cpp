@@ -329,12 +329,19 @@ TEST(FixSession, rejects_sequence_reset_with_overrange_new_seq) {
     FixSession session(mock.send_fn(), test_config());
     do_logon(session, mock);
 
-    const uint32_t prior = session.expected_inbound_seq();
-    ASSERT_GT(prior, 0u);  // Logon advanced from 1 → 2
+    // Logon (server's MsgSeqNum=1) advanced expected_inbound_seq to 2.
+    // The SequenceReset we are about to send carries MsgSeqNum=2 and
+    // is processed by the MsgSeqNum bookkeeping FIRST (advancing
+    // expected to 3), THEN by the SequenceReset NewSeqNo handler.
+    // The bug specifically corrupts NewSeqNo handling — the MsgSeqNum
+    // bookkeeping is correct on its own. Pin the post-MsgSeqNum,
+    // post-SequenceReset value so the test names exactly what the
+    // patch must preserve.
+    ASSERT_EQ(session.expected_inbound_seq(), 2u);
 
     // Hand-build a SequenceReset (MsgType=4) with NewSeqNo > UINT32_MAX
-    // (4294967300 = UINT32_MAX + 5). MessageBuilder::set_int takes
-    // int64_t, so this fits.
+    // (UINT32_MAX + 5). MessageBuilder::set_int takes int64_t, so this
+    // fits on the wire even though it's protocol-illegal.
     uint8_t buf[512];
     MessageBuilder b(buf, sizeof(buf));
     b.set(tag::MsgType, "4");
@@ -349,20 +356,22 @@ TEST(FixSession, rejects_sequence_reset_with_overrange_new_seq) {
     std::vector<uint8_t> msg(buf, buf + len);
 
     EXPECT_TRUE(session.on_rx(msg.data(), msg.size()));
-    // The session must NOT have stored the truncated low-32-bits
-    // (which would be 4 = (UINT32_MAX+5) & 0xFFFFFFFF). Either keep
-    // the prior expected (preferred — the over-range message is
-    // treated as a no-op) or move forward in some defined way that
-    // is clearly NOT 4.
     const uint32_t after = session.expected_inbound_seq();
+
+    // Truncation bug: (UINT32_MAX + 5) & 0xFFFF_FFFF == 4. If the
+    // session is using the unchecked uint32_t cast, expected_inbound_
+    // seq lands here.
     EXPECT_NE(after, 4u)
         << "Truncation bug: NewSeqNo=UINT32_MAX+5 was cast to uint32 "
            "and stored as 4. Local seq tracker is now corrupt.";
-    // Conservative-correct behaviour: ignore the over-range reset
-    // entirely, expected stays at prior.
-    EXPECT_EQ(after, prior)
-        << "Over-range NewSeqNo should be ignored, expected stays at "
-        << prior;
+    // Correct behaviour: ignore the over-range NewSeqNo entirely
+    // (the per-message MsgSeqNum bookkeeping STILL advances expected
+    // from 2 → 3 because the message was syntactically valid; only
+    // the NewSeqNo field is rejected).
+    EXPECT_EQ(after, 3u)
+        << "Over-range NewSeqNo should not move expected via the "
+           "SequenceReset path; only the per-message MsgSeqNum "
+           "bookkeeping (2→3) is allowed to advance.";
 }
 
 // ===========================================================================

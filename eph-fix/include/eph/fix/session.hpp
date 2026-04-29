@@ -58,6 +58,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -562,6 +563,26 @@ public:
                 if (*new_seq < 1) {
                     SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
                         "Invalid NewSeqNo={} in SequenceReset (must be >= 1), ignoring", *new_seq);
+                    return true;
+                }
+                // FIX 4.4 Vol 2 §4 caps MsgSeqNum at uint32. A NewSeqNo
+                // beyond UINT32_MAX is illegal on the wire and the
+                // unchecked uint32_t cast below would silently truncate
+                // the high bits, corrupting `expected_inbound_seq_`
+                // (e.g. NewSeqNo=UINT32_MAX+5 stores as 4 — every
+                // subsequent legitimate message looks like a fresh gap
+                // and the session enters a permanent ResendRequest /
+                // GapFill ping-pong). Ignore the message instead so
+                // local state stays consistent; an operator is expected
+                // to follow up with a Logoff + Logon ResetSeqNumFlag=Y.
+                if (*new_seq >
+                    static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                        "SequenceReset NewSeqNo={} exceeds UINT32_MAX — "
+                        "FIX 4.4 caps MsgSeqNum at uint32; ignoring "
+                        "to avoid local sequence corruption (operator "
+                        "should drive a Logoff + Logon with "
+                        "ResetSeqNumFlag=Y)", *new_seq);
                     return true;
                 }
                 uint32_t ns = static_cast<uint32_t>(*new_seq);
