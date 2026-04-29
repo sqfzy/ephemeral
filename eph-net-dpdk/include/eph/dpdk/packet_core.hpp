@@ -397,14 +397,20 @@ struct ConnectionTuple {
 ///       Callers that need to distinguish these cases should check the input
 ///       string directly.
 ///
-/// @note Leading zeros within an octet (e.g. "010.0.0.1") are tolerated and
-///       parsed as **decimal** — this is NOT an inet_aton-style octal escape.
-///       Historically inet_aton interprets "010" as octal 8; we always use
-///       base-10. The parser also caps each octet at 3 digits, which means
-///       "0177.0.0.1" — the classic inet_aton loopback-bypass trick — is
-///       **rejected** outright (the cap stops at "017", the remaining "7"
-///       fails the dot check). Callers that need strict no-leading-zero
-///       behaviour must pre-validate.
+/// @note Leading-zero octets are **rejected** (CVE-2021-29921 class).
+///       `inet_aton(3)` reads "010" as octal 8; modern Python/Go reject
+///       leading zeros outright. Either interpretation diverges from a
+///       naive decimal parser, and the disagreement is the attack
+///       surface — when one parser in the stack agrees a payload
+///       identifies host A while another resolves it to host B,
+///       attackers chain SSRF / auth-bypass primitives across the
+///       boundary. We therefore reject any multi-character octet
+///       starting with '0' (bare "0" is the only legitimate octet
+///       that begins with '0'). This matches the hardening in
+///       `eph::net::Ipv4Addr::parse` so the kernel-side and DPDK-side
+///       parsers cannot disagree on the same string.
+///       The parser also caps each octet at 3 digits, so 4-digit
+///       octal-style escapes like "0177.0.0.1" are blocked too.
 [[nodiscard]] constexpr uint32_t parse_ipv4(const char* str) noexcept {
     if (!str) return 0;
 
@@ -418,6 +424,11 @@ struct ConnectionTuple {
         }
         // Parse up to 3 digits
         if (*p < '0' || *p > '9') return 0;
+        // CVE-2021-29921 guard: reject multi-character octets starting
+        // with '0'. Bare "0" is fine (it's the canonical zero octet).
+        if (*p == '0' && p[1] >= '0' && p[1] <= '9') {
+            return 0;
+        }
         uint32_t val = 0;
         int digits = 0;
         while (*p >= '0' && *p <= '9' && digits < 3) {
@@ -459,6 +470,21 @@ static_assert(parse_ipv4("0177.0.0.1")      == 0u,
               "inet_aton octal loopback-bypass trick rather than reinterpreting it)");
 static_assert(parse_ipv4("177.0.0.1")       == 0xB1000001u,
               "parse_ipv4: standard 3-digit octet 177 — base-10 only");
+// CVE-2021-29921 hardening: every shape of leading-zero octet must
+// reject so the DPDK and kernel-side parsers cannot disagree on the
+// same input string. Bare "0" stays valid.
+static_assert(parse_ipv4("010.0.0.1")       == 0u,
+              "parse_ipv4: leading-zero octet must reject (CVE-2021-29921)");
+static_assert(parse_ipv4("01.2.3.4")        == 0u,
+              "parse_ipv4: 2-digit leading-zero must reject");
+static_assert(parse_ipv4("007.0.0.1")       == 0u,
+              "parse_ipv4: 3-digit leading-zero must reject");
+static_assert(parse_ipv4("1.02.3.4")        == 0u,
+              "parse_ipv4: leading-zero anywhere must reject");
+static_assert(parse_ipv4("0.1.2.3")         == 0x00010203u,
+              "parse_ipv4: bare-zero octet remains valid");
+static_assert(parse_ipv4("1.2.3.0")         == 0x01020300u,
+              "parse_ipv4: bare-zero octet in last position remains valid");
 static_assert(parse_ipv4(nullptr)           == 0u,
               "parse_ipv4: nullptr-safe (returns 0)");
 
