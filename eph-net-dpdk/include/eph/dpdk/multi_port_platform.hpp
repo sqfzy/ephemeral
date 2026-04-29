@@ -136,7 +136,7 @@ public:
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::InvalidConfig,
                     "MultiPortPlatform::create: a PlatformConfig "
-                    "failed validate_config (see WARN log for index "
+                    "failed validate_config (see ERROR log for index "
                     "and reason)"});
             }
         }

@@ -280,8 +280,23 @@ public:
     uint16_t send_batch(const UdpSegment* segs, uint16_t count) noexcept {
         if (!segs || count == 0) [[unlikely]] return 0;
 
-        // Cap to burst limit
-        count = std::min(count, kMaxBatchSize);
+        // Cap to burst limit. Caller passing count > kMaxBatchSize is
+        // either a bug or a deliberate "feed me what you've got, keep
+        // the rest" usage; either way we must not silently drop the
+        // overflow without bumping the error counter, otherwise
+        // tx_packets + tx_errors stops summing to the original
+        // request size and the operator can't distinguish "NIC is
+        // backpressuring" from "we're losing payloads upstream of the
+        // NIC".
+        if (count > kMaxBatchSize) [[unlikely]] {
+            const uint16_t dropped = count - kMaxBatchSize;
+            stats_.tx_errors += dropped;
+            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+                "send_batch: count={} > kMaxBatchSize={}; "
+                "dropping {} trailing segment(s) and bumping tx_errors",
+                count, kMaxBatchSize, dropped);
+            count = kMaxBatchSize;
+        }
 
         rte_mbuf* mbufs[kMaxBatchSize]{};
         // Track payload lengths of successfully built packets, so stats
