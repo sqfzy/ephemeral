@@ -406,3 +406,49 @@ TEST(HttpConnect, BasicAuthBase64RoundTrip) {
         "Proxy-Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==\r\n"),
         std::string_view::npos);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// 13. Target-host validation — empty / oversized rejected up front
+//     (regression: format_host_port silently truncated to 253 bytes,
+//     which would have produced a CONNECT for the wrong host)
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(HttpConnect, EmptyTargetHostRejected) {
+    FakeByteSink sink;
+    auto p = make_proxy();
+    auto r = perform_http_connect(sink, p, /*target_host=*/"", 443);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+    // Must not have sent anything to the proxy.
+    EXPECT_TRUE(sink.tx.empty());
+}
+
+TEST(HttpConnect, OversizedTargetHostRejected) {
+    FakeByteSink sink;
+    auto p = make_proxy();
+    // 254 bytes — one over the DNS limit; previously silently truncated.
+    std::string huge(254, 'a');
+    auto r = perform_http_connect(sink, p, huge, 443);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+    EXPECT_TRUE(sink.tx.empty());
+}
+
+TEST(HttpConnect, MaxLenTargetHostAccepted) {
+    // 253 bytes — exactly at the DNS limit; must build and send (the proxy
+    // mock will swallow it as a normal request).
+    struct Swap : FakeByteSink {
+        std::expected<size_t, ErrorInfo>
+        send(std::span<const uint8_t> data) noexcept {
+            auto r = FakeByteSink::send(data);
+            if (rx_script.empty()) rx_script = make_response(200, "OK");
+            return r;
+        }
+    };
+    Swap sink;
+    auto p = make_proxy();
+    std::string max_host(253, 'b');
+    auto r = perform_http_connect(sink, p, max_host, 443);
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().detail);
+    EXPECT_FALSE(sink.tx.empty());
+}

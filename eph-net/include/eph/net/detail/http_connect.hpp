@@ -236,6 +236,28 @@ perform_http_connect(
                  proxy.basic_auth_user.has_value(),
                  proxy.timeout.count());
 
+    // Reject empty / oversized target_host up front. `format_host_port`
+    // silently truncates at 253 bytes (the DNS-name cap minus length byte
+    // and trailing null), which would otherwise produce a CONNECT request
+    // for a DIFFERENT host than the caller asked for — a confused-deputy
+    // hazard if a downstream feeds an unsanitised hostname through.
+    // The real-world callers (KernelTcpStream::create) only ever pass an
+    // IPv4 dotted-quad (max 15 chars) so this is a safety net for
+    // direct callers of the helper.
+    if (target_host.empty()) {
+        SPDLOG_WARN("http_connect: target_host is empty");
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "http_connect: target_host must be non-empty"});
+    }
+    if (target_host.size() > 253) {
+        SPDLOG_WARN("http_connect: target_host len {} exceeds 253",
+                    target_host.size());
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "http_connect: target_host exceeds 253-byte DNS limit"});
+    }
+
     // ── 1. Build host:port literal (used as request-target + Host header) ──
     char hp_scratch[320];
     const std::string_view target_authority =
