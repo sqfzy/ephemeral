@@ -45,6 +45,16 @@ enum Opcode : uint8_t {
     kOpcodePong         = 0xA,
 };
 
+/// Hard cap on a single decoded client frame payload. RFC 6455 §5.2
+/// permits up to 2^63-1 bytes; we cap at 16 MiB so a malformed or
+/// hostile client claiming a huge length cannot OOM/terminate the
+/// bench mock via the noexcept `payload.resize(length)` below. The
+/// bench protocol's largest legitimate frame (`ex_market` /
+/// `ex_order`) is well under 64 KiB; 16 MiB matches `eph::codec::
+/// LengthPrefixCodec::kMaxFrameLen` for symmetry.
+inline constexpr std::uint64_t kMaxClientFramePayload =
+    16u * 1024u * 1024u;
+
 /// One decoded client→server frame.
 struct Frame {
     Opcode              opcode;
@@ -165,8 +175,23 @@ decode_frame(IoStream& io) noexcept {
     if (!len_opt) return std::nullopt;
     const uint64_t length = *len_opt;
 
-    if (!masked) {
+    if (!masked) [[unlikely]] {
         SPDLOG_WARN("[ws_server] client frame missing mask bit");
+        return std::nullopt;
+    }
+
+    // Reject implausibly large payload claims before allocating.
+    // `decode_frame` is `noexcept`; an unguarded `vector::resize` of
+    // a 64-bit untrusted length would throw `bad_alloc` and call
+    // `std::terminate`, i.e. one malformed frame crashes the mock.
+    if (length > kMaxClientFramePayload) [[unlikely]] {
+        SPDLOG_WARN(
+            "[ws_server] client frame payload length {} exceeds "
+            "kMaxClientFramePayload={}; dropping connection "
+            "(opcode=0x{:x}, raw_len={})",
+            length, kMaxClientFramePayload,
+            static_cast<unsigned>(opcode_raw),
+            static_cast<unsigned>(raw_len));
         return std::nullopt;
     }
 
@@ -176,7 +201,7 @@ decode_frame(IoStream& io) noexcept {
     Frame f;
     f.opcode = static_cast<Opcode>(opcode_raw);
     if (length == 0) return f;
-    f.payload.resize(length);
+    f.payload.resize(static_cast<size_t>(length));
     if (!io.read_exact(f.payload.data(), length))
         return std::nullopt;
 
