@@ -441,6 +441,39 @@ TEST(FixSession, poss_dup_flag_does_not_advance_expected_seq) {
 }
 
 // ---------------------------------------------------------------------------
+// MsgSeqNum boundary handling
+// ---------------------------------------------------------------------------
+
+/// FIX 4.4 §4 caps MsgSeqNum at 4-byte unsigned (UINT32_MAX). When the
+/// server emits a message at the boundary the gap-detection branch
+/// previously stored `recv + 1` into `expected_inbound_seq_`, which
+/// overflowed `uint32_t` to 0 — silently corrupting all subsequent
+/// gap detection. Per spec the only correct response is to refuse to
+/// advance past UINT32_MAX (the session must Logoff + Logon with
+/// ResetSeqNumFlag=Y to recycle); accepting a wrap-to-0 is at minimum
+/// a session-level violation and at worst a replay-attack vector
+/// against the gap-detector.
+TEST(FixSession, inbound_seq_at_uint32_max_does_not_wrap_expected_to_zero) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // After logon: expected_inbound_seq_ == 2.
+    // Server sends a message at MsgSeqNum = UINT32_MAX. Gap-detect path:
+    // recv > expected, advance to recv+1 — under the bug that's 0.
+    auto md = MockFixTransport::market_data(UINT32_MAX);
+    session.on_rx(md.data(), md.size());
+
+    EXPECT_EQ(session.last_inbound_seq(), UINT32_MAX);
+    // Bug: stores 0 here. Fix: stays at UINT32_MAX so the next valid
+    // input is treated as a low-seq violation (sane) rather than as
+    // another gap that resets the watermark.
+    EXPECT_NE(session.expected_inbound_seq(), 0u)
+        << "expected_inbound_seq_ wrapped to 0 after UINT32_MAX gap; "
+        << "this corrupts gap detection on every subsequent message";
+}
+
+// ---------------------------------------------------------------------------
 // FixSessionConfig::validate()
 // ---------------------------------------------------------------------------
 
