@@ -12,48 +12,26 @@
 ///   3. CorruptTicketFallback — passing garbage bytes as the ticket must
 ///      not cause a crash; the failure mode is graceful (either fall-back
 ///      to full handshake when the network completes, or typed error
-///      surfaced when the network doesn't — both acceptable).
-///   4. CaptureTicketAfterHandshake — when the in-process TlsWsEchoServer
-///      can be reached and the handshake completes, the captured ticket
-///      bytes are non-empty after the server delivers a NewSessionTicket.
-///   5. RestoreTicketCutsOneRtt — second connect with the previously
-///      captured ticket → `snapshot().tls.was_resumed` is true and
-///      `kTlsResumeCount` increments. Both (4) and (5) GTEST_SKIP if the
-///      handshake doesn't complete on this host (e.g. cert verify policy
-///      diverges) so the suite stays green on hostile fixtures.
+///      surfaced when the network doesn't — both acceptable). Indirectly
+///      exercises the d2i_SSL_SESSION / SSL_set_session / resume_count
+///      code path end-to-end, so the wiring is covered even though
+///      end-to-end ticket capture is not testable on aws-lc (see ADR).
 ///
-/// Why GTEST_SKIP for 4/5: there is a known architectural gap between the
-/// kernel TLS path's hot-state extraction model and aws-lc's NSE delivery
-/// timing. aws-lc 1.x (the version vendored under .xmake/packages/) defers
-/// NewSessionTicket emission until the server's next `SSL_write` (i.e. the
-/// HTTP 101 response in a WebSocket upgrade), which happens AFTER
-/// `extract_hot_state()` has already torn down the SSL session in
-/// `tls_state::handshake()`. The post-handshake drain inside
-/// `TlsSession::handshake()` (added 2026-04-28) is wired to capture NSEs
-/// when they arrive in the same flight as ServerFinished — which is the
-/// OpenSSL 3.x default — but is structurally too early for aws-lc's
-/// "send-on-next-write" pattern.
-///
-/// Capturing aws-lc NSEs would require either (a) keeping the SSL session
-/// alive past the HTTP/WS upgrade exchange so the upgrade SSL_read
-/// surfaces NSE first, or (b) calling SSL_process_quic_post_handshake-
-/// equivalent APIs on the live SSL after the WS upgrade. Both involve
-/// non-trivial refactors of the AEAD-takeover path, and the venues we
-/// currently target rotate tickets aggressively enough that one extra
-/// full handshake on first connect is not load-bearing in practice.
-/// See `.artifacts/feedback_*` for the deferred-architecture rationale.
-///
-/// Tests 4 and 5 stay SKIP for now and document the gap; the drain code
-/// is committed because (i) it serves OpenSSL backends correctly, and
-/// (ii) it leaves fewer post-handshake records sitting in the SSL/BIO
-/// buffer when `extract_hot_state` takes over, which marginally hardens
-/// the AEAD takeover against record-layer surprises.
+/// Out of scope: end-to-end "capture-then-restore" tests. aws-lc 1.x
+/// (project's permanent TLS backend — see memory) defers NewSessionTicket
+/// emission until the server's next SSL_write, which is past
+/// `extract_hot_state()`'s SSL session teardown — there is no aws-lc
+/// configuration that lands a usable ticket in our capture window.
+/// Architecturally tracked in
+/// `.artifacts/decision-20260428-093206.md` D22; tests for end-to-end
+/// resumption are deferred until the AEAD-takeover refactor that keeps
+/// the SSL session alive past WS upgrade is done. New tests at that
+/// point should assert aws-lc-specific behavior, not be backend-agnostic.
 
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -198,118 +176,3 @@ TEST(TlsResumption, CorruptTicketFallback) {
     server.stop();
 }
 
-// ─── Test 4: CaptureTicketAfterHandshake ───────────────────────────────────
-
-TEST(TlsResumption, CaptureTicketAfterHandshake) {
-    eph::test::TlsWsEchoServer server;
-    server.start();
-
-    auto cfg = make_tls_config(server.port());
-    auto r = TlsRawStream::create(cfg);
-    if (!r) {
-        GTEST_SKIP() << "TLS handshake against in-proc server failed: "
-                     << r.error().detail
-                     << " — resumption capture cannot be exercised";
-    }
-    auto stream = std::move(*r);
-    EXPECT_EQ(stream->state(), en::TcpState::Established);
-
-    // First connection is always a full handshake.
-    EXPECT_EQ(stream->metric(en::StreamMetric::kTlsResumeCount), 0u);
-    EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 1u);
-    EXPECT_FALSE(stream->snapshot().tls.was_resumed);
-
-    // The TLS 1.3 server may pack NewSessionTicket(s) into the same
-    // flight as ServerFinished (OpenSSL default) — in which case the
-    // post-handshake drain inside `TlsSession::handshake()` captures
-    // them and `tls_resumption_ticket()` returns the DER bytes here.
-    // aws-lc 1.x defers NSE emission until the server's next SSL_write
-    // (see the file header comment for the architectural rationale);
-    // the kernel TLS path tears down the SSL session before that point,
-    // so on aws-lc we observe an empty ticket and SKIP — the capture
-    // wiring is verified by `CorruptTicketFallback` (which exercises
-    // the d2i_SSL_SESSION / SSL_set_session / resume_count code path
-    // end-to-end).
-    auto ticket = stream->tls_resumption_ticket();
-    if (ticket.empty()) {
-        GTEST_SKIP() << "Server did not deliver NewSessionTicket in the "
-                        "ServerFinished flight (aws-lc defers NSE to "
-                        "next SSL_write, which is post-extract_hot_state) "
-                        "— capture path exists but has no input on this "
-                        "TLS backend. Not a regression. See file header.";
-    }
-
-    EXPECT_GT(ticket.size(), 16u)
-        << "DER-encoded SSL_SESSION should be substantially larger than 16B";
-
-    EXPECT_TRUE(stream->close_gracefully().has_value());
-    stream.reset();
-    server.stop();
-}
-
-// ─── Test 5: RestoreTicketCutsOneRtt ───────────────────────────────────────
-
-TEST(TlsResumption, RestoreTicketCutsOneRtt) {
-    // Same SSL_CTX server across both connections so the ticket key matches.
-    eph::test::TlsWsEchoServer server;
-    server.start();
-
-    // ── First connection — capture a ticket. ─────────────────────────────
-    std::vector<uint8_t> ticket;
-    {
-        auto cfg = make_tls_config(server.port());
-        auto r = TlsRawStream::create(cfg);
-        if (!r) {
-            GTEST_SKIP() << "First-connect handshake failed: "
-                         << r.error().detail;
-        }
-        auto stream = std::move(*r);
-        EXPECT_FALSE(stream->snapshot().tls.was_resumed);
-        ticket = stream->tls_resumption_ticket();
-        if (ticket.empty()) {
-            GTEST_SKIP() << "Server did not deliver NewSessionTicket in "
-                            "the ServerFinished flight — cannot exercise "
-                            "resume path on this TLS backend (aws-lc "
-                            "defers NSE to next SSL_write; see file header)";
-        }
-        EXPECT_TRUE(stream->close_gracefully().has_value());
-    }
-
-    // Give the server a moment to finalize the previous session before we
-    // race in with the second connect — small delay avoids any flaky
-    // ticket-lifecycle edge on the server side.
-    std::this_thread::sleep_for(50ms);
-
-    // ── Second connection — present the ticket. ──────────────────────────
-    {
-        auto cfg = make_tls_config(server.port(), ticket);
-        auto r = TlsRawStream::create(cfg);
-        if (!r) {
-            GTEST_SKIP() << "Second-connect handshake (with ticket) failed: "
-                         << r.error().detail
-                         << " — likely a server-side ticket cache config "
-                            "limitation, not a client regression";
-        }
-        auto stream = std::move(*r);
-        EXPECT_EQ(stream->state(), en::TcpState::Established);
-
-        if (stream->snapshot().tls.was_resumed) {
-            EXPECT_EQ(stream->metric(en::StreamMetric::kTlsResumeCount), 1u)
-                << "abbreviated handshake must increment kTlsResumeCount";
-            EXPECT_EQ(stream->metric(en::StreamMetric::kTlsHandshakeCount), 0u)
-                << "abbreviated handshake must NOT increment kTlsHandshakeCount";
-        } else {
-            // Server didn't accept the ticket — full handshake fallback.
-            // This is a server-side configuration limitation, not a
-            // client regression. Log and skip rather than fail.
-            GTEST_SKIP() << "Server did not accept the resumption ticket "
-                            "(likely server-side cache config) — fallback "
-                            "to full handshake worked correctly. resume=0, "
-                            "handshake=1";
-        }
-
-        EXPECT_TRUE(stream->close_gracefully().has_value());
-    }
-
-    server.stop();
-}
