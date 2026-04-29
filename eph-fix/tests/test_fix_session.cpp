@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <string>
@@ -314,6 +315,54 @@ TEST(FixSession, handles_sequence_reset_gap_fill) {
     auto gf = MockFixTransport::sequence_reset_gap_fill(2, 10);
     EXPECT_TRUE(session.on_rx(gf.data(), gf.size()));
     EXPECT_EQ(session.expected_inbound_seq(), 10u);
+}
+
+// FIX 4.4 Vol 2 §4 caps MsgSeqNum at uint32 — anything above UINT32_MAX
+// is illegal on the wire. The session was casting NewSeqNo (parsed as
+// int64_t) directly to uint32_t without bounds checking, so a malicious
+// or buggy peer sending NewSeqNo=4294967296 (UINT32_MAX+1) would
+// silently truncate to 0 in expected_inbound_seq_ and treat every
+// subsequent received message as a fresh gap. Reject the over-range
+// reset rather than corrupt local state.
+TEST(FixSession, rejects_sequence_reset_with_overrange_new_seq) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    const uint32_t prior = session.expected_inbound_seq();
+    ASSERT_GT(prior, 0u);  // Logon advanced from 1 → 2
+
+    // Hand-build a SequenceReset (MsgType=4) with NewSeqNo > UINT32_MAX
+    // (4294967300 = UINT32_MAX + 5). MessageBuilder::set_int takes
+    // int64_t, so this fits.
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "4");
+    b.set(tag::SenderCompID, "EXCHANGE");
+    b.set(tag::TargetCompID, "CLIENT");
+    b.set_int(tag::MsgSeqNum, 2);
+    b.set_bool(tag::GapFillFlag, true);
+    b.set_int(tag::NewSeqNo,
+              static_cast<int64_t>(std::numeric_limits<uint32_t>::max())
+                  + 5);
+    const size_t len = b.finish("FIX.4.4");
+    std::vector<uint8_t> msg(buf, buf + len);
+
+    EXPECT_TRUE(session.on_rx(msg.data(), msg.size()));
+    // The session must NOT have stored the truncated low-32-bits
+    // (which would be 4 = (UINT32_MAX+5) & 0xFFFFFFFF). Either keep
+    // the prior expected (preferred — the over-range message is
+    // treated as a no-op) or move forward in some defined way that
+    // is clearly NOT 4.
+    const uint32_t after = session.expected_inbound_seq();
+    EXPECT_NE(after, 4u)
+        << "Truncation bug: NewSeqNo=UINT32_MAX+5 was cast to uint32 "
+           "and stored as 4. Local seq tracker is now corrupt.";
+    // Conservative-correct behaviour: ignore the over-range reset
+    // entirely, expected stays at prior.
+    EXPECT_EQ(after, prior)
+        << "Over-range NewSeqNo should be ignored, expected stays at "
+        << prior;
 }
 
 // ===========================================================================
