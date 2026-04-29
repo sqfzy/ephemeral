@@ -1,0 +1,19 @@
+[req]
+distinguished_name = dn
+prompt             = no
+x509_extensions    = ext
+
+[dn]
+CN = mockex.bench
+
+[ext]
+subjectAltName       = @alt
+basicConstraints     = CA:FALSE
+keyUsage             = digitalSignature, keyEncipherment
+extendedKeyUsage     = serverAuth
+
+[alt]
+DNS.1 = localhost
+DNS.2 = mockex.bench
+IP.1  = 127.0.0.1
+IP.2  = 172.31.47.238
