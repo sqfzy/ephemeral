@@ -87,6 +87,12 @@ struct Ipv4Addr {
     ///   - components with non-digit characters
     ///   - fewer or more than 4 components
     ///   - empty components (e.g. "1..2.3", "1.2.3.", ".1.2.3")
+    ///   - **leading-zero octets** (CVE-2021-29921 class: "01.2.3.4" is
+    ///     ambiguous — inet_aton(3) reads "01" as octal 1, modern Python
+    ///     (>=3.9.5) and Go reject it; we reject it too so a different
+    ///     parser in the same stack cannot resolve the same string to a
+    ///     different host. "0" alone is the only legitimate octet starting
+    ///     with '0').
     ///
     /// Note: we deliberately do NOT accept legacy short forms like "127.1"
     /// that `inet_aton` accepts — those are footguns on modern software.
@@ -105,6 +111,20 @@ struct Ipv4Addr {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "ipv4 parse: expected digit"});
+            }
+            // CVE-2021-29921 guard: reject multi-character octets that
+            // start with '0'. Bare "0" is fine (it's the only way to
+            // write the zero octet); "01", "007", "010" are not. Compute
+            // before we start consuming digits so the diagnostic is
+            // unambiguous.
+            const bool first_is_zero = (s[i] == '0');
+            const bool more_digits_follow = (i + 1 < s.size()
+                                             && s[i + 1] >= '0'
+                                             && s[i + 1] <= '9');
+            if (first_is_zero && more_digits_follow) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "ipv4 parse: leading-zero octet (CVE-2021-29921)"});
             }
             uint32_t val = 0;
             size_t digits = 0;
