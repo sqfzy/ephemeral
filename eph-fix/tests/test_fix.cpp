@@ -487,6 +487,41 @@ TEST(FixBuilder, reset_allows_reuse) {
     EXPECT_EQ(result->get_int(tag::OrderQty).value(), 200);
 }
 
+// Hardening: a begin_string containing SOH (0x01) injects an extra field
+// boundary into the prefix and corrupts the wire format. Reject at finish().
+TEST(FixBuilder, finish_rejects_begin_string_with_soh) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Caller hands in a string with an embedded SOH — without the
+    // hardening guard this becomes "8=FIX\x019=...\x01...\x0110=...\x01"
+    // i.e. an extra empty field that downstream parsers will choke on.
+    std::string injected = "FIX\x01.4.4";
+    size_t len = b.finish(std::string_view{injected});
+
+    // After hardening, finish() returns 0 and sets the overflow flag.
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+// A begin_string with non-printable bytes (e.g. raw 0x00) is similarly
+// malformed; reject at finish() rather than silently emitting it.
+TEST(FixBuilder, finish_rejects_begin_string_with_nul) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Note: c_str-built std::string_view stops at the NUL, so build
+    // the string_view explicitly with size to keep the embedded NUL.
+    char raw[] = {'F', 'I', 'X', '\0', '4', '.', '4'};
+    std::string_view injected{raw, sizeof(raw)};
+    size_t len = b.finish(injected);
+
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
 TEST(FixParser, get_char_single_char_field) {
     std::string body = "35=D\x01" "54=1\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
