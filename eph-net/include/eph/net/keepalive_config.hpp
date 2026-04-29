@@ -51,6 +51,11 @@ struct KeepaliveConfig {
     /// @brief Validate the config. `noexcept` + allocation-free.
     ///
     /// @return `{}` on success. `ErrorInfo{InvalidConfig, "..."}` when:
+    ///   * `interval` is negative — the chrono type permits negative
+    ///     values but neither backend (kernel `setsockopt(TCP_KEEPIDLE)`
+    ///     nor DPDK `tick_keepalive`) has defined behaviour for them;
+    ///     reject at the config boundary so callers don't discover it
+    ///     as a wrapped TSC delta or an EINVAL setsockopt months later.
     ///   * `probes` is 0 or > 10 while `interval > 0`.
     ///
     /// Disabled (default-constructed) is always valid — it asks the
@@ -59,6 +64,11 @@ struct KeepaliveConfig {
     /// kernel would treat the connection as immediately dead.
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
     validate() const noexcept {
+        if (interval < std::chrono::milliseconds::zero()) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "KeepaliveConfig: interval must be >= 0 (use 0 to disable)"});
+        }
         if (empty()) {
             return {}; // disabled = always valid
         }

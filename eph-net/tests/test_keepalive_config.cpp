@@ -68,3 +68,23 @@ TEST(KeepaliveConfig, EmptyIgnoresExcessiveProbes) {
     EXPECT_TRUE(cfg.empty());
     EXPECT_TRUE(cfg.validate().has_value());
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Negative interval — rejected at the config boundary so neither backend
+// reaches the "wrap to a huge cycle delta" / "EINVAL setsockopt" surface.
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST(KeepaliveConfig, NegativeIntervalRejected) {
+    KeepaliveConfig cfg{.interval = -1ms, .probes = 3};
+    EXPECT_FALSE(cfg.empty()) << "interval != 0 must not be 'empty'";
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
+TEST(KeepaliveConfig, LargeNegativeIntervalRejected) {
+    KeepaliveConfig cfg{.interval = -3600s, .probes = 3};
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
