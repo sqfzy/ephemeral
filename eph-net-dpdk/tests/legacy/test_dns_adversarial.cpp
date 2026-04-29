@@ -477,3 +477,42 @@ TEST(DnsAdversarial, TryParsePacketNonIpv4EtherTypeRejected) {
                                                 0x08080808);
     EXPECT_FALSE(r.has_value());
 }
+
+// expected_local_ip = 0 keeps the legacy permissive shape (skip the dst_ip
+// check). Caller passing the real local IP rejects responses addressed to a
+// different host — the off-path-poisoning channel that survives even when
+// src_ip + src_port + dst_port + tx_id all collide.
+TEST(DnsAdversarial, TryParsePacketLocalIpZeroAcceptsAnyDst) {
+    FakeDnsMbuf fake;
+    fake.build(0x08080808, net::hton16(0xDEAD));
+    // Default expected_local_ip=0 should accept the packet (FakeDnsMbuf
+    // builds dst_addr = 10.0.0.1 = 0x0A000001).
+    auto r = dns::detail::try_parse_dns_packet(
+        &fake.mbuf, net::hton16(0xDEAD), 0x08080808,
+        /*expected_src_port=*/53, /*expected_dst_port=*/0,
+        /*expected_local_ip=*/0);
+    ASSERT_TRUE(r.has_value());
+}
+
+TEST(DnsAdversarial, TryParsePacketWrongLocalIpRejected) {
+    FakeDnsMbuf fake;
+    fake.build(0x08080808, net::hton16(0xDEAD));
+    // FakeDnsMbuf hardcodes dst_addr = 0x0A000001. Caller expects a
+    // different local IP — must reject.
+    auto r = dns::detail::try_parse_dns_packet(
+        &fake.mbuf, net::hton16(0xDEAD), 0x08080808,
+        /*expected_src_port=*/53, /*expected_dst_port=*/0,
+        /*expected_local_ip=*/0x01020304);
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(DnsAdversarial, TryParsePacketMatchingLocalIpAccepted) {
+    FakeDnsMbuf fake;
+    fake.build(0x08080808, net::hton16(0xDEAD));
+    auto r = dns::detail::try_parse_dns_packet(
+        &fake.mbuf, net::hton16(0xDEAD), 0x08080808,
+        /*expected_src_port=*/53, /*expected_dst_port=*/0,
+        /*expected_local_ip=*/0x0A000001);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 0x08080808u);
+}

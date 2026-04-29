@@ -593,12 +593,22 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
 ///        is the legacy default used by adversarial tests; production
 ///        callers pass their random ephemeral port for cache-poisoning
 ///        defense in depth.
+/// @param expected_local_ip  IPv4 destination the response must carry
+///        (host byte order). Equal to the local src_ip used to send the
+///        query. 0 means "accept any dst_ip" and is the legacy default
+///        used by adversarial test fixtures that predate this check.
+///        On a NIC in promiscuous mode (e.g. DPDK shared L2 with multiple
+///        guests) this closes the last off-path-poisoning channel: a
+///        forged reply from the nameserver IP carrying the correct
+///        src/dst port + tx_id but addressed to a different host's IP
+///        would otherwise have been accepted as our reply.
 /// @return IPv4 address (host order) if valid DNS response, nullopt otherwise
 [[nodiscard]] inline std::optional<uint32_t>
 try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                      uint32_t nameserver_ip,
                      uint16_t expected_src_port = kDnsPort,
-                     uint16_t expected_dst_port = 0) noexcept {
+                     uint16_t expected_dst_port = 0,
+                     uint32_t expected_local_ip = 0) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen
                              + kUdpHeaderLen + kDnsHeaderLen;
     // Reject multi-segment mbufs — our bounds math below reads first-segment
@@ -620,6 +630,11 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     if (ihl < net::kIpv4HeaderLen) return std::nullopt;
     if (ip->next_proto_id != net::kIpProtoUdp) return std::nullopt;
     if (net::ntoh32(ip->src_addr) != nameserver_ip) return std::nullopt;
+    // Defense-in-depth: if the caller supplied a local IP, the reply must
+    // be addressed to it. Skip when expected_local_ip == 0 to preserve the
+    // legacy permissive shape adversarial test fixtures depend on.
+    if (expected_local_ip != 0 &&
+        net::ntoh32(ip->dst_addr) != expected_local_ip) return std::nullopt;
 
     // Re-check total length with actual IHL — IP options can extend the header
     // beyond the 20-byte minimum used in min_len above.
@@ -1053,7 +1068,7 @@ public:
             }
             auto resolved = detail::try_parse_dns_packet(
                 mbufs[i], tx_id_net_, cfg_.nameserver_ip,
-                cfg_.port, src_port_);
+                cfg_.port, src_port_, src_ip_);
             if (resolved) {
                 result_ip_ = *resolved;
                 status_ = ResolveStatus::Ready;
@@ -1412,7 +1427,7 @@ resolve(uint16_t port_id,
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto resolved_ip = detail::try_parse_dns_packet(
                 pkts[i], tx_id_net, cfg.nameserver_ip, cfg.port,
-                src_port);
+                src_port, src_ip);
             if (resolved_ip) {
                 SPDLOG_LOGGER_INFO(log,
                     "DNS resolved: {} -> {} (after {} query/queries)",
