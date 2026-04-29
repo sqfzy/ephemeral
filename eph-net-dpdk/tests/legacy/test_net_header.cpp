@@ -115,9 +115,25 @@ TEST(NetHeader, ParseIpv4EmptyOctets) {
     EXPECT_EQ(parse_ipv4("10.0.0."), 0u);
 }
 
-TEST(NetHeader, ParseIpv4LeadingZerosAccepted) {
-    // Leading zeros are accepted as decimal (not octal)
-    EXPECT_EQ(parse_ipv4("010.001.001.001"), 0x0A010101u);
+TEST(NetHeader, ParseIpv4LeadingZerosRejected) {
+    // CVE-2021-29921 class: leading zeros are ambiguous — `inet_aton(3)`
+    // treats "010" as octal 8, our previous decimal-tolerant parser
+    // resolved it to 10, modern Python/Go reject it. The disagreement
+    // is the exploit. We reject any multi-character octet starting with
+    // '0' so a different parser in the same stack cannot resolve the
+    // same string to a different address. Bare "0" is fine. The DPDK
+    // and kernel-side `eph::net::Ipv4Addr::parse` parsers must agree
+    // on this rejection to close the cross-parser surface.
+    EXPECT_EQ(parse_ipv4("010.001.001.001"), 0u);
+    EXPECT_EQ(parse_ipv4("01.2.3.4"),         0u);
+    EXPECT_EQ(parse_ipv4("1.02.3.4"),         0u);
+    EXPECT_EQ(parse_ipv4("1.2.03.4"),         0u);
+    EXPECT_EQ(parse_ipv4("1.2.3.04"),         0u);
+    EXPECT_EQ(parse_ipv4("007.0.0.1"),        0u);
+    // Bare-zero must still work — it's the only legitimate way to
+    // write the zero octet.
+    EXPECT_EQ(parse_ipv4("0.1.2.3"),          0x00010203u);
+    EXPECT_EQ(parse_ipv4("1.2.3.0"),          0x01020300u);
 }
 
 TEST(NetHeader, ParseIpv4FourDigitOctetRejected) {
