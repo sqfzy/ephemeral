@@ -1325,7 +1325,22 @@ TEST(CloseCodeValidation, StandardErrorCodesAreValid) {
 }
 
 TEST(CloseCodeValidation, ReservedCodesBetweenRangesAreInvalid) {
-    // 1012-1015 are forbidden per RFC 6455 §7.4 (1015 = TLS handshake failure)
+    // The strict eph::net::ws::is_valid_close_code returns false for all of
+    // [1012..1015]. The motivation per code:
+    //   * 1015 — RFC 6455 §7.4.1: explicitly reserved, MUST NOT be sent on
+    //     the wire (it's a synthetic "TLS handshake failure" indicator the
+    //     LIBRARY uses internally; sending it as a Close payload is a
+    //     protocol violation).
+    //   * 1012 / 1013 / 1014 — undefined in RFC 6455 itself; subsequently
+    //     IANA-registered (Service Restart / Try Again Later / Bad Gateway)
+    //     in the WebSocket Close Code Number Registry. eph deliberately
+    //     stays on the conservative RFC-6455-strict reading and rejects
+    //     them: HFT venues do not send these codes, and accepting them
+    //     would dilute the rare-code branch's negative-test value. If a
+    //     future deployment needs interop with a server that does send
+    //     1012/1013/1014, broaden `is_valid_close_code`'s second branch
+    //     (line 138 of detail/websocket.hpp) — this test pins the current
+    //     conservative shape.
     EXPECT_FALSE(is_valid_close_code(1012));
     EXPECT_FALSE(is_valid_close_code(1013));
     EXPECT_FALSE(is_valid_close_code(1014));
