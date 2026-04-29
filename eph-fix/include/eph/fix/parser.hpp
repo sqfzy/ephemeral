@@ -713,7 +713,7 @@ parse(const uint8_t* data, size_t len) noexcept {
 
     // -- First field must be BeginString (tag 8) --
     uint32_t t1 = parse_tag_number(p, end);
-    if (t1 != tag::BeginString) {
+    if (t1 != tag::BeginString) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
             "FIX parse: first tag is {} (expected 8=BeginString), len={}", t1, len);
         return std::unexpected(ParseError::kInvalidFormat);
@@ -728,7 +728,7 @@ parse(const uint8_t* data, size_t len) noexcept {
     // -- Second field must be BodyLength (tag 9) --
     if (p >= end) return std::unexpected(ParseError::kIncomplete);
     uint32_t t2 = parse_tag_number(p, end);
-    if (t2 != tag::BodyLength) {
+    if (t2 != tag::BodyLength) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
             "FIX parse: second tag is {} (expected 9=BodyLength), len={}", t2, len);
         return std::unexpected(ParseError::kInvalidFormat);
@@ -745,18 +745,18 @@ parse(const uint8_t* data, size_t len) noexcept {
     // integer overflow on maliciously large digit strings.
     size_t body_length = 0;
     for (char c : body_len_str) {
-        if (c < '0' || c > '9') {
+        if (c < '0' || c > '9') [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: BodyLength contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
             return std::unexpected(ParseError::kInvalidFormat);
         }
-        if (body_length > MaxBodyLength / 10) {
+        if (body_length > MaxBodyLength / 10) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: BodyLength overflow before multiply, body_length={}", body_length);
             return std::unexpected(ParseError::kInvalidFormat);
         }
         body_length = body_length * 10 + static_cast<size_t>(c - '0');
-        if (body_length > MaxBodyLength) {
+        if (body_length > MaxBodyLength) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: BodyLength exceeds maximum allowed {} bytes",
                 MaxBodyLength);
@@ -778,13 +778,13 @@ parse(const uint8_t* data, size_t len) noexcept {
 
     // Verify the checksum
     const char* cs_field = body_start + body_length;
-    if (cs_field[0] != '1' || cs_field[1] != '0' || cs_field[2] != '=') {
+    if (cs_field[0] != '1' || cs_field[1] != '0' || cs_field[2] != '=') [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
             "FIX parse: CheckSum field malformed at offset {}, body_length={}",
             header_len + body_length, body_length);
         return std::unexpected(ParseError::kInvalidFormat);
     }
-    if (cs_field[6] != '\x01') {
+    if (cs_field[6] != '\x01') [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
             "FIX parse: CheckSum field missing trailing SOH, body_length={}", body_length);
         return std::unexpected(ParseError::kInvalidFormat);
@@ -794,7 +794,7 @@ parse(const uint8_t* data, size_t len) noexcept {
     uint32_t declared_cs = 0;
     for (int i = 3; i < 6; ++i) {
         char c = cs_field[i];
-        if (c < '0' || c > '9') {
+        if (c < '0' || c > '9') [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: CheckSum value contains non-digit char=0x{:02x}", static_cast<uint8_t>(c));
             return std::unexpected(ParseError::kInvalidFormat);
@@ -806,7 +806,7 @@ parse(const uint8_t* data, size_t len) noexcept {
     size_t cs_body_len = static_cast<size_t>(cs_field - msg);
     uint8_t computed_cs = compute_checksum(data, cs_body_len);
 
-    if (computed_cs != static_cast<uint8_t>(declared_cs)) {
+    if (computed_cs != static_cast<uint8_t>(declared_cs)) [[unlikely]] {
         SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
             "FIX parse: checksum mismatch: declared={}, computed={}, body_length={}",
             declared_cs, computed_cs, body_length);
@@ -823,7 +823,7 @@ parse(const uint8_t* data, size_t len) noexcept {
 
     while (bp < body_end) {
         uint32_t field_tag = parse_tag_number(bp, body_end);
-        if (field_tag == 0) {
+        if (field_tag == 0) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: malformed tag at body offset {}", static_cast<size_t>(bp - body_start));
             return std::unexpected(ParseError::kInvalidFormat);
@@ -831,7 +831,7 @@ parse(const uint8_t* data, size_t len) noexcept {
 
         const char* val_start = bp;
         while (bp < body_end && *bp != '\x01') ++bp;
-        if (bp >= body_end) {
+        if (bp >= body_end) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::fix_parser_logger(),
                 "FIX parse: field tag={} value missing SOH delimiter", field_tag);
             return std::unexpected(ParseError::kInvalidFormat);
