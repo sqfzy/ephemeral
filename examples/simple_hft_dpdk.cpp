@@ -4,7 +4,7 @@
 /// on a single lcore loop.
 ///
 /// Scope of this demo: plain TCP (`DpdkTcpStream<C, /*EnableTls=*/false>`)
-/// with a hand-built `StreamConfig::legacy` tuple and the strict
+/// with a hand-built `StreamConfig::dpdk::tcp_low_level` tuple and the strict
 /// `DpdkTcpStream::create(cfg)` factory. It is intentionally a *skeleton* —
 /// `scfg.dpdk.pool` is left null so `create` fails fast with `InvalidConfig` on
 /// a smoke-boot without a real mempool, and the rest of the code

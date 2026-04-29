@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
     // One poller owns the event loop.
     auto poller = en::KernelPoller::create({}).value();
 
-    // Plaintext WS client template. Setting `cfg.ws_path = "/stream"`
+    // Plaintext WS client template. Setting `cfg.ws.path = "/stream"`
     // (or whatever path the server expects) turns `Stream::create` into
     // a full RFC 6455 client handshake: KernelTcpStream drives the HTTP
     // Upgrade, validates the Sec-WebSocket-Accept, and only returns the
