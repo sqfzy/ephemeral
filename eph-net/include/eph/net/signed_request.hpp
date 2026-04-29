@@ -322,6 +322,20 @@ struct SignedHeaderBundle {
     /// @brief Header views safe to splice onto an outgoing request, valid
     ///        for the lifetime of this bundle.
     std::vector<HttpHeader>   headers;
+
+    SignedHeaderBundle() = default;
+
+    // Non-copyable: copying would clone `storage` into fresh std::string
+    // objects with different addresses, while `headers` would be copied
+    // verbatim with views still pointing into the ORIGINAL bundle's
+    // storage — once the original goes out of scope the copy holds
+    // dangling string_views (use-after-free). Move is O(1) ptr-swap on
+    // the underlying vectors so the contained string objects keep their
+    // addresses; the views stay valid against the moved-into bundle.
+    SignedHeaderBundle(const SignedHeaderBundle&)            = delete;
+    SignedHeaderBundle& operator=(const SignedHeaderBundle&) = delete;
+    SignedHeaderBundle(SignedHeaderBundle&&)            noexcept = default;
+    SignedHeaderBundle& operator=(SignedHeaderBundle&&) noexcept = default;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
