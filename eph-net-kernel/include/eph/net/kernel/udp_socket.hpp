@@ -274,6 +274,20 @@ public:
                 core::Error::Disconnected,
                 "KernelUdpSocket::connect_to: fd closed"});
         }
+        // Reject (0.0.0.0, 0) — POSIX semantics differ across kernels and
+        // the most common interpretation is "disassociate the connected
+        // peer", which silently un-does an earlier connect_to without
+        // surfacing the unexpected state. Force the caller to use a real
+        // peer; if they want to disassociate, a future explicit
+        // `disconnect()` API can carry that intent without overloading
+        // the same entry point.
+        if (peer.ip == Ipv4Addr{} && peer.port == 0) [[unlikely]] {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelUdpSocket::connect_to: peer (0.0.0.0:0) is not a "
+                "valid peer (POSIX semantics on this address effectively "
+                "disassociate; use a real address)"});
+        }
         struct sockaddr_in sa{};
         sa.sin_family      = AF_INET;
         sa.sin_port        = ::htons(peer.port);
