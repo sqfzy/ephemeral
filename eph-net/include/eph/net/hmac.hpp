@@ -282,8 +282,16 @@ struct HmacSha256Tag {
         SPDLOG_ERROR("hmac_sha256_sign: HMAC() returned unexpected state "
                      "(result={}, tag_len={})",
                      static_cast<const void*>(result), tag_len);
-        // Leave tag zero-initialized. The caller's request will fail
-        // venue-side with a signature mismatch rather than a segfault.
+        // The tag is INPUT to HMAC() — aws-lc may have written partial
+        // bytes before bailing out (e.g. on an invalid EVP_MD or after
+        // the inner SHA but before the outer one). The function-local
+        // `tag{}` initialiser zeroed it pre-call, but we explicitly
+        // OPENSSL_cleanse it here so a partial write is wiped before
+        // we hand the value back: a "deterministic-but-incorrect"
+        // signature that the venue rejects with a clean signature-
+        // mismatch is far better diagnostics than half-MAC bits the
+        // caller might log to a slow-path observability sink.
+        OPENSSL_cleanse(tag.bytes.data(), tag.bytes.size());
     }
     return tag;
 }
