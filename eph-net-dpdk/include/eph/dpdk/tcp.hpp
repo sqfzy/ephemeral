@@ -1266,16 +1266,21 @@ public:
             // Any matching segment counts as liveness evidence. Refresh
             // the keepalive baseline to the most recent burst's TSC (set
             // by poll_rx() before calling us, or via set_last_rx_burst_tsc
-            // on the RxDispatcher path). Clearing keepalive_misses_ also
-            // resets the "N probes unanswered → Closed" counter, so a
-            // single live reply undoes prior uncertainty.
+            // on the DpdkPoller path: tcp_stream.hpp's process_burst_
+            // calls set_last_rx_burst_tsc before process_rx so the same
+            // single-thread invariant holds — RxDispatcher predecessor
+            // was retired in the RSS / multi-queue rework). Clearing
+            // keepalive_misses_ also resets the "N probes unanswered →
+            // Closed" counter, so a single live reply undoes prior
+            // uncertainty.
             //
             // Memory order: relaxed is correct here because every store of
             // last_rx_burst_tsc_ that this load can possibly observe happens
             // earlier in program order on the SAME thread (poll_rx publishes
-            // it at line ~1668 before invoking process_rx; the RxDispatcher
-            // path calls set_last_rx_burst_tsc at tcp_stream.hpp:1634 which
-            // is also followed by sess_.process_rx in the same lcore).
+            // it via release-store before invoking process_rx; the Poller
+            // path calls set_last_rx_burst_tsc in tcp_stream.hpp's
+            // process_burst_ which is also followed by sess_.process_rx
+            // on the same lcore).
             // Cross-thread observers go through the public last_rx_burst_tsc()
             // getter, which uses memory_order_acquire to pair with the
             // release stores. Audit-20260413 #16 noted the relaxed/acquire
