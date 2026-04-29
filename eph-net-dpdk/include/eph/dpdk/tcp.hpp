@@ -1187,13 +1187,18 @@ public:
     ///          numbers are inconsistent and must be reset().
     rte_mbuf* build_data_packet(rte_mbuf* mbuf,
                                 const void* data, uint16_t len) noexcept {
-        if (state_ != TcpState::Established || len > effective_mss_) return nullptr;
+        // Hot-path send: state_ should always be Established and len <= MSS
+        // on a healthy connection. Both reject branches are user-error or
+        // post-FIN paths — hint cold so the success path stays straight.
+        if (state_ != TcpState::Established || len > effective_mss_) [[unlikely]] {
+            return nullptr;
+        }
 
         uint16_t written = pkt_template_.fill_packet(
             mbuf, snd_nxt_, rcv_nxt_,
             net::kTcpAck | net::kTcpPsh,
             rcv_wnd_, data, len);
-        if (written == 0) return nullptr;
+        if (written == 0) [[unlikely]] return nullptr;
 
         snd_nxt_ += len;
         stats_.tx_packets++;
