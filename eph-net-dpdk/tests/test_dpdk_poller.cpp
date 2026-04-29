@@ -13,11 +13,19 @@
 /// integration-test scope. The unit tests focus on the routing-table
 /// and friend-hook plumbing, where the bugs live.
 
+#include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <set>
 #include <string_view>
 
 #include <gtest/gtest.h>
+
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
+#include <rte_ether.h>
+#include <rte_ip.h>
+#include <rte_errno.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
@@ -695,6 +703,82 @@ TEST(DpdkPoller, SetIcmpCallbackEmptyIsAlsoInstallOnce) {
     EXPECT_EQ(hits, 0);
     // `hits` goes out of scope after this test returns; `p`'s
     // icmp_cb_ is the empty default — no dangling reference. ASan-safe.
+}
+
+// Reproduces the latent bug: install a default-constructed `std::function`
+// (state goes Ready), then deliver a *real* ICMP Type 3 Code 4 mbuf via
+// the test-injection seam. Without the `if (!icmp_cb_) return;` guard in
+// `maybe_dispatch_icmp_`, the dispatch would invoke `icmp_cb_(parsed)` on
+// the empty function, throwing `std::bad_function_call` and immediately
+// terminating the process (the method is `noexcept`). With the guard,
+// the empty install is treated like "no callback" and the dispatch
+// counter stays at zero.
+TEST(DpdkPoller, EmptyIcmpCallbackDoesNotCrashOnDispatch) {
+    using namespace eph::dpdk::net;
+
+    auto* pool = rte_pktmbuf_pool_create(
+        "tdp_icmp_pool",
+        /*n=*/255, /*cache=*/16, /*priv_size=*/0,
+        RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+    if (pool == nullptr) {
+        // --no-huge EAL on hosts with no hugepages can refuse small
+        // pool allocations; skip rather than fail when that's the cause.
+        GTEST_SKIP() << "rte_pktmbuf_pool_create failed (rte_errno="
+                     << rte_errno << "): " << rte_strerror(rte_errno);
+    }
+
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    // First-install-wins: the empty function locks the slot.
+    p->set_icmp_callback({});
+
+    // Build a minimal ICMP Type 3 Code 4 frame. Layout:
+    //   Ether(14) | outer IP(20) | ICMP hdr(8) | embedded IP(20) | embedded L4(8)
+    auto* mbuf = rte_pktmbuf_alloc(pool);
+    ASSERT_NE(mbuf, nullptr);
+    constexpr size_t total = kEtherHeaderLen + kIpv4HeaderLen + 8
+                           + kIpv4HeaderLen + 8;
+    auto* buf = reinterpret_cast<uint8_t*>(rte_pktmbuf_append(mbuf, total));
+    ASSERT_NE(buf, nullptr);
+    std::memset(buf, 0, total);
+
+    auto* eth = reinterpret_cast<rte_ether_hdr*>(buf);
+    eth->ether_type = hton16(kEtherTypeIpv4);
+
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+    ip->version_ihl   = static_cast<uint8_t>((4u << 4) | 5u);
+    ip->total_length  = hton16(static_cast<uint16_t>(total - kEtherHeaderLen));
+    ip->next_proto_id = kIpProtoIcmp;
+    ip->src_addr      = hton32(0x0A0000FE);
+    ip->dst_addr      = hton32(0x0A000001);
+
+    uint8_t* icmp = buf + kEtherHeaderLen + kIpv4HeaderLen;
+    icmp[0] = 3;  // Destination Unreachable
+    icmp[1] = 4;  // Fragmentation Needed
+    uint16_t mtu_net = hton16(static_cast<uint16_t>(1400));
+    std::memcpy(icmp + 6, &mtu_net, 2);
+
+    auto* e_ip = reinterpret_cast<rte_ipv4_hdr*>(icmp + 8);
+    e_ip->version_ihl   = static_cast<uint8_t>((4u << 4) | 5u);
+    e_ip->next_proto_id = kIpProtoTcp;
+    e_ip->src_addr      = hton32(0x0A000001);
+    e_ip->dst_addr      = hton32(0x0A000002);
+
+    uint8_t* e_l4 = reinterpret_cast<uint8_t*>(e_ip) + kIpv4HeaderLen;
+    uint16_t sp_n = hton16(static_cast<uint16_t>(12345));
+    uint16_t dp_n = hton16(static_cast<uint16_t>(443));
+    std::memcpy(e_l4,     &sp_n, 2);
+    std::memcpy(e_l4 + 2, &dp_n, 2);
+
+    p->inject_mbuf_for_test_(mbuf);
+    // poll(timeout) consumes injected mbufs; pre-fix this would terminate
+    // the process via std::bad_function_call inside icmp_cb_(parsed).
+    [[maybe_unused]] auto n = p->poll(std::chrono::nanoseconds{0});
+
+    // No callback ran — counter stays at zero (the guard short-circuits
+    // before incrementing icmp_frag_needed_dispatched_).
+    EXPECT_EQ(p->icmp_frag_needed_dispatched(), 0u);
+
+    rte_mempool_free(pool);
 }
 
 // The "connection rebind" sequence: add Pollable A on tuple T, remove A,

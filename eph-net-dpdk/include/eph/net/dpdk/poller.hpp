@@ -1164,6 +1164,17 @@ private:
                 kIcmpCbStateReady) {
             return;
         }
+        // Defense-in-depth: state==Ready locks the slot, but the existing
+        // `SetIcmpCallbackEmptyIsAlsoInstallOnce` test documents that an
+        // empty `std::function` is a valid first-install (it claims the
+        // slot and blocks subsequent installs). Without this guard, a
+        // genuine ICMP Type 3 Code 4 message arriving after such an
+        // empty install would invoke `icmp_cb_(parsed)` on a default-
+        // constructed std::function, throwing `std::bad_function_call`
+        // — which immediately terminates because this method is
+        // `noexcept`. Matches the symmetric `if (cb)` guard already
+        // present in `IcmpRegistry::dispatch` (icmp_registry.hpp:244).
+        if (!icmp_cb_) [[unlikely]] return;
         auto parsed = eph::dpdk::net::parse_icmp(mbuf);
         if (!parsed || !parsed.is_frag_needed() || !parsed.embedded_valid) {
             return;
