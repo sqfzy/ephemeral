@@ -443,9 +443,38 @@ public:
                 if (cfg_.resend_on_gap) {
                     send_resend_request(expected, recv - 1);
                 }
-                expected_inbound_seq_.store(recv + 1, std::memory_order_relaxed);
+                // Boundary guard: `recv + 1` in uint32_t wraps to 0 when
+                // recv == UINT32_MAX. Silently storing 0 corrupts every
+                // subsequent gap-detect comparison (anything looks like a
+                // fresh gap relative to expected=0), and a peer that
+                // controls a single MsgSeqNum field can trigger it. FIX
+                // 4.4 §4 caps MsgSeqNum at 4-byte unsigned; recovery
+                // requires Logoff + Logon with ResetSeqNumFlag=Y. Until
+                // then, freeze the watermark at UINT32_MAX and ERROR-log
+                // for the operator.
+                if (recv == UINT32_MAX) [[unlikely]] {
+                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                        "Inbound MsgSeqNum at UINT32_MAX boundary "
+                        "(recv={}, expected={}): cannot advance, session "
+                        "must be reset (Logoff + Logon with "
+                        "ResetSeqNumFlag=Y)", recv, expected);
+                    expected_inbound_seq_.store(UINT32_MAX,
+                        std::memory_order_relaxed);
+                } else {
+                    expected_inbound_seq_.store(recv + 1, std::memory_order_relaxed);
+                }
             } else if (recv == expected) {
-                expected_inbound_seq_.store(recv + 1, std::memory_order_relaxed);
+                if (recv == UINT32_MAX) [[unlikely]] {
+                    // Same boundary as the gap branch — see above.
+                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                        "Inbound MsgSeqNum at UINT32_MAX boundary "
+                        "(recv={}): cannot advance, session must be reset",
+                        recv);
+                    expected_inbound_seq_.store(UINT32_MAX,
+                        std::memory_order_relaxed);
+                } else {
+                    expected_inbound_seq_.store(recv + 1, std::memory_order_relaxed);
+                }
             } else if (recv < expected && !is_dup) {
                 SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
                     "Unexpected low sequence: expected={}, received={}", expected, recv);
