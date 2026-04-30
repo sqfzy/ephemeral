@@ -55,6 +55,8 @@
 #include <mutex>
 #include <string>
 
+#include <spdlog/spdlog.h>
+
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_core.hpp"    // ConnectionTuple
 #include "eph/dpdk/packet_parse.hpp"   // ParsedIcmp
@@ -173,18 +175,33 @@ public:
                     void*       stream,
                     MtuCallback cb) noexcept {
         if (stream == nullptr || cb == nullptr) {
+            SPDLOG_ERROR(
+                "IcmpRegistry::register_target: stream={} cb={} must not be null "
+                "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
+                stream, reinterpret_cast<void*>(cb), proto,
+                tuple.src_ip, tuple.src_port, tuple.dst_ip, tuple.dst_port);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig,
                 "IcmpRegistry::register_target: stream/cb must not be null"});
         }
         std::lock_guard<std::mutex> g(mu_);
         if (n_targets_ >= kMaxTargets) {
+            SPDLOG_ERROR(
+                "IcmpRegistry::register_target: registry full ({} entries) "
+                "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
+                kMaxTargets, proto, tuple.src_ip, tuple.src_port,
+                tuple.dst_ip, tuple.dst_port);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::OutOfMemory,
                 "IcmpRegistry::register_target: registry full"});
         }
         for (std::size_t i = 0; i < n_targets_; ++i) {
             if (entry_matches_(targets_[i], tuple, proto)) {
+                SPDLOG_WARN(
+                    "IcmpRegistry::register_target: tuple already registered "
+                    "at index {} (proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
+                    i, proto, tuple.src_ip, tuple.src_port,
+                    tuple.dst_ip, tuple.dst_port);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::InvalidConfig,
                     "IcmpRegistry::register_target: tuple already registered"});
