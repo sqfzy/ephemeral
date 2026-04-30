@@ -79,15 +79,20 @@ Last verified: 2026-04-30 (none completed at this revision).
 
 ## Known limitations (documented, no fix planned)
 
-- **ENA PMD MP secondary `rx_burst` crashes once traffic lands**
-  (parallel-bench v1 bug #7, isolated 2026-04-30):
+- **ENA PMD MP secondary `rx_burst` crashes — two conditions required**
+  (parallel-bench v1 bug #7, fully isolated 2026-04-30):
 
-  Empty-ring secondary I/O on ENA actually works — `rte_mempool_lookup`
-  / `tx_burst` / `rx_burst` against a queue with `head==tail` all
-  succeed. The crash is **gated on HW-completed RX descriptors**:
-  the next `rte_eth_rx_burst` on a populated queue segfaults
-  inside `ena_com_get_next_rx_cdesc` because per-queue ring
-  metadata lives only in primary's address space.
+  The SIGSEGV inside `ena_com_get_next_rx_cdesc` requires **both**
+  conditions simultaneously:
+  1. Primary doing high-rate `DpdkPoller`-driven I/O (Stream/Socket
+     send+poll loop — as in `lat_tcp_dpdk` + mockex).
+  2. Secondary driving `DpdkPoller::poll()` → `DpdkUdpSocket` receive
+     path (as in `lat_udp_dpdk`).
+
+  Neither condition alone is sufficient (two-direction A/B, 2026-04-30):
+  raw `rte_eth_rx_burst` in the secondary under heavy traffic → no
+  crash; full secondary machinery with an idle primary → no crash
+  (753 k samples, 50 k/s).
 
   ```
   Thread 1 received signal SIGSEGV
@@ -98,29 +103,21 @@ Last verified: 2026-04-30 (none completed at this revision).
     #4 DpdkPoller::poll()
   ```
 
-  A/B isolation: both `Platform::join_dynamic` (autojoin) and
-  `Platform::create_secondary` / `create_with_eal` (declarative)
-  bring-up paths reproduce this with identical stacks under the
-  same traffic. So this is a real ENA PMD limitation, not eph
-  autojoin specific. Earlier framings — "RX starvation under load"
-  and "fundamentally broken" — were overclaimed; see the doc's
-  "Isolation log (post-mortem)" section for what we actually
-  measured this time.
-
   **Workaround already shipped**: `lat_multi_dpdk` uses
   single-process N-lcore design — only primary ever issues I/O
   burst calls; bypasses the limitation entirely.
 
   **Documentation + reproducers**:
-  * Prose with isolation log + scope table:
+  * Prose with two-condition isolation log:
     `eph-net-dpdk/docs/ena-mp-limitation.md`
-  * In-repo regression sentinel (idle-ring path):
+  * In-repo idle-ring sentinel:
     `eph-net-dpdk/tests/integration/repro_ena_mp_secondary_rxburst.cpp`
-    — exits 9 on current DPDK 24.11.2 / ENA (no idle-ring crash).
-    Expected. If it ever exits 0, that's news worth chasing.
-  * Heavyweight A/B reproducer (under traffic):
+    — exits 9 on DPDK 24.11.2 / ENA (expected; idle rings don't crash).
+    If it ever exits 0, that is news worth chasing.
+  * Two-condition A/B reproducer:
     branch `diag/ena-mp-isolation-2` + `/tmp/ena_mp_isolation.sh`
-    (autojoin) + `/tmp/ena_mp_isolation_step2.sh` (declarative).
+    (autojoin) + `/tmp/ena_mp_diag_minsec.sh` (minimal secondary)
+    + `/tmp/ena_mp_diag_benign_primary.sh` (benign primary).
     Branch is intentionally not merged — re-introduces diagnostic
     envvar-gated bring-up paths in `dpdk_env.hpp`.
 

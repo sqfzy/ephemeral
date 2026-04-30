@@ -1,15 +1,13 @@
 # AWS ENA PMD: Multi-Process secondary RX crashes under traffic
 
 > **TL;DR.** On AWS ENA, a secondary DPDK process can attach (mempool /
-> memzone are shared correctly) and can issue `rte_eth_tx_burst` and
-> `rte_eth_rx_burst` against an **idle** queue without harm — but the
-> moment HW-completed RX descriptors land on a queue a secondary
-> polls, the next `rte_eth_rx_burst` segfaults inside
-> `ena_com_get_next_rx_cdesc`. **Both autojoin (`Platform::join_dynamic`)
-> and declarative (`Platform::create_secondary` / `create_with_eal`)
-> bring-up paths are equally affected** — verified by isolation
-> experiment (see "Isolation log" below). The crash is in ENA PMD code,
-> not in eph.
+> memzone are shared correctly) and burst calls against **idle** queues
+> work. The SIGSEGV inside `ena_com_get_next_rx_cdesc` requires **both**
+> conditions simultaneously (2026-04-30 A/B isolation):
+> **(1)** primary doing high-rate `DpdkPoller`-driven I/O (Stream / Socket
+> send+poll loop), **and (2)** secondary driving `DpdkPoller::poll()` →
+> `DpdkUdpSocket` receive path — raw `rte_eth_rx_burst` alone does not
+> crash. See "Isolation log" for the A/B evidence table.
 
 ## Scope (precise)
 
@@ -18,16 +16,17 @@
 | `rte_mempool_lookup` / mempool & memzone access  | yes              |
 | `Platform::create_secondary` / `join_dynamic` (control plane) | yes |
 | IPC primitives, ICMP registry, FlowDirector fallback | yes          |
-| `rte_eth_tx_burst` (1 packet to broadcast MAC, idle ring) | yes      |
-| `rte_eth_rx_burst` on a queue **with no completed cdesc** | yes (returns 0) |
-| `rte_eth_rx_burst` on a queue **with completed cdesc**    | **CRASH** (SIGSEGV) |
-| `DpdkPoller::poll()` on secondary while traffic is flowing | **CRASH** (same root cause) |
+| `rte_eth_tx_burst` (broadcast-MAC, idle ring) | yes                  |
+| `rte_eth_rx_burst` on idle ring (head==tail)  | yes (returns 0)      |
+| raw `rte_eth_rx_burst` + live traffic, even with high-rate primary | **no crash** |
+| `DpdkPoller::poll()` (secondary full machinery) + idle primary | **no crash** |
+| `DpdkPoller::poll()` (secondary full machinery) + high-rate primary | **CRASH** (SIGSEGV) |
 
-The empty-ring case works because ENA's `ena_com_get_next_rx_cdesc`
-short-circuits on `head == tail` before it would deref ring metadata
-that lives in primary's heap. As soon as the NIC firmware advances
-`head` (a packet has been DMA'd), the next call dereferences a pointer
-valid only in primary's address space → segfault.
+The idle-ring case works because ENA's `ena_com_get_next_rx_cdesc`
+short-circuits on `head == tail` before it dereferences ring metadata
+that lives in primary's heap. The crash occurs only when both the
+primary's high-rate burst-poll loop and the secondary's full
+`DpdkPoller`/`DpdkUdpSocket` machinery are running concurrently.
 
 ## Reference backtrace
 
@@ -59,20 +58,19 @@ Thread 1 "lat_udp" received signal SIGSEGV, Segmentation fault.
 Two complementary reproducers, intentionally split by what they cost
 to run:
 
-### `tests/integration/repro_ena_mp_secondary_rxburst.cpp` (idle, self-contained)
+### `tests/integration/repro_ena_mp_secondary_rxburst.cpp` (idle-ring sentinel)
 
-Fork+execv self; child attaches as secondary, drives a few I/O burst
-calls on its owned queue and on primary's queue. Single binary, no
-mockex, no kernel plumbing.
+Fork+execv self; child attaches as secondary, calls `tx_burst` once and
+`rx_burst` twice (own queue + primary's queue) against idle rings. Single
+binary, no mockex, no external traffic.
 
-This reproducer exits **9** ("limitation NOT reproduced") on this
-ENA / DPDK 24.11.2 combination — that is **expected**, because the
-RX queue is never populated with completed descriptors and the
-empty-ring fast path in ENA does not crash.
+This reproducer exits **9** ("sentinel holds") on ENA / DPDK 24.11.2 —
+**expected**. No traffic lands on the secondary's queue so the idle-ring
+fast-path fires and there is no crash.
 
-It is preserved as a **regression sentinel for the empty-ring path**:
-if it ever exits 0 (SIGSEGV under idle), that's news worth chasing.
-Build via `xmake build -g repros`.
+It is preserved as a **regression sentinel for the idle-ring path**:
+if it ever exits 0 (SIGSEGV under idle), that is new evidence worth
+chasing. Build via `xmake build -g repros`.
 
 ### `diag/ena-mp-isolation-2` branch (with traffic, heavyweight)
 
@@ -111,19 +109,40 @@ bundled four confounders (autojoin vs declarative path /
 `DpdkPoller::poll` machinery vs raw rx_burst / mockex traffic vs
 idle / temporary hand-written autojoin envvars).
 
-The 2026-04-30 isolation experiment disentangled them:
+The 2026-04-30 isolation experiment ran two independent A/B axes:
+
+**Phase 1 — autojoin vs declarative (same traffic)**
 
 | Test | bring-up | traffic? | Result |
 |------|----------|----------|--------|
 | Minimal repro (current file) | autojoin (`join_dynamic`) | none | exit 9 (no crash) |
-| Minimal repro (current file) | declarative (`create_secondary`) | none | exit 9 (no crash) |
 | `ena_mp_isolation.sh` step 1 | autojoin | yes (mockex echo) | SIGSEGV |
 | `ena_mp_isolation.sh` step 2 | declarative | yes (mockex echo) | SIGSEGV (identical stack) |
 
-Conclusion: the variable that matters is **traffic**, not eph's bring-up
-path. Both autojoin and declarative paths are equally functional for
-control plane on ENA secondary, and equally broken for data plane the
-moment HW completes a packet.
+Conclusion: both bring-up paths produce identical results. Traffic is
+what matters — but a further A/B revealed traffic alone is not the
+full story.
+
+**Phase 2 — two-condition A/B (2026-04-30, scripts on `diag/ena-mp-isolation-2`)**
+
+| Primary | Secondary | Result |
+|---------|-----------|--------|
+| `lat_tcp_dpdk` high-rate DpdkPoller I/O | `lat_udp_dpdk` full machinery | **CRASH** (baseline) |
+| `lat_tcp_dpdk` high-rate DpdkPoller I/O | minimal raw `rte_eth_rx_burst` loop | NO CRASH |
+| benign (Platform up, no I/O) | `lat_udp_dpdk` full machinery | NO CRASH (753k samples, 50k/s) |
+| benign (Platform up, no I/O) | minimal raw `rte_eth_rx_burst` loop | NO CRASH |
+
+**Conclusion (precise, two conditions required):** The crash requires
+**both** simultaneously:
+1. Primary doing high-rate `DpdkPoller`-driven I/O — `Stream::send` +
+   `DpdkPoller::poll` burst loop (as in `lat_tcp_dpdk` + mockex).
+2. Secondary driving `DpdkPoller::poll()` → `DpdkUdpSocket` receive path
+   (as in `lat_udp_dpdk`).
+
+Neither condition alone is sufficient. Raw `rte_eth_rx_burst` in the
+secondary does not trigger the crash even under heavy primary load and
+live traffic. An idle primary does not trigger the crash even when the
+secondary is running the full `DpdkPoller`/`DpdkUdpSocket` machinery.
 
 ## Recovery
 
