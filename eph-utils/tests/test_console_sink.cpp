@@ -98,3 +98,16 @@ TEST(ConsoleSinkTest, TagValueWithoutSpecialCharsNotQuoted) {
     };
     EXPECT_NO_THROW(sink.push_counter("test_metric", 1, tags));
 }
+
+TEST(ConsoleSinkTest, TagValueWithEmbeddedQuoteIsEscaped) {
+    // Embedded `"` and `\` inside a quoted tag value must be escaped so
+    // the closing quote isn't matched prematurely. Without escaping a
+    // value like `foo"bar` would render as `key="foo"bar"`, breaking
+    // any downstream parser keyed on quoted regions.
+    ConsoleSink sink;
+    eph::core::MetricTag tags[] = {
+        {"name",  "foo\"bar"},     // embedded double-quote
+        {"path",  "C:\\trade\\x"}, // embedded backslashes
+    };
+    EXPECT_NO_THROW(sink.push_counter("test_metric", 1, tags));
+}
