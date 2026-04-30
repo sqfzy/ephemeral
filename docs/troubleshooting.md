@@ -119,7 +119,7 @@ pattern.
 |------------------|--------------|-----|
 | `certificate verify failed` | Server cert not trusted | Set `cfg.tls.ca_cert_path`, check expiry |
 | `alert handshake_failure` | Cipher / version mismatch | ephemeral requires TLS 1.3 |
-| `handshake timeout` | Server slow to respond | Increase `cfg.tls_timeout` |
+| `handshake timeout` | Server slow to respond | Increase `cfg.tls.handshake_timeout` |
 | `self-signed certificate` | Dev / staging | Set `cfg.tls.verify_peer=false` (dev only) |
 
 **Diagnosis steps**:
