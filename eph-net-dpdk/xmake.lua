@@ -187,6 +187,24 @@ target("dpdk_mp_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- MpTopology variant of the MP e2e (reshape stage 4): exercises the
+-- recommended path where the caller passes only `MpTopology::uniform(
+-- self_index, total_procs, nb_rx_queues)` and the library auto-derives
+-- queue / src_port segments via the shared registry. Coordinated by
+-- tests/integration/dpdk_mp_topology_e2e.sh; same SKIP-on-missing-env
+-- behaviour as the legacy MP binaries above.
+target("dpdk_mp_topology_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_topology_primary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_topology_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_topology_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

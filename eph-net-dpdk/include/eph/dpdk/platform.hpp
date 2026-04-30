@@ -719,6 +719,24 @@ public:
     [[nodiscard]] std::pair<uint16_t, uint16_t>
     effective_rx_queue_range() const noexcept;
 
+    // ── Auto-derived MP layout (mp_topology-driven) ──────────────────────
+
+    /// @brief True iff this Platform was created with a populated
+    /// `cfg.mp_topology` and successfully attached to (primary) /
+    /// looked up (secondary) the cross-process registry. Cold getter,
+    /// safe on moved-from instances (returns false).
+    [[nodiscard]] bool has_mp_topology() const noexcept;
+
+    /// @brief This process's `[port_lo, port_hi)` src_port window when
+    /// `mp_topology` is in effect; `std::nullopt` otherwise. Stream
+    /// `create_and_attach` consults this to constrain
+    /// `find_src_port_for_queue`'s search range — letting the library
+    /// auto-pick a non-colliding ephemeral src_port instead of asking
+    /// the caller to hand-partition src_port ranges across processes.
+    /// Cold getter; safe on moved-from instances (returns nullopt).
+    [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
+    self_port_range() const noexcept;
+
     /// @brief Register a per-queue Poller. Intended to be called once per
     /// queue at startup, before the lcore loops begin polling.
     /// Not thread-safe.
@@ -828,6 +846,18 @@ struct Platform::Impl {
     /// branch-free at the hot path's expense of ~2 KiB per Platform,
     /// which is negligible compared to the mempools themselves.
     static constexpr std::size_t kMaxPools = 256;
+
+    /// @brief Cross-process MP registry attachment, populated by
+    /// `Platform::create_primary` / `create_secondary` when the caller
+    /// supplied `cfg.mp_topology`. Held in `std::optional` so the
+    /// non-MP path leaves it empty without paying the (still small)
+    /// cost of a default-constructed handle. **Declared before every
+    /// other DPDK-resource-owning field** so it outlives them on
+    /// destruction (reverse construction order): mempool, port state
+    /// and pollers tear down first; the registry's hugepage memzone
+    /// release happens last, when no other process state could still
+    /// be reading it.
+    std::optional<::eph::dpdk::detail::MpRegistryHandle> mp_registry;
 
     PlatformConfig config;
     /// Canonical pool — points at the single shared pool when
@@ -1584,11 +1614,73 @@ Platform::create(const PlatformConfig& config) {
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create_primary(PlatformConfig config) {
+    [[maybe_unused]] auto log = detail::platform_logger();
     // Force-set the role so mis-assembled configs can't accidentally
     // travel into create() with Secondary marked but primary semantics
     // intended.
     config.proc_type = ProcType::Primary;
-    return create(config);
+
+    // ── mp_topology auto-derivation (cold path) ─────────────────────────
+    //
+    // When the caller opts into MpTopology, we:
+    //   1. validate the config (catches an invalid topology before any
+    //      DPDK side-effect),
+    //   2. reserve the cross-process registry memzone — the primary's
+    //      reset-on-create contract (see detail/mp_registry.hpp),
+    //   3. derive cfg.rx_queue_range from `self()`,
+    //   4. clear `cfg.mp_topology` so the downstream `create()` sees a
+    //      "manual partition" config and its mp_topology⇄rx_queue_range
+    //      mutual-exclusion check still passes,
+    //   5. attach the registry handle to the resulting Platform's Impl
+    //      after `create()` succeeds (the handle's RAII destructor frees
+    //      the memzone if `create()` fails).
+    //
+    // The original topology survives via `Impl::mp_registry` —
+    // `has_mp_topology()` and `self_port_range()` consult it for the
+    // stream-attach src_port narrowing path.
+    std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
+    if (config.mp_topology.has_value()) {
+        if (auto err = validate_config(config); !err.empty()) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_primary: invalid PlatformConfig: {}", err);
+            return std::unexpected(std::string{err});
+        }
+        if (config.file_prefix.empty()) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_primary: mp_topology requires a "
+                "non-empty file_prefix (used as the registry memzone "
+                "name eph_mp/<file_prefix>)");
+            return std::unexpected(std::string{
+                "create_primary: mp_topology set but file_prefix is empty"});
+        }
+        auto r = ::eph::dpdk::detail::MpRegistryHandle::create_primary(
+            config.file_prefix, *config.mp_topology);
+        if (!r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_primary: registry reserve failed: {}",
+                r.error().detail);
+            return std::unexpected(std::string{r.error().detail});
+        }
+        reg = std::move(*r);
+        const auto& self = config.mp_topology->self();
+        config.rx_queue_range = {self.queue_lo, self.queue_hi};
+        // Consumed: clear so create()'s validate_config doesn't trip
+        // the mp_topology⇄rx_queue_range mutual-exclusion check.
+        config.mp_topology.reset();
+
+        SPDLOG_LOGGER_INFO(log,
+            "Platform::create_primary: mp_topology derived "
+            "rx_queue_range=[{},{}) for self_index (registry attached)",
+            config.rx_queue_range.first, config.rx_queue_range.second);
+    }
+
+    auto p = create(config);
+    if (!p) return p;  // reg's RAII frees the memzone on early-out
+
+    if (reg.has_value() && p->impl_) {
+        p->impl_->mp_registry = std::move(reg);
+    }
+    return p;
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
@@ -1622,6 +1714,36 @@ Platform::create_secondary(PlatformConfig config) {
             "create_secondary: file_prefix must be non-empty and match "
             "the primary's EAL --file-prefix (otherwise rte_mempool_lookup "
             "cannot find the primary's shared mempool)"});
+    }
+
+    // ── mp_topology attach (cold path) ──────────────────────────────────
+    //
+    // Mirror of create_primary's auto-derivation, but in lookup mode:
+    // the primary already wrote the registry header; we attach, cross-
+    // validate that our declared spec matches the primary's view of
+    // this self_index, derive cfg.rx_queue_range from `self()`, and
+    // clear `cfg.mp_topology` so the rest of secondary bring-up sees a
+    // "manual partition" config. The registry handle is moved into the
+    // Impl after the rest of secondary attach succeeds; the handle's
+    // RAII destructor releases the slot on early-out.
+    std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
+    if (config.mp_topology.has_value()) {
+        auto r = ::eph::dpdk::detail::MpRegistryHandle::attach_secondary(
+            config.file_prefix, *config.mp_topology);
+        if (!r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_secondary: registry attach failed: {}",
+                r.error().detail);
+            return std::unexpected(std::string{r.error().detail});
+        }
+        reg = std::move(*r);
+        const auto& self = config.mp_topology->self();
+        config.rx_queue_range = {self.queue_lo, self.queue_hi};
+        config.mp_topology.reset();
+        SPDLOG_LOGGER_INFO(log,
+            "Platform::create_secondary: mp_topology derived "
+            "rx_queue_range=[{},{}) (registry attached)",
+            config.rx_queue_range.first, config.rx_queue_range.second);
     }
 
     // --- Phase-3 real secondary attach ---
@@ -1713,6 +1835,10 @@ Platform::create_secondary(PlatformConfig config) {
         impl->dispatch_mode = ::eph::net::dpdk::RxDispatchMode::Software;
     }
 
+    if (reg.has_value()) {
+        impl->mp_registry = std::move(reg);
+    }
+
     SPDLOG_LOGGER_INFO(log,
         "Platform::create_secondary ready (port={}, file_prefix='{}', "
         "rx_queue_range=[{},{}), dispatch_mode={})",
@@ -1783,6 +1909,17 @@ Platform::effective_rx_queue_range() const noexcept {
     if (r.first == 0 && r.second == 0)
         return {uint16_t{0}, impl_->config.nb_rx_queues};
     return r;
+}
+
+inline bool Platform::has_mp_topology() const noexcept {
+    return impl_ && impl_->mp_registry.has_value();
+}
+
+inline std::optional<std::pair<uint32_t, uint32_t>>
+Platform::self_port_range() const noexcept {
+    if (!impl_ || !impl_->mp_registry.has_value()) return std::nullopt;
+    const auto& slot = impl_->mp_registry->self();
+    return std::pair{slot.port_lo, slot.port_hi};
 }
 
 inline std::expected<void, ::eph::core::ErrorInfo>
