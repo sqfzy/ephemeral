@@ -79,15 +79,57 @@ Last verified: 2026-04-30 (none completed at this revision).
 
 ## Known limitations (documented, no fix planned)
 
-- **ENA PMD MP secondary RX starvation under primary load**
-  (parallel-bench v1 bug #7, A/B confirmed): when DPDK MP primary
-  is actively `rx_burst`-ing on one queue, secondary `rx_burst` on a
-  different queue is starved on AWS ENA. Affects autojoin /
-  `create_secondary` data plane under sustained load.
+- **ENA PMD MP secondary `rx_burst` crashes once traffic lands**
+  (parallel-bench v1 bug #7, isolated 2026-04-30):
+
+  Empty-ring secondary I/O on ENA actually works — `rte_mempool_lookup`
+  / `tx_burst` / `rx_burst` against a queue with `head==tail` all
+  succeed. The crash is **gated on HW-completed RX descriptors**:
+  the next `rte_eth_rx_burst` on a populated queue segfaults
+  inside `ena_com_get_next_rx_cdesc` because per-queue ring
+  metadata lives only in primary's address space.
+
+  ```
+  Thread 1 received signal SIGSEGV
+    #0 ena_com_get_next_rx_cdesc()  librte_net_ena.so.25.0
+    #1 ena_com_rx_pkt()             librte_net_ena.so.25.0
+    #2 eth_ena_recv_pkts()          librte_net_ena.so.25.0
+    #3 rte_eth_rx_burst(port=0, queue=1)
+    #4 DpdkPoller::poll()
+  ```
+
+  A/B isolation: both `Platform::join_dynamic` (autojoin) and
+  `Platform::create_secondary` / `create_with_eal` (declarative)
+  bring-up paths reproduce this with identical stacks under the
+  same traffic. So this is a real ENA PMD limitation, not eph
+  autojoin specific. Earlier framings — "RX starvation under load"
+  and "fundamentally broken" — were overclaimed; see the doc's
+  "Isolation log (post-mortem)" section for what we actually
+  measured this time.
+
   **Workaround already shipped**: `lat_multi_dpdk` uses
-  single-process N-lcore design — bypasses the PMD limitation
-  entirely. This note exists so future MP-on-ENA users find
-  the documented diagnosis instead of re-investigating.
+  single-process N-lcore design — only primary ever issues I/O
+  burst calls; bypasses the limitation entirely.
+
+  **Documentation + reproducers**:
+  * Prose with isolation log + scope table:
+    `eph-net-dpdk/docs/ena-mp-limitation.md`
+  * In-repo regression sentinel (idle-ring path):
+    `eph-net-dpdk/tests/integration/repro_ena_mp_secondary_rxburst.cpp`
+    — exits 9 on current DPDK 24.11.2 / ENA (no idle-ring crash).
+    Expected. If it ever exits 0, that's news worth chasing.
+  * Heavyweight A/B reproducer (under traffic):
+    branch `diag/ena-mp-isolation-2` + `/tmp/ena_mp_isolation.sh`
+    (autojoin) + `/tmp/ena_mp_isolation_step2.sh` (declarative).
+    Branch is intentionally not merged — re-introduces diagnostic
+    envvar-gated bring-up paths in `dpdk_env.hpp`.
+
+  Side finding (parked): v2-reshape `lat_*.cpp` mains hard-code
+  `register_poller(0, ...)` regardless of which queue this process
+  actually owns. If MP is ever revived, they need to read
+  `env.platform.effective_rx_queue_range().first` instead. Not
+  fixed today because we're not running MP on ENA in production —
+  revisit only if MP is re-enabled (e.g. on a non-ENA NIC).
 
 ---
 

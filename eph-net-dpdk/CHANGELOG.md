@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+### Documented — AWS ENA PMD multi-process secondary RX under traffic
+
+Added `docs/ena-mp-limitation.md` documenting a precisely scoped ENA
+PMD limitation, plus a minimal regression sentinel
+`tests/integration/repro_ena_mp_secondary_rxburst.cpp` (build via
+`xmake build -g repros`).
+
+**Scope (post-isolation, 2026-04-30):** an ENA secondary process can
+attach (mempool / memzone OK), and `rte_eth_tx_burst` /
+`rte_eth_rx_burst` against an **idle** queue work (empty-ring
+`head==tail` early-exit avoids the bad deref). The crash is gated on
+**HW-completed RX descriptors**: as soon as a packet lands on a
+queue a secondary polls, the next `rte_eth_rx_burst` segfaults inside
+`ena_com_get_next_rx_cdesc` because per-queue ring metadata lives
+only in primary's address space. Both autojoin
+(`Platform::join_dynamic`) and declarative
+(`Platform::create_secondary` / `create_with_eal`) bring-up paths are
+equally affected — verified by A/B isolation under identical traffic.
+
+The minimal in-repo reproducer exercises the empty-ring path only
+and is **expected to exit 9** ("limitation NOT reproduced") on
+DPDK 24.11.2 + ENA. It is preserved as a regression sentinel — if
+it ever exits 0 (idle-ring crash), that is new evidence worth
+chasing. The full traffic-loaded reproducer lives on the
+`diag/ena-mp-isolation-2` branch (intentionally not merged; it
+re-introduces diagnostic envvar-gated bring-up paths) along with
+`/tmp/ena_mp_isolation.sh` and `/tmp/ena_mp_isolation_step2.sh`
+that demonstrate the autojoin-vs-declarative A/B.
+
+**Eph's MP control-plane primitives remain functional on ENA**
+(create_secondary, join_dynamic, IPC, ICMP registry, FlowDirector
+fallback). What does not work is direct secondary I/O burst calls
+once traffic flows; `DpdkPoller::poll()` is therefore unsafe to run
+on a secondary attached to a busy ENA queue. Recovery: use the
+single-process N-lcore pattern (e.g. `lat_multi_dpdk`) on ENA, or
+move to a PMD that exports its I/O state (most Intel / Mellanox).
+The reproducer is intentionally outside `xmake -g tests` (expects a
+SIGSEGV in a forked child under traffic; CI must not flag that as
+regression).
+
+**Note on prior framing.** Earlier CHANGELOG / TODO entries
+(parallel-bench v1 retro, the 2026-04-30 first-pass) labelled this
+"ENA MP secondary RX starvation under primary load" and later "ENA
+PMD secondary rx_burst is fundamentally broken". Both were
+overclaimed from a single confounded observation. The current entry
+reflects the post-isolation diagnosis — see the doc's "Isolation
+log (post-mortem)" section.
+
 ### Added — bench infra: `lat all --dpdk` parallel multi-scenario runner
 
 A new entry point in `benchmarks/latency/lat`: `lat all --dpdk`

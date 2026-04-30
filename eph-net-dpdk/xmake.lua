@@ -287,6 +287,25 @@ target("dpdk_mp_dynamic_tcp_handshake_secondary")
     add_defines("EPH_USE_DPDK=1")
     apply_dpdk_pmd_linkgroups()
 
+-- Vendor-PMD limitation reproducers. NOT in the "tests" group because
+-- the program is *expected* to observe a SIGSEGV in a forked child (it
+-- exits 0 when the limitation reproduces, non-zero if the limitation
+-- has been lifted) — mixing it into batch test runs is misleading.
+-- Build via: `xmake build -g repros`.
+--
+--   repro_ena_mp_secondary_rxburst — AWS ENA PMD: secondary-process
+--     rte_eth_rx_burst() segfaults inside ena_com_get_next_rx_cdesc.
+--     See file header for backtrace and DPDK / PMD / kernel / instance
+--     metadata. Documented in docs/ena-mp-limitation.md.
+target("repro_ena_mp_secondary_rxburst")
+    set_kind("binary")
+    set_group("repros")
+    set_default(false)
+    add_files("tests/integration/repro_ena_mp_secondary_rxburst.cpp")
+    add_deps("eph-net-dpdk")
+    add_defines("SPDLOG_NO_EXCEPTIONS")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do
