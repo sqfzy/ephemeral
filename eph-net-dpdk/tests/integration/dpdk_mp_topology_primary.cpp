@@ -65,50 +65,36 @@ TEST(DpdkMpTopologyPrimary, BringUpHoldAndCleanup) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
-
     eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id      = port_id;
     pcfg.nb_rx_queues = nb_rx_queues;
     pcfg.nb_tx_queues = nb_rx_queues;
     pcfg.proc_type    = eph::dpdk::ProcType::Primary;
     pcfg.file_prefix  = file_prefix;
-    // The whole point of this test: NO manual rx_queue_range. Just
-    // declare the topology and let the library auto-derive.
     pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(
         /*self_index=*/0, /*total_procs=*/2, nb_rx_queues);
 
-    // Nested scope is load-bearing — same teardown-order rule as
-    // dpdk_mp_primary.cpp. ~Platform must fire before eal_cleanup
-    // because Impl::cleanup() calls rte_eth_dev_stop / close /
-    // rte_mempool_free, all illegal after EAL is torn down.
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+
+    EXPECT_TRUE(platform.has_mp_topology());
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first,  0);
+    EXPECT_EQ(qr.second, nb_rx_queues / 2);
+
+    auto pr = platform.self_port_range();
+    ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
+    EXPECT_EQ(pr->first,  32768u);
+    EXPECT_EQ(pr->second, 32768u + 16384u);
+
     {
-        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+        std::ofstream f(ready_file);
+        f << "topology primary ready " << std::time(nullptr) << "\n";
+    }
 
-        // Library should auto-derive lower-half queues and lower-half ports.
-        EXPECT_TRUE(platform.has_mp_topology());
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first,  0);
-        EXPECT_EQ(qr.second, nb_rx_queues / 2);
-
-        auto pr = platform.self_port_range();
-        ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
-        EXPECT_EQ(pr->first,  32768u);
-        EXPECT_EQ(pr->second, 32768u + 16384u);
-
-        {
-            std::ofstream f(ready_file);
-            f << "topology primary ready " << std::time(nullptr) << "\n";
-        }
-
-        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
-    }  // ← ~Platform fires here, while EAL is still alive
-
-    (void)eph::dpdk::eal_cleanup();
+    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+    // ~Platform handles teardown.
 }

@@ -92,61 +92,48 @@ TEST(DpdkMpIcmpPrimary, ReceivesForwardedIcmp) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id      = port_id;
+    pcfg.nb_rx_queues = nb_rx_queues;
+    pcfg.nb_tx_queues = nb_rx_queues;
+    pcfg.proc_type    = eph::dpdk::ProcType::Primary;
+    pcfg.file_prefix  = file_prefix;
+    pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(0, 2, nb_rx_queues);
+
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+
+    ASSERT_TRUE(platform.has_mp_topology());
+
+    auto handle = platform.register_icmp_target(
+        test_tuple(), kProtoTcp,
+        /*stream=*/&g_observed_mtu,   // any non-null pointer
+        &icmp_test_cb);
+    ASSERT_TRUE(handle) << handle.error();
+    EXPECT_TRUE(handle->engaged());
 
     {
-        eph::dpdk::PlatformConfig pcfg{};
-        pcfg.port_id      = port_id;
-        pcfg.nb_rx_queues = nb_rx_queues;
-        pcfg.nb_tx_queues = nb_rx_queues;
-        pcfg.proc_type    = eph::dpdk::ProcType::Primary;
-        pcfg.file_prefix  = file_prefix;
-        pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(0, 2, nb_rx_queues);
-
-        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
-
-        ASSERT_TRUE(platform.has_mp_topology());
-
-        // Register a target directly via Platform → dual-register
-        // (local IcmpRegistry + cross-proc IcmpDirectory).
-        auto handle = platform.register_icmp_target(
-            test_tuple(), kProtoTcp,
-            /*stream=*/&g_observed_mtu,   // any non-null pointer
-            &icmp_test_cb);
-        ASSERT_TRUE(handle) << handle.error();
-        EXPECT_TRUE(handle->engaged());
-
-        // Signal ready so secondary can start.
-        {
-            std::ofstream f(ready_file);
-            f << "icmp primary ready " << std::time(nullptr) << "\n";
-        }
-
-        // Wait for secondary to inject IPC msgs.
-        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
-
-        // Assertions: callback fired AND directory observed IPC traffic.
-        EXPECT_GE(g_callback_count.load(std::memory_order_acquire), 1u)
-            << "callback never fired — IPC didn't reach IcmpRegistry::dispatch";
-        EXPECT_EQ(g_observed_mtu.load(std::memory_order_acquire),
-                  kInjectedMtu)
-            << "callback fired but MTU value didn't match injected";
-
-        // Directory counters (read via the active global pointer set
-        // by Platform::create_primary).
-        auto* dir =
-            ::eph::dpdk::detail::g_active_icmp_directory.load(
-                std::memory_order_acquire);
-        ASSERT_NE(dir, nullptr) << "g_active_icmp_directory must be set";
-        EXPECT_GE(dir->header()->ipc_msgs_received.load(
-                      std::memory_order_acquire),
-                  1u);
+        std::ofstream f(ready_file);
+        f << "icmp primary ready " << std::time(nullptr) << "\n";
     }
-    (void)eph::dpdk::eal_cleanup();
+
+    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+
+    EXPECT_GE(g_callback_count.load(std::memory_order_acquire), 1u)
+        << "callback never fired — IPC didn't reach IcmpRegistry::dispatch";
+    EXPECT_EQ(g_observed_mtu.load(std::memory_order_acquire),
+              kInjectedMtu)
+        << "callback fired but MTU value didn't match injected";
+
+    auto* dir =
+        ::eph::dpdk::detail::g_active_icmp_directory.load(
+            std::memory_order_acquire);
+    ASSERT_NE(dir, nullptr) << "g_active_icmp_directory must be set";
+    EXPECT_GE(dir->header()->ipc_msgs_received.load(
+                  std::memory_order_acquire),
+              1u);
+    // ~Platform handles teardown.
 }

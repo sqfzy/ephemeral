@@ -56,12 +56,6 @@ TEST(DpdkMpTopologySecondary, AttachAndVerifyDerivedRanges) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
-
     eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id      = port_id;
     pcfg.nb_rx_queues = nb_rx_queues;
@@ -71,26 +65,20 @@ TEST(DpdkMpTopologySecondary, AttachAndVerifyDerivedRanges) {
     pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(
         /*self_index=*/1, /*total_procs=*/2, nb_rx_queues);
 
-    // Nested scope — match the primary's teardown shape so ~Platform
-    // (and the registry handle's slot release) fires while EAL is
-    // still alive. Same rationale as dpdk_mp_secondary.cpp.
-    {
-        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
 
-        EXPECT_TRUE(platform.has_mp_topology());
-        // Secondary owns the upper half [nb_rx_queues/2, nb_rx_queues).
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first,  nb_rx_queues / 2);
-        EXPECT_EQ(qr.second, nb_rx_queues);
+    EXPECT_TRUE(platform.has_mp_topology());
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first,  nb_rx_queues / 2);
+    EXPECT_EQ(qr.second, nb_rx_queues);
 
-        auto pr = platform.self_port_range();
-        ASSERT_TRUE(pr.has_value());
-        EXPECT_EQ(pr->first,  32768u + 16384u);
-        EXPECT_EQ(pr->second, 65536u);
-    }  // ← ~Platform fires here, while EAL is still alive
-
-    // Eal cleanup before primary teardown — DPDK orders this strictly.
-    (void)eph::dpdk::eal_cleanup();
+    auto pr = platform.self_port_range();
+    ASSERT_TRUE(pr.has_value());
+    EXPECT_EQ(pr->first,  32768u + 16384u);
+    EXPECT_EQ(pr->second, 65536u);
+    // ~Platform handles teardown.
 }

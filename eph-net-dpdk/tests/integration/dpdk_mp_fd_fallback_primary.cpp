@@ -65,47 +65,35 @@ TEST(DpdkMpFdFallbackPrimary, ReceivesIpcInstallAndDestroy) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id      = port_id;
+    pcfg.nb_rx_queues = nb_rx_queues;
+    pcfg.nb_tx_queues = nb_rx_queues;
+    pcfg.proc_type    = eph::dpdk::ProcType::Primary;
+    pcfg.file_prefix  = file_prefix;
+    pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(0, 2, nb_rx_queues);
+
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+    ASSERT_TRUE(platform.has_mp_topology());
+
+    auto* rules =
+        ::eph::net::dpdk::detail::g_active_remote_flow_rules.load(
+            std::memory_order_acquire);
+    ASSERT_NE(rules, nullptr);
+    EXPECT_EQ(rules->size_for_test(), 0u);
 
     {
-        eph::dpdk::PlatformConfig pcfg{};
-        pcfg.port_id      = port_id;
-        pcfg.nb_rx_queues = nb_rx_queues;
-        pcfg.nb_tx_queues = nb_rx_queues;
-        pcfg.proc_type    = eph::dpdk::ProcType::Primary;
-        pcfg.file_prefix  = file_prefix;
-        pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(0, 2, nb_rx_queues);
-
-        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
-        ASSERT_TRUE(platform.has_mp_topology());
-
-        // Initial state: no remote rules tracked.
-        auto* rules =
-            ::eph::net::dpdk::detail::g_active_remote_flow_rules.load(
-                std::memory_order_acquire);
-        ASSERT_NE(rules, nullptr);
-        EXPECT_EQ(rules->size_for_test(), 0u);
-
-        {
-            std::ofstream f(ready_file);
-            f << "fd_fallback primary ready " << std::time(nullptr) << "\n";
-        }
-
-        // Sleep while secondary install + destroy via IPC.
-        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
-
-        // After secondary has exited (and its RAII fired eph_fd_destroy),
-        // our handler should have removed the entry.
-        EXPECT_EQ(rules->size_for_test(), 0u)
-            << "remote_flow_rules has stale entries after secondary exit "
-               "— either secondary's RAII didn't fire eph_fd_destroy, or "
-               "our handler didn't process it";
+        std::ofstream f(ready_file);
+        f << "fd_fallback primary ready " << std::time(nullptr) << "\n";
     }
-    (void)eph::dpdk::eal_cleanup();
+
+    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+
+    EXPECT_EQ(rules->size_for_test(), 0u)
+        << "remote_flow_rules has stale entries after secondary exit";
+    // ~Platform handles teardown.
 }

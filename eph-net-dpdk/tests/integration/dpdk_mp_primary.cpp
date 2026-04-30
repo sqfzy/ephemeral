@@ -72,7 +72,9 @@ TEST(DpdkMpPrimary, BringUpHoldAndCleanup) {
         << "MP test requires nb_rx_queues >= 2 (got " << nb_rx_queues
         << "); set EPH_MP_NB_RX_QUEUES to a value >= 2";
 
-    // Build EAL argv via the helper (phase-2 deliverable).
+    // Unified one-call bring-up: Platform owns EAL + does eal_cleanup
+    // atomically on destruction. No more nested-scope idiom or explicit
+    // eal_cleanup needed.
     eph::dpdk::EalConfig eal_cfg{};
     eal_cfg.program_name  = "dpdk_mp_primary";
     eal_cfg.proc_type     = eph::dpdk::ProcType::Primary;
@@ -81,54 +83,33 @@ TEST(DpdkMpPrimary, BringUpHoldAndCleanup) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
-
     eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id      = port_id;
-    pcfg.nb_rx_queues = nb_rx_queues;
-    pcfg.nb_tx_queues = nb_rx_queues;
-    pcfg.proc_type    = eph::dpdk::ProcType::Primary;
-    pcfg.file_prefix  = file_prefix;
-    // Primary owns the lower half of queues. Source-port partitioning is
-    // the caller's responsibility (eph-net-dpdk does not auto-allocate
-    // src_port); this test does not need to drive the wire so we leave
-    // that to whoever calls create_and_attach in production.
+    pcfg.port_id        = port_id;
+    pcfg.nb_rx_queues   = nb_rx_queues;
+    pcfg.nb_tx_queues   = nb_rx_queues;
+    pcfg.proc_type      = eph::dpdk::ProcType::Primary;
+    pcfg.file_prefix    = file_prefix;
     pcfg.rx_queue_range = {0, static_cast<uint16_t>(nb_rx_queues / 2)};
 
-    // Nested scope is load-bearing: `Platform`'s destructor runs
-    // `Impl::cleanup()` which calls `rte_eth_dev_stop` / `close` /
-    // `rte_mempool_free`. Those are illegal after `rte_eal_cleanup`,
-    // so the Platform MUST go out of scope before the explicit
-    // `eal_cleanup()` below — without the inner block, the test
-    // function's stack-unwind order is `eal_cleanup` first, then
-    // ~Platform → SIGSEGV against a dead EAL.
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+
+    EXPECT_TRUE(platform.is_running());
+    EXPECT_EQ(platform.port_id(), port_id);
+    EXPECT_EQ(platform.nb_rx_queues(), nb_rx_queues);
+
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first,  0);
+    EXPECT_EQ(qr.second, nb_rx_queues / 2);
+
     {
-        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+        std::ofstream f(ready_file);
+        f << "primary ready " << std::time(nullptr) << "\n";
+    }
 
-        EXPECT_TRUE(platform.is_running());
-        EXPECT_EQ(platform.port_id(), port_id);
-        EXPECT_EQ(platform.nb_rx_queues(), nb_rx_queues);
-
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first,  0);
-        EXPECT_EQ(qr.second, nb_rx_queues / 2);
-
-        // Signal readiness to the orchestrator.
-        {
-            std::ofstream f(ready_file);
-            f << "primary ready " << std::time(nullptr) << "\n";
-        }
-
-        // Stay alive long enough for the secondary to attach + test + exit.
-        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
-    }  // ← ~Platform fires here, while EAL is still alive
-
-    (void)eph::dpdk::eal_cleanup();
+    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+    // ~Platform at function exit handles DPDK + EAL teardown.
 }

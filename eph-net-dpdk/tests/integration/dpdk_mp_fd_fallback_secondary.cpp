@@ -64,26 +64,22 @@ TEST(DpdkMpFdFallbackSecondary, IpcInstallReturnsRemoteHandle) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id      = port_id;
+    pcfg.nb_rx_queues = nb_rx_queues;
+    pcfg.nb_tx_queues = nb_rx_queues;
+    pcfg.proc_type    = eph::dpdk::ProcType::Secondary;
+    pcfg.file_prefix  = file_prefix;
+    pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(1, 2, nb_rx_queues);
+
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+    ASSERT_TRUE(platform.has_mp_topology());
 
     {
-        eph::dpdk::PlatformConfig pcfg{};
-        pcfg.port_id      = port_id;
-        pcfg.nb_rx_queues = nb_rx_queues;
-        pcfg.nb_tx_queues = nb_rx_queues;
-        pcfg.proc_type    = eph::dpdk::ProcType::Secondary;
-        pcfg.file_prefix  = file_prefix;
-        pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(1, 2, nb_rx_queues);
-
-        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
-        ASSERT_TRUE(platform.has_mp_topology());
-
         // Build an FdInstallMsg directly and fire the IPC. This
         // verifies the bidirectional rte_mp channel + handler
         // wiring without depending on PMD-specific behaviour. On
@@ -154,5 +150,5 @@ TEST(DpdkMpFdFallbackSecondary, IpcInstallReturnsRemoteHandle) {
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    (void)eph::dpdk::eal_cleanup();
+    // ~Platform handles teardown.
 }

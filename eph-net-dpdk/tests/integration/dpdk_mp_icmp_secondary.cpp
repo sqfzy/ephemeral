@@ -79,67 +79,54 @@ TEST(DpdkMpIcmpSecondary, ForwardsIcmpToPrimary) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init failed: " << eal_r.error();
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id      = port_id;
+    pcfg.nb_rx_queues = nb_rx_queues;
+    pcfg.nb_tx_queues = nb_rx_queues;
+    pcfg.proc_type    = eph::dpdk::ProcType::Secondary;
+    pcfg.file_prefix  = file_prefix;
+    pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(1, 2, nb_rx_queues);
 
-    {
-        eph::dpdk::PlatformConfig pcfg{};
-        pcfg.port_id      = port_id;
-        pcfg.nb_rx_queues = nb_rx_queues;
-        pcfg.nb_tx_queues = nb_rx_queues;
-        pcfg.proc_type    = eph::dpdk::ProcType::Secondary;
-        pcfg.file_prefix  = file_prefix;
-        pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(1, 2, nb_rx_queues);
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
 
-        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+    ASSERT_TRUE(platform.has_mp_topology());
 
-        ASSERT_TRUE(platform.has_mp_topology());
+    auto* dir = ::eph::dpdk::detail::g_active_icmp_directory.load(
+        std::memory_order_acquire);
+    ASSERT_NE(dir, nullptr) << "g_active_icmp_directory must be set";
 
-        // Look up the test tuple in the cross-proc directory. Primary
-        // should have registered it before signaling ready.
-        auto* dir = ::eph::dpdk::detail::g_active_icmp_directory.load(
-            std::memory_order_acquire);
-        ASSERT_NE(dir, nullptr) << "g_active_icmp_directory must be set";
+    auto found = dir->lookup(test_tuple(), kProtoTcp);
+    ASSERT_TRUE(found.has_value())
+        << "lookup of primary's test tuple failed — directory empty?";
+    EXPECT_EQ(found->owner_proc, 0)
+        << "expected owner=primary (proc 0)";
 
-        auto found = dir->lookup(test_tuple(), kProtoTcp);
-        ASSERT_TRUE(found.has_value())
-            << "lookup of primary's test tuple failed — directory empty?";
-        EXPECT_EQ(found->owner_proc, 0)
-            << "expected owner=primary (proc 0)";
+    ::eph::dpdk::net::ParsedIcmp fake_parsed{};
+    fake_parsed.embedded_valid    = true;
+    fake_parsed.embedded_proto    = kProtoTcp;
+    fake_parsed.embedded_src_ip   = test_tuple().src_ip;
+    fake_parsed.embedded_dst_ip   = test_tuple().dst_ip;
+    fake_parsed.embedded_src_port = test_tuple().src_port;
+    fake_parsed.embedded_dst_port = test_tuple().dst_port;
+    fake_parsed.next_hop_mtu      = kInjectedMtu;
 
-        // Build a fake IcmpDispatchMsg simulating "router fired Frag
-        // Needed at secondary's RX queue, parse_icmp extracted these
-        // fields, local IcmpRegistry::dispatch_returns_hit returned
-        // false, and the closure now forwards via IPC."
-        ::eph::dpdk::net::ParsedIcmp fake_parsed{};
-        fake_parsed.embedded_valid    = true;
-        fake_parsed.embedded_proto    = kProtoTcp;
-        fake_parsed.embedded_src_ip   = test_tuple().src_ip;
-        fake_parsed.embedded_dst_ip   = test_tuple().dst_ip;
-        fake_parsed.embedded_src_port = test_tuple().src_port;
-        fake_parsed.embedded_dst_port = test_tuple().dst_port;
-        fake_parsed.next_hop_mtu      = kInjectedMtu;
+    auto msg = ::eph::dpdk::detail::make_icmp_dispatch_msg(
+        fake_parsed, found->slot_idx, found->generation);
 
-        auto msg = ::eph::dpdk::detail::make_icmp_dispatch_msg(
-            fake_parsed, found->slot_idx, found->generation);
+    auto ipc_r = ::eph::dpdk::detail::mp_ipc_send_oneway(
+        ::eph::dpdk::detail::kIcmpDispatchActionName, msg);
+    EXPECT_TRUE(ipc_r) << "mp_ipc_send_oneway failed: "
+                        << (ipc_r ? "" : ipc_r.error().detail);
 
-        auto ipc_r = ::eph::dpdk::detail::mp_ipc_send_oneway(
-            ::eph::dpdk::detail::kIcmpDispatchActionName, msg);
-        EXPECT_TRUE(ipc_r) << "mp_ipc_send_oneway failed: "
-                            << (ipc_r ? "" : ipc_r.error().detail);
-
-        if (ipc_r) {
-            dir->header()->ipc_msgs_sent.fetch_add(
-                1, std::memory_order_relaxed);
-        }
-
-        // Give the IPC msg time to traverse the EAL socket to primary.
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    if (ipc_r) {
+        dir->header()->ipc_msgs_sent.fetch_add(
+            1, std::memory_order_relaxed);
     }
-    (void)eph::dpdk::eal_cleanup();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // ~Platform handles teardown.
 }

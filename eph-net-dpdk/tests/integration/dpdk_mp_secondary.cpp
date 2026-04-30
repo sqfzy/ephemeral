@@ -73,7 +73,6 @@ TEST(DpdkMpSecondary, AttachAndVerify) {
         << "MP test requires nb_rx_queues >= 2 (got " << nb_rx_queues
         << "); set EPH_MP_NB_RX_QUEUES to a value >= 2";
 
-    // Build EAL argv via the helper.
     eph::dpdk::EalConfig eal_cfg{};
     eal_cfg.program_name  = "dpdk_mp_secondary";
     eal_cfg.proc_type     = eph::dpdk::ProcType::Secondary;
@@ -82,44 +81,27 @@ TEST(DpdkMpSecondary, AttachAndVerify) {
     eal_cfg.lcores        = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    auto argv_owned = eph::dpdk::build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eph::dpdk::eal_init(static_cast<int>(argv.size()), argv.data());
-    ASSERT_TRUE(eal_r) << "eal_init (secondary) failed: " << eal_r.error();
-
     eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id      = port_id;
-    pcfg.nb_rx_queues = nb_rx_queues;
-    pcfg.nb_tx_queues = nb_rx_queues;
-    pcfg.proc_type    = eph::dpdk::ProcType::Secondary;
-    pcfg.file_prefix  = file_prefix;
-    // Secondary owns the upper half of queues. Source-port partitioning
-    // is the caller's responsibility; not exercised by this attach-only
-    // test.
+    pcfg.port_id        = port_id;
+    pcfg.nb_rx_queues   = nb_rx_queues;
+    pcfg.nb_tx_queues   = nb_rx_queues;
+    pcfg.proc_type      = eph::dpdk::ProcType::Secondary;
+    pcfg.file_prefix    = file_prefix;
     pcfg.rx_queue_range = {static_cast<uint16_t>(nb_rx_queues / 2), nb_rx_queues};
 
-    // Nested scope: same teardown-order rule as dpdk_mp_primary.cpp.
-    // The current Impl::cleanup() secondary branch is pointer-only
-    // and "happens" to be safe even if EAL is dead, but the contract
-    // shouldn't depend on that — future changes that add DPDK calls
-    // to the secondary teardown path would silently SEGV without
-    // this scope. Match the primary's structure for consistency.
-    {
-        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+    auto plat_r = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        /*pins=*/{}, eph::utils::CpuPinPolicy{});
+    ASSERT_TRUE(plat_r) << "create_with_eal (secondary) failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
 
-        EXPECT_TRUE(platform.is_running());
-        EXPECT_EQ(platform.port_id(), port_id);
-        EXPECT_NE(platform.mempool(), nullptr)
-            << "secondary mempool lookup returned nullptr — primary mempool missing";
+    EXPECT_TRUE(platform.is_running());
+    EXPECT_EQ(platform.port_id(), port_id);
+    EXPECT_NE(platform.mempool(), nullptr)
+        << "secondary mempool lookup returned nullptr";
 
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first,  nb_rx_queues / 2);
-        EXPECT_EQ(qr.second, nb_rx_queues);
-    }  // ← ~Platform fires here, while EAL is still alive
-
-    (void)eph::dpdk::eal_cleanup();
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first,  nb_rx_queues / 2);
+    EXPECT_EQ(qr.second, nb_rx_queues);
+    // ~Platform handles teardown.
 }
