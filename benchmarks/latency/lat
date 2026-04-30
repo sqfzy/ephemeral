@@ -531,11 +531,23 @@ cleanup() {
         wait "$MOCK_PID" 2>/dev/null || true
     fi
     # `lat all --dpdk` may have spawned multiple mockex processes.
+    # Mirror MOCK_PID's TERM → 500ms grace → KILL escalation so a single
+    # mock that ignores SIGTERM (e.g. blocked on a stuck rte_eth_rx_burst
+    # loop, or in an EAL teardown that does not yield) does not hang the
+    # outer trap forever. Without the KILL fallback a `wait` on such a
+    # PID hangs cleanup indefinitely; we'd never reach `exit $rc`.
     for pid in "${EXTRA_PIDS[@]}"; do
         kill -0 "$pid" 2>/dev/null || continue
         kill -TERM "$pid" 2>/dev/null || true
     done
-    for pid in "${EXTRA_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
+    for pid in "${EXTRA_PIDS[@]}"; do
+        for _ in 1 2 3 4 5; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+    done
     exit $rc
 }
 trap cleanup EXIT INT TERM
