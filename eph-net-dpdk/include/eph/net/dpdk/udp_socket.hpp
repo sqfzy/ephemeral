@@ -945,8 +945,7 @@ public:
         s.dpdk.tx_queue                 = cfg_.legacy.tx_queue_id;
         s.dpdk.pool_lcore_hint_resolved = cfg_.pool_lcore_hint;
         if (flow_rule_ && flow_rule_->valid()) {
-            s.dpdk.flow_rule_handle =
-                reinterpret_cast<uint64_t>(flow_rule_->handle);
+            s.dpdk.flow_rule_handle = flow_rule_->opaque_handle_id();
         }
         return s;
     }

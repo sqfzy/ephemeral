@@ -9,11 +9,14 @@
 ///   - configure_rss validation paths that don't need a NIC
 
 #include <format>
+#include <variant>
 
 #include <gtest/gtest.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 #include "eph/net/dpdk/flow_steering.hpp"
+
+using eph::net::dpdk::LocalFlowHandle;
 
 using namespace eph::net::dpdk;
 
@@ -51,7 +54,7 @@ TEST(RxDispatchMode, EnumValues) {
 TEST(FlowRule, DefaultConstructedIsInvalid) {
     FlowRule rule;
     EXPECT_FALSE(rule.valid());
-    EXPECT_EQ(rule.handle, nullptr);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(rule.handle));
 }
 
 TEST(FlowRule, MoveTransfersOwnership) {
@@ -62,7 +65,7 @@ TEST(FlowRule, MoveTransfersOwnership) {
     FlowRule b = std::move(a);
     EXPECT_EQ(b.port_id, 1);
     EXPECT_EQ(b.queue_id, 3);
-    EXPECT_EQ(a.handle, nullptr);  // Source nulled
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(a.handle));  // Source nulled
 }
 
 TEST(FlowRule, MoveAssignmentTransfers) {
@@ -73,7 +76,7 @@ TEST(FlowRule, MoveAssignmentTransfers) {
     b = std::move(a);
     EXPECT_EQ(b.port_id, 2);
     EXPECT_EQ(b.queue_id, 5);
-    EXPECT_EQ(a.handle, nullptr);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(a.handle));
 }
 
 TEST(FlowRule, RemoveOnNullHandleIsSafe) {
@@ -128,13 +131,13 @@ TEST(FlowRule, DumpActiveShowsPortAndQueue) {
     rule.queue_id = 3;
     // Simulate an active rule (non-null handle). We use a fake pointer
     // because we can't create a real rte_flow without DPDK EAL.
-    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    rule.handle = LocalFlowHandle{reinterpret_cast<rte_flow*>(0xDEAD)};
     auto d = rule.dump();
     EXPECT_NE(d.find("port=1"), std::string::npos);
     EXPECT_NE(d.find("queue=3"), std::string::npos);
     EXPECT_NE(d.find("active"), std::string::npos);
     // Prevent destructor from calling rte_flow_destroy on the fake pointer
-    rule.handle = nullptr;
+    rule.handle = std::monostate{};
 }
 
 TEST(FlowRule, FormatterProducesOutput) {
@@ -188,7 +191,7 @@ TEST(FlowRule, DefaultValues) {
     FlowRule rule;
     EXPECT_EQ(rule.port_id, 0);
     EXPECT_EQ(rule.queue_id, 0);
-    EXPECT_EQ(rule.handle, nullptr);
+    EXPECT_TRUE(std::holds_alternative<std::monostate>(rule.handle));
     EXPECT_FALSE(rule.valid());
 }
 
@@ -228,13 +231,13 @@ TEST(FlowRule, ToJsonActiveShowsTrue) {
     FlowRule rule;
     rule.port_id = 2;
     rule.queue_id = 5;
-    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    rule.handle = LocalFlowHandle{reinterpret_cast<rte_flow*>(0xDEAD)};
     auto json = rule.to_json();
     EXPECT_NE(json.find("\"active\":true"), std::string::npos);
     EXPECT_NE(json.find("\"port_id\":2"), std::string::npos);
     EXPECT_NE(json.find("\"queue_id\":5"), std::string::npos);
     // Prevent destructor from calling rte_flow_destroy on fake pointer
-    rule.handle = nullptr;
+    rule.handle = std::monostate{};
 }
 
 // After remove(), the rule keeps its (port_id, queue_id) coordinates as an

@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -53,6 +54,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -61,6 +63,7 @@
 #include <rte_flow.h>
 #include <rte_udp.h>
 
+#include "eph/core/error.hpp"
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/net_header.hpp"
 
@@ -315,10 +318,116 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
 /// destroy without side effects.
 ///
 /// @note Created by install_flow_rule(). Do not construct directly.
+// ─── FlowDir IPC primitives (used by FlowRule + stage 6+ handlers) ──────────
+//
+// `FlowRule` may own one of two kinds of NIC flow rule:
+//   - `LocalFlowHandle`: a `rte_flow*` installed by THIS process via
+//     `rte_flow_create`. Destruction is a local `rte_flow_destroy`.
+//   - `RemoteFlowHandle`: a rule installed BY THE PRIMARY ON OUR
+//     BEHALF via the `eph_fd_install` IPC fallback path (stage 7).
+//     The opaque rule handle stays in the primary's address space;
+//     this struct just records `(owner_proc, handle_id)` so the dtor
+//     can fire `eph_fd_destroy` IPC to ask the primary to destroy it.
+//
+// The IPC payload structs (`FdInstallMsg`, `FdInstallReply`,
+// `FdDestroyMsg`, `FdDestroyReply`) are POD wire formats consumed by
+// the rte_mp action handlers wired up in stage 6 / stage 7. They are
+// version-tagged for cross-build compatibility.
+
+struct LocalFlowHandle {
+    rte_flow* h = nullptr;
+
+    [[nodiscard]] friend bool operator==(const LocalFlowHandle&,
+                                         const LocalFlowHandle&) = default;
+};
+
+struct RemoteFlowHandle {
+    uint8_t  owner_proc = 0;
+    uint8_t  _pad[7]    = {};
+    uint64_t handle_id  = 0;
+
+    [[nodiscard]] friend bool operator==(const RemoteFlowHandle&,
+                                         const RemoteFlowHandle&) = default;
+};
+
+/// @brief Variant of "no rule held" / "local rte_flow*" / "remote
+/// rule on primary". Default state is `monostate` (no rule).
+using FlowHandleVariant = std::variant<std::monostate,
+                                       LocalFlowHandle,
+                                       RemoteFlowHandle>;
+
+inline constexpr std::string_view kFdInstallActionName = "eph_fd_install";
+inline constexpr std::string_view kFdDestroyActionName = "eph_fd_destroy";
+
+/// @brief Install-rule IPC request payload. Stage 7 sends this from
+/// secondary to primary when local `rte_flow_create` returns nullptr.
+struct alignas(8) FdInstallMsg {
+    uint8_t  version;
+    uint8_t  proto;        ///< 6 = TCP, 17 = UDP
+    uint8_t  requester_proc;
+    uint8_t  reserved0;
+    uint16_t target_queue;
+    uint16_t reserved1;
+    uint32_t src_ip;       ///< host byte order
+    uint32_t dst_ip;
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint16_t port_id;
+    uint16_t reserved2;
+    uint32_t request_id;   ///< caller-correlation, opaque to handler
+};
+static_assert(std::is_trivially_copyable_v<FdInstallMsg>);
+
+/// @brief Install-rule IPC reply payload. Sent by primary back to
+/// secondary; carries a synthetic 64-bit handle the secondary stores
+/// in `RemoteFlowHandle` so `eph_fd_destroy` later can find the
+/// underlying `rte_flow*` in primary's `remote_owned_rules_` map.
+struct alignas(8) FdInstallReply {
+    uint8_t  version;
+    uint8_t  status;       ///< 0 = success, non-zero = error
+    uint16_t reserved0;
+    uint32_t reserved1;
+    uint64_t handle_id;
+};
+static_assert(std::is_trivially_copyable_v<FdInstallReply>);
+
+struct alignas(8) FdDestroyMsg {
+    uint8_t  version;
+    uint8_t  reserved[7];
+    uint64_t handle_id;
+    uint32_t request_id;
+    uint32_t reserved2;
+};
+static_assert(std::is_trivially_copyable_v<FdDestroyMsg>);
+
+struct alignas(8) FdDestroyReply {
+    uint8_t  version;
+    uint8_t  status;
+    uint8_t  reserved[6];
+};
+static_assert(std::is_trivially_copyable_v<FdDestroyReply>);
+
+namespace detail {
+
+/// @brief Forward-declaration of the IPC destroy helper. Stage 6/7
+/// provides the implementation via `rte_mp_request_sync`. Stage 5
+/// uses the stub below — RemoteFlowHandle dtors log a debug message
+/// and treat the destroy as best-effort. Once stage 6 wires the
+/// real handler, this same function does the actual IPC send.
+[[nodiscard]] inline std::expected<void, ::eph::core::ErrorInfo>
+fd_destroy_via_ipc(uint8_t  owner_proc,
+                   uint64_t handle_id) noexcept;
+
+} // namespace detail
+
 struct FlowRule {
-    uint16_t port_id = 0;        ///< DPDK port the rule is installed on
-    uint16_t queue_id = 0;       ///< Target RX queue for matched packets
-    rte_flow* handle = nullptr;  ///< Opaque DPDK flow rule handle (null if invalid/moved)
+    uint16_t          port_id  = 0;   ///< DPDK port the rule is installed on
+    uint16_t          queue_id = 0;   ///< Target RX queue for matched packets
+    /// @brief Tagged handle. Default = `monostate` (no rule held).
+    /// `LocalFlowHandle{rte_flow*}` for rules this process installed
+    /// directly; `RemoteFlowHandle{owner_proc, handle_id}` for rules
+    /// the primary installed on our behalf via IPC fallback.
+    FlowHandleVariant handle{};
 
     /// @brief Default constructor creates an invalid (empty) rule.
     FlowRule() = default;
@@ -332,55 +441,91 @@ struct FlowRule {
     /// @brief Move constructor. Transfers ownership; source becomes invalid.
     FlowRule(FlowRule&& other) noexcept
         : port_id(other.port_id), queue_id(other.queue_id),
-          handle(other.handle) {
-        other.handle = nullptr;
+          handle(std::move(other.handle)) {
+        other.handle = std::monostate{};
     }
 
     /// @brief Move assignment. Removes any existing rule before taking ownership.
     FlowRule& operator=(FlowRule&& other) noexcept {
         if (this != &other) {
             remove();
-            port_id = other.port_id;
+            port_id  = other.port_id;
             queue_id = other.queue_id;
-            handle = other.handle;
-            other.handle = nullptr;
+            handle   = std::move(other.handle);
+            other.handle = std::monostate{};
         }
         return *this;
     }
 
     /// Remove the flow rule from the NIC. Safe to call multiple times.
     ///
-    /// After remove(), `handle` is null but `port_id` / `queue_id` retain
-    /// the coordinates the rule was last active at. This is intentional —
-    /// monitoring/audit consumers reading `to_json()` post-remove still
-    /// learn *where* the rule was, with `"active":false` distinguishing
-    /// the live-vs-removed state. `dump()` returns `"FlowRule(inactive)"`
-    /// without the coordinates so log noise stays terse; `to_json()`
-    /// preserves them for structured pipelines that want the audit trail.
+    /// Visit-dispatches on the variant:
+    ///   - monostate          → noop
+    ///   - LocalFlowHandle    → rte_flow_destroy on the local rte_flow*
+    ///   - RemoteFlowHandle   → fire `eph_fd_destroy` IPC to owner proc
+    ///
+    /// After remove(), `handle` is `monostate` but `port_id` /
+    /// `queue_id` retain the coordinates the rule was last active at,
+    /// matching the pre-variant audit-friendly behavior.
     void remove() noexcept {
-        if (!handle) return;
-        rte_flow_error error{};
-        int ret = rte_flow_destroy(port_id, handle, &error);
-        if (ret != 0) {
-            // Same rationale as rte_flow_create: error.message can be
-            // empty on some PMDs; rte_errno is the fallback signal so
-            // teardown failures stay diagnosable.
-            const int err = rte_errno;
-            SPDLOG_LOGGER_WARN(detail::flow_logger(),
-                "rte_flow_destroy failed: port={}, ret={}, msg={}, "
-                "type={} rte_errno={} ({})",
-                port_id, ret, error.message ? error.message : "unknown",
-                static_cast<int>(error.type), err, rte_strerror(err));
-        } else {
-            SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
-                "Flow rule removed: port={}, queue={}", port_id, queue_id);
-        }
-        handle = nullptr;
+        std::visit([this](auto& h) {
+            using T = std::decay_t<decltype(h)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                // Nothing to do.
+            } else if constexpr (std::is_same_v<T, LocalFlowHandle>) {
+                if (h.h == nullptr) return;
+                rte_flow_error error{};
+                int ret = rte_flow_destroy(port_id, h.h, &error);
+                if (ret != 0) {
+                    const int err = rte_errno;
+                    SPDLOG_LOGGER_WARN(detail::flow_logger(),
+                        "rte_flow_destroy failed: port={}, ret={}, msg={}, "
+                        "type={} rte_errno={} ({})",
+                        port_id, ret,
+                        error.message ? error.message : "unknown",
+                        static_cast<int>(error.type), err, rte_strerror(err));
+                } else {
+                    SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
+                        "Flow rule removed: port={}, queue={}",
+                        port_id, queue_id);
+                }
+                h.h = nullptr;
+            } else if constexpr (std::is_same_v<T, RemoteFlowHandle>) {
+                if (h.handle_id == 0) return;
+                auto r = detail::fd_destroy_via_ipc(h.owner_proc, h.handle_id);
+                if (!r) {
+                    SPDLOG_LOGGER_WARN(detail::flow_logger(),
+                        "Remote flow rule destroy IPC failed: owner_proc={}, "
+                        "handle_id={}, err={} — primary may have died first; "
+                        "rule will be cleaned up at primary teardown",
+                        h.owner_proc, h.handle_id, r.error().detail);
+                } else {
+                    SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
+                        "Remote flow rule destroyed: owner_proc={}, handle_id={}",
+                        h.owner_proc, h.handle_id);
+                }
+                h.handle_id = 0;
+            }
+        }, handle);
+        handle = std::monostate{};
     }
 
     /// @brief Check if this rule is still active on the NIC.
-    /// @return true if the flow rule handle is non-null
-    [[nodiscard]] bool valid() const noexcept { return handle != nullptr; }
+    /// @return true if the variant holds either LocalFlowHandle (with
+    /// non-null rte_flow*) or RemoteFlowHandle (with non-zero
+    /// handle_id). Monostate, null/zero internals → false.
+    [[nodiscard]] bool valid() const noexcept {
+        return std::visit([](const auto& h) -> bool {
+            using T = std::decay_t<decltype(h)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                return false;
+            } else if constexpr (std::is_same_v<T, LocalFlowHandle>) {
+                return h.h != nullptr;
+            } else if constexpr (std::is_same_v<T, RemoteFlowHandle>) {
+                return h.handle_id != 0;
+            }
+        }, handle);
+    }
 
     /// Convenience bool conversion for validity checking.
     /// Usage: if (rule) { /* rule is active */ }
@@ -388,17 +533,57 @@ struct FlowRule {
 
     /// Human-readable dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
-        if (!handle)
+        if (!valid())
             return "FlowRule(inactive)";
-        return std::format("FlowRule(port={}, queue={}, active)",
-                           port_id, queue_id);
+        return std::visit([this](const auto& h) -> std::string {
+            using T = std::decay_t<decltype(h)>;
+            if constexpr (std::is_same_v<T, LocalFlowHandle>) {
+                return std::format(
+                    "FlowRule(port={}, queue={}, active, local)",
+                    port_id, queue_id);
+            } else if constexpr (std::is_same_v<T, RemoteFlowHandle>) {
+                return std::format(
+                    "FlowRule(port={}, queue={}, active, remote owner={} id={})",
+                    port_id, queue_id, h.owner_proc, h.handle_id);
+            } else {
+                return "FlowRule(inactive)";
+            }
+        }, handle);
+    }
+
+    /// @brief Telemetry accessor: a 64-bit "rule handle id" that
+    /// callers can publish as an opaque audit token.
+    ///
+    /// For LocalFlowHandle this is `(uint64_t)rte_flow*` — the same
+    /// value the pre-variant code reported. For RemoteFlowHandle it
+    /// is the primary-side `handle_id` (also a uint64_t). For
+    /// monostate / null/zero internals, returns 0. The caller treats
+    /// the value as opaque; it is not re-resolvable to either kind.
+    [[nodiscard]] uint64_t opaque_handle_id() const noexcept {
+        return std::visit([](const auto& h) -> uint64_t {
+            using T = std::decay_t<decltype(h)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                return 0;
+            } else if constexpr (std::is_same_v<T, LocalFlowHandle>) {
+                return reinterpret_cast<uint64_t>(h.h);
+            } else if constexpr (std::is_same_v<T, RemoteFlowHandle>) {
+                return h.handle_id;
+            }
+        }, handle);
     }
 
     /// JSON-formatted status for monitoring system integration.
     [[nodiscard]] std::string to_json() const {
+        const char* origin = std::visit(
+            [](const auto& h) -> const char* {
+                using T = std::decay_t<decltype(h)>;
+                if constexpr (std::is_same_v<T, LocalFlowHandle>) return "local";
+                if constexpr (std::is_same_v<T, RemoteFlowHandle>) return "remote";
+                return "none";
+            }, handle);
         return std::format(
-            "{{\"port_id\":{},\"queue_id\":{},\"active\":{}}}",
-            port_id, queue_id, handle != nullptr ? "true" : "false");
+            "{{\"port_id\":{},\"queue_id\":{},\"active\":{},\"origin\":\"{}\"}}",
+            port_id, queue_id, valid() ? "true" : "false", origin);
     }
 };
 
@@ -497,11 +682,32 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
         queue_id);
 
     FlowRule rule;
-    rule.port_id = port_id;
+    rule.port_id  = port_id;
     rule.queue_id = queue_id;
-    rule.handle = flow;
+    rule.handle   = LocalFlowHandle{flow};
     return rule;
 }
+
+namespace detail {
+
+/// @brief Stage-5 stub for the FlowRule RemoteFlowHandle destroy
+/// path. Emits a debug log and returns success without touching IPC
+/// — at this stage the on-primary `eph_fd_destroy` handler does not
+/// yet exist, so a real IPC send would only timeout. Stage 6
+/// replaces the body with `mp_ipc_request_sync<FdDestroyMsg,
+/// FdDestroyReply>(kFdDestroyActionName, ...)` once the handler is
+/// in place.
+[[nodiscard]] inline std::expected<void, ::eph::core::ErrorInfo>
+fd_destroy_via_ipc(uint8_t  owner_proc,
+                   uint64_t handle_id) noexcept {
+    SPDLOG_LOGGER_DEBUG(flow_logger(),
+        "fd_destroy_via_ipc (stage 5 stub): owner_proc={}, handle_id={} "
+        "— IPC not yet wired; primary will GC at teardown",
+        owner_proc, handle_id);
+    return {};
+}
+
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // RSS hash prediction (Step 4) — Toeplitz over IPv4 5-tuple
