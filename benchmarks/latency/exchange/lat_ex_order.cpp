@@ -2,85 +2,31 @@
 /// Latency benchmark: strict one-at-a-time WebSocket order RTT
 /// against the `ex_order` scenario of `benchmarks/mockex/mockex`.
 ///
-/// Real-server note: placing live orders is neither safe nor cheap.
-/// The Phase-4 `endpoint = wss://...` dual-mode switch is intentionally
-/// not wired here — mock is the only sensible target. For real-wire
-/// TX/RX latency against an exchange, use the bookTicker push scenarios
-/// (lat_ex_market, lat_ex_market_2p) with a `wss://...` endpoint
-/// override.
-///
-/// Semantics:
-///
-///   * Strict request→response: send one order, wait for its echo,
-///     record legs, send next. No pipelining, no slot table.
-///   * Each order gets a unique strictly-incrementing `id` and carries
-///     its `t_client` CLOCK_MONOTONIC_RAW timestamp as a JSON field.
-///   * The mock splices `t_mock_recv` / `t_mock_send` into the JSON
-///     object right before send, so the client recovers all four
-///     timestamps and computes RTT / TX / RX cleanly per order.
-///   * Why strict serial: TX/RX leg decomposition assumes each order is
-///     a self-contained measurement; pipelined sends introduce queue
-///     correlation between TX and RX percentiles that breaks the
-///     `p50(TX) + p50(RX) ≤ p50(RTT)` sanity invariant even though
-///     per-sample `TX_k + SRV_k + RX_k = RTT_k` always holds.
-///   * Loop terminates on whichever happens first: duration deadline,
-///     `order_count + warmup_samples` orders completed, send error, or
-///     SIGINT.
-///
-/// Measurement clock: `bench::monotonic_raw_ns()` (CLOCK_MONOTONIC_RAW).
+/// **Reshape note (parallel-bench v2)**: inner measurement loop extracted
+/// to `benchmarks/latency/scenarios/lat_ex_order_loop.hpp`'s
+/// `run_lat_ex_order_loop<EnableTls>(BenchCtx&)`. main() is a thin wrapper.
 
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
-#include <span>
-#include <string>
 #include <utility>
-#include <vector>
 
 #include <spdlog/spdlog.h>
 
-// eph-* headers.
-#include "eph/codec/ws_codec.hpp"
-#include "eph/net/socket_addr.hpp"
-#include "eph/utils/recorder.hpp"
-
-#if defined(EPH_USE_DPDK)
-// DpdkTcpStream<WsCodec> serial request/response order RTT.
-#  include "eph/net/dpdk/poller.hpp"
-#  include "eph/net/dpdk/tcp_stream.hpp"
-#else
-#  include "eph/net/kernel/config.hpp"
-#  include "eph/net/kernel/poller.hpp"
-#  include "eph/net/kernel/tcp_stream.hpp"
-#endif
-
-#include "core/json_scan.hpp"
+#include "core/bench_conf.hpp"
+#include "core/bench_ctx.hpp"
 #include "core/measurement.hpp"
 #include "core/pin_client.hpp"
-#include "core/timestamp_proto.hpp"
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
+#  include "eph/net/dpdk/poller.hpp"
+#else
+#  include "eph/net/kernel/poller.hpp"
 #endif
+
+#include "scenarios/lat_ex_order_loop.hpp"
 
 namespace {
-
-namespace ec = eph::codec;
-namespace eu = eph::utils;
-namespace en = eph::net;
-
-#if defined(EPH_USE_DPDK)
-namespace ed = eph::net::dpdk;
-template <bool EnableTls>
-using StreamT = ed::DpdkTcpStream<ec::WsCodec, EnableTls>;
-using Poller  = ed::DpdkPoller<>;
-#else
-namespace ek = eph::net::kernel;
-template <bool EnableTls>
-using StreamT = ek::KernelTcpStream<ec::WsCodec, EnableTls>;
-using Poller  = ek::KernelPoller;
-#endif
 
 constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
 
@@ -103,7 +49,6 @@ int main(int argc, char** argv) {
 
     const char* conf_path = parse_config_path(argc, argv);
 
-    // ── Load config.toml into structured BenchConfig ────────────────────
     auto cfg_r = bench::load_bench_conf(conf_path);
     if (!cfg_r) {
         std::fprintf(stderr, "lat_ex_order: %s\n",
@@ -113,43 +58,26 @@ int main(int argc, char** argv) {
     const bench::BenchConfig& bench_cfg = *cfg_r;
     const bench::Scenario* sc = bench_cfg.scenario("lat_ex_order");
     if (sc == nullptr) {
-        std::fprintf(stderr,
-                     "lat_ex_order: [scenarios.lat_ex_order] not found in %s\n",
-                     conf_path);
+        std::fprintf(stderr, "lat_ex_order: [scenarios.lat_ex_order] not found\n");
         return 1;
     }
-    const bench::Scenario& scenario = *sc;
 
     bench::pin_client_from_cfg(bench_cfg, "lat_ex_order");
 
-    auto port_r = scenario.get<uint16_t>("port");
-    if (!port_r) {
-        std::fprintf(stderr, "lat_ex_order: %s\n",
-                     bench::format_error(port_r.error()).c_str());
+    const uint16_t port = sc->get_or<uint16_t>("port", 0);
+    if (port == 0) {
+        std::fprintf(stderr, "lat_ex_order: scenarios.lat_ex_order.port required\n");
         return 1;
     }
-    const uint16_t port = *port_r;
-
-    const std::string ws_path =
-        scenario.get_or<std::string>("ws_path", "/ws/order");
-
-    const uint64_t order_count =
-        scenario.get_or<uint64_t>("order_count", 10000);
-    const uint64_t duration_s =
-        scenario.get_or<uint32_t>("duration_seconds", 30);
+    const std::string ws_path = sc->get_or<std::string>("ws_path", "/ws/order");
+    const uint64_t order_count = sc->get_or<uint64_t>("order_count", 10000);
+    const uint64_t duration_s = sc->get_or<uint32_t>("duration_seconds", 30);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
-    const bool use_tls = scenario.get_or<bool>("use_tls", false);
+    const bool use_tls = sc->get_or<bool>("use_tls", false);
 
     const std::string mock_ip_str = bench_cfg.networking.server_ip.empty()
                                         ? std::string{"127.0.0.1"}
                                         : bench_cfg.networking.server_ip;
-    auto ip_r = en::Ipv4Addr::parse(mock_ip_str);
-    if (!ip_r) {
-        std::fprintf(stderr, "lat_ex_order: invalid mock_ip '%s': %s\n",
-                     mock_ip_str.c_str(), ip_r.error().detail);
-        return 1;
-    }
-    const en::SocketAddr remote{ip_r.value(), port};
 
     std::printf("=== lat_ex_order ===\n");
     std::printf("config: mock=%s port=%u ws_path=%s order_count=%llu "
@@ -165,28 +93,6 @@ int main(int argc, char** argv) {
 
     bench::install_signal_handler();
 
-    auto run = [&]<bool EnableTls>() -> int {
-        using Stream = StreamT<EnableTls>;
-
-    // Construct the Recorders BEFORE Stream::create so that TSC::init's
-    // ~1 s calibration spin runs at startup, not while the WS handshake
-    // is completing. Same pattern as lat_ex_market.
-    //
-    // Three Recorders (RTT / TX / RX). ex_order is the only scenario
-    // that carries timestamps as JSON fields (`t_client` /
-    // `t_mock_recv` / `t_mock_send`) rather than a binary 24 B prefix
-    // — WS text-ish JSON wouldn't survive a binary header, so we
-    // extract via the existing scan_json_uint_field.
-    constexpr const char* backend =
-#if defined(EPH_USE_DPDK)
-        EnableTls ? "dpdk_tls" : "dpdk";
-#else
-        EnableTls ? "kernel_tls" : "kernel";
-#endif
-    eu::Recorder rec_rtt{std::string{"lat_ex_order_"} + backend + "_rtt"};
-    eu::Recorder rec_tx {std::string{"lat_ex_order_"} + backend + "_tx" };
-    eu::Recorder rec_rx {std::string{"lat_ex_order_"} + backend + "_rx" };
-
 #if defined(EPH_USE_DPDK)
     auto env_r = bench::load_dpdk_env(bench_cfg, /*port_id=*/0);
     if (!env_r) {
@@ -195,14 +101,12 @@ int main(int argc, char** argv) {
     }
     auto env = std::move(*env_r);
     bench::print_dpdk_config_echo(env);
+    bench::DpdkBenchView view = bench::make_view(env);
 
-    ed::PollerConfig poller_cfg{};
+    eph::net::dpdk::PollerConfig poller_cfg{};
     poller_cfg.port_id     = env.port_id;
     poller_cfg.rx_queue_id = 0;
-    auto poller_r = Poller::create(poller_cfg);
-#else
-    auto poller_r = ek::KernelPoller::create({});
-#endif
+    auto poller_r = eph::net::dpdk::DpdkPoller<>::create(poller_cfg);
     if (!poller_r) {
         std::fprintf(stderr, "lat_ex_order: Poller::create failed: %s\n",
                      poller_r.error().detail);
@@ -210,244 +114,32 @@ int main(int argc, char** argv) {
     }
     auto poller = std::move(poller_r.value());
 
-#if defined(EPH_USE_DPDK)
-    ed::StreamConfig cfg{};
-    cfg.dpdk.tcp_low_level          = env.make_tcp_config(bench::random_src_port(), port);
-    cfg.dpdk.pool            = env.pool;
-    cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws.path         = ws_path;
-    cfg.ws.timeout      = std::chrono::seconds{10};
-#else
-    ek::StreamConfig cfg{};
-    cfg.remote          = remote;
-    // Order payloads are tiny (~30 B); 64 KiB reassembly is ample.
-    cfg.reasm_capacity  = 64 * 1024;
-    cfg.connect_timeout = std::chrono::milliseconds{3000};
-    cfg.ws.path         = ws_path;
-    cfg.ws.timeout      = std::chrono::seconds{10};
-#endif
-
-    if constexpr (EnableTls) {
-        cfg.tls.hostname    = mock_ip_str;
-        cfg.tls.verify_peer = false;
-    }
-
-#if defined(EPH_USE_DPDK)
     if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
         std::fprintf(stderr, "lat_ex_order: register_poller failed: %s\n",
                      rr.error().detail);
         return 3;
     }
-    auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
 #else
-    auto stream_r = Stream::create(cfg);
-#endif
-    if (!stream_r) {
-        std::fprintf(stderr, "lat_ex_order: Stream::create failed: %s\n",
-                     stream_r.error().detail);
-        return 3;
+    auto poller_r = eph::net::kernel::KernelPoller::create({});
+    if (!poller_r) {
+        std::fprintf(stderr, "lat_ex_order: Poller::create failed: %s\n",
+                     poller_r.error().detail);
+        return 2;
     }
-    auto stream = std::move(stream_r.value());
-
-    // ── Strict-serial state (captured by reference in on_message) ───────
-    //
-    // Only one order is ever in flight. `current_id` is the id of the
-    // outstanding order (0 = pipeline idle). `response_seen` flips to
-    // true when the mock's echo arrives and passes validation; the main
-    // loop polls it to advance to the next send.
-    uint64_t current_id      = 0;     // 0 = no order in flight
-    bool     response_seen   = false; // mock echoed current_id
-    uint64_t sample_idx      = 0;     // completed orders, incl. warmup
-    uint64_t recorded_count  = 0;     // post-warmup recorded samples
-    uint64_t stale_count     = 0;     // id mismatch / unexpected response
-    uint64_t malformed_count = 0;     // missing "id" or timestamp fields
-    uint64_t t_measure_start = 0;     // first post-warmup completion time
-
-    stream->on_message = [&](std::span<const uint8_t> app_frame) {
-        const uint64_t t_recv = bench::monotonic_raw_ns();
-        const auto* d   = app_frame.data();
-        const std::size_t nsz = app_frame.size();
-
-        auto id_opt = bench::scan_json_uint_field(d, nsz, "id");
-        if (!id_opt) {
-            ++malformed_count;
-            return;
-        }
-        if (current_id == 0 || *id_opt != current_id) {
-            // Response with no matching outstanding order — duplicate
-            // echo or out-of-order leftover. Skip without polluting the
-            // histogram.
-            ++stale_count;
-            return;
-        }
-
-        // Pull the three timestamps from the echoed JSON. The mock
-        // (`ex_order_echo.py`) inserts `t_mock_recv` and `t_mock_send`
-        // around its `json.loads`/`json.dumps`; `t_client` comes back
-        // unchanged. Any missing field → drop the sample and move on.
-        auto tc_opt = bench::scan_json_uint_field(d, nsz, "t_client");
-        auto tr_opt = bench::scan_json_uint_field(d, nsz, "t_mock_recv");
-        auto ts_opt = bench::scan_json_uint_field(d, nsz, "t_mock_send");
-
-        if (sample_idx == warmup_samples) {
-            t_measure_start = t_recv;
-        }
-        if (sample_idx >= warmup_samples) {
-            if (tc_opt && tr_opt && ts_opt &&
-                t_recv >= *tc_opt && *tr_opt >= *tc_opt && t_recv >= *ts_opt) {
-                const bench::TimestampBlock tsb{
-                    .client_ns    = *tc_opt,
-                    .mock_recv_ns = *tr_opt,
-                    .mock_send_ns = *ts_opt,
-                };
-                const auto lgs = bench::compute_legs(tsb, t_recv);
-                rec_rtt.record_ns(lgs.rtt_ns);
-                rec_tx .record_ns(lgs.tx_ns);
-                rec_rx .record_ns(lgs.rx_ns);
-                ++recorded_count;
-            } else {
-                ++malformed_count;
-                SPDLOG_DEBUG("lat_ex_order: dropping sample id={} — "
-                             "missing/inconsistent t_client/t_mock_*",
-                             *id_opt);
-            }
-        }
-        ++sample_idx;
-        response_seen = true;
-    };
-
-#if !defined(EPH_USE_DPDK)
-    if (auto r = poller->add(stream.get()); !r) {
-        std::fprintf(stderr, "lat_ex_order: poller->add failed: %s\n",
-                     r.error().detail);
-        return 3;
-    }
+    auto poller = std::move(poller_r.value());
 #endif
 
-    // ── Encode buffer for outbound WS-binary frames ─────────────────────
-    //
-    // Each sample encodes
-    //   `{"e":"NewOrder","id":NNN,"t_client":NNNNNNNNNNNNNNNNNNNN}`
-    // Worst case: 20-digit id + 20-digit t_client ≈ 80 bytes. A 128-byte
-    // JSON buffer plus WsCodec::max_overhead covers every case.
-    constexpr std::size_t kJsonBufSize = 128;
-    char      json_buf[kJsonBufSize];
-    std::vector<uint8_t> frame(ec::WsCodec::max_overhead + kJsonBufSize);
-    ec::WsCodec encoder{};
-
-    // ── Measurement loop (strict request/response) ──────────────────────
-    //
-    // For each order: send → poll until response_seen → record in
-    // on_message → next. Total orders issued = order_count + warmup.
-    //
-    // Exit conditions:
-    //   1. duration_seconds deadline elapses
-    //   2. all planned orders completed
-    //   3. SIGINT/SIGTERM sets the shutdown flag
-    //   4. send() error (mock died)
-    //   5. per-sample recv timeout (5s — mock stuck)
-    const uint64_t t_start = bench::monotonic_raw_ns();
-    const uint64_t t_deadline =
-        t_start + (duration_s + 2) * 1'000'000'000ull;
-    const uint64_t plan_total = order_count + warmup_samples;
-    constexpr uint64_t kPerSampleTimeoutNs = 5ull * 1'000'000'000ull;
-
-    bool send_failed = false;
-    bool timed_out   = false;
-    uint64_t next_id = 1;
-    while (next_id <= plan_total && !bench::shutdown_requested()) {
-        if (bench::monotonic_raw_ns() >= t_deadline) break;
-
-        const uint64_t id = next_id;
-        const uint64_t t_client = bench::monotonic_raw_ns();
-        const int jn = std::snprintf(
-            json_buf, sizeof(json_buf),
-            "{\"e\":\"NewOrder\",\"id\":%llu,\"t_client\":%llu}",
-            static_cast<unsigned long long>(id),
-            static_cast<unsigned long long>(t_client));
-        if (jn <= 0 || static_cast<std::size_t>(jn) >= sizeof(json_buf)) {
-            std::fprintf(stderr,
-                         "lat_ex_order: json snprintf overflow at id=%llu\n",
-                         static_cast<unsigned long long>(id));
-            send_failed = true;
-            break;
-        }
-
-        auto enc_r = encoder.encode(
-            frame.data(), frame.size(),
-            std::span<const uint8_t>{
-                reinterpret_cast<const uint8_t*>(json_buf),
-                static_cast<std::size_t>(jn)});
-        if (!enc_r) {
-            std::fprintf(stderr, "lat_ex_order: WsCodec::encode failed: %s\n",
-                         enc_r.error().detail);
-            send_failed = true;
-            break;
-        }
-
-        current_id    = id;
-        response_seen = false;
-
-        auto send_r = stream->send(
-            std::span<const uint8_t>{frame.data(), *enc_r});
-        if (!send_r) {
-            std::fprintf(stderr,
-                         "lat_ex_order: send failed at id=%llu: %s\n",
-                         static_cast<unsigned long long>(id),
-                         send_r.error().detail);
-            send_failed = true;
-            break;
-        }
-
-        const uint64_t t0 = t_client;
-        while (!response_seen && !bench::shutdown_requested()) {
-            poller->poll();
-            if (bench::monotonic_raw_ns() - t0 > kPerSampleTimeoutNs) {
-                std::fprintf(stderr,
-                             "lat_ex_order: response timeout at id=%llu\n",
-                             static_cast<unsigned long long>(id));
-                timed_out = true;
-                break;
-            }
-        }
-        if (timed_out || bench::shutdown_requested()) break;
-
-        current_id = 0;
-        ++next_id;
-    }
-
-    if (malformed_count > 0 || stale_count > 0) {
-        std::fprintf(stderr,
-                     "lat_ex_order: skipped %llu malformed + %llu stale responses\n",
-                     static_cast<unsigned long long>(malformed_count),
-                     static_cast<unsigned long long>(stale_count));
-    }
-    std::fprintf(stderr,
-                 "lat_ex_order: completed %llu orders (recorded %llu post-warmup)\n",
-                 static_cast<unsigned long long>(sample_idx),
-                 static_cast<unsigned long long>(recorded_count));
-
-    const uint64_t wall_time_ns =
-        (t_measure_start != 0)
-            ? (bench::monotonic_raw_ns() - t_measure_start)
-            : 0;
-    bench::print_leg_report("lat_ex_order", backend, rec_rtt, rec_tx, rec_rx,
-                            warmup_samples, wall_time_ns);
-    (void)bench::export_legs(rec_rtt, rec_tx, rec_rx);
-
-    (void)stream->close_gracefully();
-#if !defined(EPH_USE_DPDK)
-    poller->poll(std::chrono::milliseconds{50});
+    bench::BenchCtx ctx{};
+    ctx.bench_cfg    = &bench_cfg;
+    ctx.scenario_cfg = sc;
+#if defined(EPH_USE_DPDK)
+    ctx.view         = &view;
 #endif
-    (void)poller->remove(stream.get());
-    stream.reset();
-    poller.reset();
+    ctx.poller       = poller.get();
+    ctx.queue_id     = 0;
+    ctx.slot_index   = -1;
 
-    if (send_failed) return 4;
-    if (timed_out)   return 5;
-    return 0;
-    };  // end of run<EnableTls>() lambda
-
-    return use_tls ? run.template operator()<true>()
-                   : run.template operator()<false>();
+    return use_tls
+        ? bench::scenarios::run_lat_ex_order_loop<true>(ctx)
+        : bench::scenarios::run_lat_ex_order_loop<false>(ctx);
 }
