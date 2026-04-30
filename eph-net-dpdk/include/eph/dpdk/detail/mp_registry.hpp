@@ -84,6 +84,13 @@ inline constexpr uint32_t kMpRegistryVersion = 1;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
 
+/// Sentinel for `MpRegistryHandle::self_index_` meaning "this handle
+/// does not own a process slot". Used by `attach_secondary_readonly`
+/// (look-only handle) and as the default for moved-from / inert
+/// instances. Distinct from any valid index because the registry caps
+/// at `MpTopology::kMaxProcs == 64` so 0xFF is unreachable.
+inline constexpr uint8_t kMpRegistrySelfIndexUnset = 0xFF;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POD layout — must remain trivially copyable + standard layout
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,6 +269,13 @@ public:
     [[nodiscard]] ProcSlot const& self() const noexcept {
         return hdr_->procs[self_index_];
     }
+    /// @brief True iff this handle owns a claimed slot (`self_index_`
+    /// is a valid index, not the unset sentinel). Read-only handles
+    /// returned by `attach_secondary_readonly` report `false` until a
+    /// successful `try_claim_free_slot()` upgrades them.
+    [[nodiscard]] bool owns_slot() const noexcept {
+        return hdr_ != nullptr && self_index_ != kMpRegistrySelfIndexUnset;
+    }
 
     // ── Factories ────────────────────────────────────────────────────────────
 
@@ -344,8 +358,18 @@ public:
     /// @brief Look up the primary's registry memzone, cross-validate
     /// magic / version / file_prefix / per-slot topology, and CAS-claim
     /// `procs[topo.self_index]`. Called by `Platform::create_secondary`.
+    ///
+    /// @param already_claimed When `true` the CAS-claim step is
+    /// skipped — the caller has already preclaimed the slot via
+    /// `try_claim_free_slot()` (Mode 2 / `Platform::join_dynamic`
+    /// path). The returned handle still takes ownership of the slot
+    /// and will release it on destruction, so the caller MUST drop
+    /// the original preclaim handle (or transfer it via move) before
+    /// invoking attach_secondary with `already_claimed=true` to avoid
+    /// double-release at teardown.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
-    attach_secondary(std::string_view file_prefix, MpTopology const& topo) {
+    attach_secondary(std::string_view file_prefix, MpTopology const& topo,
+                     bool already_claimed = false) {
         if (!topo.valid())
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -419,19 +443,38 @@ public:
                 "MpRegistry: secondary's self spec disagrees with primary"});
         }
 
-        // CAS-claim. The whole point: if another secondary booted with
-        // the same self_index, exactly one wins.
-        uint8_t expected = 0;
-        if (!hdr->procs[topo.self_index].claimed.compare_exchange_strong(
-                expected, 1, std::memory_order_acq_rel)) {
-            SPDLOG_ERROR(
-                "MpRegistry: self_index={} already claimed (another peer "
-                "is running with the same self_index — config bug)",
-                topo.self_index);
-            return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
-                "MpRegistry: self_index is already claimed by another "
-                "process — duplicate self_index in MP topology"});
+        if (!already_claimed) {
+            // CAS-claim. The whole point: if another secondary booted
+            // with the same self_index, exactly one wins.
+            uint8_t expected = 0;
+            if (!hdr->procs[topo.self_index].claimed.compare_exchange_strong(
+                    expected, 1, std::memory_order_acq_rel)) {
+                SPDLOG_ERROR(
+                    "MpRegistry: self_index={} already claimed (another "
+                    "peer is running with the same self_index — config "
+                    "bug)",
+                    topo.self_index);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "MpRegistry: self_index is already claimed by another "
+                    "process — duplicate self_index in MP topology"});
+            }
+        } else {
+            // Caller has preclaimed via try_claim_free_slot. Verify the
+            // slot is in fact in claimed=1 state — if not, the caller's
+            // contract is broken and we refuse to take ownership of an
+            // unclaimed slot (would race with a concurrent claimer).
+            if (hdr->procs[topo.self_index].claimed.load(
+                    std::memory_order_acquire) != 1) {
+                SPDLOG_ERROR(
+                    "MpRegistry: attach_secondary(already_claimed=true) "
+                    "but procs[{}].claimed != 1 — caller contract violated",
+                    topo.self_index);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "MpRegistry: attach_secondary(already_claimed=true) "
+                    "but slot is not actually claimed"});
+            }
         }
 
         SPDLOG_INFO(
@@ -449,20 +492,136 @@ public:
         return h;
     }
 
+    /// @brief Look up the primary's registry memzone and validate
+    /// header-level invariants (magic / version / file_prefix) but
+    /// **do not** CAS-claim any slot. Returns a read-only handle
+    /// (`owns_slot()` is `false`) suitable for inspecting
+    /// `header()->total_procs` and per-slot specs before the caller
+    /// decides which free slot to claim via `try_claim_free_slot()`.
+    ///
+    /// This is the entry point for `Platform::join_dynamic` (Mode 2)
+    /// where the secondary doesn't know its own `self_index` until
+    /// it scans the registry. Mode 1
+    /// (`Platform::create_secondary`) goes through `attach_secondary`
+    /// instead because it already knows its index from the topology.
+    [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
+    attach_secondary_readonly(std::string_view file_prefix) {
+        auto name_r = build_mp_registry_name(file_prefix);
+        if (!name_r) return std::unexpected(name_r.error());
+        const char* name = name_r->data();
+
+        const auto* mz = rte_memzone_lookup(name);
+        if (mz == nullptr) {
+            SPDLOG_ERROR(
+                "MpRegistry: attach_secondary_readonly: "
+                "rte_memzone_lookup('{}') returned NULL — primary not "
+                "running, prefix mismatch, or EAL not initialized as "
+                "secondary",
+                name);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotFound,
+                "MpRegistry: memzone lookup failed (primary not running "
+                "or file_prefix mismatch)"});
+        }
+
+        auto* hdr = static_cast<MpRegistryHeader*>(mz->addr);
+
+        if (hdr->magic != kMpRegistryMagic)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry: header magic mismatch (memzone collided "
+                "with a non-eph layout under the same file_prefix)"});
+        if (hdr->version != kMpRegistryVersion)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry: header version mismatch (primary built "
+                "with a different eph-net-dpdk version)"});
+        if (std::strncmp(hdr->file_prefix, file_prefix.data(),
+                         std::min(file_prefix.size(),
+                                  kMpRegistryFilePrefixMax - 1)) != 0)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry: file_prefix in header does not match the "
+                "one this attach_secondary_readonly was called with"});
+
+        SPDLOG_INFO(
+            "MpRegistry: attached read-only to '{}' "
+            "(magic=0x{:08x} ver={} total_procs={})",
+            name, hdr->magic, hdr->version, hdr->total_procs);
+
+        MpRegistryHandle h;
+        h.hdr_          = hdr;
+        h.mz_           = mz;
+        h.owns_memzone_ = false;
+        h.self_index_   = kMpRegistrySelfIndexUnset;
+        return h;
+    }
+
+    // ── Methods ──────────────────────────────────────────────────────────────
+
+    /// @brief Scan `procs[0..total_procs)` and CAS-claim the lowest
+    /// free slot. On success, sets this handle's `self_index_` so
+    /// the destructor will release the slot, and returns the claimed
+    /// index. On failure (all slots claimed) returns
+    /// `Error::OutOfMemory`. Lock-free under contention.
+    ///
+    /// Precondition: this handle must be a fresh read-only handle
+    /// from `attach_secondary_readonly` (i.e. `!owns_slot()`).
+    /// Calling on an already-owning handle returns
+    /// `Error::InvalidConfig` rather than silently double-claiming.
+    [[nodiscard]] std::expected<uint8_t, core::ErrorInfo>
+    try_claim_free_slot() noexcept {
+        if (hdr_ == nullptr)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry::try_claim_free_slot: handle is inert"});
+        if (self_index_ != kMpRegistrySelfIndexUnset)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry::try_claim_free_slot: handle already owns "
+                "a slot"});
+
+        const uint32_t total = hdr_->total_procs;
+        for (uint32_t i = 0; i < total; ++i) {
+            uint8_t expected = 0;
+            if (hdr_->procs[i].claimed.compare_exchange_strong(
+                    expected, 1, std::memory_order_acq_rel)) {
+                self_index_ = static_cast<uint8_t>(i);
+                SPDLOG_INFO(
+                    "MpRegistry: try_claim_free_slot claimed self_index={} "
+                    "(of total_procs={})",
+                    i, total);
+                return self_index_;
+            }
+        }
+        SPDLOG_WARN(
+            "MpRegistry: try_claim_free_slot found all {} slots claimed "
+            "(resource exhausted)",
+            total);
+        return std::unexpected(core::ErrorInfo{
+            core::Error::OutOfMemory,
+            "MpRegistry: all process slots are claimed "
+            "(max_procs reached — start fewer peers or raise max_procs)"});
+    }
+
 private:
     void reset_() noexcept {
         hdr_          = nullptr;
         mz_           = nullptr;
         owns_memzone_ = false;
-        self_index_   = 0;
+        self_index_   = kMpRegistrySelfIndexUnset;
     }
 
     void release_() noexcept {
         if (hdr_ == nullptr) return;
         // Always release the slot first so a peer that's spinning on
         // CAS can make progress before we tear down hugepage state.
-        hdr_->procs[self_index_].claimed.store(0,
-                                                std::memory_order_release);
+        // Read-only handles (self_index_ == sentinel) own no slot —
+        // skip the release to avoid touching out-of-bounds procs[].
+        if (self_index_ != kMpRegistrySelfIndexUnset) {
+            hdr_->procs[self_index_].claimed.store(0,
+                                                    std::memory_order_release);
+        }
         if (owns_memzone_ && mz_ != nullptr) {
             const int rc = rte_memzone_free(mz_);
             if (rc != 0) {
@@ -482,7 +641,7 @@ private:
     MpRegistryHeader*        hdr_          = nullptr;
     const struct rte_memzone* mz_          = nullptr;
     bool                     owns_memzone_ = false;
-    uint8_t                  self_index_   = 0;
+    uint8_t                  self_index_   = kMpRegistrySelfIndexUnset;
 };
 
 } // namespace eph::dpdk::detail

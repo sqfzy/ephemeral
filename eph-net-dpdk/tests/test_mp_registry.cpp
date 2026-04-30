@@ -37,6 +37,7 @@ using eph::dpdk::ProcSpec;
 using eph::dpdk::detail::build_mp_registry_name;
 using eph::dpdk::detail::kMpRegistryFilePrefixMax;
 using eph::dpdk::detail::kMpRegistryMagic;
+using eph::dpdk::detail::kMpRegistrySelfIndexUnset;
 using eph::dpdk::detail::kMpRegistryVersion;
 using eph::dpdk::detail::MpRegistryHandle;
 
@@ -189,4 +190,133 @@ TEST(MpRegistry, InvalidTopology_Rejected) {
     auto p = MpRegistryHandle::create_primary("rgbadt", bad);
     ASSERT_FALSE(p.has_value());
     EXPECT_EQ(p.error().code, Error::InvalidConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode 2 helpers — attach_secondary_readonly + try_claim_free_slot +
+// attach_secondary(already_claimed=true)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MpRegistry, AttachSecondaryReadonly_LookupSucceedsNoClaim) {
+    auto p = MpRegistryHandle::create_primary("rgrdonly", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgrdonly");
+    ASSERT_TRUE(ro.has_value()) << ro.error();
+    ASSERT_TRUE(static_cast<bool>(*ro));
+    EXPECT_FALSE(ro->owns_slot());
+    EXPECT_EQ(ro->self_index(), kMpRegistrySelfIndexUnset);
+
+    // Header is the primary's: same memzone, same magic / total_procs.
+    ASSERT_NE(ro->header(), nullptr);
+    EXPECT_EQ(ro->header(), p->header());
+    EXPECT_EQ(ro->header()->total_procs, 2u);
+
+    // Critically: peer slot still free — readonly attach must not have
+    // CAS-claimed anything.
+    EXPECT_EQ(ro->header()->procs[1].claimed.load(std::memory_order_acquire),
+              0);
+}
+
+TEST(MpRegistry, AttachSecondaryReadonly_NoPrimary_NotFound) {
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgrdmiss");
+    ASSERT_FALSE(ro.has_value());
+    EXPECT_EQ(ro.error().code, Error::NotFound);
+}
+
+TEST(MpRegistry, TryClaimFreeSlot_ClaimsLowestFree) {
+    // total_procs=4, primary at index 0 → readonly handle should be
+    // able to claim index 1 first.
+    auto p = MpRegistryHandle::create_primary(
+        "rgtcfree", MpTopology::uniform(0, 4, 8));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgtcfree");
+    ASSERT_TRUE(ro.has_value()) << ro.error();
+    ASSERT_FALSE(ro->owns_slot());
+
+    auto idx = ro->try_claim_free_slot();
+    ASSERT_TRUE(idx.has_value()) << idx.error();
+    EXPECT_EQ(*idx, 1u);  // primary owns 0 → lowest free is 1
+    EXPECT_TRUE(ro->owns_slot());
+    EXPECT_EQ(ro->self_index(), 1u);
+    EXPECT_EQ(ro->header()->procs[1].claimed.load(std::memory_order_acquire),
+              1);
+
+    // Calling again on the same handle should error: handle already
+    // owns a slot, no double-claim.
+    auto again = ro->try_claim_free_slot();
+    ASSERT_FALSE(again.has_value());
+    EXPECT_EQ(again.error().code, Error::InvalidConfig);
+}
+
+TEST(MpRegistry, TryClaimFreeSlot_AllClaimedReturnsOom) {
+    // total_procs=2, primary at 0 → only index 1 free; manually claim
+    // it so the next try_claim_free_slot must report OOM.
+    auto p = MpRegistryHandle::create_primary("rgtcoom", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    // Claim slot 1 by hand to fully saturate the registry.
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    uint8_t exp = 0;
+    ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
+        exp, 1, std::memory_order_acq_rel));
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgtcoom");
+    ASSERT_TRUE(ro.has_value()) << ro.error();
+
+    auto idx = ro->try_claim_free_slot();
+    ASSERT_FALSE(idx.has_value());
+    EXPECT_EQ(idx.error().code, Error::OutOfMemory);
+    EXPECT_FALSE(ro->owns_slot());
+
+    // Restore for clean shutdown — primary's destructor needs slot 0,
+    // and we touched slot 1 by hand outside of any handle.
+    hdr->procs[1].claimed.store(0, std::memory_order_release);
+}
+
+TEST(MpRegistry, AttachSecondary_AlreadyClaimedSkipsCAS) {
+    // Reproduces the Mode 2 fragment: a try_claim_free_slot has
+    // preclaimed slot 1; subsequent attach_secondary(already_claimed=
+    // true) must succeed (without already_claimed it would fail with
+    // "already claimed").
+    auto p = MpRegistryHandle::create_primary("rgalrcl", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    uint8_t exp = 0;
+    ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
+        exp, 1, std::memory_order_acq_rel));
+
+    // Without the bypass: the second attach would refuse on CAS.
+    auto without = MpRegistryHandle::attach_secondary("rgalrcl", make_topo(1),
+                                                      /*already_claimed=*/false);
+    ASSERT_FALSE(without.has_value());
+    EXPECT_EQ(without.error().code, Error::InvalidConfig);
+
+    // With the bypass: slot is taken, but attach_secondary trusts the
+    // caller and produces an owning handle.
+    auto with = MpRegistryHandle::attach_secondary("rgalrcl", make_topo(1),
+                                                   /*already_claimed=*/true);
+    ASSERT_TRUE(with.has_value()) << with.error();
+    EXPECT_EQ(with->self_index(), 1u);
+    EXPECT_TRUE(with->owns_slot());
+
+    // Sanity: dropping the bypass handle releases the slot via RAII so
+    // the primary doesn't trip on stale state at teardown.
+}
+
+TEST(MpRegistry, AttachSecondary_AlreadyClaimedRequiresActualClaim) {
+    // Caller contract: already_claimed=true must be paired with a real
+    // preclaim. Pass it on a free slot → the helper detects the
+    // mismatch and refuses to take ownership of an unclaimed slot.
+    auto p = MpRegistryHandle::create_primary("rgalrnk", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    EXPECT_EQ(p->header()->procs[1].claimed.load(std::memory_order_acquire), 0);
+
+    auto bad = MpRegistryHandle::attach_secondary("rgalrnk", make_topo(1),
+                                                  /*already_claimed=*/true);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, Error::InvalidConfig);
 }
