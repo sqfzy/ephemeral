@@ -12,53 +12,57 @@ This document is the operational contract. For the design rationale see
 
 ---
 
-## TL;DR (recommended path)
+## TL;DR — autojoin (recommended path)
+
+Two unrelated processes share one NIC by agreeing on **only the
+PCI BDF and `nb_rx_queues`** — no shared file_prefix, no manual
+topology, no primary-vs-secondary launch protocol. Whoever calls
+`rte_eal_init` first becomes primary; the next peer auto-attaches
+as secondary and CAS-claims the lowest free slot.
 
 ```cpp
-// Primary process — declare only (self_index, total_procs).
-PlatformConfig p_cfg{
-    .port_id      = 0,
-    .nb_rx_queues = 4,
-    .enable_rss   = true,
-    .proc_type    = ProcType::Primary,
-    .file_prefix  = "eph_mp_demo",
-    .mp_topology  = MpTopology::uniform(/*self_index=*/0,
-                                        /*total_procs=*/2,
-                                        /*nb_rx_queues=*/4),
-};
-auto platform = Platform::create_primary(std::move(p_cfg));
-// Library auto-derives queues=[0,2) and src_port=[32768, 49152) for
-// this process. Stream create_and_attach picks src_ports from that
-// window automatically; no manual partition tables.
+#include "eph/dpdk/platform.hpp"
+#include "eph/dpdk/join_dynamic.hpp"
 
-// Secondary process (separate binary; same file_prefix).
-PlatformConfig s_cfg{
-    .port_id      = 0,
-    .nb_rx_queues = 4,                   // must match primary
-    .proc_type    = ProcType::Secondary,
-    .file_prefix  = "eph_mp_demo",
-    .mp_topology  = MpTopology::uniform(/*self_index=*/1,
-                                        /*total_procs=*/2,
-                                        /*nb_rx_queues=*/4),
-};
-auto platform_sec = Platform::create_secondary(std::move(s_cfg));
-// Auto-derives queues=[2,4) and src_port=[49152, 65536). The shared
-// hugepage registry rejects two processes that declare the same
-// self_index — silent collisions become loud cold-path errors.
+// Same code in BOTH binaries. Run them in any order.
+auto platform = eph::dpdk::Platform::join_dynamic({
+    .pci          = "0000:28:00.0",
+    .nb_rx_queues = 4,
+    .lcores       = {"0,1"},   // process-specific lcore set
+});
+// First peer  → primary, owns queue/port slot 0.
+// Second peer → secondary, CAS-claims slot 1, owns queue/port slot 1.
+//
+// File_prefix derived as "eph_0000_28_00_0" (sanitized BDF) so
+// both peers automatically agree on the hugepage segment name.
+// max_procs derived as nb_rx_queues / queues_per_proc (default 1).
+//
+// Hot-path code is byte-for-byte identical to a single-process
+// platform with the same self_index — only the cold setup path
+// differs. inc_<StreamMetric::*>, rr_counter, ICMP / FlowDirector /
+// Poller state are all per-process.
 ```
 
-For non-uniform layouts (e.g. one trader process gets 6 queues, the
-rest 1 each), use `MpTopology::custom(self_index, {ProcSpec{...}, ...})`.
+`JoinDynamicConfig` only requires `pci` and `nb_rx_queues`; everything
+else (`queues_per_proc`, `max_procs`, `file_prefix`, `port_id`) has a
+sensible default. See `examples/simple_hft_dpdk_mp_dynamic.cpp` for
+a runnable end-to-end demo.
 
-The same code with `mp_topology` left empty falls back to the legacy
-"hand-partitioned `rx_queue_range` + caller-allocated src_port" path;
-see "Advanced usage: manual partitioning" below if you need it.
+### When to use which path
 
-Hot-path code in both processes is **identical** to the single-process
-case: `inc_<StreamMetric::*>` is per-instance atomic, `rr_counter` is
-process-local, and ICMP / FlowDirector / Poller state are all per-process.
-The multi-process machinery lives entirely in the cold startup and
-teardown paths.
+| Need                                                          | Path                          |
+|---------------------------------------------------------------|-------------------------------|
+| Two independent binaries / teams sharing one NIC              | **autojoin** (`join_dynamic`) |
+| Single team, simple uniform partition                         | **autojoin** (`join_dynamic`) |
+| Asymmetric topology (one peer gets 6 queues, others get 1)    | declarative + `MpTopology::custom` |
+| Tagged process roles where slot order matters semantically    | declarative + `MpTopology::uniform` (manual self_index) |
+| Pre-existing EAL bootstrap you don't want join_dynamic to own | declarative                   |
+| Cross-node coordinated RSS / hand-tuned partitions            | manual `rx_queue_range`       |
+
+The autojoin path is built **on top of** the declarative path: by
+the time `Platform::join_dynamic` returns, the resulting Platform's
+`Impl` is byte-for-byte identical to one produced by the
+declarative factories.
 
 ---
 
@@ -110,6 +114,56 @@ start and the last to stop**. Concretely:
 * Within a single primary's lifetime, secondaries may attach / detach
   freely — the registry's `procs[i].claimed` CAS makes "I'm the only
   one with self_index=i" mutually exclusive among live peers.
+
+## Advanced usage: declarative topology
+
+The path the autojoin TL;DR builds on. Use it directly when you
+need precise control over `self_index`, asymmetric per-peer
+specs (`MpTopology::custom`), or when you're managing EAL
+bootstrap yourself (e.g. a wrapper that already calls
+`eal_init`).
+
+```cpp
+// Primary process — declare only (self_index, total_procs).
+PlatformConfig p_cfg{
+    .port_id      = 0,
+    .nb_rx_queues = 4,
+    .enable_rss   = true,
+    .proc_type    = ProcType::Primary,
+    .file_prefix  = "eph_mp_demo",
+    .mp_topology  = MpTopology::uniform(/*self_index=*/0,
+                                        /*total_procs=*/2,
+                                        /*nb_rx_queues=*/4),
+};
+auto platform = Platform::create_primary(std::move(p_cfg));
+// Library auto-derives queues=[0,2) and src_port=[32768, 49152) for
+// this process. Stream create_and_attach picks src_ports from that
+// window automatically; no manual partition tables.
+
+// Secondary process (separate binary; same file_prefix).
+PlatformConfig s_cfg{
+    .port_id      = 0,
+    .nb_rx_queues = 4,                   // must match primary
+    .proc_type    = ProcType::Secondary,
+    .file_prefix  = "eph_mp_demo",
+    .mp_topology  = MpTopology::uniform(/*self_index=*/1,
+                                        /*total_procs=*/2,
+                                        /*nb_rx_queues=*/4),
+};
+auto platform_sec = Platform::create_secondary(std::move(s_cfg));
+// Auto-derives queues=[2,4) and src_port=[49152, 65536). The shared
+// hugepage registry rejects two processes that declare the same
+// self_index — silent collisions become loud cold-path errors.
+```
+
+For non-uniform layouts (e.g. one trader process gets 6 queues, the
+rest 1 each), use `MpTopology::custom(self_index, {ProcSpec{...}, ...})`.
+
+The same code with `mp_topology` left empty falls back to the legacy
+"hand-partitioned `rx_queue_range` + caller-allocated src_port" path;
+see "Advanced usage: manual partitioning" below if you need it.
+
+---
 
 ## Advanced usage: manual partitioning
 

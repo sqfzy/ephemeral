@@ -2,6 +2,95 @@
 
 ## [Unreleased]
 
+### Added — `Platform::join_dynamic` (autojoin MP factory)
+
+Zero-coordination multi-process bring-up. Two unrelated
+processes sharing the same NIC can now stand up a primary +
+secondary without any shared file_prefix string, manual
+`MpTopology`, or explicit `self_index`:
+
+```cpp
+auto platform = eph::dpdk::Platform::join_dynamic({
+    .pci          = "0000:28:00.0",
+    .nb_rx_queues = 4,
+});
+// First peer  → primary (slot 0)
+// Second peer → secondary (CAS-claims slot 1)
+```
+
+What `join_dynamic` does internally (all cold-path):
+
+1. Validates `JoinDynamicConfig` (`pci` non-empty,
+   `nb_rx_queues > 0`, `queues_per_proc > 0`).
+2. Auto-derives the DPDK `--file-prefix` as
+   `"eph_" + sanitize(pci)` when the caller leaves it empty
+   (so two peers naming the same NIC name the same hugepage
+   segment without sharing any string).
+3. Auto-derives `max_procs` as `nb_rx_queues / queues_per_proc`.
+4. Assembles EAL argv with `--proc-type=auto`, calls `eal_init`.
+5. Asks DPDK which role this process resolved to via
+   `rte_eal_process_type()`. First peer to claim the
+   `--file-prefix` lockfile is primary; later peers auto-attach
+   as secondary.
+6. Primary path: synthesizes a uniform
+   `MpTopology(self_index=0)` and delegates to
+   `Platform::create_primary` — no behaviour change vs. the
+   declarative path with the same topology.
+7. Secondary path: `attach_secondary_readonly` to validate the
+   primary's view, `try_claim_free_slot` for the lowest free
+   `procs[].claimed` flag. Synthesizes a uniform `MpTopology`
+   pointing at the claimed slot, transfers ownership via the
+   new `attach_secondary(..., already_claimed=true)` bypass,
+   and delegates to a new private `create_secondary_impl_`.
+
+The hot path is unchanged: by the time the Platform is
+returned, its `Impl` is byte-for-byte identical to one produced
+by the declarative factories with the same self_index. `inc_<M>`,
+`rr_counter`, FlowDir, ICMP, Poller are all per-process.
+
+Supporting public surface:
+
+- `eph::dpdk::JoinDynamicConfig` (in
+  `eph/dpdk/join_dynamic.hpp`) — POD config: `pci` +
+  `nb_rx_queues` required; `queues_per_proc` (default 1),
+  `max_procs` (0 = auto), `file_prefix` (empty = auto from
+  BDF), `lcores`, `port_id`.
+- `eph::dpdk::ProcType::Auto` — new enum value, serializes to
+  `--proc-type=auto`. `to_eal_string` static_assert coverage
+  extended.
+- `eph::dpdk::detail::sanitize_bdf_for_file_prefix` (in
+  `eph/dpdk/detail/bdf_sanitize.hpp`) — validates a PCI BDF
+  (length 7-12, hex digits + `:` + `.`, requires both
+  separators) and returns the `_`-substituted form.
+- `MpRegistryHandle::attach_secondary_readonly(file_prefix)` —
+  view-only attach: look up + validate magic / version /
+  file_prefix, but do NOT CAS-claim any slot.
+- `MpRegistryHandle::try_claim_free_slot()` — scan
+  `procs[0..total)` and CAS-claim the lowest free; returns
+  `OutOfMemory` when full. Lock-free.
+- `MpRegistryHandle::attach_secondary(..., bool
+  already_claimed = false)` — defaulted parameter so existing
+  callers compile unchanged. When `true` the helper trusts the
+  caller's preclaim and skips the CAS, but still verifies the
+  slot is in `claimed=1` state.
+- `MpRegistryHandle::disarm_slot()` — drop slot ownership
+  without clearing the shared-memory `claimed` flag; used to
+  hand off ownership from the read-only handle to the full
+  handle returned by `attach_secondary(already_claimed=true)`.
+
+The declarative path (`Platform::create_primary` /
+`create_secondary` + `MpTopology`) is preserved unchanged for
+asymmetric topologies, tagged `self_index` control, and
+callers already managing their own EAL bootstrap. The TL;DR in
+`docs/dpdk-multiprocess.md` now leads with autojoin; the
+declarative path is documented as "Advanced usage:
+declarative topology" — same content, demoted but **not**
+deprecated.
+
+End-to-end demo: `examples/simple_hft_dpdk_mp_dynamic.cpp`
+(run the same binary twice in two terminals; whichever calls
+`eal_init` first becomes primary).
+
 ### Added — FlowDir secondary fallback via primary IPC
 
 When `rte_flow_create` rejects a secondary's install (some PMDs

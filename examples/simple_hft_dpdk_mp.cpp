@@ -1,6 +1,13 @@
 /// @file simple_hft_dpdk_mp.cpp
 ///
-/// DPDK single-NIC multi-process (primary + secondary) skeleton.
+/// DPDK single-NIC multi-process (primary + secondary) **declarative**
+/// path skeleton. Each process declares its own `MpTopology` and
+/// `Platform::create_primary` / `create_secondary` does the
+/// bring-up. For the **autojoin** alternative — same scenario but
+/// zero coordination between peers (no shared file_prefix, no
+/// manual self_index, launch order is the only "agreement") — see
+/// `examples/simple_hft_dpdk_mp_dynamic.cpp`.
+///
 /// One binary that plays *both* roles, selected by `--role primary|secondary`
 /// on the command line. Mirrors the spirit of `simple_hft_dpdk.cpp` but
 /// brings in the MP scaffolding shipped with `eph-net-dpdk`:
