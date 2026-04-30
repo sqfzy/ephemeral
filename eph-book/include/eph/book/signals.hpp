@@ -146,15 +146,25 @@ vwap(std::span<const PriceLevel> levels) noexcept {
 ///
 /// Values > 1.0 indicate more buy interest; < 1.0 more sell interest.
 ///
+/// Returns `std::nullopt` when the ratio is undefined — either side empty
+/// (0/0 or X/0). The previous "0.0 when ask side empty" sentinel inverted
+/// the signal: an empty ask is the most extreme buy-pressure regime, but
+/// 0.0 reads as the most extreme sell-pressure regime to any caller doing
+/// `if (depth_ratio > threshold)`. Returning `nullopt` matches the rest of
+/// this header (`weighted_mid`, `microprice`, `spread_bps`, `vwap`) and
+/// forces callers to make a deliberate choice about handling the
+/// undefined case.
+///
 /// @tparam Book  Any book type exposing total_bid_qty() and total_ask_qty().
 /// @param  book  The order book to compute the depth ratio for.
-/// @return Ratio of aggregate bid to ask quantity, or 0.0 if the ask side
-///         is empty (avoids division by zero).
+/// @return Ratio of aggregate bid to ask quantity, or `std::nullopt`
+///         when either side is empty.
 template <typename Book>
-[[nodiscard]] double depth_ratio(const Book& book) noexcept {
+[[nodiscard]] std::optional<double> depth_ratio(const Book& book) noexcept {
     const double ask_qty = book.total_ask_qty();
-    if (ask_qty <= 0.0) return 0.0;
-    return book.total_bid_qty() / ask_qty;
+    const double bid_qty = book.total_bid_qty();
+    if (ask_qty <= 0.0 || bid_qty <= 0.0) return std::nullopt;
+    return bid_qty / ask_qty;
 }
 
 } // namespace eph::book

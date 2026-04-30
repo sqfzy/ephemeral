@@ -245,34 +245,50 @@ TEST(SignalsTest, VwapFromMapBookTopBids) {
 
 TEST(SignalsTest, DepthRatioSymmetric) {
     auto book = make_simple_array_book(100.0, 10.0, 101.0, 10.0);
-    EXPECT_NEAR(depth_ratio(book), 1.0, kEps);
+    auto r = depth_ratio(book);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(*r, 1.0, kEps);
 }
 
 TEST(SignalsTest, DepthRatioBuyHeavy) {
     auto book = make_simple_array_book(100.0, 30.0, 101.0, 10.0);
-    EXPECT_NEAR(depth_ratio(book), 3.0, kEps);
+    auto r = depth_ratio(book);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(*r, 3.0, kEps);
 }
 
 TEST(SignalsTest, DepthRatioSellHeavy) {
     auto book = make_simple_array_book(100.0, 10.0, 101.0, 30.0);
-    EXPECT_NEAR(depth_ratio(book), 10.0 / 30.0, kEps);
+    auto r = depth_ratio(book);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(*r, 10.0 / 30.0, kEps);
 }
 
-TEST(SignalsTest, DepthRatioEmptyAsk) {
+TEST(SignalsTest, DepthRatioEmptyAskReturnsNullopt) {
     ArrayBook<5> book;
     book.update_bid(100.0, 10.0);
-    // Ask side empty → returns 0.0.
-    EXPECT_NEAR(depth_ratio(book), 0.0, kEps);
+    // Ask side empty → ratio is undefined (conceptually +inf, NOT 0.0 — that
+    // would invert the buy/sell signal). API returns nullopt to force the
+    // caller to handle the undefined case explicitly.
+    EXPECT_FALSE(depth_ratio(book).has_value());
 }
 
-TEST(SignalsTest, DepthRatioEmptyBook) {
+TEST(SignalsTest, DepthRatioEmptyBookReturnsNullopt) {
     ArrayBook<5> book;
-    EXPECT_NEAR(depth_ratio(book), 0.0, kEps);
+    EXPECT_FALSE(depth_ratio(book).has_value());
+}
+
+TEST(SignalsTest, DepthRatioEmptyBidReturnsNullopt) {
+    ArrayBook<5> book;
+    book.update_ask(101.0, 10.0);
+    EXPECT_FALSE(depth_ratio(book).has_value());
 }
 
 TEST(SignalsTest, DepthRatioMapBook) {
     auto book = make_simple_map_book(100.0, 30.0, 101.0, 10.0);
-    EXPECT_NEAR(depth_ratio(book), 3.0, kEps);
+    auto r = depth_ratio(book);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(*r, 3.0, kEps);
 }
 
 // ===========================================================================
@@ -296,5 +312,7 @@ TEST(SignalsTest, DepthRatioMultiLevel) {
     book.update_ask(101.0, 5.0);
     book.update_ask(102.0, 15.0);
     // 30 / 20 = 1.5
-    EXPECT_NEAR(depth_ratio(book), 1.5, kEps);
+    auto r = depth_ratio(book);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(*r, 1.5, kEps);
 }
