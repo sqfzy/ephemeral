@@ -108,6 +108,16 @@ parse_ws_url(std::string_view url) noexcept {
                 return std::unexpected("parse_ws_url: port out of range");
             }
         }
+        // Explicit `:0` is meaningless for a client URL — TCP port 0
+        // means "OS picks an ephemeral port" which only makes sense
+        // server-side. A `wss://host:0/path` URL produced by config
+        // typo would otherwise pass through to KernelTcpStream::create
+        // which then rejects the zero port deep in connect() — surface
+        // it here so the diagnostic points at the URL field instead.
+        if (p == 0) {
+            return std::unexpected(
+                "parse_ws_url: port 0 is invalid for a client URL");
+        }
         out.port = static_cast<uint16_t>(p);
     }
     if (out.host.empty()) {

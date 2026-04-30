@@ -74,6 +74,15 @@ TEST(ParseWsUrl, RejectsOutOfRangePort) {
     EXPECT_FALSE(bench::parse_ws_url("wss://x:65536/y").has_value());
 }
 
+// Port 0 is meaningless for a client URL — would silently slip past
+// parse_ws_url and surface as a deep "connect to port 0" failure later.
+TEST(ParseWsUrl, RejectsZeroPort) {
+    EXPECT_FALSE(bench::parse_ws_url("wss://x:0/y").has_value());
+    EXPECT_FALSE(bench::parse_ws_url("ws://x:0/path").has_value());
+    // Leading-zero variant: still 0, still rejected
+    EXPECT_FALSE(bench::parse_ws_url("ws://x:000/path").has_value());
+}
+
 TEST(ResolveEndpoint, DefaultsToServerIpPortPath) {
     const auto p = write_toml("10.0.0.1",
         "port             = 20003\n"
