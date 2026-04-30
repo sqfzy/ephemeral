@@ -116,6 +116,20 @@ struct ProxyConfig {
                 "ProxyConfig: basic_auth_user and basic_auth_pass "
                 "must both be set or both unset"});
         }
+        // Reject empty-string credentials. has_value() distinguishes
+        // "auth requested" from "no auth", but a defaulted std::string
+        // sneaks through as has_value()==true with size()==0. We'd then
+        // emit `Proxy-Authorization: Basic base64(":")` = `Og==`, which
+        // some squid configurations silently accept and route as
+        // anonymous, defeating the operator's intent. Force the caller
+        // to either omit both fields or supply non-empty values.
+        if (basic_auth_user.has_value() &&
+            (basic_auth_user->empty() || basic_auth_pass->empty())) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "ProxyConfig: basic_auth_user / basic_auth_pass must be "
+                "non-empty when auth is requested"});
+        }
         if (timeout <= std::chrono::milliseconds::zero()) {
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig,

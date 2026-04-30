@@ -134,6 +134,29 @@ TEST(ProxyConfig, BothAuthFieldsSetAccepted) {
     EXPECT_TRUE(v.has_value()) << (v ? "" : v.error().detail);
 }
 
+// Empty-string credentials must be rejected — has_value() distinguishes
+// "auth requested" from "no auth", but a defaulted std::string sneaks
+// through as has_value()==true with size()==0, producing
+// `Authorization: Basic Og==` (base64 of ":") which some proxies treat
+// as anonymous.
+TEST(ProxyConfig, EmptyUserRejectedWhenAuthRequested) {
+    ProxyConfig cfg{.host = "x", .port = 1};
+    cfg.basic_auth_user = "";          // empty string, not nullopt
+    cfg.basic_auth_pass = "wonderland";
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
+TEST(ProxyConfig, EmptyPassRejectedWhenAuthRequested) {
+    ProxyConfig cfg{.host = "x", .port = 1};
+    cfg.basic_auth_user = "alice";
+    cfg.basic_auth_pass = "";          // empty string, not nullopt
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Timeout validation
 // ═══════════════════════════════════════════════════════════════════════════
