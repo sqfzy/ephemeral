@@ -163,7 +163,7 @@ parse_eal_cores_csv(std::string_view csv) {
 /// Failure modes (all surface as `std::unexpected(std::string)`):
 ///   - "load_dpdk_env: networking.nic_b_pci is required ..."
 ///   - "load_dpdk_env: parse_eal_cores_csv: <reason>"
-///   - "load_dpdk_env: create_full_with_pins: <reason>"
+///   - "load_dpdk_env: DpdkBenchEnv::create: <reason>"
 [[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
 load_dpdk_env(const BenchConfig& cfg,
               uint16_t dpdk_port_id = 0) noexcept try {
@@ -193,16 +193,16 @@ load_dpdk_env(const BenchConfig& cfg,
     eph::dpdk::EalConfig eal_cfg{};
     eal_cfg.program_name = "lat_bench";
     eal_cfg.allowed_devs = {dpdk_pci};
-    // --proc-type=auto and --log-level filter were the previous defaults
-    // from synthesize_eal_argv. EalConfig has no first-class field for
-    // either, so route them through extra_args. init_with_pins appends
-    // its own `--lcores=...` token on top of these.
+    // --proc-type=auto and --log-level filter routed through extra_args.
+    // create_with_eal (via DpdkBenchEnv::create) appends its own
+    // `--lcores=...` token from the typed pins on top of these.
     eal_cfg.extra_args   = {std::string{"--proc-type=auto"},
                             std::string{"--log-level=lib.eal:warning"}};
 
     spdlog::info(
-        "load_dpdk_env: EAL init via init_with_pins: pins={} cpus_csv={} pci={}",
-        pins.size(), eal_cores, dpdk_pci);
+        "load_dpdk_env: EAL+Platform via DpdkBenchEnv::create: "
+        "pins={} cpus_csv={} pci={} nb_rx_queues={}",
+        pins.size(), eal_cores, dpdk_pci, cfg.dpdk.nb_rx_queues);
 
     eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id      = dpdk_port_id;
@@ -215,10 +215,10 @@ load_dpdk_env(const BenchConfig& cfg,
             pcfg.nb_rx_queues);
     }
 
-    // Relaxed CpuPinPolicy (matches pin_client_from_cfg): the bench runs
-    // on shared dev hosts where isolcpus / NUMA / SMT-sibling enforcement
-    // would gate the run on cluster topology rather than the property
-    // we actually care about (every measurement thread on a *fixed* cpu).
+    // Relaxed CpuPinPolicy: bench runs on shared dev hosts where
+    // isolcpus / NUMA / SMT-sibling enforcement would gate the run
+    // on cluster topology rather than what we care about (every
+    // measurement thread on a fixed cpu).
     eph::utils::CpuPinPolicy pin_policy{
         .require_isolcpus            = false,
         .require_no_sibling_conflict = false,
@@ -226,11 +226,14 @@ load_dpdk_env(const BenchConfig& cfg,
         .warn_irq_overlap            = false,
     };
 
-    auto env_r = eph::dpdk::test::DpdkBenchEnv::create_full_with_pins(
-        std::move(eal_cfg), pins, pin_policy,
-        mock_ip, client_ip, gateway_ip, pcfg);
+    auto env_r = eph::dpdk::test::DpdkBenchEnv::create(
+        std::move(pcfg),
+        std::move(eal_cfg),
+        std::span<eph::dpdk::LcorePin const>{pins},
+        pin_policy,
+        mock_ip, client_ip, gateway_ip);
     if (!env_r) {
-        return std::unexpected("load_dpdk_env: create_full_with_pins: " + env_r.error());
+        return std::unexpected("load_dpdk_env: DpdkBenchEnv::create: " + env_r.error());
     }
     return std::move(*env_r);
 } catch (const std::exception& e) {
