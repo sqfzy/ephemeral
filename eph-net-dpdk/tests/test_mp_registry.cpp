@@ -58,15 +58,30 @@ TEST(MpRegistryName, EmptyFilePrefix_Rejected) {
 }
 
 TEST(MpRegistryName, MaxLengthAccepted) {
-    // 24 bytes — exactly kMpRegistryFilePrefixMax
-    std::string fp(kMpRegistryFilePrefixMax, 'x');
+    // kMpRegistryFilePrefixMax - 1 bytes — the largest size that fits in
+    // MpRegistryHeader::file_prefix[kMpRegistryFilePrefixMax] *with* a NUL
+    // terminator. The validate now reserves the last byte for NUL so the
+    // strncmp(min(size, max-1)) read paths and the SPDLOG `{}` formatter
+    // can both treat the field as a C string safely.
+    std::string fp(kMpRegistryFilePrefixMax - 1, 'x');
     auto r = build_mp_registry_name(fp);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(std::strlen(r->data()),
-              std::string("eph_mp/").size() + kMpRegistryFilePrefixMax);
+              std::string("eph_mp/").size() + (kMpRegistryFilePrefixMax - 1));
 }
 
 TEST(MpRegistryName, OverMaxLengthRejected) {
+    // kMpRegistryFilePrefixMax bytes — was accepted previously but
+    // would silently lose the last byte during init_mp_registry_header
+    // and could let two distinct prefixes that share the first
+    // kMpRegistryFilePrefixMax-1 bytes hash-collide on strncmp.
+    std::string fp(kMpRegistryFilePrefixMax, 'x');
+    auto r = build_mp_registry_name(fp);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+TEST(MpRegistryName, FarOverMaxLengthRejected) {
     std::string fp(kMpRegistryFilePrefixMax + 1, 'x');
     auto r = build_mp_registry_name(fp);
     ASSERT_FALSE(r.has_value());

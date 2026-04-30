@@ -153,7 +153,14 @@ static_assert(alignof(MpRegistryHeader) >= 64,
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// @brief Compose the memzone name `eph_mp/<file_prefix>`. Returns
-/// `InvalidConfig` if `file_prefix` is empty or exceeds 24 bytes.
+/// `InvalidConfig` if `file_prefix` is empty or is `kMpRegistryFilePrefixMax`
+/// bytes or longer. The strict-`>=` check (rather than `>`) reserves the
+/// final byte of `MpRegistryHeader::file_prefix[kMpRegistryFilePrefixMax]`
+/// for the NUL terminator that `init_mp_registry_header` and the strncmp
+/// in `attach_secondary*` rely on — accepting `kMpRegistryFilePrefixMax`
+/// bytes here would let `init_*` silently truncate the last byte and let
+/// two distinct prefixes that share the first `kMpRegistryFilePrefixMax-1`
+/// bytes hash-collide on strncmp.
 [[nodiscard]] inline std::expected<std::array<char, kMpRegistryNameCap>,
                                    core::ErrorInfo>
 build_mp_registry_name(std::string_view file_prefix) noexcept {
@@ -161,11 +168,12 @@ build_mp_registry_name(std::string_view file_prefix) noexcept {
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "MpRegistry: file_prefix must be non-empty"});
-    if (file_prefix.size() > kMpRegistryFilePrefixMax)
+    if (file_prefix.size() >= kMpRegistryFilePrefixMax)
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
-            "MpRegistry: file_prefix exceeds 24 bytes "
-            "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp/\") - 1)"});
+            "MpRegistry: file_prefix must be < 24 bytes "
+            "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp/\") - 1; the final "
+            "byte is reserved for the header NUL terminator)"});
 
     std::array<char, kMpRegistryNameCap> buf{};
     std::memcpy(buf.data(), kMpRegistryNamePrefix.data(),
