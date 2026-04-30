@@ -172,6 +172,20 @@ TEST_F(TimeTest, ToCyclesPositiveInfSaturates) {
   EXPECT_EQ(*result, UINT64_MAX);
 }
 
+// Boundary regression: a `cycles` value at exactly 2^64 (the rounded-up
+// alias of UINT64_MAX in IEEE-754 double) must saturate, not flow through
+// to a UB cast. The previous `<= UINT64_MAX_as_double` check let this exact
+// boundary through; the strict `<` form saturates correctly.
+TEST_F(TimeTest, ToCyclesAtUint64MaxBoundarySaturates) {
+  // Pick an ns input that, after dividing by ns_per_cycle, lands at or
+  // above 2^64. Use a slightly-above-UINT64_MAX ns value scaled by typical
+  // ns_per_cycle (~0.3 to ~1.0) so cycles >= 2^64 across hosts.
+  // 2e19 ns / ~1 ns/cycle ≈ 2e19 cycles > UINT64_MAX (≈1.84e19).
+  auto result = TSC::to_cycles(2e19);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, UINT64_MAX);
+}
+
 TEST_F(TimeTest, ToCyclesNegativeInfReturnsNullopt) {
   auto result = TSC::to_cycles(-std::numeric_limits<double>::infinity());
   EXPECT_FALSE(result.has_value());

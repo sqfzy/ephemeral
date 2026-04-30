@@ -160,7 +160,13 @@ public:
       return std::nullopt;
     }
     auto cycles = static_cast<double>(ns) / ns_per_cycle_;
-    if (!(cycles <= static_cast<double>(UINT64_MAX))) [[unlikely]] {
+    // `static_cast<double>(UINT64_MAX)` rounds UP to 2^64 because UINT64_MAX
+    // is unrepresentable in IEEE-754 double (53-bit mantissa). Using `<=` would
+    // let `cycles == 2^64` through, and the subsequent
+    // `static_cast<uint64_t>(2^64)` is undefined behavior per [conv.fpint].
+    // Use strict `<` so any double whose mathematical value is at least
+    // UINT64_MAX (including the rounded-up boundary alias) is saturated.
+    if (!(cycles < static_cast<double>(UINT64_MAX))) [[unlikely]] {
       return UINT64_MAX; // Saturate on overflow/NaN instead of UB
     }
     return static_cast<uint64_t>(cycles);
