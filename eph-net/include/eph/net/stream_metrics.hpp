@@ -198,29 +198,33 @@ enum class StreamMetric : std::size_t {
     /// backends emit 0.
     kRxL4ChecksumBad,
 
-    /// DPDK UDP only: catch-all drop counter for any RX packet rejected
-    /// before codec dispatch and NOT attributable to a more specific
-    /// counter. Currently covers:
-    ///   * `parse_udp_packet` returned null for reasons other than IP
-    ///     fragment (non-IPv4 ethertype, truncated frame, bad IHL,
-    ///     multi-segment mbuf, UDP length mismatch).
-    ///   * `connect_to()` filter rejected the source address (fixed-peer
-    ///     semantics — packets from non-configured peers are dropped).
+    /// DPDK only (TCP + UDP): catch-all drop counter for any RX packet
+    /// rejected before codec dispatch and NOT attributable to a more
+    /// specific counter. Currently covers:
+    ///   * `parse_udp_packet` / TCP parsing returned null for reasons
+    ///     other than IP fragment (non-IPv4 ethertype, truncated frame,
+    ///     bad IHL, multi-segment mbuf, UDP/TCP length mismatch).
+    ///   * UDP `connect_to()` filter rejected the source address
+    ///     (fixed-peer semantics — packets from non-configured peers
+    ///     are dropped).
+    ///   * TCP segments routed to the wrong session by an unrelated
+    ///     4-tuple (TD-5 attribution, see `tcp.hpp::Stats::packets_dropped`).
     /// Disjoint from `kRxBadChecksum` (checksum-specific), `kFragmentRejected`
     /// (fragment-specific), and `kCodecErrors` (post-parse decode failure).
-    /// Non-zero in production points to upstream misconfiguration,
-    /// incorrect flow steering, or adversarial traffic.
+    /// Kernel backends emit 0. Non-zero in production points to upstream
+    /// misconfiguration, incorrect flow steering, or adversarial traffic.
     kPacketsDropped,
 
-    /// DPDK UDP only: RX packet was an IPv4 fragment (MF=1 or non-zero
-    /// fragment_offset) and therefore rejected by `parse_ip_header`
-    /// (HFT workloads set DF + negotiate MSS; fragments are either
-    /// hostile or indicate the path MTU is wrong). Dedicated counter
-    /// because the operational response differs from the generic
+    /// DPDK only (TCP + UDP): RX packet was an IPv4 fragment (MF=1 or
+    /// non-zero fragment_offset) and therefore rejected by
+    /// `parse_ip_header` (HFT workloads set DF + negotiate MSS; fragments
+    /// are either hostile or indicate the path MTU is wrong). Dedicated
+    /// counter because the operational response differs from the generic
     /// `kPacketsDropped` — a rise here typically means "check DF/MTU
-    /// on the path", not "check flow-steering config". Kernel backends
-    /// emit 0 (the kernel stack reassembles or silently drops
-    /// fragments before userspace sees them).
+    /// on the path", not "check flow-steering config". TCP also bumps
+    /// this on `parse_ip_header` rejecting a fragment (TD-5 symmetry).
+    /// Kernel backends emit 0 (the kernel stack reassembles or silently
+    /// drops fragments before userspace sees them).
     kFragmentRejected,
 
     /// WebSocket only: total bytes of *compressed* payload fed into the
