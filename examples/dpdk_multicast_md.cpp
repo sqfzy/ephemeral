@@ -220,7 +220,7 @@ int main(int argc, char** argv) {
     spdlog::info("dpdk_multicast_md: Platform up — port={}, is_rss_active={}",
                  platform.port_id(), rss_active_diag);
 
-    // ── 3) Build MulticastConfig + receiver ──────────────────────────────
+    // ── 2) Build MulticastConfig + receiver ──────────────────────────────
     ed::MulticastConfig mc_cfg{};
     mc_cfg.port_id     = platform.port_id();
     mc_cfg.rx_queue_id = 0;
@@ -255,7 +255,7 @@ int main(int argc, char** argv) {
         }
     });
 
-    // ── 4) Join group ────────────────────────────────────────────────────
+    // ── 3) Join group ────────────────────────────────────────────────────
     ed::MulticastGroup grp{};
     grp.group_ip   = group_ip;
     grp.group_port = args.group_port;
@@ -269,7 +269,7 @@ int main(int argc, char** argv) {
     spdlog::info("dpdk_multicast_md: joined {}:{}",
                  args.group_str, args.group_port);
 
-    // ── 5) start() — exercise the RSS safety gate when --rss-fail-test ───
+    // ── 4) start() — exercise the RSS safety gate when --rss-fail-test ───
     auto sr = receiver.start();
     if (!sr) {
         if (args.rss_fail_test) {
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
         return 6;
     }
 
-    // ── 6) Run for `--seconds` (RX thread is internal) ───────────────────
+    // ── 5) Run for `--seconds` (RX thread is internal) ───────────────────
     spdlog::info("dpdk_multicast_md: receiver running for {}s "
                  "(no traffic on the wire is fine — final rx=0 still "
                  "demonstrates the path)", args.seconds);
@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(200ms);
     }
 
-    // ── 7) stop() + diagnostics ───────────────────────────────────────────
+    // ── 6) stop() + diagnostics ───────────────────────────────────────────
     receiver.stop();
     const auto total_matched = receiver.total_rx_packets();
     const auto total_unm     = receiver.rx_unmatched_packets();
