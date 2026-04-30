@@ -1,24 +1,25 @@
 /// @file binance_book.cpp
 ///
-/// End-to-end Binance bookTicker pipeline:
+/// Minimal Binance-style bookTicker integration skeleton:
 ///
-///     KernelTcpStream<WsCodec, true>          (network + WS)
+///     KernelTcpStream<WsCodec, /*Tls=*/false>   (network + WS framing)
 ///         │
 ///         v
-///     on_message(payload)
-///         │
-///         v
+///     on_message(payload)                       (frame counter — TODO)
+///
+/// The example is intentionally a *thin* skeleton: it stands up the
+/// network + WS-codec stack and counts decoded frames so the wiring
+/// is observable. Plugging the parser/book layers in is a 3-line
+/// addition (see the comment near `on_message` below):
+///
 ///     eph::json::binance::parse_book_ticker   (zero-copy JSON)
 ///         │
 ///         v
 ///     eph::book::BinanceBookAdapter           (BBO state)
-///         │
-///         v
-///     spdlog::info(BBO)
 ///
-/// Demonstrates how the network layer (eph-net-kernel + eph-codec)
-/// composes with the parser/book layers (eph-json + eph-book) without
-/// coupling to a monolithic transport abstraction.
+/// Note that the template argument `/*Tls=*/false` means this binary
+/// only works against a plaintext WS endpoint (e.g. mockex). For a
+/// real `wss://stream.binance.com` flip Tls to true and link aws-lc.
 
 #include <atomic>
 #include <chrono>
@@ -51,7 +52,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     // -- CLI: keep the same surface as the legacy binance_book ---------------
-    std::string host_ip  = "127.0.0.1";  // dotted-quad — see file header
+    std::string host_ip  = "127.0.0.1";  // IPv4 literal only; no DNS in this demo
     uint16_t    port     = 443;
     std::string symbol   = "btcusdt";
     int         duration = 5;
@@ -66,12 +67,12 @@ int main(int argc, char** argv) {
 
     auto ip = eph::net::Ipv4Addr::parse(host_ip);
     if (!ip) {
-        spdlog::error("binance_book_v3: --host must be an IPv4 literal "
+        spdlog::error("binance_book: --host must be an IPv4 literal "
                       "(got '{}')", host_ip);
         return 1;
     }
 
-    spdlog::info("binance_book_v3: target {}:{}, symbol={}, duration={}s",
+    spdlog::info("binance_book: target {}:{}, symbol={}, duration={}s",
                  host_ip, port, symbol, duration);
 
     // -- Build poller + stream ----------------------------------------------
@@ -85,7 +86,7 @@ int main(int argc, char** argv) {
 
     auto sr = Stream::create(std::move(cfg));
     if (!sr) {
-        spdlog::error("binance_book_v3: KernelTcpStream::create failed: {}",
+        spdlog::error("binance_book: KernelTcpStream::create failed: {}",
                       sr.error().detail);
         return 2;
     }
@@ -118,6 +119,6 @@ int main(int argc, char** argv) {
         (void)poller->poll(100ms);
     }
 
-    spdlog::info("binance_book_v3: done, frames={}", frames);
+    spdlog::info("binance_book: done, frames={}", frames);
     return 0;
 }
