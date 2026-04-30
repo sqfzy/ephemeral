@@ -11,11 +11,19 @@
 
 namespace eph::utils {
 
-/// @brief x86-64 cache line size in bytes.
+/// @brief Cache line size in bytes for false-sharing avoidance.
 ///
-/// Used to pad or align structures so that independent fields accessed by
-/// different threads do not share a cache line (false sharing). All modern
-/// x86-64 processors use 64-byte cache lines.
+/// Used to pad or align structures so independent fields accessed by
+/// different threads do not share a cache line (false sharing).
+///
+/// Value is 64 bytes — correct for all x86-64 CPUs and the AArch64 cores
+/// this codebase targets (Cortex-A72/A76/A78, Neoverse N1/V1, AWS
+/// Graviton 2/3/4). Apple Silicon (M-series, 128 B) and IBM POWER (128 B)
+/// will see padding undersized; the data layout still works but
+/// false-sharing avoidance is weaker on those uarches. If portability
+/// to those targets becomes a goal, switch to
+/// `std::hardware_destructive_interference_size` (C++17, but still
+/// implementation-defined on libstdc++ at the time of writing).
 inline constexpr std::size_t CACHE_LINE_SIZE = 64;
 
 /// @brief Alignment value that ensures @p T is at least cache-line aligned.
