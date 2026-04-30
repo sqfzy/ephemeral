@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+### Fixed — `DpdkTcpStream::create_and_attach` RSS-aware connect (BREAKING)
+
+`create_and_attach` in `RxDispatchMode::RssPartitioned` previously
+had two branches:
+
+  - `pin_to_queue` set       → engineer src_port via
+                                `find_src_port_for_queue` so SYN-ACK
+                                Toeplitz-hashes to the pinned queue.
+  - `pin_to_queue` unset     → defer queue selection: pick `target_qid`
+                                via the rr_counter, run `create()` with
+                                the caller's *original* src_port, then
+                                post-create call `predict_rss_queue` on
+                                the final 5-tuple to figure out which
+                                queue would receive future packets.
+
+The deferred path left the SYN's src_port untouched. Under
+multi-process autojoin (`Platform::join_dynamic`) where each peer
+owns only a subset of RX queues, the SYN-ACK's RSS hash routed it
+to whichever queue the caller's arbitrary src_port hashed to —
+typically owned by *another* process, which had no `TcpSession` for
+this 5-tuple and silently dropped the packet. Manifested as: an
+autojoin secondary's `lat_tcp_dpdk` client hanging at TCP connect,
+zero samples recorded over a 30s window. Single-process callers
+were unaffected because all queues belonged to one Platform.
+
+The two branches are now merged: `RssPartitioned` *always* engineers
+src_port via `find_src_port_for_queue`, regardless of how
+`target_qid` was determined. `defer_queue_selection` and the
+post-create `predict_rss_queue` block are deleted; `target_qid` is
+locked in *before* `create()` runs, so the handshake polls the
+correct queue from the very first SYN.
+
+**BREAKING CHANGE**: in `RssPartitioned` mode, caller-set
+`cfg.dpdk.tcp_low_level.tuple.src_port` is no longer preserved
+across `create_and_attach`. The library always selects an
+RSS-aligned src_port. `StreamSnapshot::Endpoint::src_port_rewritten`
+correctly reports this. Audit of every in-tree caller (5 examples +
+lat_tcp + 9 e2e) found zero callers depend on src_port preservation
+across `create_and_attach`.
+
+Operational note: when `pin_to_queue` is unset and the autojoin /
+mp_topology partition gives this process a non-zero queue range,
+remember to set `nb_tx_queues = nb_rx_queues` (or any value ≥
+`target_qid + 1`) so the engineered TX queue id maps to a real
+TX ring. Default `nb_tx_queues = 1` only works for single-queue
+or queue-0-pinned scenarios.
+
+`Software` and `FlowDirector` branches are unchanged — `Software`'s
+single-queue mode never needed src_port engineering; `FlowDirector`
+already had a separate KNOWN LIMITATION around handshake-race
+timing (tracked under its own reshape).
+
+Verification on this commit:
+  - 11 unit suites / 186 cases — PASS
+  - 6 e2e (5 existing + new `dpdk_mp_dynamic_tcp_handshake_e2e`) — PASS
+  - lat_tcp_dpdk 30s parity: p50 +0.8% / p99 +4.9% (≤5% gate)
+  - lat_udp_dpdk 30s parity: p50 +0.8% / p99 +3.5% (≤5% gate)
+
 ### Added — `Platform::create_with_eal` (unified one-call factory)
 
 The new top-level user-facing factory: brings up EAL + Platform in
