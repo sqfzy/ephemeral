@@ -239,6 +239,74 @@ load_dpdk_env(const BenchConfig& cfg,
     return std::unexpected("load_dpdk_env: unknown exception");
 }
 
+/// Non-owning view of the DPDK bench environment. Holds a `Platform&`
+/// plus the resolved IPs / MACs / port_id / pool from `DpdkBenchEnv`.
+/// Used by `lat_multi_dpdk` so multiple per-scenario `BenchCtx`
+/// instances can each see the same Platform without trying to copy /
+/// own it. Mirror of `eph::dpdk::test::DpdkBenchEnv`'s helpers
+/// (`make_tcp_config` / `make_udp_config`) so per-scenario
+/// `run_lat_<sc>_loop` functions can produce wire-level configs
+/// identically whether they run from the single-binary path
+/// (DpdkBenchEnv::view()) or from lat_multi_dpdk (one DpdkBenchEnv
+/// owned, N DpdkBenchView referenced).
+struct DpdkBenchView {
+    eph::dpdk::Platform&  platform;
+    uint32_t              src_ip;
+    uint32_t              dst_ip;
+    uint32_t              gw_ip;
+    rte_ether_addr        src_mac;
+    rte_ether_addr        gw_mac;
+    uint16_t              port_id;
+    rte_mempool*          pool;
+
+    /// Build a TcpConfig with this view's tuple+MAC+port. Mirrors
+    /// `DpdkBenchEnv::make_tcp_config`. tx/rx_queue_id are left at 0;
+    /// caller (or `Stream::create_and_attach`'s pin_to_queue path)
+    /// overrides them to the appropriate queue.
+    [[nodiscard]] eph::dpdk::TcpConfig
+    make_tcp_config(uint16_t local_port, uint16_t remote_port) const {
+        eph::dpdk::TcpConfig tcfg{};
+        tcfg.tuple = {src_ip, dst_ip, local_port, remote_port};
+        tcfg.src_mac = src_mac;
+        tcfg.dst_mac = gw_mac;
+        tcfg.port_id = port_id;
+        tcfg.tx_queue_id = 0;
+        tcfg.rx_queue_id = 0;
+        return tcfg;
+    }
+
+    /// Build a UdpConfig (the legacy wire-level fields). Caller fills
+    /// in `src_port` / `dst_port` and any pool override. Mirrors the
+    /// UdpConfig population in `DpdkBenchEnv::make_udp_sender`.
+    [[nodiscard]] eph::dpdk::UdpConfig
+    make_udp_config(uint16_t local_port, uint16_t remote_port) const {
+        eph::dpdk::UdpConfig ucfg{};
+        ucfg.src_ip = src_ip;
+        ucfg.dst_ip = dst_ip;
+        ucfg.src_port = local_port;
+        ucfg.dst_port = remote_port;
+        ucfg.src_mac = src_mac;
+        ucfg.dst_mac = gw_mac;
+        ucfg.port_id = port_id;
+        ucfg.tx_queue_id = 0;
+        ucfg.pool = pool;
+        return ucfg;
+    }
+};
+
+/// Construct a `DpdkBenchView` referencing `env`'s Platform and
+/// snapshotting the IP / MAC / port / pool fields. Used by single-
+/// binary main()s to bridge DpdkBenchEnv → DpdkBenchView → BenchCtx.
+[[nodiscard]] inline DpdkBenchView
+make_view(eph::dpdk::test::DpdkBenchEnv& env) noexcept {
+    return DpdkBenchView{
+        env.platform,
+        env.src_ip, env.dst_ip, env.gw_ip,
+        env.src_mac, env.gw_mac,
+        env.port_id, env.pool,
+    };
+}
+
 /// Print a one-line DPDK configuration echo so the bench report is
 /// self-describing (port_id, MAC addresses, resolved IPs in host byte
 /// order). Invoked once per scenario, right before the measurement loop.
