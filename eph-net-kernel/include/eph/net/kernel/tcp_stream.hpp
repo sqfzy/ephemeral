@@ -304,6 +304,8 @@ public:
             cfg.remote.to_string(), EnableTls);
 
         if (cfg.reasm_capacity == 0) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelTcpStream::create: reasm_capacity=0 — must be > 0");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelTcpStream::create: reasm_capacity must be > 0"});
