@@ -226,14 +226,20 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
 /// @return Number of queues actually configured, or error
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
-    [[maybe_unused]] auto* log = detail::flow_logger();
+    auto* log = detail::flow_logger();
 
     if (num_queues < 2) {
+        SPDLOG_LOGGER_ERROR(log,
+            "configure_rss: num_queues={} < 2 — RSS requires at least 2 queues",
+            num_queues);
         return std::unexpected("RSS requires at least 2 queues");
     }
 
     rte_eth_dev_info dev_info{};
     if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "configure_rss: rte_eth_dev_info_get(port={}) failed errno={}",
+            port_id, rte_errno);
         return std::unexpected("rte_eth_dev_info_get failed");
     }
 
@@ -274,12 +280,20 @@ configure_rss(uint16_t port_id, uint16_t num_queues) noexcept {
                         RTE_ETH_RSS_IPV4);
 
     if (rss_conf.rss_hf == 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "configure_rss: NIC port={} reports flow_type_rss_offloads=0x{:x} — "
+            "no IPv4 TCP/UDP RSS hash flags supported",
+            port_id, dev_info.flow_type_rss_offloads);
         return std::unexpected(
             "NIC does not support IPv4 TCP/UDP RSS hash");
     }
 
     int ret = rte_eth_dev_rss_hash_update(port_id, &rss_conf);
     if (ret != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "configure_rss: rte_eth_dev_rss_hash_update(port={}, "
+            "rss_hf=0x{:x}) failed: rc={}",
+            port_id, rss_conf.rss_hf, ret);
         return std::unexpected(std::format(
             "rte_eth_dev_rss_hash_update failed: {}", ret));
     }
