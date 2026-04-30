@@ -248,9 +248,12 @@ enum class ReconnectEventKind : uint8_t {
 /// @brief Structured event payload delivered to `OnReconnectEvent`.
 ///
 /// Fields are populated only when meaningful for the kind:
-///   - `attempt`     — `policy_.attempts()` value at event emission. For
-///                     `Connected` this is the 1-based attempt number that
-///                     succeeded (matches the legacy `OnReconnect` arg).
+///   - `attempt`     — 1-based attempt number associated with the event.
+///                     For `AttemptStarted` / `AttemptFailed` / `AttachFailed`
+///                     / `Connected` this is the in-flight (or just-finished)
+///                     attempt. For `BackoffScheduled` / `Failed` it is the
+///                     attempt number that *would* be next. Matches the legacy
+///                     `OnReconnect` second arg for `Connected`.
 ///   - `event_tsc`   — TSC at the moment the orchestrator emitted the event.
 ///   - `duration_ns` — only `Connected` populates this with the cycle delta
 ///                     from the most recent disconnect (or `start()`) to
@@ -551,9 +554,17 @@ private:
                      eph::core::ErrorInfo err =
                          eph::core::ErrorInfo{eph::core::Error::Ok, ""}) noexcept {
         if (!on_event_) return;
+        // `policy_.attempts()` counts *failed* attempts so far; the in-flight
+        // (or just-finished) attempt's natural 1-based number is therefore
+        // `attempts() + 1`. Using the +1 form keeps every event consistent
+        // with the legacy `OnReconnect` callback (which already adds 1 at
+        // its call site for the same reason — first success is "attempt 1").
+        // Without the +1, Connected events report N-1 while the legacy
+        // callback reports N for the same success, a silent contract drift
+        // that no test currently catches.
         on_event_(ReconnectEvent{
             .kind        = kind,
-            .attempt     = policy_.attempts(),
+            .attempt     = policy_.attempts() + 1,
             .event_tsc   = now_tsc,
             .duration_ns = duration_ns,
             .error       = err,
@@ -788,11 +799,11 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
 
     // Emit Connected with the full duration_ns payload (matches the
     // legacy on_reconnect_ second arg and the `last_reconnect_duration_ns`
-    // metric — see EventDurationMatchesMetric test). We deliberately use
-    // policy_.attempts()+1 in the legacy callback above (so first success
-    // is "attempt 1"); the event's `attempt` field is filled by
-    // emit_event_ from `policy_.attempts()` and snapshots the value
-    // BEFORE policy_.reset() — i.e. it carries the same number.
+    // metric — see EventDurationMatchesMetric test). The event's `attempt`
+    // field is filled by emit_event_ from `policy_.attempts() + 1` and
+    // snapshots the value BEFORE policy_.reset() runs below — so a
+    // first-success Connected reports `attempt=1`, matching the legacy
+    // `attempt` variable on line above.
     emit_event_(ReconnectEventKind::Connected, now_tsc, dur_ns);
 
     policy_.reset();
