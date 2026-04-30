@@ -7,7 +7,6 @@ process plus a monitor / risk-check / mirror process, or two independent
 strategies that must share a single expensive 25/100 Gbps card.
 
 This document is the operational contract. For the design rationale see
-`.artifacts/happy-mapping-pond-*` plan artifacts and
 `eph-net-dpdk/CHANGELOG.md`.
 
 ---
