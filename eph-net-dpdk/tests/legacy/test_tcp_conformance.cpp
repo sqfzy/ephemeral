@@ -257,6 +257,19 @@ const std::vector<Row> kRows = {
      2000, 1000, static_cast<uint8_t>(F_FIN | F_ACK), 0,
      TcpState::TimeWait, true, 1, 0},
 
+    // RFC 793 §3.5 — FIN_WAIT_1 receiving a FIN-bearing segment whose ACK
+    // flag is set but whose ack number does NOT cover our outgoing FIN
+    // (snd_una stays < snd_nxt) is a simultaneous close, not a clean
+    // peer-acknowledged close. Earlier code keyed the FIN_WAIT_1 →
+    // TIME_WAIT transition off the raw ACK flag bit, which is set on every
+    // post-SYN segment, so this case incorrectly skipped CLOSING. The fix
+    // keys the transition off `snd_una == snd_nxt` (i.e. our FIN actually
+    // ACK'd) instead.
+    {"FIN_WAIT_1: FIN+ACK that doesn't cover our FIN → CLOSING",
+     TcpState::FinWait1, 1000, 999, 2000,
+     2000, 999, static_cast<uint8_t>(F_FIN | F_ACK), 0,
+     TcpState::Closing, true, 1, 0},
+
     // ═══════ FIN_WAIT_2 state ═══════
     {"FIN_WAIT_2: in-window RST closes",
      TcpState::FinWait2, 1000, 1000, 2000,

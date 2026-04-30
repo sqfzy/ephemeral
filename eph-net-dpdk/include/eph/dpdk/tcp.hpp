@@ -1469,16 +1469,26 @@ public:
                         case TcpState::FinWait1:
                             rcv_nxt_++;
                             need_ack = true;
-                            if (parsed.has_flag(net::kTcpAck)) {
-                                // FIN+ACK: peer acknowledged our FIN and sent its own.
-                                // Simultaneous close completes — RFC 793 §3.5 FIN_WAIT_1 → TIME_WAIT.
-                                SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK in FIN_WAIT_1 -> TIME_WAIT");
+                            // RFC 793 §3.5: in FIN_WAIT_1, a peer FIN promotes us to TIME_WAIT
+                            // ONLY if the same packet also ACKs our outgoing FIN; otherwise
+                            // it is simultaneous close → CLOSING.
+                            //
+                            // We cannot key off `parsed.has_flag(kTcpAck)` because every TCP
+                            // segment after SYN carries the ACK flag, regardless of whether
+                            // the ack number actually advances past our FIN's sequence. The
+                            // load-bearing condition is whether the ACK block above advanced
+                            // `snd_una_` to `snd_nxt_` (i.e. our FIN's sequence is now ACK'd).
+                            // If the peer ACK'd only earlier data, snd_una_ < snd_nxt_ and we
+                            // remain in FIN_WAIT_1 logically — the FIN we just received is the
+                            // simultaneous-close path → CLOSING. We move to TIME_WAIT later
+                            // when the peer eventually ACKs our FIN while in CLOSING.
+                            if (snd_una_ == snd_nxt_) {
+                                SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK-of-FIN in FIN_WAIT_1 -> TIME_WAIT");
                                 enter_time_wait();
                             } else {
-                                // FIN without ACK: simultaneous close — peer sent FIN but hasn't
-                                // ACK'd ours yet. RFC 793 §3.5: FIN_WAIT_1 → CLOSING (not TIME_WAIT).
-                                // We'll move to TIME_WAIT when the peer's ACK arrives in CLOSING.
-                                SPDLOG_LOGGER_DEBUG(log, "Simultaneous close: FIN_WAIT_1 -> CLOSING");
+                                SPDLOG_LOGGER_DEBUG(log,
+                                    "Simultaneous close: FIN_WAIT_1 -> CLOSING (peer FIN does not ACK our FIN: snd_una={}, snd_nxt={})",
+                                    snd_una_, snd_nxt_);
                                 state_ = TcpState::Closing;
                             }
                             break;
