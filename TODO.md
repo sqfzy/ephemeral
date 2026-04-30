@@ -1,96 +1,102 @@
 # TODO
 
 Open follow-ups across the project. Items here are **not yet promised**
-to anyone — they're a holding tank for "would be nice" / "should do later"
-work. Promote items into `/pax`-driven reshapes when picked up.
+to anyone — promote into `/pax`-driven reshapes when picked up.
 
-Format: `- [ ] <action>` per line, with a hint of when / why under each
-top-level bullet. Keep terse — long descriptions belong in the linked
-plan / retro / issue.
+Last verified: 2026-04-30 (none completed at this revision).
 
 ---
 
-## reshape/parallel-bench (v2) follow-ups (2026-04-30)
+## P1 — quick wins (≤ 1 day each)
 
-Source: `.artifacts/reshape-parallel-bench-final-v2-20260430.md` §Follow-ups.
+- [ ] **`validate_config` reject `nb_rx_queues > 1 && nb_tx_queues == 1`**
+  early. Today only `nb_tx_queues == 0` is rejected — `=1` with
+  `nb_rx_queues > 1` silently lets a misconfigured user reach
+  Phase-1-style "secondary's RSS-aware tx_queue_id ≥ nb_tx_queues"
+  TX starvation. ~30 lines in
+  `eph-net-dpdk/include/eph/dpdk/platform.hpp:474-498`.
+  Source: `.artifacts/reshape-rss-aware-connect-final-20260430.md`.
+
+- [ ] **Per-slot result aggregation script**
+  `benchmarks/latency/scripts/show_parallel_run.py`. Collate the
+  latest `outputs/lat_*_dpdk_*_slot<i>_*.json` into one table
+  (slot / scenario / p50 / p99 / samples / wall). Today
+  `parallel_e2e.sh` greps each slot manually.
+  Source: parallel-bench v2 retro.
+
+- [ ] **`[parallel]` user guide section in
+  `benchmarks/latency/README.md`**. Today the only user-facing doc
+  is the CHANGELOG entry + commented template in `config.toml`.
+  Worked examples (small/medium/large machine sizings, fan-out
+  load test pattern of multiple rows pointing at the same scenario).
+  Source: parallel-bench v2 retro.
+
+- [ ] **Document `Platform::create_with_eal` in user docs**.
+  Has good doc-comment in `platform.hpp` but no prose in
+  `eph-net-dpdk/docs/`. New page `docs/platform-bringup.md`?
+  Source: api-unify retro.
+
+## P2 — medium reshapes (1-3 days)
 
 - [ ] **Run 7-scenario `lat all --dpdk` end-to-end** to verify the
-  ~7× speedup claim (current verification is 4-scenario × 18s wall
-  time = 3.3×). Needs a host with ≥8 lcores free and 7 distinct
-  CPU IDs. Update retro's "Final result" table once measured.
+  ~7× speedup claim (today verified: 4-scenario × 18s wall =
+  3.3×). Needs ≥8 free lcores + 7 distinct CPU IDs. Update
+  retro's "Final result" table once measured.
+  Source: parallel-bench v2 retro.
 
-- [ ] **Add `[parallel]` user guide section to
-  `benchmarks/latency/README.md`**. Today the only user-facing doc
-  is the CHANGELOG entry + the commented template in
-  `benchmarks/latency/config.toml`. A README section with worked
-  examples (small/medium/large machine sizings, fan-out load test
-  pattern of multiple rows pointing at the same scenario) would
-  help adoption.
+- [ ] **Auto-derive `runs[]` from `cpu.eal_cores` + top-level
+  `enabled = ["lat_tcp", ...]` list**. User today must hand-write
+  each `(scenario, lcore, cpu, queue)` tuple. Synthesize defaults
+  given just a scenario name list.
+  Source: parallel-bench v2 retro.
 
-- [ ] **Auto-derive `runs[]` from `cpu.eal_cores` + a top-level
-  `enabled = ["lat_tcp", ...]` list**. Today the user must
-  hand-write each `(scenario, lcore, cpu, queue)` tuple. A helper
-  could synthesize reasonable defaults given just a list of
-  scenario names. Out of scope for v1 reshape.
+- [ ] **Extract `PlatformConfig` to its own header**. Resolves the
+  circular include between `platform.hpp` ↔ `join_dynamic.hpp`
+  currently bridged by `EPH_DPDK_PLATFORM_CONFIG_DEFINED` sentinel
+  macro. 1-2 hour task; eliminates fragile inclusion-order
+  requirement.
+  Source: api-unify retro.
 
-- [ ] **Per-slot result aggregation tool**:
-  `benchmarks/latency/scripts/show_parallel_run.py` collating the
-  latest `_slot<i>` JSONs into one table (slot / scenario / p50 /
-  p99 / samples / wall_time). Today `parallel_e2e.sh` greps each
-  slot manually.
+- [ ] **Move `lat_ex_market` kernel real-server flow to its own
+  header**. Currently the DNS-resolved wss:// path stays inline
+  in `lat_ex_market.cpp` main(); only DPDK + kernel-mock is in
+  `scenarios/lat_ex_market_loop.hpp`. Splitting would let
+  `lat_multi_dpdk` symmetrically support real-server (debatable
+  value: real-server is single-stream, parallel doesn't add much).
+  Source: parallel-bench v2 retro.
 
-- [ ] **2-week regression check** on `parallel_e2e.sh` after main
-  has accumulated 2 weeks of unrelated commits — make sure no new
-  PR silently broke the parallel path. Could be a one-shot
-  `/schedule` agent.
+## P3 — conditional / hardware-dependent
 
-- [ ] **Move lat_ex_market kernel real-server flow into its own
-  per-scenario header**. Currently the real-server (DNS-resolved
-  wss://) path stays inline in `lat_ex_market.cpp` main(); only
-  the DPDK + kernel-mock path is in `scenarios/lat_ex_market_loop.hpp`.
-  Splitting would let lat_multi_dpdk also support real-server
-  (questionable: real-server is single-stream by nature, parallel
-  doesn't add value) — but if a future user wants symmetry it'd
-  be a small refactor.
+- [ ] **FlowDirector handshake race fix** at
+  `eph-net-dpdk/include/eph/net/dpdk/tcp_stream.hpp:788-816`
+  KNOWN LIMITATION block. Either install `rte_flow` rule before
+  connect() instead of after, or use a transient steer-to-rx_queue
+  rule. **Needs FD-capable NIC** (Mellanox / Intel) to validate;
+  AWS aarch64 ENA host can't.
+  Source: rss-aware-connect retro.
 
-## reshape/rss-aware-connect follow-ups (2026-04-30)
+---
 
-Source: `.artifacts/reshape-rss-aware-connect-final-20260430.md` §Follow-ups.
+## Known limitations (documented, no fix planned)
 
-- [ ] **`validate_config` strengthening**: reject
-  `nb_rx_queues > 1 && nb_tx_queues == 1` early so the
-  TX-queue-mismatch gotcha (Task 1 retro #1) can't sneak through
-  silently. ~30-line follow-up reshape.
+- **ENA PMD MP secondary RX starvation under primary load**
+  (parallel-bench v1 bug #7, A/B confirmed): when DPDK MP primary
+  is actively `rx_burst`-ing on one queue, secondary `rx_burst` on a
+  different queue is starved on AWS ENA. Affects autojoin /
+  `create_secondary` data plane under sustained load.
+  **Workaround already shipped**: `lat_multi_dpdk` uses
+  single-process N-lcore design — bypasses the PMD limitation
+  entirely. This note exists so future MP-on-ENA users find
+  the documented diagnosis instead of re-investigating.
 
-- [ ] **FlowDirector handshake race** (KNOWN LIMITATION at
-  `eph-net-dpdk/include/eph/net/dpdk/tcp_stream.hpp:788-816`):
-  install rule before connect() instead of after, or steer-to-
-  rx_queue transient rule. Needs FD-capable NIC (Mellanox /
-  Intel) to validate. Out of scope for ENA-only host.
+---
 
-## reshape/api-unify follow-ups (2026-04-30)
+## Schedule candidates (use `/schedule`, not TODO)
 
-Source: `.artifacts/reshape-api-unify-final-20260430.md` §Follow-ups.
+These are time-anchored, one-shot checks better suited to a scheduled
+agent than a TODO entry:
 
-- [ ] **Extract `PlatformConfig` to its own header**. Resolves
-  the circular include (`platform.hpp` ↔ `join_dynamic.hpp`)
-  currently bridged by the `EPH_DPDK_PLATFORM_CONFIG_DEFINED`
-  sentinel macro. 1-2 hour task; eliminates a fragile
-  inclusion-order requirement.
-
-- [ ] **Document `Platform::create_with_eal` more deeply in user
-  docs** (currently has good doc-comment in platform.hpp but no
-  prose in `eph-net-dpdk/docs/`).
-
-## Open bugs / known limitations
-
-- [ ] **ENA PMD MP secondary RX starvation under primary load**
-  (bug #7 from reshape/parallel-bench v1 investigation, A/B
-  confirmed): when primary process is actively rx_burst-ing on
-  one queue, secondary rx_burst on a different queue is starved.
-  Affects DPDK MP (`Platform::join_dynamic` / `create_secondary`)
-  TCP/UDP **data plane** under sustained load on AWS ENA.
-  Workaround: use single-process N-lcore design (which is what
-  `lat_multi_dpdk` does — bypasses the PMD limitation entirely).
-  Not in eph code; tracking here so future MP-on-ENA users find
-  the documented limitation.
+- **2-week regression check on `parallel_e2e.sh`** after main
+  accumulates 2 weeks of unrelated commits. If `lat all --dpdk`
+  4-scenario PASS + wall ≤ 25s, do nothing; else open issue with
+  log tail.
