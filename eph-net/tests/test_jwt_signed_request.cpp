@@ -326,6 +326,58 @@ TEST(BuildCoinbaseJwt, NonceOverrideIsDeterministic) {
     EXPECT_EQ(pa.payload_b64, pb.payload_b64);
 }
 
+// ── nonce_override size validation ──
+//
+// Coinbase Advanced Trade documents the nonce as a 32-byte (256-bit)
+// random value; passing any other size is a programming bug — most
+// commonly a half-initialised array, a 16-byte legacy nonce, or a
+// fixture truncated by a typo. The venue may reject the wrong-shape
+// header with a 401 that gives no actionable hint, or worse silently
+// accept it while flagging the call. Either failure mode is much
+// harder to debug than the local InvalidConfig we surface here.
+
+TEST(BuildCoinbaseJwt, RejectsTooShortNonceOverride) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    std::array<uint8_t, 16> short_nonce{};  // legacy 16-byte size
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 1714867200,
+        .ttl_secs      = 120,
+        .nonce_override = std::span<const uint8_t>(short_nonce.data(),
+                                                    short_nonce.size()),
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+TEST(BuildCoinbaseJwt, RejectsTooLongNonceOverride) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    std::array<uint8_t, 64> long_nonce{};  // double-sized typo
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 1714867200,
+        .ttl_secs      = 120,
+        .nonce_override = std::span<const uint8_t>(long_nonce.data(),
+                                                    long_nonce.size()),
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
 TEST(BuildCoinbaseJwt, RejectsEmptyRequiredFields) {
     auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
     ASSERT_TRUE(key_exp.has_value());

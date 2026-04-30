@@ -346,10 +346,13 @@ struct CoinbaseJwtParams {
     uint64_t         now_unix_secs;   ///< current wall-clock unix seconds (caller-supplied)
     uint64_t         ttl_secs = 120;  ///< token validity window; default 120s per Coinbase docs
 
-    /// @brief Optional caller-supplied 32-byte nonce. Empty (default) →
-    ///        the builder pulls 32 fresh CSPRNG bytes via aws-lc
-    ///        `RAND_bytes`. Non-empty: the caller's bytes are used
-    ///        verbatim (mainly for deterministic tests).
+    /// @brief Optional caller-supplied nonce. Empty (default) → the
+    ///        builder pulls `kCoinbaseJwtNonceLen` fresh CSPRNG bytes
+    ///        via aws-lc `RAND_bytes`. Non-empty: the caller's bytes
+    ///        are used verbatim (mainly for deterministic tests) AND
+    ///        MUST be exactly `kCoinbaseJwtNonceLen` (32) bytes —
+    ///        anything else is rejected with `InvalidConfig` at build
+    ///        time. See `kCoinbaseJwtNonceLen` for rationale.
     std::span<const uint8_t> nonce_override = {};
 };
 
@@ -365,6 +368,17 @@ inline constexpr uint64_t kCoinbaseJwtTtlSecsMax = 120;
 ///        mint a token whose nbf == exp and the venue rejects it. We
 ///        enforce ≥ 1 to keep this representable.
 inline constexpr uint64_t kCoinbaseJwtTtlSecsMin = 1;
+
+/// @brief Required byte length of the JWT nonce. RFC 7519 itself does not
+///        prescribe a length, but Coinbase Advanced Trade's documented
+///        nonce field is a 32-byte (256-bit) random value, hex-encoded
+///        into the JWT header. Wrong-sized overrides (e.g. a 16-byte
+///        legacy nonce, or an accidentally-truncated test fixture)
+///        produce a malformed header that the venue may either reject or
+///        — worse — silently accept while logging the request as
+///        suspicious. Catching the size mismatch up-front turns this
+///        latent foot-gun into an `InvalidConfig` at build time.
+inline constexpr size_t kCoinbaseJwtNonceLen = 32;
 
 namespace detail {
 
@@ -518,9 +532,23 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     }
 
     // ── 1) Resolve nonce: caller-supplied or fresh CSPRNG ─────────────────
-    std::array<uint8_t, 32> nonce_buf{};
+    std::array<uint8_t, kCoinbaseJwtNonceLen> nonce_buf{};
     std::span<const uint8_t> nonce_bytes;
     if (!p.nonce_override.empty()) {
+        // Reject wrong-sized nonces up-front: hex-encoding any size
+        // works mechanically, but a 16-byte (legacy) or 64-byte
+        // (over-padded) override produces a header field of the wrong
+        // length, which the venue may either reject as malformed or
+        // accept while flagging the request — both surfaces are
+        // confusing to debug. See `kCoinbaseJwtNonceLen` doc.
+        if (p.nonce_override.size() != kCoinbaseJwtNonceLen) {
+            SPDLOG_ERROR("build_coinbase_jwt: nonce_override size={} "
+                         "(must be exactly {} bytes)",
+                         p.nonce_override.size(), kCoinbaseJwtNonceLen);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "nonce_override wrong size (must be 32 bytes)"});
+        }
         nonce_bytes = p.nonce_override;
     } else {
         // RAND_bytes returns 1 on success, 0 on failure. aws-lc seeds from
