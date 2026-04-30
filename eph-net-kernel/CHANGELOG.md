@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Fixed — silent-error-log audit (batches 14-20)
+
+Cold-path / control-plane functions previously returned typed errors
+silently. Every fix preserves the return contract — only adds a
+`SPDLOG_LOGGER_WARN` (caller-recoverable) or `ERROR` (programming
+contract violation) with the offending value before the return. Sites
+touched on the kernel side:
+
+- `eph::net::kernel::detail::ByteSocket` — `fd<0` guard branches now
+  WARN-log with the function name and fd value.
+- `eph::net::kernel::detail::KernelUdpSocket` — cold-path guard
+  branches now WARN-log.
+
+Hot-path codec / parser silent-error branches were intentionally not
+modified to keep steady-state throughput unchanged.
+
 ### Fixed — TLS desync latch on `encrypt_for_send` failure
 
 `KernelTcpStream<C, EnableTls=true>::send` now latches `tls_corrupt_`

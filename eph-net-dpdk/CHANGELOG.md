@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Fixed — silent-error-log audit (batches 14-20)
+
+Multi-batch sweep through cold-path / control-plane functions where a
+typed error was returned but no log line fired. Every fix preserves
+the existing return contract — only adds an `SPDLOG_LOGGER_ERROR` /
+`WARN` with caller-actionable context (the offending value plus
+function name) on the branch about to return. Affected sites:
+
+- `eph::dpdk::detail::bdf_sanitize` — all four BDF validation
+  rejection branches now ERROR-log.
+- `eph::dpdk::detail::IcmpRegistry::register_target` /
+  `IcmpDirectory` lookup paths — register / dispatch silent error
+  branches now log.
+- `eph::dpdk::detail::MpRegistry` — topology-mismatch and
+  claim-error branches now ERROR-log.
+- `eph::utils::CpuPinPolicy::register_external_pin` —
+  cpu<0 guard branch now ERROR-logs.
+- `eph::net::detail::TlsState` — DPDK handshake error logging
+  brought to kernel-backend parity.
+
+The hot data path remains untouched; codec / parser silent-error
+branches were intentionally not modified (they are leaf primitives
+and adding logs would harm steady-state throughput).
+
 ### Fixed — TLS desync latch on `encrypt_for_send` failure
 
 `DpdkTcpStream<C, EnableTls=true>::send` now latches `tls_corrupt_` and
