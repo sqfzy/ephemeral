@@ -31,7 +31,15 @@ namespace eph::dpdk {
 ///
 /// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
 /// queue/src_port segmentation rules, and PMD-specific caveats.
-enum class ProcType : uint8_t { Primary, Secondary };
+/// Auto: emits `--proc-type=auto`. DPDK then resolves at
+///       `rte_eal_init` time: first peer to claim the
+///       `--file-prefix` lockfile becomes primary, every later
+///       peer auto-attaches as secondary. The actual role is
+///       reported by `rte_eal_process_type()` after init.
+///       Used exclusively by `Platform::join_dynamic` (the
+///       autojoin path); declarative-path callers must pass
+///       Primary or Secondary explicitly.
+enum class ProcType : uint8_t { Primary, Secondary, Auto };
 
 /// @brief Serialize a ProcType to the string DPDK expects after
 ///        `--proc-type=`. Single source of truth — both `EalConfig`
@@ -42,6 +50,7 @@ to_eal_string(ProcType p) noexcept {
     switch (p) {
         case ProcType::Primary:   return "primary";
         case ProcType::Secondary: return "secondary";
+        case ProcType::Auto:      return "auto";
     }
     // Unreachable in well-formed code; returning "primary" is the
     // conservative default (DPDK's auto behavior). If a future enum
@@ -62,5 +71,7 @@ static_assert(to_eal_string(ProcType::Primary)   == "primary",
               "EAL --proc-type=primary spelling drift would break MP startup");
 static_assert(to_eal_string(ProcType::Secondary) == "secondary",
               "EAL --proc-type=secondary spelling drift would break MP startup");
+static_assert(to_eal_string(ProcType::Auto)      == "auto",
+              "EAL --proc-type=auto spelling drift would break autojoin startup");
 
 } // namespace eph::dpdk

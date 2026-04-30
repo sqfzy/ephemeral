@@ -241,6 +241,25 @@ target("dpdk_mp_fd_fallback_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- Autojoin (Platform::join_dynamic) e2e (reshape mp-mode2-dynamic
+-- stage 3). Both peers call join_dynamic with the SAME pci /
+-- nb_rx_queues; the first to start is auto-resolved as primary,
+-- the second auto-attaches as secondary and CAS-claims slot 1.
+-- Coordinated by tests/integration/dpdk_mp_dynamic_e2e.sh; same
+-- SKIP-on-missing-env behaviour as the declarative-path MP
+-- binaries above.
+target("dpdk_mp_dynamic_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_dynamic_primary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_dynamic_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_dynamic_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

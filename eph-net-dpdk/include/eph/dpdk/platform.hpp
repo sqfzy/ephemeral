@@ -2227,7 +2227,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     // ── 4. EAL init (proc-type=auto) ──────────────────────────────────────
     EalConfig eal_cfg{};
     eal_cfg.program_name  = "eph_join_dynamic";
-    eal_cfg.proc_type_set = false;            // DPDK auto: first peer is primary
+    // DPDK's default is `--proc-type=primary`, NOT auto. We must
+    // emit `--proc-type=auto` explicitly so the second peer joins
+    // as secondary instead of dying on a lockfile collision.
+    eal_cfg.proc_type     = ProcType::Auto;
+    eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = file_prefix;
     eal_cfg.allowed_devs  = {std::string{cfg.pci}};
     eal_cfg.lcores        = cfg.lcores;
