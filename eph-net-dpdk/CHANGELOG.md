@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Added — bench infra: `lat all --dpdk` parallel multi-scenario runner
+
+A new entry point in `benchmarks/latency/lat`: `lat all --dpdk`
+brings up a single Platform sharing NIC_B across N concurrent EAL
+worker lcores, each running one lat scenario from a new
+`[parallel].runs[]` config section. ~7× faster end-to-end DPDK
+verification (single-binary serial: 7 × 30s = 3.5min → multi: ~30s).
+
+```toml
+[parallel]
+runs = [
+  { scenario = "lat_tcp",       lcore = 1, cpu = 4, queue = 0 },
+  { scenario = "lat_udp",       lcore = 2, cpu = 5, queue = 1 },
+  { scenario = "lat_ws",        lcore = 3, cpu = 6, queue = 2 },
+  { scenario = "lat_ex_market", lcore = 4, cpu = 7, queue = 3 },
+  ...
+]
+```
+
+Implementation (parallel-bench v2 reshape): per-scenario inner
+measurement loops extracted to `benchmarks/latency/scenarios/
+<name>_loop.hpp` as reusable `run_lat_<sc>_loop<EnableTls>(BenchCtx&)`.
+A new orchestrator `lat_multi_dpdk` (modeled on
+`examples/simple_hft_dpdk_rss.cpp`'s worker pattern) constructs N
+`BenchCtx` (one per `runs[]` row), registers a Poller per RX queue
+with the Platform, then `rte_eal_remote_launch`-es each worker
+lcore to a `switch (scenario_id)` dispatch into the appropriate
+inner loop. Each scenario's inbound traffic Toeplitz-hashes to its
+owned queue via `pin_to_queue` (Task 1 RSS-aware connect fix).
+
+Per-slot JSON outputs use `_slot<i>` suffix; single-binary commands
+(`lat tcp --dpdk` etc.) keep `slot_index = -1` and produce
+byte-identical output (no suffix) — verified with 30s parity gate
+≤ 5%.
+
+`eph-net-dpdk` library code is unchanged — this is application-layer
+plumbing on top of the existing `Platform::create_with_eal` +
+`LcorePin[]` + `register_poller` + RSS-aware
+`create_and_attach(pin_to_queue=...)` infrastructure.
+
 ### Fixed — `DpdkTcpStream::create_and_attach` RSS-aware connect (BREAKING)
 
 `create_and_attach` in `RxDispatchMode::RssPartitioned` previously
