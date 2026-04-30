@@ -82,26 +82,33 @@ TEST(DpdkMpTopologyPrimary, BringUpHoldAndCleanup) {
     pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(
         /*self_index=*/0, /*total_procs=*/2, nb_rx_queues);
 
-    auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-    ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-    auto platform = std::move(*plat_r);
-
-    // Library should auto-derive lower-half queues and lower-half ports.
-    EXPECT_TRUE(platform.has_mp_topology());
-    const auto qr = platform.effective_rx_queue_range();
-    EXPECT_EQ(qr.first,  0);
-    EXPECT_EQ(qr.second, nb_rx_queues / 2);
-
-    auto pr = platform.self_port_range();
-    ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
-    EXPECT_EQ(pr->first,  32768u);
-    EXPECT_EQ(pr->second, 32768u + 16384u);
-
+    // Nested scope is load-bearing — same teardown-order rule as
+    // dpdk_mp_primary.cpp. ~Platform must fire before eal_cleanup
+    // because Impl::cleanup() calls rte_eth_dev_stop / close /
+    // rte_mempool_free, all illegal after EAL is torn down.
     {
-        std::ofstream f(ready_file);
-        f << "topology primary ready " << std::time(nullptr) << "\n";
-    }
+        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
+        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
+        auto platform = std::move(*plat_r);
 
-    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+        // Library should auto-derive lower-half queues and lower-half ports.
+        EXPECT_TRUE(platform.has_mp_topology());
+        const auto qr = platform.effective_rx_queue_range();
+        EXPECT_EQ(qr.first,  0);
+        EXPECT_EQ(qr.second, nb_rx_queues / 2);
+
+        auto pr = platform.self_port_range();
+        ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
+        EXPECT_EQ(pr->first,  32768u);
+        EXPECT_EQ(pr->second, 32768u + 16384u);
+
+        {
+            std::ofstream f(ready_file);
+            f << "topology primary ready " << std::time(nullptr) << "\n";
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+    }  // ← ~Platform fires here, while EAL is still alive
+
     (void)eph::dpdk::eal_cleanup();
 }

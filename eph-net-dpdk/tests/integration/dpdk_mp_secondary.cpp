@@ -100,20 +100,26 @@ TEST(DpdkMpSecondary, AttachAndVerify) {
     // test.
     pcfg.rx_queue_range = {static_cast<uint16_t>(nb_rx_queues / 2), nb_rx_queues};
 
-    auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-    ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-    auto platform = std::move(*plat_r);
+    // Nested scope: same teardown-order rule as dpdk_mp_primary.cpp.
+    // The current Impl::cleanup() secondary branch is pointer-only
+    // and "happens" to be safe even if EAL is dead, but the contract
+    // shouldn't depend on that — future changes that add DPDK calls
+    // to the secondary teardown path would silently SEGV without
+    // this scope. Match the primary's structure for consistency.
+    {
+        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
+        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
+        auto platform = std::move(*plat_r);
 
-    EXPECT_TRUE(platform.is_running());
-    EXPECT_EQ(platform.port_id(), port_id);
-    EXPECT_NE(platform.mempool(), nullptr)
-        << "secondary mempool lookup returned nullptr — primary mempool missing";
+        EXPECT_TRUE(platform.is_running());
+        EXPECT_EQ(platform.port_id(), port_id);
+        EXPECT_NE(platform.mempool(), nullptr)
+            << "secondary mempool lookup returned nullptr — primary mempool missing";
 
-    const auto qr = platform.effective_rx_queue_range();
-    EXPECT_EQ(qr.first,  nb_rx_queues / 2);
-    EXPECT_EQ(qr.second, nb_rx_queues);
+        const auto qr = platform.effective_rx_queue_range();
+        EXPECT_EQ(qr.first,  nb_rx_queues / 2);
+        EXPECT_EQ(qr.second, nb_rx_queues);
+    }  // ← ~Platform fires here, while EAL is still alive
 
-    // Secondary cleanup via RAII — must NOT touch port state (asserted by
-    // absence of primary-side failure; primary continues running).
     (void)eph::dpdk::eal_cleanup();
 }

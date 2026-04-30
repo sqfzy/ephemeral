@@ -100,27 +100,35 @@ TEST(DpdkMpPrimary, BringUpHoldAndCleanup) {
     // that to whoever calls create_and_attach in production.
     pcfg.rx_queue_range = {0, static_cast<uint16_t>(nb_rx_queues / 2)};
 
-    auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
-    ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
-    auto platform = std::move(*plat_r);
-
-    EXPECT_TRUE(platform.is_running());
-    EXPECT_EQ(platform.port_id(), port_id);
-    EXPECT_EQ(platform.nb_rx_queues(), nb_rx_queues);
-
-    const auto qr = platform.effective_rx_queue_range();
-    EXPECT_EQ(qr.first,  0);
-    EXPECT_EQ(qr.second, nb_rx_queues / 2);
-
-    // Signal readiness to the orchestrator.
+    // Nested scope is load-bearing: `Platform`'s destructor runs
+    // `Impl::cleanup()` which calls `rte_eth_dev_stop` / `close` /
+    // `rte_mempool_free`. Those are illegal after `rte_eal_cleanup`,
+    // so the Platform MUST go out of scope before the explicit
+    // `eal_cleanup()` below — without the inner block, the test
+    // function's stack-unwind order is `eal_cleanup` first, then
+    // ~Platform → SIGSEGV against a dead EAL.
     {
-        std::ofstream f(ready_file);
-        f << "primary ready " << std::time(nullptr) << "\n";
-    }
+        auto plat_r = eph::dpdk::Platform::create_primary(std::move(pcfg));
+        ASSERT_TRUE(plat_r) << "create_primary failed: " << plat_r.error();
+        auto platform = std::move(*plat_r);
 
-    // Stay alive long enough for the secondary to attach + test + exit.
-    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+        EXPECT_TRUE(platform.is_running());
+        EXPECT_EQ(platform.port_id(), port_id);
+        EXPECT_EQ(platform.nb_rx_queues(), nb_rx_queues);
 
-    // Platform + EAL cleanup via RAII (Platform::~Platform then eal_cleanup).
+        const auto qr = platform.effective_rx_queue_range();
+        EXPECT_EQ(qr.first,  0);
+        EXPECT_EQ(qr.second, nb_rx_queues / 2);
+
+        // Signal readiness to the orchestrator.
+        {
+            std::ofstream f(ready_file);
+            f << "primary ready " << std::time(nullptr) << "\n";
+        }
+
+        // Stay alive long enough for the secondary to attach + test + exit.
+        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+    }  // ← ~Platform fires here, while EAL is still alive
+
     (void)eph::dpdk::eal_cleanup();
 }

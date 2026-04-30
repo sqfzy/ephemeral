@@ -71,20 +71,25 @@ TEST(DpdkMpTopologySecondary, AttachAndVerifyDerivedRanges) {
     pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(
         /*self_index=*/1, /*total_procs=*/2, nb_rx_queues);
 
-    auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
-    ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
-    auto platform = std::move(*plat_r);
+    // Nested scope — match the primary's teardown shape so ~Platform
+    // (and the registry handle's slot release) fires while EAL is
+    // still alive. Same rationale as dpdk_mp_secondary.cpp.
+    {
+        auto plat_r = eph::dpdk::Platform::create_secondary(std::move(pcfg));
+        ASSERT_TRUE(plat_r) << "create_secondary failed: " << plat_r.error();
+        auto platform = std::move(*plat_r);
 
-    EXPECT_TRUE(platform.has_mp_topology());
-    // Secondary owns the upper half [nb_rx_queues/2, nb_rx_queues).
-    const auto qr = platform.effective_rx_queue_range();
-    EXPECT_EQ(qr.first,  nb_rx_queues / 2);
-    EXPECT_EQ(qr.second, nb_rx_queues);
+        EXPECT_TRUE(platform.has_mp_topology());
+        // Secondary owns the upper half [nb_rx_queues/2, nb_rx_queues).
+        const auto qr = platform.effective_rx_queue_range();
+        EXPECT_EQ(qr.first,  nb_rx_queues / 2);
+        EXPECT_EQ(qr.second, nb_rx_queues);
 
-    auto pr = platform.self_port_range();
-    ASSERT_TRUE(pr.has_value());
-    EXPECT_EQ(pr->first,  32768u + 16384u);
-    EXPECT_EQ(pr->second, 65536u);
+        auto pr = platform.self_port_range();
+        ASSERT_TRUE(pr.has_value());
+        EXPECT_EQ(pr->first,  32768u + 16384u);
+        EXPECT_EQ(pr->second, 65536u);
+    }  // ← ~Platform fires here, while EAL is still alive
 
     // Eal cleanup before primary teardown — DPDK orders this strictly.
     (void)eph::dpdk::eal_cleanup();
