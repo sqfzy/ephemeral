@@ -34,11 +34,14 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
+#include "eph/dpdk/detail/bdf_sanitize.hpp"     // detail::sanitize_bdf_for_file_prefix (autojoin)
 #include "eph/dpdk/detail/icmp_directory.hpp"  // detail::IcmpDirectoryHandle, IPC thunk
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
+#include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
+#include "eph/dpdk/join_dynamic.hpp"           // JoinDynamicConfig (autojoin user-facing POD)
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
@@ -624,6 +627,45 @@ public:
     [[nodiscard]] static std::expected<Platform, std::string>
     create_secondary(PlatformConfig config);
 
+    /// @brief Autojoin (zero-coordination) MP factory.
+    ///
+    /// One call does **everything**: assembles the EAL argv with
+    /// `--proc-type=auto`, calls `eal_init`, asks DPDK which role
+    /// this process resolved to, and either:
+    ///   * primary  → derives a uniform `MpTopology(self_index=0)`
+    ///                and delegates to `create_primary`, OR
+    ///   * secondary→ attaches the registry read-only,
+    ///                CAS-claims the lowest free `procs[]` slot,
+    ///                synthesizes a `MpTopology` whose `self_index`
+    ///                points at the claimed slot, and delegates to
+    ///                the secondary attach path with the registry
+    ///                preclaim wired through.
+    ///
+    /// Two peers calling `Platform::join_dynamic({.pci=BDF,
+    /// .nb_rx_queues=N})` on the same machine therefore agree on
+    /// roles, file_prefix (auto-derived from the BDF), max_procs
+    /// (auto-derived from `N / queues_per_proc`) and self_index
+    /// (CAS-claimed) **without exchanging any string**.
+    ///
+    /// Failure modes:
+    ///   * `pci` empty / `nb_rx_queues == 0` / `queues_per_proc == 0`
+    ///     → `Error::InvalidConfig`-shaped diagnostic
+    ///   * BDF fails `sanitize_bdf_for_file_prefix` → diagnostic
+    ///   * EAL init fails → propagated
+    ///   * primary path: identical surface to `create_primary`
+    ///   * secondary path: registry not yet visible →
+    ///     `MpRegistry: memzone lookup failed`; all slots taken →
+    ///     `Error::OutOfMemory` (start fewer peers or raise
+    ///     `JoinDynamicConfig::max_procs`).
+    ///
+    /// EAL must NOT have been initialized prior to this call —
+    /// `eal_init` is invoked internally so an autojoin caller stays
+    /// out of EAL bootstrap entirely. Callers that already manage
+    /// EAL themselves should stay on the declarative path
+    /// (`create_primary` / `create_secondary`).
+    [[nodiscard]] static std::expected<Platform, std::string>
+    join_dynamic(JoinDynamicConfig cfg);
+
     ~Platform();
 
     Platform(const Platform&)            = delete;
@@ -897,6 +939,15 @@ private:
     struct Impl;
     explicit Platform(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
+
+    /// @brief Internal secondary attach. Identical to the public
+    /// `create_secondary` body, but with a flag that propagates into
+    /// `MpRegistryHandle::attach_secondary(..., already_claimed)` so
+    /// the autojoin (`join_dynamic`) path — which has already CAS-
+    /// claimed the slot via `try_claim_free_slot` — can skip the
+    /// double-CAS without forking the rest of the bring-up.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    create_secondary_impl_(PlatformConfig config, bool registry_preclaimed);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1899,6 +1950,19 @@ Platform::create_primary(PlatformConfig config) {
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create_secondary(PlatformConfig config) {
+    // Public surface: caller-driven attach with a fresh CAS-claim
+    // for `*config.mp_topology->self_index`. Autojoin callers
+    // reach the bypass via `Platform::join_dynamic`, which
+    // delegates to
+    // `create_secondary_impl_(..., registry_preclaimed=true)` after
+    // having already CAS-claimed the slot itself.
+    return create_secondary_impl_(std::move(config),
+                                  /*registry_preclaimed=*/false);
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::create_secondary_impl_(PlatformConfig config,
+                                 bool registry_preclaimed) {
     [[maybe_unused]] auto log = detail::platform_logger();
     config.proc_type = ProcType::Secondary;
 
@@ -1945,10 +2009,11 @@ Platform::create_secondary(PlatformConfig config) {
     uint8_t captured_self_idx = 0xFF;
     if (config.mp_topology.has_value()) {
         auto r = ::eph::dpdk::detail::MpRegistryHandle::attach_secondary(
-            config.file_prefix, *config.mp_topology);
+            config.file_prefix, *config.mp_topology, registry_preclaimed);
         if (!r) {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_secondary: registry attach failed: {}",
+                "Platform::create_secondary{}: registry attach failed: {}",
+                registry_preclaimed ? " (preclaimed)" : "",
                 r.error().detail);
             return std::unexpected(std::string{r.error().detail});
         }
@@ -2098,6 +2163,181 @@ Platform::create_secondary(PlatformConfig config) {
         ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
 
     return Platform(std::move(impl));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Autojoin — Platform::join_dynamic
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Cold-path orchestrator over EAL init + role detection + registry
+// claim. The hot path is unchanged from the declarative path: by
+// the time a Platform is returned the impl is byte-for-byte
+// identical to one produced by `create_primary` (primary role) or
+// `create_secondary_impl_` (secondary role).
+//
+// Failure modes are surfaced as `unexpected<std::string>` to match
+// the rest of `Platform::*` for source compatibility.
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::join_dynamic(JoinDynamicConfig cfg) {
+    [[maybe_unused]] auto log = detail::platform_logger();
+
+    // ── 1. validate ────────────────────────────────────────────────────────
+    if (cfg.pci.empty())
+        return std::unexpected(std::string{
+            "join_dynamic: pci must be non-empty (provide a PCI BDF "
+            "such as '0000:28:00.0')"});
+    if (cfg.nb_rx_queues == 0)
+        return std::unexpected(std::string{
+            "join_dynamic: nb_rx_queues must be > 0"});
+    if (cfg.queues_per_proc == 0)
+        return std::unexpected(std::string{
+            "join_dynamic: queues_per_proc must be > 0"});
+
+    // ── 2. derive file_prefix ─────────────────────────────────────────────
+    std::string derived_prefix;
+    std::string_view file_prefix = cfg.file_prefix;
+    if (file_prefix.empty()) {
+        auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
+        if (!san)
+            return std::unexpected(std::string{san.error().detail});
+        derived_prefix = std::string{"eph_"} + *san;
+        file_prefix = derived_prefix;
+        SPDLOG_LOGGER_INFO(log,
+            "join_dynamic: derived file_prefix='{}' from pci='{}'",
+            derived_prefix, cfg.pci);
+    }
+
+    // ── 3. derive max_procs ───────────────────────────────────────────────
+    uint8_t max_procs = cfg.max_procs;
+    if (max_procs == 0) {
+        const uint16_t auto_max = cfg.nb_rx_queues / cfg.queues_per_proc;
+        if (auto_max == 0)
+            return std::unexpected(std::string{
+                "join_dynamic: nb_rx_queues / queues_per_proc < 1; "
+                "supply queues_per_proc <= nb_rx_queues or set max_procs "
+                "explicitly"});
+        max_procs = static_cast<uint8_t>(
+            std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
+    }
+    if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
+        return std::unexpected(std::string{
+            "join_dynamic: max_procs out of range [1, kMaxProcs=64]"});
+
+    // ── 4. EAL init (proc-type=auto) ──────────────────────────────────────
+    EalConfig eal_cfg{};
+    eal_cfg.program_name  = "eph_join_dynamic";
+    eal_cfg.proc_type_set = false;            // DPDK auto: first peer is primary
+    eal_cfg.file_prefix   = file_prefix;
+    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
+    eal_cfg.lcores        = cfg.lcores;
+
+    auto argv_owned = build_eal_argv(eal_cfg);
+    std::vector<char*> argv;
+    argv.reserve(argv_owned.size());
+    for (auto& s : argv_owned) argv.push_back(s.data());
+
+    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
+    if (!eal_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "join_dynamic: eal_init failed: {}", eal_r.error());
+        return std::unexpected(std::string{
+            "join_dynamic: eal_init failed: "} + eal_r.error());
+    }
+
+    // ── 5. role detection ─────────────────────────────────────────────────
+    const enum rte_proc_type_t role = rte_eal_process_type();
+    SPDLOG_LOGGER_INFO(log,
+        "join_dynamic: rte_eal_process_type() resolved to {} "
+        "(file_prefix='{}', max_procs={}, nb_rx_queues={})",
+        role == RTE_PROC_PRIMARY   ? "primary"
+        : role == RTE_PROC_SECONDARY ? "secondary"
+                                     : "<invalid>",
+        file_prefix, max_procs, cfg.nb_rx_queues);
+
+    // Common PlatformConfig template — both roles populate the same
+    // fields except for proc_type / mp_topology (set per-branch).
+    PlatformConfig pcfg{};
+    pcfg.port_id      = cfg.port_id;
+    pcfg.nb_rx_queues = cfg.nb_rx_queues;
+    pcfg.nb_tx_queues = cfg.nb_rx_queues;
+    pcfg.file_prefix  = file_prefix;
+
+    // ── 6/7. branch on role ───────────────────────────────────────────────
+    if (role == RTE_PROC_PRIMARY) {
+        pcfg.proc_type   = ProcType::Primary;
+        pcfg.mp_topology = MpTopology::uniform(
+            /*self_index=*/0, max_procs, cfg.nb_rx_queues);
+        return Platform::create_primary(std::move(pcfg));
+    }
+
+    if (role == RTE_PROC_SECONDARY) {
+        // 6S. attach read-only and validate the primary's view.
+        auto ro = ::eph::dpdk::detail::MpRegistryHandle::
+            attach_secondary_readonly(file_prefix);
+        if (!ro) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: attach_secondary_readonly "
+                "failed: {}", ro.error().detail);
+            return std::unexpected(std::string{ro.error().detail});
+        }
+
+        // Cross-check: primary's max_procs must match what THIS peer
+        // would have computed — otherwise the queue partitions don't
+        // line up. Conservative: refuse rather than silently pick a
+        // narrower / wider partition than the primary chose.
+        const uint32_t primary_total = ro->header()->total_procs;
+        if (primary_total != max_procs) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: primary's total_procs={} "
+                "differs from this peer's derived max_procs={} "
+                "(both peers must derive the same value — supply the "
+                "same nb_rx_queues / queues_per_proc / max_procs to "
+                "every join_dynamic call sharing this NIC)",
+                primary_total, max_procs);
+            return std::unexpected(std::string{
+                "join_dynamic[secondary]: max_procs disagreement with "
+                "primary's registry — peers must derive identical "
+                "max_procs"});
+        }
+
+        // 7S. CAS-claim the lowest free slot.
+        auto idx_r = ro->try_claim_free_slot();
+        if (!idx_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: try_claim_free_slot failed: {}",
+                idx_r.error().detail);
+            return std::unexpected(std::string{idx_r.error().detail});
+        }
+        const uint8_t self_idx = *idx_r;
+
+        // 8S. Synthesize a topology view that agrees with the primary's
+        // (uniform layout, same max_procs / nb_rx_queues / port base).
+        // Using `MpTopology::uniform` produces the exact same per-slot
+        // ProcSpec the primary wrote at its own create_primary, so the
+        // self-spec cross-validation in attach_secondary will pass.
+        pcfg.proc_type   = ProcType::Secondary;
+        pcfg.mp_topology = MpTopology::uniform(
+            self_idx, max_procs, cfg.nb_rx_queues);
+
+        // 9S. Disarm `ro`'s slot-ownership (the slot is claimed in
+        // shared memory, but we don't want `ro`'s destructor to clear
+        // it — the new handle from create_secondary_impl_ will own it).
+        // After this, `ro` is a pure view; its destructor is a no-op
+        // re slot state, only releasing the memzone reference.
+        ro->disarm_slot();
+
+        return Platform::create_secondary_impl_(std::move(pcfg),
+                                                /*registry_preclaimed=*/true);
+    }
+
+    // RTE_PROC_INVALID or future enum values.
+    SPDLOG_LOGGER_ERROR(log,
+        "join_dynamic: rte_eal_process_type returned invalid role={}",
+        static_cast<int>(role));
+    return std::unexpected(std::string{
+        "join_dynamic: rte_eal_process_type returned an invalid role "
+        "(EAL not properly initialized)"});
 }
 
 // Null guards on all impl_-accessing methods protect against use on a

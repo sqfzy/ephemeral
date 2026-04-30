@@ -277,6 +277,20 @@ public:
         return hdr_ != nullptr && self_index_ != kMpRegistrySelfIndexUnset;
     }
 
+    /// @brief Drop slot-ownership without clearing the slot's
+    /// `claimed` flag in shared memory. After this call,
+    /// `owns_slot()` is `false` and the destructor will NOT
+    /// release the slot. Used by the autojoin path to transfer
+    /// ownership from the read-only handle (which CAS-claimed the
+    /// slot via `try_claim_free_slot`) to the full handle returned
+    /// by `attach_secondary(..., already_claimed=true)`. The slot
+    /// stays in `claimed=1` state across the transition so no
+    /// other peer can race-claim it; the new handle assumes
+    /// teardown responsibility.
+    void disarm_slot() noexcept {
+        self_index_ = kMpRegistrySelfIndexUnset;
+    }
+
     // ── Factories ────────────────────────────────────────────────────────────
 
     /// @brief Reserve (or replace) the registry memzone, write a fresh
@@ -361,7 +375,7 @@ public:
     ///
     /// @param already_claimed When `true` the CAS-claim step is
     /// skipped — the caller has already preclaimed the slot via
-    /// `try_claim_free_slot()` (Mode 2 / `Platform::join_dynamic`
+    /// `try_claim_free_slot()` (autojoin / `Platform::join_dynamic`
     /// path). The returned handle still takes ownership of the slot
     /// and will release it on destruction, so the caller MUST drop
     /// the original preclaim handle (or transfer it via move) before
@@ -499,11 +513,12 @@ public:
     /// `header()->total_procs` and per-slot specs before the caller
     /// decides which free slot to claim via `try_claim_free_slot()`.
     ///
-    /// This is the entry point for `Platform::join_dynamic` (Mode 2)
-    /// where the secondary doesn't know its own `self_index` until
-    /// it scans the registry. Mode 1
-    /// (`Platform::create_secondary`) goes through `attach_secondary`
-    /// instead because it already knows its index from the topology.
+    /// This is the entry point for `Platform::join_dynamic` (the
+    /// autojoin path) where the secondary doesn't know its own
+    /// `self_index` until it scans the registry. The declarative
+    /// path (`Platform::create_secondary`) goes through
+    /// `attach_secondary` instead because it already knows its
+    /// index from the topology.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary_readonly(std::string_view file_prefix) {
         auto name_r = build_mp_registry_name(file_prefix);

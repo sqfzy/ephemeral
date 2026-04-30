@@ -3,7 +3,7 @@
 /// @file detail/bdf_sanitize.hpp
 /// PCI BDF → MP file_prefix derivation helper.
 ///
-/// Mode 2 (`Platform::join_dynamic`) auto-derives a DPDK
+/// The autojoin path (`Platform::join_dynamic`) auto-derives a DPDK
 /// `--file-prefix` from the user-supplied PCI BDF so two processes
 /// sharing one NIC naturally agree on the prefix without any explicit
 /// coordination string. The derivation is `"eph_" + sanitize(bdf)`
@@ -15,7 +15,7 @@
 ///   "0000:28:00.0"  -> "0000_28_00_0"   (full domain form)
 ///   "28:00.0"       -> "28_00_0"        (short form)
 ///
-/// Validation rules (precise — Mode 2 won't paper over a typo):
+/// Validation rules (precise — the autojoin path won't paper over a typo):
 ///   - non-empty
 ///   - length 7-12 (covers short `BB:DD.F` and full `DDDD:BB:DD.F`)
 ///   - characters are hex digits, `:`, or `.` (no whitespace, no
