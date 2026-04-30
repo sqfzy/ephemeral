@@ -91,9 +91,12 @@ socket).
 **Cause**: Operation deadline exceeded. Used by handshake (TLS, WS) and
 explicit `recv_for(timeout)` waits.
 
-**Fix**: Increase the matching `*_timeout` in `StreamConfig` (`tcp_timeout`,
-`tls_timeout`, `ws_timeout`) — defaults are tight (1-2 s) by design, since
-HFT venues are local-DC.
+**Fix**: Increase the matching `*_timeout` in `StreamConfig`
+(`connect_timeout` for TCP / handshake budget, `tls.handshake_timeout`
+for the TLS 1.3 round trip, `ws.timeout` for the RFC 6455 client
+upgrade) — defaults are tight (1-2 s) by design, since HFT venues
+are local-DC. (Field paths post-T3.19; the flat `tls_timeout` /
+`ws_timeout` fields were folded into the `tls` / `ws` substructs.)
 
 ### `Error::NotAttached`
 

@@ -4,12 +4,13 @@
 ///
 /// What's demonstrated:
 ///
-///   * `StreamConfig::ws_permessage_deflate = true` (default) — the WS
+///   * `StreamConfig::ws.permessage_deflate = true` (default) — the WS
 ///     handshake driver injects `Sec-WebSocket-Extensions: permessage-
 ///     deflate; client_no_context_takeover` into the upgrade request and
 ///     activates inflate on RSV1-flagged frames if the server agrees.
 ///     Toggle with `--no-deflate` to opt out (e.g. for venues that
-///     mis-implement the extension).
+///     mis-implement the extension). (Field path post-T3.19; the flat
+///     `ws_permessage_deflate` was folded into the `WsConfig` substruct.)
 ///   * Reading the `kWsDeflateBytesIn` / `kWsDeflateBytesOut` counters
 ///     directly via `stream->metric(...)` to compute on-the-fly
 ///     compression ratio — two atomics, one division.
@@ -109,7 +110,7 @@ int main(int argc, char** argv) {
     // ── Smoke-boot: no --host means just describe the wiring and exit ────
     if (args.host.empty()) {
         spdlog::info("ws_deflate_demo: smoke-boot (no --host given)");
-        spdlog::info("  StreamConfig::ws_permessage_deflate default = true");
+        spdlog::info("  StreamConfig::ws.permessage_deflate default = true");
         spdlog::info("    handshake injects 'Sec-WebSocket-Extensions: "
                      "permessage-deflate; client_no_context_takeover'");
         spdlog::info("    set --no-deflate to opt out (some venues mis-implement)");
@@ -135,7 +136,7 @@ int main(int argc, char** argv) {
 
     // TLS 1.3 + WS upgrade in one create() call — the three transparent
     // handshakes are folded by StreamConfig (TLS via the EnableTls template
-    // arg, WS via non-empty ws_path, deflate via ws_permessage_deflate).
+    // arg, WS via non-empty cfg.ws.path, deflate via cfg.ws.permessage_deflate).
     using Stream = en::KernelTcpStream<ec::WsCodec, /*Tls=*/true>;
     en::StreamConfig cfg{};
     cfg.remote                  = eph::net::SocketAddr{*ip, args.port};
