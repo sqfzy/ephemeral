@@ -8,6 +8,7 @@
 /// coordination.
 
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 
@@ -84,6 +85,37 @@ TEST(BdfSanitize, HexCaseInsensitive_Accepted) {
     // Case is preserved — mixing wouldn't agree across peers anyway,
     // so callers should normalize their input. We only validate.
     EXPECT_EQ(*upper, "0000_AF_BC_D");
+}
+
+TEST(BdfSanitize, MinLengthBoundary_7Chars_Accepted) {
+    // The lower bound `kBdfMinLen = 7` is the canonical short PCI
+    // BDF form `BB:DD.F` (one hex byte + ':' + two hex + '.' + one
+    // hex). Sits exactly at the boundary — a regression that
+    // tightened the check to `<= 7` would silently reject every
+    // short-form BDF.
+    auto r = sanitize_bdf_for_file_prefix("0:00.0");  // 6 chars, must fail
+    ASSERT_FALSE(r.has_value());
+
+    auto ok = sanitize_bdf_for_file_prefix("a:bc.d");  // still 6 chars
+    ASSERT_FALSE(ok.has_value());
+
+    auto seven = sanitize_bdf_for_file_prefix("aa:bc.d");  // 7 chars, valid
+    ASSERT_TRUE(seven.has_value()) << seven.error().detail;
+    EXPECT_EQ(*seven, "aa_bc_d");
+}
+
+TEST(BdfSanitize, EmbeddedNulRejected) {
+    // The header doc explicitly forbids NUL bytes ("no whitespace,
+    // no glob metas, no NUL byte"). The validator currently catches
+    // it via the is_hex branch (NUL is neither hex, ':', nor '.'),
+    // which is a fragile reliance — pin it with a regression test
+    // built from a `string_view{ptr, size}` so the NUL survives into
+    // the function (a `const char*` ctor would terminate early).
+    constexpr char kBuf[] = "00\0:28:00.0";  // size 11, has embedded NUL
+    std::string_view sv{kBuf, sizeof(kBuf) - 1};
+    auto r = sanitize_bdf_for_file_prefix(sv);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
 }
 
 TEST(BdfSanitize, OutputFitsInFilePrefixCap) {
