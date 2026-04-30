@@ -8,7 +8,7 @@
 The library's TLS surface is `eph::net::TlsConfig` in
 `eph-net/include/eph/net/detail/tls_constants.hpp:134`. This page is the
 runbook for which combinations to pick per venue and why; pair it with
-`docs/production-config.md` (full `TransportConfig` profiles) and
+`docs/production-config.md` (full `StreamConfig` profiles) and
 `docs/troubleshooting.md` (TLS error decoder).
 
 ---
@@ -310,7 +310,7 @@ all four primary venues; differences are confined to
 
 - `docs/observability-metrics.md` — `net.reconnect.*` and
   `net.stream.tls.*` counters used to detect rotation events.
-- `docs/production-config.md` — full `TransportConfig` profiles
+- `docs/production-config.md` — full `StreamConfig` profiles
   (low-latency, high-throughput, market-data) with `verify_peer =
   true` baked in.
 - `docs/troubleshooting.md` — TLS error decoder

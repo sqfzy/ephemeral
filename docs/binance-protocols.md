@@ -16,24 +16,32 @@ All three protocols run over **WebSocket over TLS** — ephemeral's core transpo
 
 The simplest path. JSON payload is parsed by the application (bring your own JSON library).
 
+> **Note (2026-04 doc refresh)**: this section's snippets predate the
+> v3.3 / T3.19 reshape and reference fields from a retired
+> `eph::net::TransportConfig` (`.remote_host` / `.use_tls` /
+> `.skip_utf8_validation` / `.ping_interval` / `.pong_timeout` / etc.).
+> The current API is `eph::net::kernel::StreamConfig` + the second
+> `EnableTls` template parameter on `KernelTcpStream`; for runnable
+> code see `examples/binance_book.cpp` and `examples/simple_hft.cpp`
+> (kernel) or `examples/binance_latency.cpp` (DPDK). The snippets below
+> are kept as protocol reference — substitute the modern config shape
+> shown in `eph-net-kernel/README.md` when copy-pasting.
+
 ```cpp
-// Connect to Binance spot bookTicker
-eph::net::TransportConfig cfg{
-    .remote_host = "stream.binance.com",
-    .remote_port = 443,
-    .ws_path     = "/ws/btcusdt@bookTicker",  // subscription via path
-    .use_tls     = true,
-    .verify_peer = true,
-    .skip_utf8_validation = true,  // Binance sends valid UTF-8
-    .ping_interval = std::chrono::seconds{15},
-    .pong_timeout  = std::chrono::seconds{10},
-};
+// Connect to Binance spot bookTicker — modern shape
+auto stream = eph::net::kernel::KernelTcpStream<
+                  eph::codec::WsCodec, /*EnableTls=*/true>::create({
+    .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
+    .tls    = { .hostname = "stream.binance.com", .verify_peer = true },
+    .ws     = { .path = "/ws/btcusdt@bookTicker" },  // subscription via path
+}).value();
 
 // In RX callback: parse JSON with simdjson/rapidjson
-cfg.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+stream->on_message = [](std::span<const uint8_t> app_frame) {
     // {"u":123,"s":"BTCUSDT","b":"67000.00","B":"0.5","a":"67010.00","A":"0.75","T":...,"E":...}
     // Parse with your preferred JSON library
-    auto doc = simdjson::ondemand::parser{}.iterate(data, len);
+    auto doc = simdjson::ondemand::parser{}.iterate(
+        app_frame.data(), app_frame.size());
     auto bid = doc["b"].get_string();
     auto ask = doc["a"].get_string();
     // process...
@@ -136,17 +144,21 @@ namespace book_ticker {
 ### Usage with Transport
 
 ```cpp
-eph::net::TransportConfig cfg{
-    .remote_host = "stream-sbe.binance.com",
-    .remote_port = 443,
-    .ws_path     = "/ws/btcusdt@bookTicker",
-    .extra_headers = "X-MBX-APIKEY: YOUR_ED25519_KEY\r\n",
-    .use_tls     = true,
-    .skip_utf8_validation = true,  // Binary data, not UTF-8
-};
+// Modern shape — see note at top of this file.
+auto stream = eph::net::kernel::KernelTcpStream<
+                  eph::codec::WsCodec, /*EnableTls=*/true>::create({
+    .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
+    .tls    = { .hostname = "stream-sbe.binance.com" },
+    .ws     = {
+        .path           = "/ws/btcusdt@bookTicker",
+        // Add custom headers via cfg.ws.extra_headers (vector<HttpHeader>)
+        // — populate with X-MBX-APIKEY: YOUR_ED25519_KEY before create().
+    },
+}).value();
 
-cfg.on_message = [](const uint8_t* data, uint16_t len, uint8_t) {
+stream->on_message = [](std::span<const uint8_t> app_frame) {
     // Zero-copy SBE decode — ~50ns vs ~400ns-1µs for JSON
+    const uint8_t* data = app_frame.data();
     auto bid = binance_sbe::book_ticker::bid_price(data);
     auto ask = binance_sbe::book_ticker::ask_price(data);
     auto ts  = binance_sbe::book_ticker::event_time_us(data);
