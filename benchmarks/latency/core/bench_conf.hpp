@@ -131,34 +131,35 @@ struct DpdkRss {
     std::string lcore_per_queue;   ///< CSV; reserved (not yet consumed)
 };
 
+/// One row of the `[parallel].runs[]` array. Each row maps a single
+/// lat scenario to the EAL lcore + CPU + RX queue it should run on
+/// inside `lat_multi_dpdk` (the parallel-bench v2 runner). Multiple
+/// rows with the same `scenario` are allowed (run N copies of the
+/// same scenario on different queues for fan-out load testing).
+struct RunSpec {
+    std::string scenario;       ///< "lat_tcp" / "lat_udp" / ...
+    uint16_t    lcore = 0;      ///< EAL lcore id (passed via LcorePin)
+    int         cpu   = -1;     ///< CPU id this lcore pins to (typed)
+    uint16_t    queue = 0;      ///< RX queue this run owns
+};
+
 /// `[parallel]` section — drives `lat all --dpdk` (multi-scenario
-/// parallel runner via DPDK autojoin). Single-scenario commands
-/// (`lat tcp --dpdk` etc.) ignore this section completely; the only
-/// observable effect of a missing or `max_procs <= 1` block is that
-/// `lat all` runs scenarios serially (which is the legacy behaviour).
+/// single-process N-lcore runner via `lat_multi_dpdk`). Single-
+/// scenario commands (`lat tcp --dpdk` etc.) ignore this section
+/// entirely.
 ///
-/// The user picks `max_procs` based on their machine's lcore /
-/// hugepage / NIC headroom — there's no universally-correct default
-/// because mockex / per-scenario lcore use varies by host.
+/// **Parallel-bench v2 schema (this file)**:
+/// `[parallel].runs = [{scenario=..., lcore=N, cpu=M, queue=Q}, ...]`
+/// with one inline-table per concurrent run.
+///
+/// The dispatcher computes `nb_rx_queues = max(queue) + 1`,
+/// `LcorePin[]` from `(lcore, cpu)` pairs, and exec's
+/// `lat_multi_dpdk` which brings up a single EAL session sharing the
+/// NIC across all runs (`Platform::create_with_eal` + per-queue
+/// `register_poller` + `rte_eal_remote_launch` per worker). RSS routes
+/// each run's reverse traffic to its owned queue via `pin_to_queue`.
 struct ParallelConfig {
-    /// Maximum scenarios to run concurrently. `0` and `1` both mean
-    /// "serial" (default; behaviour unchanged from before parallel
-    /// support landed). Mapped to `JoinDynamicConfig::max_procs` and
-    /// `pcfg_template.nb_rx_queues = nb_tx_queues = max_procs` per
-    /// peer, so going past your NIC's queue count is rejected at
-    /// `Platform::join_dynamic` time, not at `lat all` invocation.
-    uint32_t max_procs = 1;
-
-    /// CSV lcore allocation per scenario peer. The dispatcher slices
-    /// this list into `max_procs` chunks of equal size. Empty string
-    /// = let the dispatcher derive lcores from `cpu.eal_cores`.
-    /// Default chunk size is 2 lcores per peer (main + worker).
-    uint32_t lcores_per_proc = 2;
-
-    /// Scenarios eligible for `lat all`. Empty = all 7 standard
-    /// scenarios. Subset is honoured in the order given. Names match
-    /// the `lat_<name>` / `lat_<name>_dpdk` binary stem.
-    std::vector<std::string> enabled;
+    std::vector<RunSpec> runs;
 };
 
 // ─── Internal helpers ─────────────────────────────────────────────────
@@ -528,18 +529,24 @@ load_bench_conf(std::string_view path) {
     }
 
     // ── parallel ─────────────────────────────────────────────────────
-    // Optional. Absent / max_procs<=1 → `lat all` runs serial.
+    // Optional. Absent or empty `runs` → `lat all` has nothing to
+    // dispatch (single-scenario commands continue to work).
     if (auto* p = raw["parallel"].as_table()) {
-        if (auto v = (*p)["max_procs"].value<int64_t>()) {
-            cfg.parallel.max_procs = static_cast<uint32_t>(*v);
-        }
-        if (auto v = (*p)["lcores_per_proc"].value<int64_t>()) {
-            cfg.parallel.lcores_per_proc = static_cast<uint32_t>(*v);
-        }
-        if (auto* e = (*p)["enabled"].as_array()) {
-            for (const auto& el : *e) {
-                if (auto s = el.value<std::string>()) {
-                    cfg.parallel.enabled.push_back(*s);
+        if (auto* arr = (*p)["runs"].as_array()) {
+            for (const auto& el : *arr) {
+                const auto* tbl = el.as_table();
+                if (tbl == nullptr) continue;
+                RunSpec r;
+                if (auto v = (*tbl)["scenario"].value<std::string>())
+                    r.scenario = *v;
+                if (auto v = (*tbl)["lcore"].value<int64_t>())
+                    r.lcore = static_cast<uint16_t>(*v);
+                if (auto v = (*tbl)["cpu"].value<int64_t>())
+                    r.cpu = static_cast<int>(*v);
+                if (auto v = (*tbl)["queue"].value<int64_t>())
+                    r.queue = static_cast<uint16_t>(*v);
+                if (!r.scenario.empty()) {
+                    cfg.parallel.runs.push_back(std::move(r));
                 }
             }
         }

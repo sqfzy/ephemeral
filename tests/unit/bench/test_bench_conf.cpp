@@ -295,44 +295,96 @@ port = 20000
     EXPECT_EQ(tcp->get<uint16_t>("port").value(), 20000u);
 }
 
-// ─── ParallelConfig ────────────────────────────────────────────────────
+// ─── ParallelConfig (runs[] schema) ────────────────────────────────────
 
-TEST(BenchConf, ParallelConfigAbsent_DefaultsSerial) {
+TEST(BenchConf, ParallelConfigAbsent_EmptyRuns) {
     TmpToml f{kMinimalValid};
     auto r = load_bench_conf(f.path.string());
     ASSERT_TRUE(r.has_value()) << format_error(r.error());
-    EXPECT_EQ(r->parallel.max_procs, 1u);
-    EXPECT_EQ(r->parallel.lcores_per_proc, 2u);
-    EXPECT_TRUE(r->parallel.enabled.empty());
+    EXPECT_TRUE(r->parallel.runs.empty());
 }
 
-TEST(BenchConf, ParallelConfigPartial_OnlyMaxProcs) {
+TEST(BenchConf, ParallelConfigSingleRun) {
     TmpToml f{std::string{kMinimalValid} + R"(
 [parallel]
-max_procs = 4
+runs = [
+  { scenario = "lat_tcp", lcore = 1, cpu = 4, queue = 0 },
+]
 )"};
     auto r = load_bench_conf(f.path.string());
     ASSERT_TRUE(r.has_value()) << format_error(r.error());
-    EXPECT_EQ(r->parallel.max_procs, 4u);
-    EXPECT_EQ(r->parallel.lcores_per_proc, 2u);  // default
-    EXPECT_TRUE(r->parallel.enabled.empty());
+    ASSERT_EQ(r->parallel.runs.size(), 1u);
+    EXPECT_EQ(r->parallel.runs[0].scenario, "lat_tcp");
+    EXPECT_EQ(r->parallel.runs[0].lcore, 1u);
+    EXPECT_EQ(r->parallel.runs[0].cpu, 4);
+    EXPECT_EQ(r->parallel.runs[0].queue, 0u);
 }
 
-TEST(BenchConf, ParallelConfigComplete) {
+TEST(BenchConf, ParallelConfigMultipleRuns) {
     TmpToml f{std::string{kMinimalValid} + R"(
 [parallel]
-max_procs       = 7
-lcores_per_proc = 3
-enabled = ["lat_tcp", "lat_udp", "lat_ws"]
+runs = [
+  { scenario = "lat_tcp",       lcore = 1, cpu = 4, queue = 0 },
+  { scenario = "lat_udp",       lcore = 2, cpu = 5, queue = 1 },
+  { scenario = "lat_ws",        lcore = 3, cpu = 6, queue = 2 },
+  { scenario = "lat_ex_md_udp", lcore = 4, cpu = 7, queue = 3 },
+]
 )"};
     auto r = load_bench_conf(f.path.string());
     ASSERT_TRUE(r.has_value()) << format_error(r.error());
-    EXPECT_EQ(r->parallel.max_procs, 7u);
-    EXPECT_EQ(r->parallel.lcores_per_proc, 3u);
-    ASSERT_EQ(r->parallel.enabled.size(), 3u);
-    EXPECT_EQ(r->parallel.enabled[0], "lat_tcp");
-    EXPECT_EQ(r->parallel.enabled[1], "lat_udp");
-    EXPECT_EQ(r->parallel.enabled[2], "lat_ws");
+    ASSERT_EQ(r->parallel.runs.size(), 4u);
+    EXPECT_EQ(r->parallel.runs[0].scenario, "lat_tcp");
+    EXPECT_EQ(r->parallel.runs[1].scenario, "lat_udp");
+    EXPECT_EQ(r->parallel.runs[2].scenario, "lat_ws");
+    EXPECT_EQ(r->parallel.runs[3].scenario, "lat_ex_md_udp");
+    EXPECT_EQ(r->parallel.runs[0].queue, 0u);
+    EXPECT_EQ(r->parallel.runs[3].queue, 3u);
+    EXPECT_EQ(r->parallel.runs[3].cpu, 7);
+}
+
+TEST(BenchConf, ParallelConfigSameScenarioMultipleQueues) {
+    // Two lat_tcp runs on different queues — fan-out load test pattern.
+    TmpToml f{std::string{kMinimalValid} + R"(
+[parallel]
+runs = [
+  { scenario = "lat_tcp", lcore = 1, cpu = 4, queue = 0 },
+  { scenario = "lat_tcp", lcore = 2, cpu = 5, queue = 1 },
+]
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    ASSERT_EQ(r->parallel.runs.size(), 2u);
+    EXPECT_EQ(r->parallel.runs[0].scenario, "lat_tcp");
+    EXPECT_EQ(r->parallel.runs[1].scenario, "lat_tcp");
+    EXPECT_NE(r->parallel.runs[0].queue, r->parallel.runs[1].queue);
+}
+
+TEST(BenchConf, ParallelConfigRowMissingScenario_Skipped) {
+    // Row without `scenario` is silently dropped (validation error
+    // surfaces later when lat_multi_dpdk validates the runs[] list).
+    TmpToml f{std::string{kMinimalValid} + R"(
+[parallel]
+runs = [
+  { scenario = "lat_tcp", lcore = 1, cpu = 4, queue = 0 },
+  { lcore = 2, cpu = 5, queue = 1 },
+  { scenario = "lat_udp", lcore = 3, cpu = 6, queue = 2 },
+]
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    ASSERT_EQ(r->parallel.runs.size(), 2u);
+    EXPECT_EQ(r->parallel.runs[0].scenario, "lat_tcp");
+    EXPECT_EQ(r->parallel.runs[1].scenario, "lat_udp");
+}
+
+TEST(BenchConf, ParallelConfigEmptyRuns) {
+    TmpToml f{std::string{kMinimalValid} + R"(
+[parallel]
+runs = []
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    EXPECT_TRUE(r->parallel.runs.empty());
 }
 
 // ─── format_error ──────────────────────────────────────────────────────
