@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <random>
 
 namespace eph::net {
@@ -135,8 +136,26 @@ public:
         // Advance base for the NEXT call. This is intentional: the returned
         // value uses the pre-advance base, so the first call returns roughly
         // initial_backoff as documented.
-        auto next = std::chrono::milliseconds{
-            static_cast<int64_t>(current_base_.count() * cfg_.multiplier)};
+        //
+        // Saturated FP→int64 conversion: `current_base_.count() * multiplier`
+        // is a double; once `current_base_` approaches INT64_MAX (e.g. when
+        // `max_backoff = milliseconds::max()` and we doubled ~63 times), the
+        // product exceeds 9.22e18 and `static_cast<int64_t>(huge)` becomes
+        // UB per [conv.fpint] — implementations may return INT64_MIN, leak
+        // a wrap to negative, or anything else. Clamp to INT64_MAX before
+        // the cast so the cap-by-`std::min(next, max_backoff)` below sees
+        // a well-defined value. This complements the non-positive
+        // initial_backoff clamp in the ctor (commit aebf0622) — together
+        // they cover both the negative-march and the positive-explode
+        // overflow paths.
+        const double scaled = current_base_.count() * cfg_.multiplier;
+        constexpr double kInt64MaxAsDouble =
+            static_cast<double>(std::numeric_limits<int64_t>::max());
+        const int64_t scaled_int =
+            (scaled >= kInt64MaxAsDouble)
+                ? std::numeric_limits<int64_t>::max()
+                : static_cast<int64_t>(scaled);
+        auto next = std::chrono::milliseconds{scaled_int};
         current_base_ = std::min(next, cfg_.max_backoff);
 
         return apply_jitter(base);

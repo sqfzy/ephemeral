@@ -88,12 +88,21 @@ TEST(ReconnectPolicy, UnboundedMaxBackoffDoesNotOverflow) {
     // math (~63 doublings exhausts the range). The post-fix code must
     // run cleanly without UB and the returned value must stay
     // non-negative on every iteration.
+    int64_t prev = -1;
     for (int i = 0; i < 100; ++i) {
         auto v = p.next_backoff();
         EXPECT_GE(v.count(), 0)
             << "iteration " << i << " produced a negative backoff "
             << v.count() << "ms — likely int64 overflow from "
             << "unbounded exponential growth";
+        // Monotonicity guard: with jitter=0 and growing exponentially up
+        // to a saturation ceiling, the sequence must be non-decreasing.
+        // A wrap-to-negative would surface as v < prev between iterations
+        // post-saturation, even when the magnitude check above passes.
+        EXPECT_GE(v.count(), prev)
+            << "iteration " << i << " went backward: " << v.count()
+            << " < " << prev << " — saturation cap was breached";
+        prev = v.count();
     }
 }
 
