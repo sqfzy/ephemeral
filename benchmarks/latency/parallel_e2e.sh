@@ -71,6 +71,17 @@ PYEOF
 log "config: $PARALLEL_CONF (duration=${BENCH_DURATION}s, 4 runs)"
 
 # ── Run ─────────────────────────────────────────────────────────────
+# `lat` exits non-zero when the multi-dpdk client itself failed (mockex
+# fork crash, EAL init failure, lcore launch error). Without checking
+# LAT_RC, the JSON-verify section below would silently pick up STALE
+# slotN_*.json files from a previous successful run (matched by glob,
+# `ls -t | head -1` returns the newest *existing* file regardless of
+# whether THIS run produced it) and mark the run PASS. That turns a
+# real lat_multi_dpdk crash into a green CI light.
+#
+# Anchor verification on T0: any JSON whose mtime is older than the
+# run-start timestamp must have come from a previous invocation; reject
+# such matches so a partial / no-output run can never inherit history.
 T0=$(date +%s)
 "$REPO_ROOT/benchmarks/latency/lat" all --dpdk --config "$PARALLEL_CONF"
 LAT_RC=$?
@@ -78,17 +89,37 @@ T1=$(date +%s)
 WALL=$((T1 - T0))
 log "lat all --dpdk rc=$LAT_RC wall_time=${WALL}s"
 
+if [ "$LAT_RC" -ne 0 ]; then
+    fail "lat all --dpdk exited rc=$LAT_RC after ${WALL}s — refusing to validate "\
+"stale JSON from previous runs (rerun manually or check mockex logs in /tmp/)"
+fi
+
 # ── Verify per-slot JSON output ─────────────────────────────────────
 out_dir="$REPO_ROOT/benchmarks/latency/outputs"
 
-# Each slot's primary RTT JSON (RTT for the request-response scenarios,
-# `_rtt` suffix). lat_ex_market would be `_oneway` but we excluded it.
-# Match both `_dpdk_rtt_slot0_` (no TLS) and `_dpdk_tls_rtt_slot0_`
-# variants. ls -t gives newest first.
-slot0_json=$(ls -t "$out_dir"/lat_tcp_dpdk*rtt_slot0_*.json 2>/dev/null | head -1)
-slot1_json=$(ls -t "$out_dir"/lat_udp_dpdk_rtt_slot1_*.json 2>/dev/null | head -1)
-slot2_json=$(ls -t "$out_dir"/lat_ws_dpdk*rtt_slot2_*.json 2>/dev/null | head -1)
-slot3_json=$(ls -t "$out_dir"/lat_ex_md_udp_dpdk_rtt_slot3_*.json 2>/dev/null | head -1)
+# Pick the newest slot JSON only if it was produced by THIS run (mtime
+# >= T0). `ls -t | head -1` would otherwise happily return a months-old
+# file if the current run wrote nothing for that slot.
+pick_fresh() {
+    # args: glob pattern (single arg, will be shell-expanded by caller)
+    local f
+    for f in $(ls -t "$@" 2>/dev/null); do
+        # `stat -c %Y` is the mtime epoch on Linux; macOS uses -f %m but
+        # parallel_e2e.sh is Linux-only (set -uo pipefail + DPDK + vfio).
+        local mt
+        mt=$(stat -c %Y "$f" 2>/dev/null || echo 0)
+        if [ "$mt" -ge "$T0" ]; then
+            echo "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
+slot0_json=$(pick_fresh "$out_dir"/lat_tcp_dpdk*rtt_slot0_*.json     || true)
+slot1_json=$(pick_fresh "$out_dir"/lat_udp_dpdk_rtt_slot1_*.json     || true)
+slot2_json=$(pick_fresh "$out_dir"/lat_ws_dpdk*rtt_slot2_*.json      || true)
+slot3_json=$(pick_fresh "$out_dir"/lat_ex_md_udp_dpdk_rtt_slot3_*.json || true)
 
 extract_recorded() {
     python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['samples']['recorded'])" "$1"
