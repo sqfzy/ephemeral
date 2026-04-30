@@ -476,6 +476,26 @@ public:
         if (interval_secs <= 0) {
             return {}; // disabled — no syscall
         }
+        // Validate `probes` BEFORE touching any socket option. Linux
+        // setsockopt(TCP_KEEPCNT) rejects probes==0 with EINVAL, but
+        // by then SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL have
+        // already succeeded — the socket would be left in a half-
+        // configured state (keepalive enabled, but probe count still
+        // at the system default of 9). Reject up-front so an invalid
+        // call cannot leak partial state into the kernel. The upper
+        // layer KeepaliveConfig::validate() already enforces the same
+        // [1,10] bound, but this lower-layer API is reachable directly
+        // from tests and future callers, so it must defend itself.
+        if (probes == 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: probes=0 rejected — "
+                "setsockopt(TCP_KEEPCNT, 0) is EINVAL on Linux and "
+                "would leave keepalive partially configured");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: probes must be > 0 "
+                "when interval_secs > 0"});
+        }
         int one = 1;
         if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
                          &one, sizeof(one)) != 0) {

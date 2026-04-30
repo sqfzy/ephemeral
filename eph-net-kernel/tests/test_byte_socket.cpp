@@ -204,3 +204,33 @@ TEST(ByteSocket, MoveTransfersFdOwnership) {
     server.join();
     ::close(lfd);
 }
+
+// Regression: when keepalive is enabled (interval > 0) but probes is 0,
+// `set_keepalive` must reject up-front instead of leaving the socket
+// half-configured (SO_KEEPALIVE + IDLE + INTVL set but TCP_KEEPCNT
+// EINVAL'd by the kernel). Mirrors the upper-layer KeepaliveConfig
+// validate(), but enforced at the lowest API too.
+TEST(ByteSocket, SetKeepaliveZeroProbesRejected) {
+    auto [lfd, port] = bind_ephemeral_listener();
+    ASSERT_GE(lfd, 0);
+    std::thread server([lfd] { echo_once(lfd); });
+
+    ek::ByteSocket bs;
+    en::SocketAddr target{en::Ipv4Addr{127, 0, 0, 1}, port};
+    ASSERT_TRUE(bs.connect(target, std::chrono::milliseconds{1000}).has_value());
+
+    // probes == 0 with non-zero interval: reject with InvalidConfig and
+    // do NOT touch any socket option.
+    auto r = bs.set_keepalive(/*interval_secs=*/30, /*probes=*/0);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+
+    // Disabled path (interval_secs <= 0) is still a no-op success even
+    // when probes==0 — symmetric with the existing semantics.
+    auto r0 = bs.set_keepalive(/*interval_secs=*/0, /*probes=*/0);
+    EXPECT_TRUE(r0.has_value());
+
+    bs.close();
+    server.join();
+    ::close(lfd);
+}
