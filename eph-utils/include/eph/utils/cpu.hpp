@@ -737,11 +737,14 @@ private:
 [[nodiscard]] inline std::expected<PinGuard, std::string>
 pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     if (cpu < 0) {
+        spdlog::error("pin_thread('{}'): cpu={} must be >= 0", name, cpu);
         return std::unexpected("pin_thread: cpu must be >= 0");
     }
 
 #if defined(__linux__)
     if (auto v = detail::validate_pin_policy(cpu, policy); !v) {
+        spdlog::error("pin_thread('{}'): validate_pin_policy(cpu={}) "
+                      "failed: {}", name, cpu, v.error());
         return std::unexpected(std::move(v.error()));
     }
 
@@ -750,6 +753,9 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     CPU_SET(cpu, &set);
     if (int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
         rc != 0) {
+        spdlog::error("pin_thread('{}'): pthread_setaffinity_np(cpu={}) "
+                      "failed: {} (rc={})",
+                      name, cpu, std::strerror(rc), rc);
         return std::unexpected(
             std::string("pthread_setaffinity_np failed: ") + std::strerror(rc));
     }
@@ -757,11 +763,17 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     cpu_set_t verify;
     CPU_ZERO(&verify);
     if (pthread_getaffinity_np(pthread_self(), sizeof(verify), &verify) != 0) {
+        spdlog::error("pin_thread('{}'): pthread_getaffinity_np(cpu={}) "
+                      "failed: {} (errno={})",
+                      name, cpu, std::strerror(errno), errno);
         return std::unexpected(
             std::string("pthread_getaffinity_np failed: ") +
             std::strerror(errno));
     }
     if (!CPU_ISSET(cpu, &verify) || CPU_COUNT(&verify) != 1) {
+        spdlog::error("pin_thread('{}'): affinity verification mismatch — "
+                      "requested cpu={}, verified isset={}, cpu_count={}",
+                      name, cpu, CPU_ISSET(cpu, &verify), CPU_COUNT(&verify));
         return std::unexpected(
             "affinity verification mismatch for cpu " + std::to_string(cpu));
     }
@@ -779,6 +791,13 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
             std::string by = (it != detail::g_pinned_owner_role.end() && !it->second.empty())
                                  ? std::format(" by {}", it->second)
                                  : std::string{};
+            // Log AFTER the registry probe so the conflict is visible — the
+            // OS affinity is already in effect (pthread_setaffinity_np
+            // returned success above), so this is the only chance for an
+            // operator to see *who* the colliding owner is.
+            spdlog::warn("pin_thread('{}'): cpu {} already pinned{} "
+                         "— OS affinity is in effect but registry rejected",
+                         name, cpu, by);
             return std::unexpected(std::format(
                 "pin_thread: cpu {} already pinned{}", cpu, by));
         }
@@ -798,7 +817,10 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     // an empty guard so callers' API shape stays consistent.
     return PinGuard{};
 #else
-    (void)name; (void)policy;
+    (void)policy;
+    spdlog::error("pin_thread('{}'): hard affinity not supported on this "
+                  "platform (cpu={} requested)",
+                  name, cpu);
     return std::unexpected(
         "pin_thread: hard affinity not supported on this platform");
 #endif
