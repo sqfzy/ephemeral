@@ -583,7 +583,18 @@ run_lat_all_dpdk() {
             continue
         fi
         seen_mocks[$sc_short]=1
-        local mock_log="/tmp/lat_all_mockex_${sc_short}.log"
+        # Per-PID file path: previously /tmp/lat_all_mockex_${sc_short}.log was
+        # a fixed (root-writable) name that
+        #   (a) two parallel `lat all` runs would clobber each other's logs,
+        #   (b) sat under TOCTOU symlink-attack reach: a pre-placed
+        #       `/tmp/lat_all_mockex_tcp.log -> /etc/passwd` would have the
+        #       root-running mockex truncate-and-write the symlink target.
+        # `mktemp` with a deterministic prefix solves both: each PID gets a
+        # unique path, and mktemp atomically refuses to follow symlinks.
+        local mock_log
+        mock_log=$(mktemp "/tmp/lat_all_mockex_${sc_short}_XXXXXX.log") || \
+            die "mktemp failed for /tmp/lat_all_mockex_${sc_short}" \
+                "  /tmp not writable? Check 'df -h /tmp' and 'ls -ld /tmp'."
         log_step "fork mockex --scenario $sc_short → $mock_log"
         "$mockex_bin" --scenario "$sc_short" --config "$cfg" \
             > "$mock_log" 2>&1 &
