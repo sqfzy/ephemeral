@@ -82,6 +82,14 @@ int run_lat_ex_market_2p_measurement(std::unique_ptr<StreamT> stream,
     uint64_t malformed       = 0;
     uint64_t clock_skew      = 0;
     uint64_t slot_overflow   = 0;
+    // Two-phase mode latches frames into per-symbol slots whose data buffer
+    // is fixed at kEx2pMaxFrameSize. When `n > kEx2pMaxFrameSize` the
+    // memcpy below silently truncates and the deferred ej::parse() will
+    // fail (incomplete JSON), inflating `malformed` with no breadcrumb to
+    // distinguish "server sent bad JSON" from "frame larger than slot
+    // buffer". Track truncation explicitly so an operator can tell which
+    // root cause is in play. Naive mode parses inline and is unaffected.
+    uint64_t frame_truncated = 0;
     uint64_t t_measure_start = 0;
 
     Slot2P slots[kEx2pMaxSymbols]{};
@@ -124,6 +132,13 @@ int run_lat_ex_market_2p_measurement(std::unique_ptr<StreamT> stream,
                 target = &slots[n_slots++];
                 target->hash = hash;
             }
+            // Track silent truncation for triage — the deferred parse will
+            // fail with kIncomplete and bump `malformed`, but without this
+            // counter operators cannot tell whether the root cause is
+            // genuine bad JSON or undersized slot buffers.
+            if (n > kEx2pMaxFrameSize) [[unlikely]] {
+                ++frame_truncated;
+            }
             const uint16_t copy_len =
                 static_cast<uint16_t>(std::min<std::size_t>(n, kEx2pMaxFrameSize));
             std::memcpy(target->data, d, copy_len);
@@ -159,13 +174,16 @@ int run_lat_ex_market_2p_measurement(std::unique_ptr<StreamT> stream,
         }
     }
 
-    if (malformed > 0 || clock_skew > 0 || slot_overflow > 0) {
+    if (malformed > 0 || clock_skew > 0 || slot_overflow > 0 ||
+        frame_truncated > 0) {
         std::fprintf(stderr,
             "lat_ex_market_2p: skipped %llu malformed + %llu clock-skew"
-            " + %llu slot-overflow samples\n",
+            " + %llu slot-overflow samples (frame_truncated=%llu — raise "
+            "kEx2pMaxFrameSize if non-zero)\n",
             static_cast<unsigned long long>(malformed),
             static_cast<unsigned long long>(clock_skew),
-            static_cast<unsigned long long>(slot_overflow));
+            static_cast<unsigned long long>(slot_overflow),
+            static_cast<unsigned long long>(frame_truncated));
     }
 
     const uint64_t wall_time_ns =
