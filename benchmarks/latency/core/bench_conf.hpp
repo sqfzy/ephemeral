@@ -607,12 +607,46 @@ load_bench_conf(std::string_view path) {
                 RunSpec r;
                 if (auto v = (*tbl)["scenario"].value<std::string>())
                     r.scenario = *v;
-                if (auto v = (*tbl)["lcore"].value<int64_t>())
+                // Same int64→uint16 narrowing concern as the
+                // measurement / dpdk.rss block above: a typo like
+                // `lcore = 100000` would silently wrap to 34464,
+                // colliding with another lcore. Reject up front.
+                if (auto v = (*tbl)["lcore"].value<int64_t>()) {
+                    if (*v < 0 || *v > std::numeric_limits<uint16_t>::max()) {
+                        return std::unexpected(ConfigErrorInfo{
+                            .code   = ConfigError::InvalidValue,
+                            .key    = "parallel.runs[].lcore",
+                            .detail = std::to_string(*v) +
+                                      " out of range [0, UINT16_MAX]",
+                            .file   = cfg.source_,
+                            .line   = 0});
+                    }
                     r.lcore = static_cast<uint16_t>(*v);
-                if (auto v = (*tbl)["cpu"].value<int64_t>())
+                }
+                if (auto v = (*tbl)["cpu"].value<int64_t>()) {
+                    if (*v < 0 || *v > std::numeric_limits<int>::max()) {
+                        return std::unexpected(ConfigErrorInfo{
+                            .code   = ConfigError::InvalidValue,
+                            .key    = "parallel.runs[].cpu",
+                            .detail = std::to_string(*v) +
+                                      " out of range [0, INT_MAX]",
+                            .file   = cfg.source_,
+                            .line   = 0});
+                    }
                     r.cpu = static_cast<int>(*v);
-                if (auto v = (*tbl)["queue"].value<int64_t>())
+                }
+                if (auto v = (*tbl)["queue"].value<int64_t>()) {
+                    if (*v < 0 || *v > std::numeric_limits<uint16_t>::max()) {
+                        return std::unexpected(ConfigErrorInfo{
+                            .code   = ConfigError::InvalidValue,
+                            .key    = "parallel.runs[].queue",
+                            .detail = std::to_string(*v) +
+                                      " out of range [0, UINT16_MAX]",
+                            .file   = cfg.source_,
+                            .line   = 0});
+                    }
                     r.queue = static_cast<uint16_t>(*v);
+                }
                 if (!r.scenario.empty()) {
                     cfg.parallel.runs.push_back(std::move(r));
                 }
