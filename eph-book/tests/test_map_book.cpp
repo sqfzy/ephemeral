@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -313,6 +314,31 @@ TEST(MapBookTest, NanPriceIsIgnored) {
     book.update_bid(100.0, 10.0);
     book.update_bid(std::nan(""), 0.0);
     EXPECT_EQ(book.bid_depth(), 1u);
+}
+
+// Inf price would pin best_bid (greater<>) or best_ask (less<>) at +/- Inf
+// indefinitely — feed glitches sometimes emit Inf via 1/0 in client-side
+// code. Reject up-front like NaN.
+TEST(MapBookTest, InfPriceIsIgnored) {
+    MapBook book;
+    book.update_bid(std::numeric_limits<double>::infinity(), 10.0);
+    EXPECT_EQ(book.bid_depth(), 0u);
+    book.update_bid(-std::numeric_limits<double>::infinity(), 10.0);
+    EXPECT_EQ(book.bid_depth(), 0u);
+    book.update_ask(std::numeric_limits<double>::infinity(), 5.0);
+    EXPECT_EQ(book.ask_depth(), 0u);
+}
+
+// Inf qty would poison total_bid_qty / total_ask_qty and any vwap-style
+// aggregation. Reject like NaN qty.
+TEST(MapBookTest, InfQtyIsIgnored) {
+    MapBook book;
+    book.update_bid(100.0, std::numeric_limits<double>::infinity());
+    EXPECT_EQ(book.bid_depth(), 0u);
+    EXPECT_DOUBLE_EQ(book.total_bid_qty(), 0.0);
+    book.update_ask(101.0, std::numeric_limits<double>::infinity());
+    EXPECT_EQ(book.ask_depth(), 0u);
+    EXPECT_DOUBLE_EQ(book.total_ask_qty(), 0.0);
 }
 
 // ---------------------------------------------------------------------------

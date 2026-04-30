@@ -299,19 +299,24 @@ private:
     /// from different floating-point rounding paths.
     template <typename Map>
     static void update_side(Map& side, double price, double qty) noexcept {
-        // Reject NaN prices — they would corrupt map ordering.
-        if (std::isnan(price)) {
-            SPDLOG_LOGGER_WARN(detail::map_book_logger(), "MapBook::update_side ignoring NaN price");
+        // Reject non-finite prices — NaN corrupts map ordering, +Inf would
+        // pin best_bid (greater<>) at +Inf indefinitely under ascending /
+        // descending sorts and the level couldn't be replaced via tick-size
+        // updates from the feed.
+        if (!std::isfinite(price)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::map_book_logger(),
+                "MapBook::update_side ignoring non-finite price={}", price);
             return;
         }
 
-        // Reject NaN qty — same rationale as ArrayBook: every NaN comparison
-        // is false, so a NaN qty would skip the `qty <= 0.0` removal branch
-        // and call insert_or_assign with NaN, poisoning total_*_qty() and
-        // every signal downstream.
-        if (std::isnan(qty)) [[unlikely]] {
+        // Reject non-finite qty — every NaN comparison is false, so a NaN
+        // qty would skip the `qty <= 0.0` removal branch and call
+        // insert_or_assign with NaN, poisoning total_*_qty() and every
+        // signal downstream. +Inf qty would similarly poison total_*_qty
+        // and any vwap-style aggregation.
+        if (!std::isfinite(qty)) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::map_book_logger(),
-                "MapBook::update_side ignoring NaN qty at price={}", price);
+                "MapBook::update_side ignoring non-finite qty={} at price={}", qty, price);
             return;
         }
 
