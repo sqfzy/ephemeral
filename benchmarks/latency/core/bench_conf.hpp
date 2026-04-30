@@ -526,8 +526,36 @@ load_bench_conf(std::string_view path) {
 
     // ── cpu ───────────────────────────────────────────────────────────
     if (auto* c = raw["cpu"].as_table()) {
-        if (auto v = (*c)["cpu_client"].value<int64_t>()) cfg.cpu.cpu_client = static_cast<int>(*v);
-        if (auto v = (*c)["cpu_mock"].value<int64_t>())   cfg.cpu.cpu_mock   = static_cast<int>(*v);
+        // Same int64→int narrowing concern as the measurement /
+        // dpdk.rss / parallel.runs[] blocks below. CPU id range is
+        // [0, INT_MAX] practically; reject obvious typos (negative
+        // or above INT_MAX) up front so pin_thread() failure points
+        // back at config rather than a misleading sched_setaffinity
+        // EINVAL.
+        if (auto v = (*c)["cpu_client"].value<int64_t>()) {
+            if (*v < 0 || *v > std::numeric_limits<int>::max()) {
+                return std::unexpected(ConfigErrorInfo{
+                    .code   = ConfigError::InvalidValue,
+                    .key    = "cpu.cpu_client",
+                    .detail = std::to_string(*v) +
+                              " out of range [0, INT_MAX]",
+                    .file   = cfg.source_,
+                    .line   = 0});
+            }
+            cfg.cpu.cpu_client = static_cast<int>(*v);
+        }
+        if (auto v = (*c)["cpu_mock"].value<int64_t>()) {
+            if (*v < 0 || *v > std::numeric_limits<int>::max()) {
+                return std::unexpected(ConfigErrorInfo{
+                    .code   = ConfigError::InvalidValue,
+                    .key    = "cpu.cpu_mock",
+                    .detail = std::to_string(*v) +
+                              " out of range [0, INT_MAX]",
+                    .file   = cfg.source_,
+                    .line   = 0});
+            }
+            cfg.cpu.cpu_mock = static_cast<int>(*v);
+        }
         if (auto v = (*c)["eal_cores"].value<std::string>()) cfg.cpu.eal_cores = *v;
         if (auto v = (*c)["allow_non_isolated"].value<bool>()) cfg.cpu.allow_non_isolated = *v;
     }
