@@ -64,6 +64,7 @@
 #  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
+#include "core/bench_ctx.hpp"
 #include "core/endpoint.hpp"          // Phase 4: resolve_endpoint
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
@@ -71,6 +72,8 @@
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
+
+#include "scenarios/lat_ex_market_2p_loop.hpp"
 
 namespace {
 
@@ -135,16 +138,31 @@ enum class Mode { kNaive, kTwophase };
     return {};
 }
 
-/// Templated measurement body — shared between the plain-TCP (mock) and
-/// TLS (real-server) stream flavours. Takes ownership of the already-
-/// connected stream and runs the full poll loop until `duration_s` or
-/// SIGTERM, then prints the report and exports JSON.
-///
-/// All the heavy lifting (naive vs twophase lambda install, per-slot
-/// Phase-2 processing after poll()) stays exactly as it was before
-/// Phase 4 — only the stream type is abstracted.
+/// Forwards to scenarios/lat_ex_market_2p_loop.hpp's
+/// run_lat_ex_market_2p_measurement. Kept as `run_measurement(... PollerT&)`
+/// API in this file's anon namespace so the existing main() call sites
+/// (with `*poller` deref) work without further surgery.
 template <class StreamT, class PollerT>
 int run_measurement(std::unique_ptr<StreamT> stream,
+                    PollerT& poller,
+                    eu::Recorder& rec,
+                    Mode mode,
+                    uint32_t burst_size,
+                    uint64_t duration_s,
+                    uint64_t warmup_samples,
+                    const char* mode_label,
+                    const char* backend) noexcept {
+    auto m2p = (mode == Mode::kNaive)
+                    ? bench::scenarios::Mode2P::kNaive
+                    : bench::scenarios::Mode2P::kTwophase;
+    return bench::scenarios::run_lat_ex_market_2p_measurement(
+        std::move(stream), poller, rec, m2p, burst_size,
+        duration_s, warmup_samples, mode_label, backend);
+}
+
+#if 0  // ── original inline run_measurement body retained as comment ──
+template <class StreamT, class PollerT>
+int run_measurement_orig(std::unique_ptr<StreamT> stream,
                     std::unique_ptr<PollerT>& poller,
                     eu::Recorder& rec,
                     Mode mode,
@@ -287,6 +305,7 @@ int run_measurement(std::unique_ptr<StreamT> stream,
     (void)poller->remove(stream.get());
     return 0;
 }
+#endif  // ── end original run_measurement_orig retained as comment ──
 
 } // namespace
 
@@ -480,7 +499,7 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
+        rc = run_measurement(std::move(stream_r.value()), *poller,
                              rec, mode, burst_size, duration_s,
                              warmup_samples, mode_label, backend);
     } else {
@@ -491,7 +510,7 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
+        rc = run_measurement(std::move(stream_r.value()), *poller,
                              rec, mode, burst_size, duration_s,
                              warmup_samples, mode_label, backend);
     }
@@ -517,7 +536,7 @@ int main(int argc, char** argv) {
                          r.error().detail);
             return 3;
         }
-        return run_measurement(std::move(stream_uptr), poller,
+        return run_measurement(std::move(stream_uptr), *poller,
                                rec, mode, burst_size, duration_s,
                                warmup_samples, mode_label, backend);
     };
