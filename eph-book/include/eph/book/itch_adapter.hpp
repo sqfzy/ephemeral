@@ -167,29 +167,40 @@ private:
     }
 
     /// Add qty to a price level and push to book. O(1).
+    ///
+    /// Both the internal qty_map AND the downstream `book_.update_*` are
+    /// keyed on the quantized price (`qp`). Passing the raw `price` to the
+    /// book risked diverging keys: ITCH feeds always derive prices from
+    /// `int / 10000.0` so today the two are bit-identical, but the qty_map
+    /// would silently aggregate near-duplicates while the book installed
+    /// them as distinct levels under the raw price — leaving the
+    /// previous level's stale qty visible to consumers (matching the
+    /// safety rationale in MapBook::quantize and the BinanceBookAdapter
+    /// canonical-key bookkeeping).
     void add_qty(double price, double qty, char side) noexcept {
         double qp = quantize(price);
         auto& m = qty_map(side);
         double& total = m[qp];
         total += qty;
-        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "add_qty side={} price={} delta={} total={}", side, price, qty, total);
+        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "add_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
         if (side == 'B') {
-            book_.update_bid(price, total);
+            book_.update_bid(qp, total);
         } else {
-            book_.update_ask(price, total);
+            book_.update_ask(qp, total);
         }
     }
 
     /// Subtract qty from a price level and push to book. O(1).
     /// Removes the level from the map if total reaches zero.
+    /// See add_qty for the canonical-price (qp) rationale.
     void sub_qty(double price, double qty, char side) noexcept {
         double qp = quantize(price);
         auto& m = qty_map(side);
         auto it = m.find(qp);
         if (it == m.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "sub_qty: price={} side={} not in qty map", price, side);
-            if (side == 'B') book_.update_bid(price, 0.0);
-            else             book_.update_ask(price, 0.0);
+            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "sub_qty: price={} qp={} side={} not in qty map", price, qp, side);
+            if (side == 'B') book_.update_bid(qp, 0.0);
+            else             book_.update_ask(qp, 0.0);
             return;
         }
         it->second -= qty;
@@ -198,11 +209,11 @@ private:
             m.erase(it);
             total = 0.0;
         }
-        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "sub_qty side={} price={} delta={} total={}", side, price, qty, total);
+        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "sub_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
         if (side == 'B') {
-            book_.update_bid(price, total);
+            book_.update_bid(qp, total);
         } else {
-            book_.update_ask(price, total);
+            book_.update_ask(qp, total);
         }
     }
 
