@@ -1,0 +1,505 @@
+#pragma once
+
+/// @file detail/icmp_directory.hpp
+/// Cross-process ICMP target directory — a hugepage-backed POD lookup
+/// table mapping `(4-tuple, proto) → owner_proc_index`.
+///
+/// Purpose: when an ICMP Frag Needed message lands on a secondary's
+/// RX queue but the target stream lives in primary (or another
+/// secondary), the local `IcmpRegistry::dispatch` finds nothing and
+/// would otherwise silently drop the message. This directory lets the
+/// receiving process look up the owner and forward the parsed message
+/// via `rte_mp_*` IPC.
+///
+/// Why it's separate from `IcmpRegistry`:
+///   - `IcmpRegistry` lives in heap memory, holds raw `void* stream`
+///     pointers (only valid in the owning process), uses `std::mutex`
+///     (undefined behaviour in cross-process shared memory)
+///   - This directory only needs `(tuple, proto, owner_proc_index)` —
+///     no per-target callback, no stream pointer. It's POD-only,
+///     atomic-only, hugepage-friendly.
+///   - Result: `IcmpRegistry` stays untouched (the existing
+///     test_icmp_dispatch's 10 cases keep passing byte-for-byte).
+///     This directory is a strict addition: each `register_icmp_
+///     target` call now does **dual register** — local registry +
+///     this directory.
+///
+/// Generation counter (stale-handle protection):
+///   Each entry has a `std::atomic<uint32_t> generation` that is
+///   incremented on every `unregister`. IPC dispatch messages carry
+///   the generation observed at lookup time; the receiving process
+///   re-reads the entry's gen on dispatch and drops if mismatched —
+///   preventing UAF if a stream is unregistered between the
+///   secondary's lookup and the primary's dispatch.
+///
+/// Mutual layout: this header parallels `mp_registry.hpp`'s POD
+/// layout style — same `magic / version / file_prefix / [array of
+/// atomic-fielded entries]` shape, same memzone-backed RAII handle.
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <expected>
+#include <optional>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+
+#include <spdlog/spdlog.h>
+
+#include <rte_eal.h>
+#include <rte_errno.h>
+#include <rte_lcore.h>
+#include <rte_memzone.h>
+
+#include "eph/core/error.hpp"
+#include "eph/dpdk/packet_core.hpp"   // ConnectionTuple
+
+namespace eph::dpdk::detail {
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compile-time constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Memzone name prefix. Composed name is `eph_mp_icmp/<file_prefix>`.
+inline constexpr std::string_view kIcmpDirectoryNamePrefix = "eph_mp_icmp/";
+
+/// @brief Mirrors `RTE_MEMZONE_NAMESIZE` (32 incl. NUL).
+inline constexpr size_t kIcmpDirectoryNameCap = 32;
+
+/// @brief Cap on the user-supplied `file_prefix` portion of the name.
+/// 32 - len("eph_mp_icmp/") - 1 (trailing NUL) = 19.
+inline constexpr size_t kIcmpDirectoryFilePrefixMax =
+    kIcmpDirectoryNameCap - kIcmpDirectoryNamePrefix.size() - 1;  // 19
+
+/// @brief Magic bytes 'EICD' (eph icmp directory) in memory order. A
+/// hex dump shows `45 49 43 44 ..` and is greppable.
+inline constexpr uint32_t kIcmpDirectoryMagic =
+    (static_cast<uint32_t>('E') << 0)  |
+    (static_cast<uint32_t>('I') << 8)  |
+    (static_cast<uint32_t>('C') << 16) |
+    (static_cast<uint32_t>('D') << 24);
+
+inline constexpr uint32_t kIcmpDirectoryVersion = 1;
+
+/// @brief Cap on populated entries. 1024 ≈ 4 procs × 256 streams/proc;
+/// generous for HFT but not extravagant. Header sizeof ≈ 32 KiB ≪
+/// hugepage (2 MiB). Increasing requires a version bump.
+inline constexpr size_t kIcmpDirectoryMaxEntries = 1024;
+
+/// @brief Sentinel used to indicate "no owner" / "free slot" in
+/// `owner_proc` field. Real proc indices are 0-based ≤ 63
+/// (MpTopology::kMaxProcs cap).
+inline constexpr uint8_t kIcmpDirectoryNoOwner = 0xFF;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POD layout — must remain trivially copyable + standard layout
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief One directory slot. Memory layout MUST stay stable across
+/// the build tree (all eph processes link the same header). Fields
+/// are ordered so all atomics align naturally; pads are explicit.
+struct IcmpDirectoryEntry {
+    /// 0 = free, 1 = claimed. CAS on register; plain store on unregister.
+    std::atomic<uint8_t> claimed;
+    /// IP protocol (e.g. 6 = TCP, 17 = UDP). 0 = unset.
+    uint8_t  proto;
+    /// Owning process index. `kIcmpDirectoryNoOwner` (0xFF) when free.
+    uint8_t  owner_proc;
+    uint8_t  _pad0;
+
+    uint32_t src_ip;   ///< Host byte order, matches ConnectionTuple
+    uint32_t dst_ip;
+    uint16_t src_port;
+    uint16_t dst_port;
+
+    uint32_t _pad1;    ///< Align `generation` to 8-byte boundary
+
+    /// Bumped on every unregister; IPC dispatch messages carry the
+    /// gen observed at lookup, owner re-reads on dispatch, drops if
+    /// mismatch (stale handle protection).
+    std::atomic<uint32_t> generation;
+};
+
+/// @brief Header block at the start of the memzone. Cacheline-aligned
+/// so the hot stats counters don't share a line with anything else
+/// while still keeping the entries[] array tightly packed behind it.
+struct alignas(64) IcmpDirectoryHeader {
+    uint32_t magic;          ///< = kIcmpDirectoryMagic
+    uint32_t version;        ///< = kIcmpDirectoryVersion
+    uint32_t max_entries;    ///< Effective `entries` array bound (== kIcmpDirectoryMaxEntries)
+    uint32_t _pad0;          ///< Align file_prefix to 8
+
+    /// Null-terminated copy of the user `file_prefix`. Sanity-check
+    /// only — primary/secondary mismatch on file_prefix would have
+    /// already failed at `rte_memzone_lookup` (different memzone
+    /// names). Carried here for human-readable dump output.
+    char file_prefix[kIcmpDirectoryFilePrefixMax + 1];
+
+    /// Stats — atomic so any process can read live counts without locking.
+    std::atomic<uint64_t> ipc_msgs_sent;
+    std::atomic<uint64_t> ipc_msgs_received;
+    std::atomic<uint64_t> dropped_stale;
+    std::atomic<uint64_t> dropped_no_owner;
+
+    std::array<IcmpDirectoryEntry, kIcmpDirectoryMaxEntries> entries;
+};
+
+static_assert(std::atomic<uint8_t>::is_always_lock_free,
+              "IcmpDirectoryEntry::claimed must be lock-free for cross-process use");
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "IcmpDirectoryEntry::generation must be lock-free");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "IcmpDirectoryHeader stats counters must be lock-free");
+static_assert(std::is_trivially_copyable_v<IcmpDirectoryEntry>,
+              "IcmpDirectoryEntry must be trivially copyable for memzone storage");
+static_assert(std::is_trivially_copyable_v<IcmpDirectoryHeader>,
+              "IcmpDirectoryHeader must be trivially copyable for memzone storage");
+static_assert(alignof(IcmpDirectoryHeader) >= 64,
+              "IcmpDirectoryHeader requires cacheline alignment");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @brief Compose memzone name `eph_mp_icmp/<file_prefix>` into a
+/// fixed-size buffer. Returns InvalidConfig on empty / oversize.
+[[nodiscard]] inline std::expected<std::array<char, kIcmpDirectoryNameCap>,
+                                   core::ErrorInfo>
+build_icmp_directory_name(std::string_view file_prefix) noexcept {
+    if (file_prefix.empty())
+        return std::unexpected(core::ErrorInfo{
+            core::Error::InvalidConfig,
+            "IcmpDirectory: file_prefix must be non-empty"});
+    if (file_prefix.size() > kIcmpDirectoryFilePrefixMax)
+        return std::unexpected(core::ErrorInfo{
+            core::Error::InvalidConfig,
+            "IcmpDirectory: file_prefix exceeds 19 bytes "
+            "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp_icmp/\") - 1)"});
+
+    std::array<char, kIcmpDirectoryNameCap> buf{};
+    std::memcpy(buf.data(), kIcmpDirectoryNamePrefix.data(),
+                kIcmpDirectoryNamePrefix.size());
+    std::memcpy(buf.data() + kIcmpDirectoryNamePrefix.size(),
+                file_prefix.data(), file_prefix.size());
+    return buf;
+}
+
+/// @brief Initialize a fresh directory in `dst`. Caller has ensured
+/// `dst` points at a freshly reserved memzone of >=
+/// sizeof(IcmpDirectoryHeader) bytes.
+inline void
+init_icmp_directory_header(IcmpDirectoryHeader* dst,
+                           std::string_view file_prefix) noexcept {
+    dst->magic       = kIcmpDirectoryMagic;
+    dst->version     = kIcmpDirectoryVersion;
+    dst->max_entries = static_cast<uint32_t>(kIcmpDirectoryMaxEntries);
+    dst->_pad0       = 0;
+    std::memset(dst->file_prefix, 0, sizeof(dst->file_prefix));
+    std::memcpy(dst->file_prefix, file_prefix.data(),
+                std::min(file_prefix.size(),
+                         sizeof(dst->file_prefix) - 1));
+
+    dst->ipc_msgs_sent.store(0, std::memory_order_relaxed);
+    dst->ipc_msgs_received.store(0, std::memory_order_relaxed);
+    dst->dropped_stale.store(0, std::memory_order_relaxed);
+    dst->dropped_no_owner.store(0, std::memory_order_relaxed);
+
+    for (auto& e : dst->entries) {
+        e.claimed.store(0, std::memory_order_relaxed);
+        e.proto = 0;
+        e.owner_proc = kIcmpDirectoryNoOwner;
+        e._pad0 = 0;
+        e.src_ip = 0;
+        e.dst_ip = 0;
+        e.src_port = 0;
+        e.dst_port = 0;
+        e._pad1 = 0;
+        e.generation.store(0, std::memory_order_relaxed);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IcmpDirectoryHandle — RAII owner of a directory attachment
+// ─────────────────────────────────────────────────────────────────────────────
+
+class IcmpDirectoryHandle {
+public:
+    /// @brief Look-up result returned by `lookup()`. Carries the
+    /// owner proc index, the generation observed at lookup time,
+    /// and the slot index for re-checking.
+    struct LookupResult {
+        uint8_t  owner_proc;
+        uint32_t generation;
+        size_t   slot_idx;
+    };
+
+    IcmpDirectoryHandle() noexcept = default;
+
+    IcmpDirectoryHandle(const IcmpDirectoryHandle&) = delete;
+    IcmpDirectoryHandle& operator=(const IcmpDirectoryHandle&) = delete;
+
+    IcmpDirectoryHandle(IcmpDirectoryHandle&& o) noexcept
+        : hdr_(o.hdr_), mz_(o.mz_), owns_memzone_(o.owns_memzone_) {
+        o.reset_();
+    }
+
+    IcmpDirectoryHandle& operator=(IcmpDirectoryHandle&& o) noexcept {
+        if (this != &o) {
+            release_();
+            hdr_          = o.hdr_;
+            mz_           = o.mz_;
+            owns_memzone_ = o.owns_memzone_;
+            o.reset_();
+        }
+        return *this;
+    }
+
+    ~IcmpDirectoryHandle() { release_(); }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return hdr_ != nullptr;
+    }
+
+    [[nodiscard]] IcmpDirectoryHeader const* header() const noexcept {
+        return hdr_;
+    }
+    [[nodiscard]] IcmpDirectoryHeader* header() noexcept { return hdr_; }
+
+    // ── Factories ────────────────────────────────────────────────────────────
+
+    /// @brief Reserve (or replace) the directory memzone. Same
+    /// reset-on-create contract as `MpRegistryHandle::create_primary`.
+    [[nodiscard]] static std::expected<IcmpDirectoryHandle, core::ErrorInfo>
+    create_primary(std::string_view file_prefix) {
+        auto name_r = build_icmp_directory_name(file_prefix);
+        if (!name_r) return std::unexpected(name_r.error());
+        const char* name = name_r->data();
+
+        // Free any stale memzone from a previous run — primary always
+        // resets (matches mp_registry's contract).
+        if (auto* old = rte_memzone_lookup(name)) {
+            SPDLOG_INFO(
+                "IcmpDirectory: primary found stale memzone '{}' from a "
+                "previous run; freeing before re-reserving",
+                name);
+            (void)rte_memzone_free(old);
+        }
+
+        const auto* mz = rte_memzone_reserve_aligned(
+            name,
+            sizeof(IcmpDirectoryHeader),
+            SOCKET_ID_ANY,
+            /*flags=*/0,
+            /*align=*/64);
+        if (mz == nullptr) {
+            SPDLOG_ERROR(
+                "IcmpDirectory: rte_memzone_reserve_aligned('{}', size={}) "
+                "failed (rte_errno={})",
+                name, sizeof(IcmpDirectoryHeader), rte_errno);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "IcmpDirectory: rte_memzone_reserve_aligned failed "
+                "(see rte_errno; usually hugepage exhaustion)"});
+        }
+
+        auto* hdr = static_cast<IcmpDirectoryHeader*>(mz->addr);
+        init_icmp_directory_header(hdr, file_prefix);
+
+        SPDLOG_INFO(
+            "IcmpDirectory: primary reserved memzone '{}' "
+            "(magic=0x{:08x} ver={} max_entries={})",
+            name, kIcmpDirectoryMagic, kIcmpDirectoryVersion,
+            hdr->max_entries);
+
+        IcmpDirectoryHandle h;
+        h.hdr_          = hdr;
+        h.mz_           = mz;
+        h.owns_memzone_ = true;
+        return h;
+    }
+
+    /// @brief Look up the primary's directory memzone and validate.
+    [[nodiscard]] static std::expected<IcmpDirectoryHandle, core::ErrorInfo>
+    attach_secondary(std::string_view file_prefix) {
+        auto name_r = build_icmp_directory_name(file_prefix);
+        if (!name_r) return std::unexpected(name_r.error());
+        const char* name = name_r->data();
+
+        const auto* mz = rte_memzone_lookup(name);
+        if (mz == nullptr) {
+            SPDLOG_ERROR(
+                "IcmpDirectory: rte_memzone_lookup('{}') returned NULL — "
+                "primary not running, file_prefix mismatch, or EAL not "
+                "initialized as secondary",
+                name);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotFound,
+                "IcmpDirectory: memzone lookup failed"});
+        }
+
+        auto* hdr = static_cast<IcmpDirectoryHeader*>(mz->addr);
+        if (hdr->magic != kIcmpDirectoryMagic)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "IcmpDirectory: header magic mismatch (memzone collision "
+                "or corruption)"});
+        if (hdr->version != kIcmpDirectoryVersion)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "IcmpDirectory: header version mismatch (build-tree drift)"});
+
+        SPDLOG_INFO(
+            "IcmpDirectory: secondary attached to '{}' (max_entries={})",
+            name, hdr->max_entries);
+
+        IcmpDirectoryHandle h;
+        h.hdr_          = hdr;
+        h.mz_           = mz;
+        h.owns_memzone_ = false;
+        return h;
+    }
+
+    // ── Mutators ─────────────────────────────────────────────────────────────
+
+    /// @brief Claim a free slot for `(tuple, proto, owner_proc)`.
+    /// Returns the slot index on success, ResourceExhausted-class
+    /// error on full directory, InvalidConfig on duplicate.
+    /// Linear scan; cap=1024 → ~few μs worst case (cold path).
+    [[nodiscard]] std::expected<size_t, core::ErrorInfo>
+    register_target(net::ConnectionTuple const& tuple,
+                    uint8_t                     proto,
+                    uint8_t                     owner_proc) noexcept {
+        if (hdr_ == nullptr)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "IcmpDirectory::register_target: handle is moved-from"});
+        if (owner_proc == kIcmpDirectoryNoOwner)
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "IcmpDirectory::register_target: 0xFF is reserved as "
+                "no-owner sentinel"});
+
+        // Pass 1: reject duplicates (same tuple+proto already registered)
+        for (size_t i = 0; i < hdr_->max_entries; ++i) {
+            auto& e = hdr_->entries[i];
+            if (e.claimed.load(std::memory_order_acquire) == 0) continue;
+            if (e.proto == proto &&
+                e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
+                e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "IcmpDirectory::register_target: (tuple, proto) "
+                    "already registered"});
+            }
+        }
+
+        // Pass 2: CAS-claim a free slot.
+        for (size_t i = 0; i < hdr_->max_entries; ++i) {
+            auto& e = hdr_->entries[i];
+            uint8_t expected = 0;
+            if (!e.claimed.compare_exchange_strong(
+                    expected, 1, std::memory_order_acq_rel)) {
+                continue;  // slot was just claimed by someone else
+            }
+            // Race won — write payload before any reader can lookup.
+            // Note: gen is NOT bumped on register; only on unregister
+            // (so a fresh slot starts at gen=0 and increments per
+            // detach cycle). This means dispatch IPC carrying gen=0
+            // is "first generation, never unregistered yet" — fine.
+            e.proto      = proto;
+            e.owner_proc = owner_proc;
+            e._pad0      = 0;
+            e.src_ip     = tuple.src_ip;
+            e.dst_ip     = tuple.dst_ip;
+            e.src_port   = tuple.src_port;
+            e.dst_port   = tuple.dst_port;
+            return i;
+        }
+        return std::unexpected(core::ErrorInfo{
+            core::Error::OutOfMemory,
+            "IcmpDirectory::register_target: directory full (1024 slots)"});
+    }
+
+    /// @brief Release a slot. Bumps generation so any in-flight IPC
+    /// msg referencing this slot's old gen will be dropped at owner-
+    /// side dispatch.
+    void unregister(size_t slot_idx) noexcept {
+        if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return;
+        auto& e = hdr_->entries[slot_idx];
+        // ++gen first (acquire-release with claimed clear so dispatch
+        // path observing claimed=1 + new gen is consistent).
+        e.generation.fetch_add(1, std::memory_order_acq_rel);
+        e.proto      = 0;
+        e.owner_proc = kIcmpDirectoryNoOwner;
+        e.src_ip     = 0;
+        e.dst_ip     = 0;
+        e.src_port   = 0;
+        e.dst_port   = 0;
+        e.claimed.store(0, std::memory_order_release);
+    }
+
+    // ── Lookups (read-only) ─────────────────────────────────────────────────
+
+    /// @brief Find the slot owning `(tuple, proto)`. Returns
+    /// `std::nullopt` if no such target.
+    /// Linear scan; cap=1024 → ~few μs worst case (cold ICMP miss path).
+    [[nodiscard]] std::optional<LookupResult>
+    lookup(net::ConnectionTuple const& tuple,
+           uint8_t                     proto) const noexcept {
+        if (hdr_ == nullptr) return std::nullopt;
+        for (size_t i = 0; i < hdr_->max_entries; ++i) {
+            const auto& e = hdr_->entries[i];
+            if (e.claimed.load(std::memory_order_acquire) == 0) continue;
+            if (e.proto == proto &&
+                e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
+                e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
+                return LookupResult{
+                    .owner_proc = e.owner_proc,
+                    .generation = e.generation.load(std::memory_order_acquire),
+                    .slot_idx   = i,
+                };
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// @brief Stale-check used by the owner-side IPC handler before
+    /// dispatching to the local `IcmpRegistry`. Returns true iff the
+    /// slot is still claimed AND its generation matches `expected_gen`.
+    [[nodiscard]] bool
+    is_slot_alive(size_t slot_idx, uint32_t expected_gen) const noexcept {
+        if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return false;
+        const auto& e = hdr_->entries[slot_idx];
+        return e.claimed.load(std::memory_order_acquire) != 0 &&
+               e.generation.load(std::memory_order_acquire) == expected_gen;
+    }
+
+private:
+    void reset_() noexcept {
+        hdr_          = nullptr;
+        mz_           = nullptr;
+        owns_memzone_ = false;
+    }
+
+    void release_() noexcept {
+        if (hdr_ == nullptr) return;
+        if (owns_memzone_ && mz_ != nullptr) {
+            const int rc = rte_memzone_free(mz_);
+            if (rc != 0) {
+                SPDLOG_ERROR(
+                    "IcmpDirectory: rte_memzone_free failed (rc={}) — "
+                    "hugepage segment will leak until process exit",
+                    rc);
+            }
+        }
+        reset_();
+    }
+
+    IcmpDirectoryHeader*      hdr_          = nullptr;
+    const struct rte_memzone* mz_           = nullptr;
+    bool                      owns_memzone_ = false;
+};
+
+} // namespace eph::dpdk::detail
