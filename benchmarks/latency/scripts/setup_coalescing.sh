@@ -3,8 +3,8 @@
 #   — tune NIC RX coalescing for reproducible bench latency
 #
 # ┌── Script roles in this repo ────────────────────────────────────────────┐
-# │ eph-dpdk/scripts/dpdk-setup.sh         one-shot host env: vfio + hugepg │
-# │ eph-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
+# │ eph-net-dpdk/scripts/dpdk-setup.sh     one-shot host env: vfio + hugepg │
+# │ eph-net-dpdk/scripts/dpdk-teardown.sh  undo dpdk-setup, restore kernel  │
 # │ benchmarks/latency/scripts/            this script — RX coalescing tune │
 # │   setup_coalescing.sh                                                   │
 # │ benchmarks/latency/lat                 per-run bench wrapper            │
@@ -66,9 +66,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
     :
 else
-    # Fallback: walk up looking for the eph-dpdk/ marker
+    # Fallback: walk up looking for the eph-net-dpdk/ marker. Phase 7
+    # renamed the legacy eph-dpdk/ directory to eph-net-dpdk/, so the
+    # old marker stopped existing — left unchanged this loop bottomed
+    # out at "/" and silently aliased PROJECT_DIR to "$SCRIPT_DIR/.."
+    # (= benchmarks/latency), making BENCH_CONFIG resolve to
+    # `benchmarks/latency/benchmarks/latency/bench.conf` which never
+    # exists. Use the current marker.
     PROJECT_DIR="$SCRIPT_DIR"
-    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-dpdk" ]]; do
+    while [[ "$PROJECT_DIR" != "/" && ! -d "$PROJECT_DIR/eph-net-dpdk" ]]; do
         PROJECT_DIR="$(dirname "$PROJECT_DIR")"
     done
     [[ "$PROJECT_DIR" == "/" ]] && PROJECT_DIR="$SCRIPT_DIR/.."
@@ -323,7 +329,7 @@ elif [[ -f "$BENCH_CONFIG" ]]; then
         # not applicable while bound to vfio. Warn and skip.
         log_warn "$NIC_B not found in any netns — possibly bound to vfio-pci, skipping"
         log_info "  if running a DPDK bench, this is expected; coalescing only matters in kernel mode"
-        log_info "  to apply now, first re-bind: sudo ./eph-dpdk/scripts/dpdk-teardown.sh"
+        log_info "  to apply now, first re-bind: sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
     else
         TARGETS+=("$NIC_B|$nic_b_ns")
     fi
