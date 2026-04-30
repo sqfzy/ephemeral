@@ -13,7 +13,7 @@
 ///   * `Platform::create_primary` with `enable_rss=true` + `nb_rx_queues=N`,
 ///     hard-failing on RSS bring-up (no silent collapse to queue 0 — see
 ///     `eph-net-dpdk/CHANGELOG.md`).
-///   * The four diagnostic getters that tell you what RSS path resolved:
+///   * The three diagnostic getters that tell you what RSS path resolved:
 ///         `dispatch_mode()` /
 ///         `rss_using_probed_key()` / `effective_rx_queue_range()`.
 ///     The probed-key path lights up on ENA where the PMD rejects
