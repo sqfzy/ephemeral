@@ -31,6 +31,8 @@
 #include <string>
 #include <string_view>
 
+#include <spdlog/spdlog.h>
+
 #include "eph/core/error.hpp"
 
 namespace eph::dpdk::detail {
@@ -47,16 +49,27 @@ inline constexpr size_t kBdfMaxLen = 12;  // "DDDD:BB:DD.F"
 /// memzone-naming failure.
 [[nodiscard]] inline std::expected<std::string, core::ErrorInfo>
 sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
-    if (bdf.empty())
+    // Cold-path validation: each rule logs the offending input alongside the
+    // typed error so a misconfigured `Platform::join_dynamic` surfaces in the
+    // logs even if the caller wraps san.error().detail and never logs the
+    // string form (see platform.hpp line ~2421 — autojoin forwards the detail
+    // back as a `std::string` without a SPDLOG_ call on the failure path).
+    if (bdf.empty()) {
+        spdlog::error("sanitize_bdf: BDF must be non-empty");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "sanitize_bdf: BDF must be non-empty"});
+    }
 
-    if (bdf.size() < kBdfMinLen || bdf.size() > kBdfMaxLen)
+    if (bdf.size() < kBdfMinLen || bdf.size() > kBdfMaxLen) {
+        spdlog::error(
+            "sanitize_bdf: BDF length {} out of range [7, 12] (bdf='{}')",
+            bdf.size(), bdf);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "sanitize_bdf: BDF length must be in [7, 12] "
             "(e.g. '0000:28:00.0' or '28:00.0')"});
+    }
 
     bool has_colon = false;
     bool has_dot   = false;
@@ -66,17 +79,27 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
                             (c >= 'A' && c <= 'F');
         if (c == ':') { has_colon = true; continue; }
         if (c == '.') { has_dot   = true; continue; }
-        if (!is_hex)
+        if (!is_hex) {
+            spdlog::error(
+                "sanitize_bdf: BDF contains non-hex/':'/'.' char "
+                "(byte={:#x}, bdf='{}')",
+                static_cast<unsigned>(static_cast<unsigned char>(c)), bdf);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "sanitize_bdf: BDF contains a character that is not a "
                 "hex digit, ':' or '.'"});
+        }
     }
-    if (!has_colon || !has_dot)
+    if (!has_colon || !has_dot) {
+        spdlog::error(
+            "sanitize_bdf: BDF missing required separator "
+            "(has_colon={} has_dot={} bdf='{}')",
+            has_colon, has_dot, bdf);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "sanitize_bdf: BDF must contain both ':' and '.' "
             "(canonical PCI form requires the function separator)"});
+    }
 
     std::string out;
     out.reserve(bdf.size());
