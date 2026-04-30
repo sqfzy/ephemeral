@@ -130,28 +130,43 @@ path-MTU feedback is served from the un-routed fallback via
 ### Config types (`config.hpp`)
 
 ```cpp
+// Post-T3.19 layout: backend-shared concerns at the top level; DPDK-only
+// knobs live in a nested `dpdk` substruct. Mirrors the kernel twin's
+// `kernel` substruct for symmetry. The DPDK StreamConfig has NO proxy
+// field — misuse on DPDK is a compile error rather than a factory-time
+// reject (HTTP CONNECT is kernel-only by design).
 struct StreamConfig {
-    ::eph::dpdk::TcpConfig legacy{};    // 4-tuple, MAC, port/queue, MSS, recv_window
-    ::rte_mempool*        pool{nullptr};
-    std::chrono::milliseconds connect_timeout{3000};
-    ::eph::net::TlsConfig tls{};        // only used when EnableTls=true
+    std::chrono::milliseconds            connect_timeout{3000};
+    std::size_t                          reasm_capacity{256 * 1024};
+    ::eph::net::TlsConfig                tls{};             // used when EnableTls=true
 
-    // WebSocket upgrade (empty ws_path skips)
-    std::string                 ws_path{};
-    std::string                 ws_host{};
-    std::vector<HttpHeader>     ws_extra_headers{};
-    std::chrono::milliseconds   ws_timeout{10'000};
+    // WebSocket upgrade — non-empty ws.path activates RFC 6455 handshake.
+    // Sub-struct also carries `host`, `extra_headers`, `timeout`, and
+    // `permessage_deflate` (true by default).
+    ::eph::net::WsConfig                 ws{};
 
-    // Unsupported on DPDK — create() rejects non-empty proxy at factory time
-    std::optional<ProxyConfig>  proxy{};
+    // TCP keepalive (interval==0 disables). Lowered into
+    // dpdk.tcp_low_level.keepalive_interval / keepalive_probes at factory
+    // time so TcpSession::tick_keepalive honours it on every poll cycle.
+    ::eph::net::KeepaliveConfig          keepalive{};
 
-    std::size_t                 reasm_capacity{256 * 1024};
-    std::optional<uint16_t>     pin_to_queue{};  // RSS+pin / FlowDirector target
+    // DPDK-only knobs.
+    struct Dpdk {
+        ::eph::dpdk::TcpConfig tcp_low_level{};   // 4-tuple, MAC, port/queue, MSS,
+                                                  // recv_window, max_rx_burst
+                                                  // (renamed from `legacy` in T3.19)
+        ::rte_mempool*        pool{nullptr};      // mempool for TcpSession mbufs
+        std::optional<uint16_t> pin_to_queue{};   // RSS+pin / FlowDirector target
+        int                   pool_lcore_hint{-1}; // per-lcore mempool hint
+    } dpdk;
 };
 
 struct UdpConfig {
-    ::eph::dpdk::UdpConfig legacy{};    // 4-tuple, MAC, port/queue, mempool, hw_cksum
+    ::eph::dpdk::UdpConfig  legacy{};   // 4-tuple, MAC, port/queue, mempool, hw_cksum
+                                        // (UDP retains the legacy substruct name —
+                                        //  see config.hpp comment)
     std::optional<uint16_t> pin_to_queue{};
+    int                     pool_lcore_hint{-1};
 };
 
 struct PollerConfig {
