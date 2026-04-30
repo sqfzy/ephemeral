@@ -133,3 +133,34 @@ TEST(MockexWsServerDecode, RejectsUnmaskedClientFrame) {
     auto frame = mockex::ws::decode_frame(io);
     EXPECT_FALSE(frame.has_value());
 }
+
+/// `extract_sec_ws_key` strips RFC 7230 OWS on both sides of the
+/// header value. Without the trailing-OWS strip a non-conforming
+/// client emitting "key  \r\n" would compute a Sec-WebSocket-Accept
+/// against "key  " (with trailing spaces) and the handshake would
+/// fail for an opaque reason.
+TEST(MockexWsServerDecode, ExtractKeyStripsLeadingAndTrailingOws) {
+    // Leading two spaces, trailing two tabs.
+    std::string req =
+        "GET / HTTP/1.1\r\n"
+        "Host: x\r\n"
+        "Sec-WebSocket-Key:  dGhlIHNhbXBsZSBub25jZQ==\t\t\r\n"
+        "\r\n";
+    auto key = mockex::ws::detail::extract_sec_ws_key(req);
+    ASSERT_TRUE(key.has_value());
+    EXPECT_EQ(*key, "dGhlIHNhbXBsZSBub25jZQ==");
+}
+
+TEST(MockexWsServerDecode, ExtractKeyHandlesAllWhitespaceValueAsEmpty) {
+    // A pathological "value is only whitespace" — leading strip pushes
+    // p past `e` would underflow if not guarded. We expect either
+    // empty string or rejection; pin behaviour: empty string is fine
+    // (the SHA1 path will then mismatch any real client).
+    std::string req =
+        "GET / HTTP/1.1\r\n"
+        "Sec-WebSocket-Key:   \r\n"
+        "\r\n";
+    auto key = mockex::ws::detail::extract_sec_ws_key(req);
+    ASSERT_TRUE(key.has_value());
+    EXPECT_TRUE(key->empty());
+}

@@ -105,7 +105,15 @@ extract_sec_ws_key(std::string_view req) noexcept {
         while (p < req.size() && (req[p] == ' ' || req[p] == '\t')) ++p;
         size_t e = req.find("\r\n", p);
         if (e == std::string_view::npos) return std::nullopt;
-        return std::string(req.substr(p, e - p));
+        // Strip trailing OWS (RFC 7230 §3.2.4: header values may have
+        // whitespace before AND after the value). The eph WS client
+        // never emits trailing OWS, but a non-conforming peer that
+        // does would otherwise produce a key like "abc== " whose
+        // SHA1 differs from "abc==", failing handshake-accept on
+        // both sides for an opaque reason.
+        size_t end = e;
+        while (end > p && (req[end - 1] == ' ' || req[end - 1] == '\t')) --end;
+        return std::string(req.substr(p, end - p));
     }
     return std::nullopt;
 }
