@@ -99,6 +99,65 @@ TEST(DpdkEnvArgv, EmptyPciOmitsAllowList) {
     }
 }
 
+// ── parse_eal_cores_csv — typed CSV → LcorePin list ──────────────────
+//
+// The typed pin path (`bench::parse_eal_cores_csv`) is what production
+// bench bring-up uses (replaces the legacy `-l <csv>` argv lowering).
+// Pre-fix, atoi-based parsing silently coerced "abc" → 0 and stacked
+// multiple lcores onto cpu 0 — directly breaking the project rule that
+// every bench thread pin to its own cpu. These tests pin the strict
+// strtol-based parser.
+
+TEST(DpdkEnvArgv, ParseCsv_HappyPath) {
+    auto r = bench::parse_eal_cores_csv("0,4,5");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    ASSERT_EQ(r->size(), 3u);
+    EXPECT_EQ((*r)[0].lcore_id, 0);
+    EXPECT_EQ((*r)[0].cpu_id, 0);
+    EXPECT_EQ((*r)[1].lcore_id, 1);
+    EXPECT_EQ((*r)[1].cpu_id, 4);
+    EXPECT_EQ((*r)[2].lcore_id, 2);
+    EXPECT_EQ((*r)[2].cpu_id, 5);
+}
+
+TEST(DpdkEnvArgv, ParseCsv_TrimsWhitespace) {
+    auto r = bench::parse_eal_cores_csv(" 0 , 4 , 5 ");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    ASSERT_EQ(r->size(), 3u);
+    EXPECT_EQ((*r)[1].cpu_id, 4);
+}
+
+TEST(DpdkEnvArgv, ParseCsv_RejectsNonDigitToken) {
+    // Pre-fix, atoi("abc") returned 0 and silently created a pin on cpu 0.
+    auto r = bench::parse_eal_cores_csv("0,abc,5");
+    EXPECT_FALSE(r.has_value())
+        << "non-digit token 'abc' must be rejected";
+}
+
+TEST(DpdkEnvArgv, ParseCsv_RejectsTrailingGarbage) {
+    // "5x" is exactly the kind of typo that atoi swallowed (parses '5'
+    // and ignores 'x'). strtol's `end` pointer flags the unconsumed 'x'.
+    auto r = bench::parse_eal_cores_csv("0,5x");
+    EXPECT_FALSE(r.has_value())
+        << "trailing garbage in '5x' must be rejected";
+}
+
+TEST(DpdkEnvArgv, ParseCsv_RejectsNegative) {
+    auto r = bench::parse_eal_cores_csv("0,-3");
+    EXPECT_FALSE(r.has_value())
+        << "negative cpu must be rejected";
+}
+
+TEST(DpdkEnvArgv, ParseCsv_SkipsEmptyTokens) {
+    // ",,3" — leading + double comma. The whitespace-stripping path
+    // collapses these to nothing; only "3" produces a pin.
+    auto r = bench::parse_eal_cores_csv(",,3");
+    ASSERT_TRUE(r.has_value()) << r.error();
+    ASSERT_EQ(r->size(), 1u);
+    EXPECT_EQ((*r)[0].cpu_id, 3);
+    EXPECT_EQ((*r)[0].lcore_id, 0);
+}
+
 #else
 
 // Compile-time fallback on non-DPDK builds so the test target still

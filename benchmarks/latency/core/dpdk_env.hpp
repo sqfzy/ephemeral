@@ -18,9 +18,13 @@
 #ifdef EPH_USE_DPDK
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
+#include <limits>
 #include <random>
 #include <string>
 #include <string_view>
@@ -122,12 +126,35 @@ parse_eal_cores_csv(std::string_view csv) {
         while (!tok.empty() && (tok.back()  == ' ' || tok.back()  == '\t'))
             tok.remove_suffix(1);
         if (!tok.empty()) {
-            int cpu = std::atoi(std::string{tok}.c_str());
-            if (cpu < 0) {
+            // strtol over std::atoi: atoi swallows non-digits silently
+            // ("abc" → 0), which would have pinned this lcore to cpu 0
+            // and stacked it with another lcore — directly violating the
+            // "every bench thread on a fixed cpu" project rule. strtol
+            // tells us where parsing stopped via `end`, so we can reject
+            // any trailing garbage.
+            const std::string tok_z{tok};
+            char* end = nullptr;
+            errno = 0;
+            const long parsed = std::strtol(tok_z.c_str(), &end, 10);
+            if (end == tok_z.c_str() || end == nullptr || *end != '\0' ||
+                errno == ERANGE) {
+                return std::unexpected(std::string{
+                    "parse_eal_cores_csv: malformed cpu token '"}
+                    + std::string{tok} + "' (expected non-negative decimal)");
+            }
+            if (parsed < 0) {
                 return std::unexpected(std::string{
                     "parse_eal_cores_csv: negative cpu in token '"}
                     + std::string{tok} + "'");
             }
+            // Cap at INT_MAX defensively. Real cpu ids are 0..NCPU-1
+            // (a few hundred at most); anything larger is a typo.
+            if (parsed > std::numeric_limits<int>::max()) {
+                return std::unexpected(std::string{
+                    "parse_eal_cores_csv: cpu out of int range in token '"}
+                    + std::string{tok} + "'");
+            }
+            const int cpu = static_cast<int>(parsed);
             pins.push_back(eph::dpdk::LcorePin{
                 next_lcore++, cpu, std::string{"bench-eal"}});
         }
