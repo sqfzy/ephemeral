@@ -68,11 +68,15 @@ public:
         }
     }
 
-    /// @brief If headroom at the front exceeds `threshold`, move the unread
-    ///        window back to offset 0 so the tail has room to grow again.
+    /// @brief Unconditionally move the unread window back to offset 0 so the
+    ///        tail has room to grow again.
     ///
     /// Called internally by the Stream before every recv() so that a slow
     /// stream of tiny frames cannot starve the tail of writable bytes.
+    /// No-op when `head_ == 0`. There is no "headroom threshold" knob —
+    /// compaction is always free relative to the cost of growing tail
+    /// against a wall, and the recv() path already pays a memmove on
+    /// stale frames anyway.
     void compact() noexcept {
         if (head_ == 0) return;
         const std::size_t n = readable();
