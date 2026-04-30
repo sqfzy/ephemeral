@@ -32,6 +32,43 @@ inline const std::shared_ptr<spdlog::logger>& console_sink_logger() {
     }();
     return l;
 }
+
+/// @brief Format `tags` as `" {k1=v1, k2=v2}"` (or `" {}"` if empty).
+///
+/// Values containing `,` / `=` / `{` / `}` / `"` / `\` are quoted; embedded
+/// `"` and `\` inside a quoted value are backslash-escaped so the closing
+/// quote isn't matched prematurely by downstream log parsers (e.g. structured
+/// log shippers keyed on quoted regions).
+///
+/// Lifted out of `ConsoleSink` so the formatting contract can be unit-tested
+/// without parsing spdlog output. `ConsoleSink::format_tags` is just a thin
+/// forwarder.
+[[nodiscard]] inline std::string format_metric_tags(
+    std::span<const core::MetricTag> tags) {
+    if (tags.empty()) return " {}";
+    std::string result = " {";
+    for (size_t i = 0; i < tags.size(); ++i) {
+        if (i > 0) result += ", ";
+        const auto& val = tags[i].value;
+        const bool needs_quoting =
+            val.find_first_of(",={}\"\\") != std::string_view::npos;
+        if (needs_quoting) {
+            result += tags[i].key;
+            result += "=\"";
+            // Backslash-escape `\` and `"` inside the value so the
+            // closing quote isn't matched prematurely.
+            for (char c : val) {
+                if (c == '\\' || c == '"') result += '\\';
+                result += c;
+            }
+            result += '"';
+        } else {
+            result += std::format("{}={}", tags[i].key, val);
+        }
+    }
+    result += '}';
+    return result;
+}
 } // namespace detail
 
 /// @brief Metrics sink that logs to spdlog at INFO level.
@@ -81,35 +118,11 @@ public:
     }
 
 private:
-    /// Format tags as " {key1=val1, key2=val2}" or " {}" if empty.
-    /// Values containing commas, equals signs, or braces are quoted to
-    /// prevent ambiguous log output. Embedded `"` and `\` characters
-    /// inside a quoted value are backslash-escaped so the surrounding
-    /// quotes remain unambiguous to downstream log parsers.
+    /// Thin forwarder to `detail::format_metric_tags` — the formatting logic
+    /// lives in detail/ so it can be unit-tested without parsing spdlog
+    /// output. See `test_console_sink.cpp::FormatTags*`.
     static std::string format_tags(std::span<const core::MetricTag> tags) {
-        if (tags.empty()) return " {}";
-        std::string result = " {";
-        for (size_t i = 0; i < tags.size(); ++i) {
-            if (i > 0) result += ", ";
-            const auto& val = tags[i].value;
-            const bool needs_quoting =
-                val.find_first_of(",={}\"\\") != std::string_view::npos;
-            if (needs_quoting) {
-                result += tags[i].key;
-                result += "=\"";
-                // Backslash-escape `\` and `"` inside the value so the
-                // closing quote isn't matched prematurely.
-                for (char c : val) {
-                    if (c == '\\' || c == '"') result += '\\';
-                    result += c;
-                }
-                result += '"';
-            } else {
-                result += std::format("{}={}", tags[i].key, val);
-            }
-        }
-        result += '}';
-        return result;
+        return detail::format_metric_tags(tags);
     }
 };
 
