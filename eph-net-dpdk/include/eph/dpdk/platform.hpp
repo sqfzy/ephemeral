@@ -24,6 +24,7 @@
 #include <expected>
 #include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -35,6 +36,8 @@
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
+#include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
 #include "eph/net/dpdk/flow_steering.hpp"
@@ -302,6 +305,31 @@ struct PlatformConfig {
     // `pool_lcore_hint` keep using the shared pool.
     uint16_t per_lcore_pools = 0;
 
+    // ── Auto-derived MP layout (recommended path) ───────────────────────
+    //
+    // When set, the library treats this as the source of truth for
+    // multi-process resource allocation: `Platform::create_primary` /
+    // `create_secondary` derive the effective `rx_queue_range` from
+    // `mp_topology->self()`, register the topology in a shared hugepage
+    // memzone (`detail::MpRegistry`) so cross-process disjointness is
+    // enforced rather than trusted, and constrain the stream creators'
+    // src_port search range to the self spec's `[port_lo, port_hi)`.
+    //
+    // Mutually exclusive with a hand-set `rx_queue_range != {0,0}`:
+    // `validate_config` rejects the combination so the caller can't
+    // silently fight the auto-derivation. Setting `mp_topology` plus
+    // leaving `rx_queue_range` at its `{0,0}` sentinel is the
+    // recommended path; setting `rx_queue_range` and leaving
+    // `mp_topology` empty is the legacy escape hatch (manual
+    // partitioning, see docs/dpdk-multiprocess.md "Advanced usage").
+    //
+    // `MpTopology` is a literal type (fixed `std::array<ProcSpec, 64>`
+    // backing — see mp_topology.hpp) so wrapping it in `std::optional`
+    // keeps `PlatformConfig` constexpr-constructible: existing
+    // `static_assert(config_ok(kBaseCfg))` patterns in tests continue
+    // to compile against the default-empty optional.
+    std::optional<MpTopology> mp_topology {};
+
     // NOTE on source-port partitioning across MP processes:
     //
     // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
@@ -322,13 +350,14 @@ struct PlatformConfig {
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
-        return std::format(
+        std::string base = std::format(
             "PlatformConfig:\n"
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
             "  rx_cksum_offload: {}, strict_rx_cksum: {}\n"
             "  proc_type: {}, file_prefix: '{}', rx_queue_range: [{},{})\n"
-            "  per_lcore_pools: {}",
+            "  per_lcore_pools: {}\n"
+            "  mp_topology: {}",
             port_id, nb_rx_queues, nb_tx_queues, nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous ? "true" : "false", link_timeout_ms,
@@ -337,7 +366,13 @@ struct PlatformConfig {
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
             rx_queue_range.first, rx_queue_range.second,
-            per_lcore_pools);
+            per_lcore_pools,
+            mp_topology.has_value() ? "set" : "unset");
+        if (mp_topology.has_value()) {
+            base += "\n";
+            base += mp_topology->dump();
+        }
+        return base;
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -393,7 +428,9 @@ struct PlatformConfig {
             "\"link_timeout_ms\":{},"
             "\"proc_type\":\"{}\",\"file_prefix\":\"{}\","
             "\"rx_queue_range\":[{},{}],"
-            "\"per_lcore_pools\":{}}}",
+            "\"per_lcore_pools\":{},"
+            "\"mp_topology_set\":{},\"mp_topology_self_index\":{},"
+            "\"mp_topology_total_procs\":{}}}",
             port_id, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc,
             mbuf_pool_size, mbuf_cache_size,
@@ -404,7 +441,10 @@ struct PlatformConfig {
             proc_type == ProcType::Primary ? "Primary" : "Secondary",
             file_prefix,
             rx_queue_range.first, rx_queue_range.second,
-            per_lcore_pools);
+            per_lcore_pools,
+            mp_topology.has_value() ? "true" : "false",
+            mp_topology.has_value() ? mp_topology->self_index : uint8_t{0},
+            mp_topology.has_value() ? mp_topology->total_procs : uint8_t{0});
     }
 };
 
@@ -443,6 +483,18 @@ struct PlatformConfig {
     // mask is an EAL-runtime value, not a config-time constant.
     if (cfg.per_lcore_pools > 256)
         return "per_lcore_pools must be <= RTE_MAX_LCORE (256)";
+    // mp_topology (auto-derived MP layout) is mutually exclusive with a
+    // hand-set rx_queue_range. Allowing both would let two source-of-
+    // truth values disagree silently — pick one path or the other.
+    if (cfg.mp_topology.has_value()) {
+        if (cfg.rx_queue_range.first != 0 || cfg.rx_queue_range.second != 0)
+            return "mp_topology is set; rx_queue_range must remain {0,0} sentinel";
+        if (!cfg.mp_topology->valid())
+            return "mp_topology failed valid() (overlap / OOB self_index / "
+                   "empty range — see MpTopology::valid())";
+        if (cfg.mp_topology->self().queue_hi > cfg.nb_rx_queues)
+            return "mp_topology.self().queue_hi exceeds nb_rx_queues";
+    }
     return {};
 }
 

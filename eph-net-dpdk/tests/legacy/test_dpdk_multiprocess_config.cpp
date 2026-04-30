@@ -24,6 +24,8 @@ using eph::dpdk::EalConfig;
 using eph::dpdk::PlatformConfig;
 using eph::dpdk::Platform;
 using eph::dpdk::ProcType;
+using eph::dpdk::MpTopology;
+using eph::dpdk::ProcSpec;
 using eph::dpdk::build_eal_argv;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +146,70 @@ TEST(ValidateConfigRxQueueRange, ValidSubRangeAccepted) {
     cfg.rx_queue_range = {2, 4};   // valid sub-range
     auto err = eph::dpdk::validate_config(cfg);
     EXPECT_TRUE(err.empty()) << "valid sub-range should pass: " << err;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PlatformConfig.mp_topology — auto-derived MP layout (reshape stage 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(ValidateConfigMpTopology, NoMpTopologyPreservesLegacyBehavior) {
+    // Sanity: a config without mp_topology behaves byte-for-byte like
+    // the pre-reshape baseline — both the {0,0} sentinel and a manual
+    // sub-range are accepted unchanged.
+    PlatformConfig cfg_sentinel{};
+    cfg_sentinel.nb_rx_queues = 4;
+    EXPECT_TRUE(eph::dpdk::validate_config(cfg_sentinel).empty());
+
+    PlatformConfig cfg_manual{};
+    cfg_manual.nb_rx_queues   = 4;
+    cfg_manual.rx_queue_range = {2, 4};
+    EXPECT_TRUE(eph::dpdk::validate_config(cfg_manual).empty());
+}
+
+TEST(ValidateConfigMpTopology, MpTopologyOnlyAccepted) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 4;
+    cfg.mp_topology  = MpTopology::uniform(/*self_index=*/0,
+                                           /*total_procs=*/2,
+                                           /*nb_rx_queues=*/4);
+    // rx_queue_range left at default {0,0} — the recommended path.
+    auto err = eph::dpdk::validate_config(cfg);
+    EXPECT_TRUE(err.empty()) << "mp_topology + sentinel rx_queue_range should pass: " << err;
+}
+
+TEST(ValidateConfigMpTopology, MpTopologyAndManualRangeConflict) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues   = 4;
+    cfg.mp_topology    = MpTopology::uniform(0, 2, 4);
+    cfg.rx_queue_range = {0, 2};   // forbidden combination
+    auto err = eph::dpdk::validate_config(cfg);
+    EXPECT_NE(err.find("mp_topology is set; rx_queue_range must remain {0,0}"),
+              std::string_view::npos)
+        << "got: " << err;
+}
+
+TEST(ValidateConfigMpTopology, MpTopologyInvalidRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 4;
+    // Invalid: empty topology fails MpTopology::valid().
+    cfg.mp_topology  = MpTopology{};
+    auto err = eph::dpdk::validate_config(cfg);
+    EXPECT_NE(err.find("mp_topology failed valid()"),
+              std::string_view::npos)
+        << "got: " << err;
+}
+
+TEST(ValidateConfigMpTopology, SelfQueueHiExceedsNbRxQueuesRejected) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 2;
+    // Topology declares queues up to 4, but cfg.nb_rx_queues only 2.
+    cfg.mp_topology  = MpTopology::uniform(/*self_index=*/1,
+                                           /*total_procs=*/2,
+                                           /*nb_rx_queues=*/4);
+    auto err = eph::dpdk::validate_config(cfg);
+    EXPECT_NE(err.find("queue_hi exceeds nb_rx_queues"),
+              std::string_view::npos)
+        << "got: " << err;
 }
 
 TEST(CreateSecondaryValidation, PrimaryProcTypeInputDoesNotShortCircuitValidation) {

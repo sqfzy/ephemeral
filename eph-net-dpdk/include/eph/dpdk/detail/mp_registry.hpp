@@ -46,6 +46,7 @@
 #include <spdlog/spdlog.h>
 
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_lcore.h>
 #include <rte_memzone.h>
 
@@ -182,7 +183,7 @@ init_mp_registry_header(MpRegistryHeader* dst,
     // explicit field assignment keeps us within well-defined territory.
     dst->magic        = kMpRegistryMagic;
     dst->version      = kMpRegistryVersion;
-    dst->total_procs  = static_cast<uint32_t>(topo.procs.size());
+    dst->total_procs  = topo.total_procs;
     dst->_pad0        = 0;
     std::memset(dst->file_prefix, 0, kMpRegistryFilePrefixMax);
     std::memcpy(dst->file_prefix, file_prefix.data(),
@@ -198,7 +199,7 @@ init_mp_registry_header(MpRegistryHeader* dst,
         s.port_hi  = 0;
     }
 
-    for (size_t i = 0; i < topo.procs.size(); ++i) {
+    for (uint8_t i = 0; i < topo.total_procs; ++i) {
         ProcSlot& s = dst->procs[i];
         const auto& src = topo.procs[i];
         std::memcpy(s.tag, src.tag.data(),
@@ -386,7 +387,7 @@ public:
                 core::Error::InvalidConfig,
                 "MpRegistry: file_prefix in header does not match the "
                 "one this secondary supplied"});
-        if (hdr->total_procs != topo.procs.size())
+        if (hdr->total_procs != topo.total_procs)
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: total_procs mismatch — secondary's topology "

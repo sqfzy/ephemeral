@@ -23,19 +23,31 @@
 /// the declared topology is consistent across the primary and every
 /// secondary that attaches.
 ///
-/// This header is intentionally DPDK-free: it pulls in only `<cstdint>`,
-/// `<string>`, `<string_view>`, `<vector>`, `<format>`. That keeps unit
-/// tests for the topology-shaping logic (`valid()`, `uniform()`, etc.)
-/// runnable in any environment, and lets the registry header be the
-/// only place that talks to `<rte_memzone.h>` / `<rte_eal.h>`.
+/// **Literal-type contract**: this struct uses `std::array` + a
+/// `total_procs` count instead of `std::vector` so `PlatformConfig`
+/// can remain a literal type. Existing test code relies on
+/// `constexpr PlatformConfig kBaseCfg{...}` + `static_assert(config_ok
+/// (kBaseCfg))` for compile-time validation, which would break if any
+/// member required heap state. The fixed-capacity array (`kMaxProcs ==
+/// 64`) is the same upper bound the registry uses, so the user-facing
+/// view and the on-hugepage POD agree on layout shape.
+///
+/// This header is intentionally DPDK-free: it pulls in only `<array>`,
+/// `<cstdint>`, `<string>`, `<string_view>`, `<format>`,
+/// `<initializer_list>`. That keeps unit tests for the topology-shaping
+/// logic (`valid()`, `uniform()`, etc.) runnable in any environment,
+/// and lets the registry header be the only place that talks to
+/// `<rte_memzone.h>` / `<rte_eal.h>`.
 ///
 /// See `docs/dpdk-multiprocess.md` "Recommended path: MpTopology".
 
+#include <array>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
+#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace eph::dpdk {
 
@@ -59,8 +71,8 @@ struct ProcSpec {
     uint32_t port_lo  = 0;
     uint32_t port_hi  = 0;          ///< src_port range hi (exclusive)
 
-    [[nodiscard]] friend bool operator==(const ProcSpec&,
-                                         const ProcSpec&) = default;
+    [[nodiscard]] friend constexpr bool
+    operator==(const ProcSpec&, const ProcSpec&) noexcept = default;
 };
 
 /// @brief Multi-process resource topology — the full picture of who
@@ -74,62 +86,75 @@ struct ProcSpec {
 /// `valid()` detect cross-process overlap before any DPDK side-effect.
 ///
 /// Construction patterns:
-///   - **Uniform (90% case)**: `MpTopology::uniform(self_index, total_procs,
-///     nb_rx_queues)` — equal-share queue split + 32 KiB ephemeral port
-///     range divided evenly. Two numbers per process, no other config.
-///   - **Custom (power-user case)**: build `procs` directly via
-///     initializer list when the layout is intentionally non-uniform
-///     (e.g. one trader gets 6 queues, monitors get 1 each).
+///   - **Uniform (90% case)**: `MpTopology::uniform(self_index,
+///     total_procs, nb_rx_queues)` — equal-share queue split + 32 KiB
+///     ephemeral port range divided evenly. Two numbers per process,
+///     no other config.
+///   - **Custom (power-user case)**: `MpTopology::custom(self_index,
+///     {ProcSpec{...}, ProcSpec{...}})` for non-uniform layouts (e.g.
+///     one trader gets 6 queues, monitors get 1 each).
 struct MpTopology {
-    /// @brief 0-based index of THIS process within `procs`. Must be
-    /// strictly less than `procs.size()`. The primary should typically
-    /// use `0` so its slot is the first one written into the shared
-    /// registry; secondaries take the indices the operator assigned them.
-    uint8_t self_index = 0;
-
-    /// @brief All process slots — the global topology view.
-    /// Every process declares the *same* `procs` and reads its own
-    /// row via `self_index`. The registry verifies disjointness.
-    std::vector<ProcSpec> procs {};
-
-    [[nodiscard]] friend bool operator==(const MpTopology&,
-                                         const MpTopology&) = default;
-
-    /// @brief Hard upper bound on `procs.size()`. Aligned with
+    /// @brief Hard upper bound on populated slots. Aligned with
     /// `kMaxRssQueues = 64` (platform.hpp): no realistic single-NIC HFT
     /// deployment runs more than a handful of processes against one
     /// physical port; 64 is ~8× headroom and matches the registry
     /// header's fixed-size `ProcSlot` array.
     static constexpr uint8_t kMaxProcs = 64;
 
+    /// @brief 0-based index of THIS process within `procs`. Must be
+    /// strictly less than `total_procs`. The primary should typically
+    /// use `0` so its slot is the first one written into the shared
+    /// registry; secondaries take the indices the operator assigned them.
+    uint8_t self_index = 0;
+
+    /// @brief Number of populated slots in `procs`. Slots `procs[0..
+    /// total_procs)` carry meaningful data; slots beyond that are
+    /// default-initialised filler that `valid()` ignores.
+    uint8_t total_procs = 0;
+
+    /// @brief Fixed-capacity slot array. Exposed for direct write
+    /// access in advanced cases (`t.procs[i] = ProcSpec{...}; t.
+    /// total_procs = N;`); most callers should prefer the `uniform`
+    /// or `custom` factories which set both fields atomically.
+    std::array<ProcSpec, kMaxProcs> procs {};
+
+    [[nodiscard]] friend constexpr bool
+    operator==(const MpTopology&, const MpTopology&) noexcept = default;
+
+    /// @brief View of just the populated slots — `[procs.begin(),
+    /// procs.begin() + total_procs)`. Use this whenever iterating
+    /// over "all real procs" instead of touching the full array,
+    /// which contains default filler past `total_procs`.
+    [[nodiscard]] constexpr std::span<const ProcSpec>
+    procs_view() const noexcept {
+        return std::span<const ProcSpec>(procs.data(), total_procs);
+    }
+
     /// @brief Returns true iff the topology is internally consistent:
-    ///   * `procs` is non-empty and `procs.size() <= kMaxProcs`
-    ///   * `self_index < procs.size()`
-    ///   * every `ProcSpec` has `queue_lo < queue_hi` and `port_lo < port_hi`
+    ///   * `total_procs > 0` and `total_procs <= kMaxProcs`
+    ///   * `self_index < total_procs`
+    ///   * every populated `ProcSpec` has `queue_lo < queue_hi` and
+    ///     `port_lo < port_hi`
     ///   * RX queue ranges are pairwise disjoint
     ///   * src_port ranges are pairwise disjoint
     ///
-    /// O(N²) in `procs.size()`; N ≤ 64 so the worst case is 64*63/2 ≈
+    /// O(N²) in `total_procs`; N ≤ 64 so the worst case is 64*63/2 ≈
     /// 2k comparisons — only ever called once per process, on the cold
     /// `Platform::create_*` path.
-    [[nodiscard]] bool valid() const noexcept {
-        // Empty / oversized topology — caller almost certainly forgot
-        // to populate `procs` or accidentally pushed past kMaxProcs.
-        if (procs.empty() || procs.size() > kMaxProcs) return false;
-        if (self_index >= procs.size()) return false;
+    [[nodiscard]] constexpr bool valid() const noexcept {
+        if (total_procs == 0 || total_procs > kMaxProcs) return false;
+        if (self_index >= total_procs) return false;
 
-        for (const auto& p : procs) {
-            // Empty-or-inverted range is a hard error: it would silently
-            // disable any queue / port allocation for this slot, which
-            // is far worse than failing fast.
+        for (uint8_t i = 0; i < total_procs; ++i) {
+            const auto& p = procs[i];
             if (p.queue_lo >= p.queue_hi) return false;
             if (p.port_lo  >= p.port_hi)  return false;
         }
 
         // Pairwise overlap check. Half-open intervals `[a, b)` and
         // `[c, d)` overlap iff `a < d && c < b`.
-        for (size_t i = 0; i < procs.size(); ++i) {
-            for (size_t j = i + 1; j < procs.size(); ++j) {
+        for (uint8_t i = 0; i < total_procs; ++i) {
+            for (uint8_t j = i + 1; j < total_procs; ++j) {
                 const auto& a = procs[i];
                 const auto& b = procs[j];
                 if (a.queue_lo < b.queue_hi && b.queue_lo < a.queue_hi)
@@ -146,13 +171,13 @@ struct MpTopology {
     /// a contiguous `[port_base, port_base + port_total)` src_port
     /// window.
     ///
-    /// Both queues and ports are integer-divided by `total_procs`.
-    /// Any remainder is assigned to the **last** proc slot — this keeps
-    /// the first N-1 slots at the divisor and concentrates the imbalance
-    /// at one end (rather than smearing it via floor / ceil), which is
-    /// easier to reason about when reading registry dumps. For example,
-    /// `uniform(_, 3, 8)` produces queue ranges `[0,2)`, `[2,4)`,
-    /// `[4,8)` — proc 2 gets 4 queues, the others 2 each.
+    /// Both queues and ports are integer-divided by `total_procs`. Any
+    /// remainder is assigned to the **last** proc slot — this keeps
+    /// the first N-1 slots at the divisor and concentrates the
+    /// imbalance at one end (rather than smearing it via floor / ceil),
+    /// which is easier to reason about when reading registry dumps.
+    /// For example, `uniform(_, 3, 8)` produces queue ranges `[0,2)`,
+    /// `[2,4)`, `[4,8)` — proc 2 gets 4 queues, the others 2 each.
     ///
     /// @param self_index    This process's index in `[0, total_procs)`.
     /// @param total_procs   Number of peers sharing the NIC. Must be
@@ -170,58 +195,67 @@ struct MpTopology {
     ///
     /// @return A topology whose `valid()` is true on every supported
     ///         input. On invalid input (e.g. `total_procs == 0`) the
-    ///         returned topology has empty `procs` and `valid()` will
-    ///         report false, which `validate_config` then surfaces as
-    ///         a clear error rather than a silent runtime corruption.
-    [[nodiscard]] static MpTopology
+    ///         returned topology has `total_procs == 0` and `valid()`
+    ///         will report false.
+    [[nodiscard]] static constexpr MpTopology
     uniform(uint8_t self_index, uint8_t total_procs,
             uint16_t nb_rx_queues,
             uint16_t port_base = 32768,
             uint16_t port_total = 32768) noexcept {
         MpTopology t;
-        // Defensive guards — return invalid topology rather than UB.
         if (total_procs == 0 || total_procs > kMaxProcs) return t;
         if (nb_rx_queues < total_procs)                  return t;
         if (port_total < total_procs)                    return t;
         if (self_index >= total_procs)                   return t;
-        // Overflow guard: port_base + port_total must fit in uint32_t
-        // arithmetic (we never let port_hi exceed 65535 here, but the
-        // intermediate sum needs to be safe).
         if (static_cast<uint32_t>(port_base) +
-            static_cast<uint32_t>(port_total) > 65536u) return t;
+            static_cast<uint32_t>(port_total) > 65536u)  return t;
 
-        t.self_index = self_index;
-        t.procs.reserve(total_procs);
+        t.self_index  = self_index;
+        t.total_procs = total_procs;
 
-        const uint16_t qlen = static_cast<uint16_t>(nb_rx_queues / total_procs);
-        const uint32_t plen = static_cast<uint32_t>(port_total)  / total_procs;
+        const uint16_t qlen  = static_cast<uint16_t>(nb_rx_queues / total_procs);
+        const uint32_t plen  = static_cast<uint32_t>(port_total)  / total_procs;
         const uint32_t pbase = static_cast<uint32_t>(port_base);
         const uint32_t pend  = pbase + static_cast<uint32_t>(port_total);
 
         for (uint8_t i = 0; i < total_procs; ++i) {
             const bool last = (i + 1 == total_procs);
-            const uint16_t q_lo = static_cast<uint16_t>(i * qlen);
-            const uint16_t q_hi = last
+            t.procs[i].queue_lo = static_cast<uint16_t>(i * qlen);
+            t.procs[i].queue_hi = last
                 ? nb_rx_queues
                 : static_cast<uint16_t>((i + 1) * qlen);
-            const uint32_t p_lo = pbase + i * plen;
-            const uint32_t p_hi = last ? pend : (pbase + (i + 1) * plen);
-            t.procs.push_back(ProcSpec{
-                .tag      = {},
-                .queue_lo = q_lo,
-                .queue_hi = q_hi,
-                .port_lo  = p_lo,
-                .port_hi  = p_hi,
-            });
+            t.procs[i].port_lo  = pbase + i * plen;
+            t.procs[i].port_hi  = last ? pend : (pbase + (i + 1) * plen);
         }
         return t;
     }
 
-    /// @brief This process's spec. Precondition: `self_index < procs.size()`
-    /// (held by `valid()` — call `valid()` before relying on this).
-    /// Returns a reference into `procs`; the returned reference is
-    /// invalidated by any subsequent mutation of `procs`.
-    [[nodiscard]] const ProcSpec& self() const noexcept {
+    /// @brief Build a topology from a hand-written list of `ProcSpec`s
+    /// (the power-user / non-uniform path). Sets `self_index` and
+    /// `total_procs = list.size()`, copying up to `kMaxProcs` entries.
+    ///
+    /// Caller is responsible for ensuring the resulting topology
+    /// passes `valid()`; this factory does no overlap check itself
+    /// (the same `valid()` runs in `Platform::validate_config` so a
+    /// bad layout is rejected before any DPDK side-effect).
+    ///
+    /// On `list.size() > kMaxProcs` the result has `total_procs == 0`
+    /// (invalid).
+    [[nodiscard]] static MpTopology
+    custom(uint8_t self_index, std::initializer_list<ProcSpec> list) noexcept {
+        MpTopology t;
+        if (list.size() == 0 || list.size() > kMaxProcs) return t;
+        t.self_index  = self_index;
+        t.total_procs = static_cast<uint8_t>(list.size());
+        uint8_t i = 0;
+        for (const auto& p : list) t.procs[i++] = p;
+        return t;
+    }
+
+    /// @brief This process's spec. Precondition: `self_index <
+    /// total_procs` (held by `valid()` — call `valid()` before relying
+    /// on this).
+    [[nodiscard]] constexpr const ProcSpec& self() const noexcept {
         return procs[self_index];
     }
 
@@ -229,9 +263,9 @@ struct MpTopology {
     /// `PlatformConfig::dump()` style.
     [[nodiscard]] std::string dump() const {
         std::string out = std::format(
-            "MpTopology: self_index={}, procs={} of max {}\n",
-            self_index, procs.size(), kMaxProcs);
-        for (size_t i = 0; i < procs.size(); ++i) {
+            "MpTopology: self_index={}, total_procs={} of max {}\n",
+            self_index, total_procs, kMaxProcs);
+        for (uint8_t i = 0; i < total_procs; ++i) {
             const auto& p = procs[i];
             out += std::format(
                 "  [{}]{} tag='{}' queues=[{},{}) ports=[{},{})\n",
