@@ -55,14 +55,13 @@ stream->on_message = [](std::span<const uint8_t> app_frame) {
 // Up to 1024 streams per connection
 cfg.ws.path = "/stream?streams=btcusdt@bookTicker/ethusdt@bookTicker/solusdt@bookTicker";
 
-// Use frame filter for latest-per-symbol delivery
-cfg.on_frame_filter = eph::net::make_twophase_filter(
-    [](const uint8_t* data, size_t len) -> uint32_t {
-        // Extract symbol hash from JSON {"stream":"btcusdt@bookTicker",...}
-        // Simple: hash first 6-8 bytes after "stream":"
-        // Production: use simdjson to extract stream field
-        return simple_hash(data, len);
-    });
+// Latest-per-symbol delivery is now an application-layer concern: in your
+// on_message callback, hash the symbol (e.g.
+// `eph::json::binance::symbol_hash`) and keep only the most recent frame
+// per bucket before dispatching to strategy logic. The previous
+// `cfg.on_frame_filter` / `make_twophase_filter` transport hook was
+// retired in v3.3 / T3.19 — see `phase-9-scope-decision.md` for the
+// rationale.
 ```
 
 ## 2. WebSocket SBE (Binary)

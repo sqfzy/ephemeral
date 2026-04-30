@@ -172,18 +172,25 @@ if (!inner) return;
 auto ticker = eph::json::binance::BookTicker::from(*inner);
 ```
 
-## Symbol Hash for Frame Filtering
+## Symbol Hash for Application-Layer Bucketing
 
-For Transport's two-phase frame filter (latest-per-symbol deduplication), use `symbol_hash()`:
+For latest-per-symbol deduplication, use `symbol_hash()` in your message
+handler (the previous `cfg.on_frame_filter` / `make_twophase_filter`
+transport hook was retired in v3.3 / T3.19):
 
 ```cpp
 #include "eph/json/adapters/binance.hpp"
 
-cfg.on_frame_filter = eph::net::make_twophase_filter(
-    eph::json::binance::symbol_hash);
+stream->on_message = [&](std::span<const std::uint8_t> frame) {
+    auto h = eph::json::binance::symbol_hash(frame.data(), frame.size());
+    auto& slot = latest_per_bucket[h % N];
+    slot.assign(frame.begin(), frame.end());  // keep only the latest
+    // strategy reads `slot` on its own cadence
+};
 ```
 
-This performs a fast pattern scan for the `"s":"..."` field without a full JSON parse, suitable for the hot path.
+`symbol_hash` performs a fast pattern scan for the `"s":"..."` field
+without a full JSON parse, suitable for the hot path.
 
 ## REST API (Binance)
 
