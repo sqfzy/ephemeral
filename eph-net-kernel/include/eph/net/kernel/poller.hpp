@@ -157,14 +157,19 @@ public:
     /// add() call site, a compile error surfaces immediately.
     template <KernelPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
-        [[maybe_unused]] auto* log = detail::poller_logger();
+        auto* log = detail::poller_logger();
         if (obj == nullptr) {
+            SPDLOG_LOGGER_ERROR(log, "KernelPoller::add: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::add: nullptr"});
         }
         const int fd = obj->fd();
         if (fd < 0) {
+            SPDLOG_LOGGER_ERROR(log,
+                "KernelPoller::add: obj={} has closed fd ({}); "
+                "pollable must be open before add()",
+                static_cast<void*>(obj), fd);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::add: pollable has closed fd"});
@@ -174,6 +179,10 @@ public:
         // anyway but the message here is clearer.
         for (const auto& e : entries_) {
             if (e.obj == static_cast<void*>(obj)) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelPoller::add: obj={} (fd={}) already registered "
+                    "(entries={})",
+                    static_cast<void*>(obj), fd, entries_.size());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "KernelPoller::add: already registered"});
@@ -215,8 +224,9 @@ public:
     /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
     template <KernelPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
-        [[maybe_unused]] auto* log = detail::poller_logger();
+        auto* log = detail::poller_logger();
         if (obj == nullptr) {
+            SPDLOG_LOGGER_ERROR(log, "KernelPoller::remove: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::remove: nullptr"});
@@ -226,6 +236,9 @@ public:
                 return e.obj == p;
             });
         if (it == entries_.end()) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelPoller::remove: obj={} not registered (entries={})",
+                static_cast<void*>(obj), entries_.size());
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::remove: not registered"});
