@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed — TLS desync latch on `encrypt_for_send` failure
+
+`DpdkTcpStream<C, EnableTls=true>::send` now latches `tls_corrupt_` and
+bumps `kTlsSendDesyncs` when the in-stream `TlsState::encrypt_for_send`
+returns an error, mirroring the already-correct latch on
+`sess_.send` failure further down the same function.
+
+The bug: `encrypt_for_send` chunks the plaintext into
+`kMaxRecordPayload`-sized TLS records and bumps the AEAD write seq
+once per successful `EVP_AEAD_CTX_seal` (`tls_encryptor.hpp:189
+seq_++`). A failure on chunk N>0 left the counter ahead of any wire
+output (the `sess_.send` loop runs strictly after encrypt returns).
+Without the latch, a subsequent `send()` call would slip past the
+desync guard, encrypt with the partially-advanced seq, hit the wire,
+and silently desync the peer. The realistic trigger is TLS write-seq
+exhaustion (`kMaxSequenceNumber`) on a multi-chunk send where chunk
+0 succeeds and chunk 1 hits the limit.
+
+The same fix is applied symmetrically on the kernel backend
+(`KernelTcpStream::send`).
+
 ### Documented — AWS ENA PMD multi-process secondary RX under traffic
 
 Added `docs/ena-mp-limitation.md` documenting a precisely scoped ENA

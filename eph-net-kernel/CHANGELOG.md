@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed — TLS desync latch on `encrypt_for_send` failure
+
+`KernelTcpStream<C, EnableTls=true>::send` now latches `tls_corrupt_`
+and bumps `kTlsSendDesyncs` when the in-stream `TlsState::
+encrypt_for_send` returns an error. Previously the latch fired only
+on the downstream `sock_.send` failure; a failure inside
+`encrypt_for_send` (e.g. AEAD seq exhaustion mid-payload on a
+multi-chunk plaintext) returned the error verbatim without latching,
+so a subsequent `send()` could slip past the desync guard, encrypt
+with the partially-advanced seq, hit the wire, and silently desync
+the peer. Symmetric with the same fix on the DPDK backend (see
+`eph-net-dpdk/CHANGELOG.md`).
+
 ### BREAKING CHANGES — StreamConfig reshape (2026-04-29, T3.19)
 
 `KernelTcpStream::StreamConfig` field paths changed to a backend-symmetric
