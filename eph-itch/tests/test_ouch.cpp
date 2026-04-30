@@ -81,6 +81,33 @@ TEST(OuchEnterOrder, ShortTokenIsPadded) {
               "TK            ");
 }
 
+// Oversize text fields must be rejected (HFT correctness): silent truncation
+// would let two distinct tokens collide on the wire and mis-route the order.
+TEST(OuchEnterOrder, OversizeTokenReturnsZero) {
+    std::array<uint8_t, EnterOrder::kSize> buf{};
+    EXPECT_EQ(EnterOrder::build(buf.data(), "TOKEN_FIFTEENXY", 'B', 100, "AAPL", 100, 0, "FIRM"), 0u);
+}
+
+TEST(OuchEnterOrder, OversizeSymbolReturnsZero) {
+    std::array<uint8_t, EnterOrder::kSize> buf{};
+    EXPECT_EQ(EnterOrder::build(buf.data(), "TOKEN", 'B', 100, "TOOLONGSYM", 100, 0, "FIRM"), 0u);
+}
+
+TEST(OuchEnterOrder, OversizeFirmReturnsZero) {
+    std::array<uint8_t, EnterOrder::kSize> buf{};
+    EXPECT_EQ(EnterOrder::build(buf.data(), "TOKEN", 'B', 100, "AAPL", 100, 0, "FIRM5"), 0u);
+}
+
+// 14-char token boundary: the longest accepted token must succeed and copy
+// verbatim — guards against an off-by-one in the bound check.
+TEST(OuchEnterOrder, ExactBoundaryTokenAccepted) {
+    std::array<uint8_t, EnterOrder::kSize> buf{};
+    EXPECT_EQ(EnterOrder::build(buf.data(), "TOKEN_FOURTEEN", 'B', 100, "AAPL", 100, 0, "FIRM"),
+              EnterOrder::kSize);
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 1), 14}),
+              "TOKEN_FOURTEEN");
+}
+
 // ---------------------------------------------------------------------------
 // ReplaceOrder builder tests
 // ---------------------------------------------------------------------------
@@ -118,6 +145,16 @@ TEST(OuchReplaceOrder, BuildVerifyWireBytes) {
     EXPECT_EQ(read_be32(buf.data() + 37), 300u);
 }
 
+TEST(OuchReplaceOrder, OversizeExistingTokenReturnsZero) {
+    std::array<uint8_t, ReplaceOrder::kSize> buf{};
+    EXPECT_EQ(ReplaceOrder::build(buf.data(), "EXISTING_FIFTNX", "REPLACEMNT_TOK", 100, 100, 0), 0u);
+}
+
+TEST(OuchReplaceOrder, OversizeReplacementTokenReturnsZero) {
+    std::array<uint8_t, ReplaceOrder::kSize> buf{};
+    EXPECT_EQ(ReplaceOrder::build(buf.data(), "EXISTING_TOK", "REPLACEMNT_TOKX", 100, 100, 0), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // CancelOrder builder tests
 // ---------------------------------------------------------------------------
@@ -152,6 +189,11 @@ TEST(OuchCancelOrder, PartialCancel) {
 
 TEST(OuchCancelOrder, NullBufferReturnsZero) {
     EXPECT_EQ(CancelOrder::build(nullptr, "TOKEN         ", 0), 0u);
+}
+
+TEST(OuchCancelOrder, OversizeTokenReturnsZero) {
+    std::array<uint8_t, CancelOrder::kSize> buf{};
+    EXPECT_EQ(CancelOrder::build(buf.data(), "FIFTEEN_CHARTKN", 0), 0u);
 }
 
 // ---------------------------------------------------------------------------

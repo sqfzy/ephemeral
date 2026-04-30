@@ -159,6 +159,23 @@ struct EnterOrder {
             SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: invalid side='{}', expected 'B' or 'S'", side);
             return 0;
         }
+        // Reject oversize text fields up-front. write_padded would silently
+        // truncate, which is catastrophic in HFT order entry: two distinct
+        // 15-char tokens that share a 14-char prefix would collide on the
+        // wire, mis-routing later cancel/replace messages. Same applies to
+        // symbol (8) and firm (4) — wrong symbol = wrong instrument routed.
+        if (token.size() > 14) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: token too long ({} > 14)", token.size());
+            return 0;
+        }
+        if (symbol.size() > 8) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: symbol too long ({} > 8)", symbol.size());
+            return 0;
+        }
+        if (firm.size() > 4) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: firm too long ({} > 4)", firm.size());
+            return 0;
+        }
 
         std::memset(buf, ' ', kSize);
 
@@ -215,6 +232,16 @@ struct ReplaceOrder {
             SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: null buffer");
             return 0;
         }
+        // Reject oversize tokens — silent truncation would route the replace
+        // to the wrong existing order or stamp the wrong replacement_token.
+        if (existing_token.size() > 14) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplaceOrder::build: existing_token too long ({} > 14)", existing_token.size());
+            return 0;
+        }
+        if (replacement_token.size() > 14) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplaceOrder::build: replacement_token too long ({} > 14)", replacement_token.size());
+            return 0;
+        }
 
         std::memset(buf, ' ', kSize);
 
@@ -259,6 +286,13 @@ struct CancelOrder {
         // Caller must ensure buf has at least kSize (19) bytes available
         if (!buf) [[unlikely]] {
             SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"CancelOrder::build: null buffer");
+            return 0;
+        }
+        // Reject oversize token — silent truncation would target the wrong
+        // existing order. CancelOrder doesn't memset so we still need to
+        // pad explicitly via write_padded after the bound check.
+        if (token.size() > 14) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"CancelOrder::build: token too long ({} > 14)", token.size());
             return 0;
         }
 
