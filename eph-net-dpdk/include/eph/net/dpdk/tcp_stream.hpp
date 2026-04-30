@@ -691,19 +691,22 @@ public:
         }
 
         // ── Phase 1: pre-create — pick target queue, possibly rebind src_port ──
-        // RxDispatchMode::RssPartitioned with an explicit pin requires us to
-        // search the ephemeral src_port range for one whose Toeplitz hash
-        // lands on the target queue, AND apply that src_port to cfg before
-        // connect() runs. Other modes can defer queue selection to phase 2.
+        // RxDispatchMode::RssPartitioned ALWAYS engineers src_port via
+        // find_src_port_for_queue so the SYN-ACK Toeplitz-hashes to the
+        // target queue this process owns. Whether target_qid comes from
+        // pin_to_queue or rr_counter, the engineering step is identical —
+        // before the unify (commit c267b9d6) the no-pin branch deferred
+        // selection to post-create predict_rss_queue, which left src_port
+        // untouched and caused autojoin secondaries to silently miss
+        // SYN-ACK ~50% of the time when RSS hashed to a queue owned by
+        // primary. See .artifacts/reshape-rss-aware-connect-final-*.md.
         uint16_t target_qid = 0;
-        bool defer_queue_selection = false;
 
         // Capture the caller's requested src_port BEFORE any reverse-pick
         // overwrite, so post-create we can populate
-        // `StreamSnapshot::Endpoint::src_port_rewritten` truthfully. Only
-        // mutated by the RSS+pin branch below; other branches leave it
-        // untouched. We treat src_port==0 as "caller didn't care" and never
-        // flag rewriting in that case.
+        // `StreamSnapshot::Endpoint::src_port_rewritten` truthfully.
+        // RssPartitioned now always rewrites; we treat src_port==0 as
+        // "caller didn't care" and never flag rewriting in that case.
         const uint16_t original_src_port =
             cfg.dpdk.tcp_low_level.tuple.src_port;
 
@@ -715,6 +718,10 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
+            // Determine target_qid:
+            //   pin_to_queue set       → use it (validated < nb_q)
+            //   pin_to_queue unset     → rr_counter % qrange + qlo
+            //                            (range-aware for autojoin / mp_topology)
             if (cfg.dpdk.pin_to_queue) {
                 const uint16_t want = *cfg.dpdk.pin_to_queue;
                 if (want >= nb_q) {
@@ -722,63 +729,61 @@ public:
                         core::Error::InvalidConfig,
                         "create_and_attach: pin_to_queue >= nb_rx_queues"});
                 }
-                // RSS input "src" is the REMOTE end on the inbound
-                // SYN-ACK (peer→local direction). The helper now takes
-                // (remote_ip, remote_port, local_ip) explicitly and
-                // searches the local sp in the dst_port slot. Pre-fix
-                // (b67b1ef4 and earlier) the helper put sp in the
-                // src_port slot, transposing two Toeplitz inputs and
-                // producing a wrong-queue prediction ~75% of the time.
-                const auto& t = cfg.dpdk.tcp_low_level.tuple;
-                // mp_topology auto-derive: if the platform has a self
-                // src_port window from the shared registry, use it
-                // instead of the default Linux ephemeral range so
-                // primary and secondary processes draw from disjoint
-                // segments. find_src_port_for_queue takes a CLOSED
-                // upper bound (port_range_end is inclusive), so we
-                // hand it `port_hi - 1`.
-                const auto pr = platform.self_port_range();
-                const uint16_t port_lo_arg =
-                    pr ? static_cast<uint16_t>(pr->first)
-                       : uint16_t{32768};
-                const uint16_t port_hi_arg =
-                    pr ? static_cast<uint16_t>(pr->second - 1)
-                       : uint16_t{60999};
-                auto sp = ::eph::net::dpdk::find_src_port_for_queue(
-                    platform.port_id(), want,
-                    /*remote_ip=*/  t.dst_ip,
-                    /*remote_port=*/t.dst_port,
-                    /*local_ip=*/   t.src_ip,
-                    port_lo_arg, port_hi_arg);
-                if (!sp) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "create_and_attach: find_src_port_for_queue({}) failed: {}",
-                        want, sp.error());
+                target_qid = want;
+            } else {
+                static std::atomic<uint16_t> rr_counter{0};
+                const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                if (qhi <= qlo) {
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
-                        "create_and_attach: find_src_port_for_queue exhausted"});
+                        "create_and_attach: empty effective_rx_queue_range "
+                        "(Platform moved-from or misconfigured)"});
                 }
-                cfg.dpdk.tcp_low_level.tuple.src_port = *sp;
-                target_qid = want;
-                // Critical: align cfg.dpdk.tcp_low_level.{rx,tx}_queue_id with target_qid.
-                // TStream::create() drives the SYN/SYN-ACK/ACK handshake by
-                // calling rte_eth_rx_burst(port, cfg.dpdk.tcp_low_level.rx_queue_id, ...).
-                // Without this assignment, rx_queue_id stays at whatever the
-                // caller's TcpConfig defaulted to (0), so the handshake polls
-                // queue 0 while SYN-ACK actually lands on queue=want per the
-                // RSS hash we just engineered for sp. Result: silent
-                // 10-second handshake timeouts on every pin_to_queue!=0
-                // attach, surfaced as the fan-out integration test's Test 2
-                // before this fix.
-                cfg.dpdk.tcp_low_level.rx_queue_id = want;
-                cfg.dpdk.tcp_low_level.tx_queue_id = want;
-                SPDLOG_LOGGER_INFO(log,
-                    "create_and_attach: RSS pin → src_port={} hashes to queue={}",
-                    *sp, want);
-            } else {
-                // Will compute target_qid from the FINAL 5-tuple after create().
-                defer_queue_selection = true;
+                const uint16_t qrange = qhi - qlo;
+                target_qid = qlo + (rr_counter.fetch_add(1,
+                                std::memory_order_relaxed) % qrange);
             }
+
+            // Engineer src_port whose RSS Toeplitz hash lands on target_qid.
+            // RSS input "src" is the REMOTE end on the inbound SYN-ACK
+            // (peer→local direction): find_src_port_for_queue takes
+            // (remote_ip, remote_port, local_ip) explicitly and searches
+            // the local sp in the dst_port slot. self_port_range gives
+            // autojoin / mp_topology a disjoint segment per process;
+            // single-process Platform returns nullopt → use Linux default
+            // ephemeral range. The helper takes a CLOSED upper bound, so
+            // we hand it `port_hi - 1`.
+            const auto& t = cfg.dpdk.tcp_low_level.tuple;
+            const auto pr = platform.self_port_range();
+            const uint16_t port_lo_arg =
+                pr ? static_cast<uint16_t>(pr->first)
+                   : uint16_t{32768};
+            const uint16_t port_hi_arg =
+                pr ? static_cast<uint16_t>(pr->second - 1)
+                   : uint16_t{60999};
+            auto sp = ::eph::net::dpdk::find_src_port_for_queue(
+                platform.port_id(), target_qid,
+                /*remote_ip=*/  t.dst_ip,
+                /*remote_port=*/t.dst_port,
+                /*local_ip=*/   t.src_ip,
+                port_lo_arg, port_hi_arg);
+            if (!sp) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: find_src_port_for_queue({}) failed: {}",
+                    target_qid, sp.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: find_src_port_for_queue exhausted"});
+            }
+            cfg.dpdk.tcp_low_level.tuple.src_port = *sp;
+            // Critical: align rx/tx_queue_id with target_qid so the
+            // SYN/SYN-ACK/ACK handshake in TStream::create() polls the
+            // queue where the engineered SYN-ACK will actually land.
+            cfg.dpdk.tcp_low_level.rx_queue_id = target_qid;
+            cfg.dpdk.tcp_low_level.tx_queue_id = target_qid;
+            SPDLOG_LOGGER_INFO(log,
+                "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
+                *sp, target_qid, cfg.dpdk.pin_to_queue.has_value());
         } else {  // FlowDirector
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue >= nb_q) {
                 return std::unexpected(core::ErrorInfo{
@@ -884,25 +889,6 @@ public:
         // here (not in plain create()) because create() has no Platform
         // reference; unattached streams stay in non-strict best-effort.
         stream->set_strict_rx_checksum_(platform.strict_rx_checksum());
-
-        // Resolve queue id from the final post-connect 5-tuple if we deferred.
-        if (defer_queue_selection) {
-            const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
-            auto qr = ::eph::net::dpdk::predict_rss_queue(
-                platform.port_id(),
-                /*src_ip=*/t.dst_ip,
-                /*src_port=*/t.dst_port,
-                /*dst_ip=*/t.src_ip,
-                /*dst_port=*/t.src_port);
-            if (!qr) {
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::InvalidConfig,
-                    "create_and_attach: predict_rss_queue failed"});
-            }
-            target_qid = *qr;
-            SPDLOG_LOGGER_INFO(log,
-                "create_and_attach: RSS auto → queue={}", target_qid);
-        }
 
         // Attach the Pollable BEFORE installing any flow rule, so the
         // moment the NIC starts steering matching packets to target_qid
