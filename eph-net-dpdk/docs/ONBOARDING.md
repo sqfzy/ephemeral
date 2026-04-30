@@ -118,14 +118,23 @@ enforces the secondary contract synchronously and then performs the real
 shared-mempool attach:
 
 ```cpp
+// Recommended path: declare an MpTopology, let the library derive
+// rx_queue_range / src_port windows and cross-validate via the shared
+// hugepage registry. Two numbers per process — no other coordination.
 eph::dpdk::PlatformConfig cfg{
-    .port_id        = 0,
-    .nb_rx_queues   = 4,
-    .proc_type      = eph::dpdk::ProcType::Secondary,   // or use create_secondary
-    .file_prefix    = "hft_app",                         // must match primary's EAL --file-prefix
-    .rx_queue_range = {2, 4},                            // disjoint from primary's [0, 2)
+    .port_id      = 0,
+    .nb_rx_queues = 4,
+    .proc_type    = eph::dpdk::ProcType::Secondary,   // or use create_secondary
+    .file_prefix  = "hft_app",                         // must match primary's EAL --file-prefix
+    .mp_topology  = eph::dpdk::MpTopology::uniform(
+                        /*self_index=*/1, /*total_procs=*/2,
+                        /*nb_rx_queues=*/4),
 };
 auto plat = eph::dpdk::Platform::create_secondary(std::move(cfg));
+
+// Legacy hand-partitioned alternative (mp_topology empty, manual
+// rx_queue_range — see "Advanced usage" in dpdk-multiprocess.md):
+//   .rx_queue_range = {2, 4},   // disjoint from primary's [0, 2)
 ```
 
 `create_secondary` runs `validate_config` (which polices
@@ -137,13 +146,21 @@ sub-range bounded by `nb_rx_queues`) and the secondary-only checks
 entirely — those are primary-only. Primary callers should use
 `create_primary` for symmetry and call-site clarity.
 
-Source-port partitioning across MP processes is the **caller's**
-responsibility — `eph-net-dpdk` does not auto-allocate src_port and
-has no global view to enforce disjointness. Allocate disjoint
-sub-ranges per process via `cfg.dpdk.tcp_low_level.tuple.src_port`
-(TCP) or `cfg.legacy.src_port` (UDP — the `legacy` substruct is
-intentionally retained on `eph::net::dpdk::UdpConfig` per T3.19's
-TCP-only reshape scope).
+Source-port partitioning across MP processes:
+
+  * **With `mp_topology` set + `Stream::create_and_attach` /
+    `Socket::create_and_attach`** — the library auto-narrows
+    `find_src_port_for_queue`'s search to this process's
+    `MpTopology::self().port_lo / port_hi` window via
+    `Platform::self_port_range()`. Primary and secondary draw from
+    disjoint segments without manual coordination.
+  * **Without `mp_topology` (legacy / manual partition path)** — the
+    caller is responsible: allocate disjoint sub-ranges per process
+    via `cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or
+    `cfg.legacy.src_port` (UDP — the `legacy` substruct is
+    intentionally retained on `eph::net::dpdk::UdpConfig` per T3.19's
+    TCP-only reshape scope). `eph-net-dpdk` has no global view to
+    enforce disjointness on this path.
 
 See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
 1+N partitioning table, PMD caveats, and the orchestrator script;
