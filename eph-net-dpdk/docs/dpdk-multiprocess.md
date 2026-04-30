@@ -255,11 +255,14 @@ Secondary-mode `rte_flow_create` support is PMD-specific:
 | ena   | ✓ | verified under noiommu, ena 2.x, 4 RX queues; report regressions on other configurations |
 | null  | — | not applicable (PMD is simulation-only) |
 
-If your PMD rejects `rte_flow_create` in secondary, push rule installation
-back to the primary (have the secondary send its 4-tuple to the primary
-via a shared ring, and let the primary install the rule pointing to the
-secondary's queue). This fallback is not currently wired in `eph-net-dpdk`
-— file an issue if you hit it.
+If your PMD rejects `rte_flow_create` in secondary, the library now
+**auto-handles** this via the FlowDir secondary-fallback IPC path
+(see "FlowDir secondary fallback" below). User code is unchanged —
+`Stream::create_and_attach` transparently routes through
+`eph_fd_install` IPC when local install fails, and the resulting
+`FlowRule`'s RAII destructor fires the matching `eph_fd_destroy`
+IPC. PMD compatibility moves from caller's concern to library
+detail.
 
 ---
 
@@ -367,6 +370,63 @@ counters for live monitoring:
 Counters are visible to any process that has the directory attached;
 read via `&platform.impl_->icmp_directory->header()->...` or, in
 diagnostic code, the global `eph::dpdk::detail::g_active_icmp_directory`.
+
+---
+
+## FlowDir secondary fallback
+
+When `rte_flow_create` would fail on a secondary because the PMD
+doesn't allow rule installation from non-primary processes, the
+library auto-routes the install request through DPDK's `rte_mp_*`
+IPC to the primary, which installs the rule on the secondary's
+behalf and returns an opaque handle id.
+
+Seen from user code, `Stream::create_and_attach` continues to
+"just work" — there is no API change at all. Internally:
+
+1. **Try local install first**. The fast path is unchanged:
+   secondaries that are on a PMD supporting `rte_flow_create`
+   (ENA / mlx5 / ixgbe / i40e in working configurations) get a
+   `LocalFlowHandle` and zero IPC overhead.
+2. **Fall back through `eph_fd_install`**. If local install
+   returns nullptr AND the platform is a secondary AND
+   `mp_topology` is in effect, `try_install_flow_rule_via_ipc`
+   sends an `FdInstallMsg` (POD: 4-tuple + target_queue + port_id
+   + request_id) to primary via `rte_mp_request_sync`. Primary's
+   `on_fd_install_thunk` calls `install_flow_rule` locally,
+   stashes the resulting `rte_flow*` in its `RemoteFlowRulesMap`
+   keyed by a synthetic 64-bit handle_id, and replies with that
+   id.
+3. **`FlowRule` holds a `RemoteFlowHandle`**. The `FlowRule::
+   handle` variant now carries `{owner_proc, handle_id}` instead
+   of a `rte_flow*`. Functionality (`valid()`, `dump()`,
+   `to_json()`, `opaque_handle_id()` for telemetry) is identical
+   to a local rule from the caller's perspective, modulo the
+   `"origin": "remote"` JSON tag.
+4. **Destruction is symmetric**. When the `FlowRule` falls out of
+   scope, its destructor visit-dispatches: a `LocalFlowHandle`
+   becomes `rte_flow_destroy`; a `RemoteFlowHandle` becomes an
+   `eph_fd_destroy` IPC. Primary's `on_fd_destroy_thunk` looks
+   up `handle_id` in `RemoteFlowRulesMap` and runs
+   `rte_flow_destroy` on the primary-side `rte_flow*`.
+
+Crash semantics:
+
+* If a secondary dies before `eph_fd_destroy` reaches primary,
+  the rule is leaked until primary teardown — `Platform::Impl`'s
+  destructor calls `RemoteFlowRulesMap::destroy_all` to GC any
+  surviving rules.
+* If primary dies before secondary's destroy IPC, the
+  `mp_ipc_request_sync` call returns `Timeout`; FlowRule's
+  destructor logs WARN and continues. Secondary then exits, and
+  primary's hugepage state is gone anyway, so the leak is
+  bounded to that primary's process lifetime.
+
+Telemetry: the public `FlowRule::to_json()` gains an `"origin"`
+field — `"local"` / `"remote"` / `"none"` — that monitoring
+pipelines can use to track how many rules are running through
+the IPC fallback path. A non-zero `remote` count on an ENA host
+is normally unexpected and worth investigating.
 
 ---
 

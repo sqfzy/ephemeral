@@ -17,6 +17,16 @@
 ///     via the shared hugepage registry. Manual `rx_queue_range` +
 ///     hand-allocated src_port is still supported as the "Advanced
 ///     usage" escape hatch — see eph-net-dpdk/docs/dpdk-multiprocess.md.
+///   * Cross-process ICMP MTU propagation is automatic when
+///     `mp_topology` is set: ICMP Frag Needed messages that land on a
+///     peer process's RX queue auto-forward via `rte_mp_*` IPC to the
+///     owning stream's `effective_mss` — no caller wiring needed. See
+///     "Cross-process ICMP MTU propagation" in the doc.
+///   * FlowDir secondary install fallback is automatic too: if your
+///     PMD rejects `rte_flow_create` from a secondary, the library
+///     transparently routes the install through `eph_fd_install` IPC
+///     to the primary; `Stream::create_and_attach` doesn't change.
+///     PMD compatibility is no longer the caller's concern.
 ///
 /// Scope:
 ///   * UDP, not TCP — no connect handshake clutter (RawDatagramCodec).

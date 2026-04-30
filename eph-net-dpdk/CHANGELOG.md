@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### Added — FlowDir secondary fallback via primary IPC
+
+When `rte_flow_create` rejects a secondary's install (some PMDs
+don't allow flow rule install from non-primary processes), the
+library now auto-routes the install through DPDK's `rte_mp_*`
+IPC to the primary, which installs the rule on the secondary's
+behalf and returns an opaque handle id. From user code,
+`Stream::create_and_attach` still "just works" — PMD compatibility
+moves from caller's concern to library detail.
+
+Implementation:
+* `FlowRule::handle` evolved (stage 5) into `std::variant<
+  monostate, LocalFlowHandle{rte_flow*}, RemoteFlowHandle{
+  owner_proc, handle_id}>`. RAII destructor visit-dispatches:
+  Local → `rte_flow_destroy`, Remote → `eph_fd_destroy` IPC.
+  New `FlowRule::opaque_handle_id() -> uint64_t` accessor for
+  telemetry; `to_json()` gains `"origin": "local" / "remote"
+  / "none"`.
+* New POD wire formats: `FdInstallMsg` / `FdInstallReply` /
+  `FdDestroyMsg` / `FdDestroyReply`, all version-tagged for
+  cross-build compatibility.
+* Primary-side: `detail::RemoteFlowRulesMap` (mutex-guarded
+  unordered_map<handle_id, {port, rte_flow*}> + atomic counter)
+  stores rules installed on behalf. `on_fd_install_thunk` /
+  `on_fd_destroy_thunk` are static `rte_mp_t` handlers
+  registered by `Platform::create_primary`. ~Impl
+  `destroy_all()` GCs any rules a secondary couldn't tear down.
+* Secondary-side: `try_install_flow_rule_via_ipc(port, queue,
+  tuple, proto, owner_proc=0)` packs an FdInstallMsg, fires
+  `mp_ipc_request_sync` (5 s timeout), validates the reply,
+  wraps in a `FlowRule(RemoteFlowHandle{...})`. `Stream::create_
+  and_attach` (TCP + UDP) gates on `is_secondary() && has_mp_
+  topology()` and falls through to this on local
+  rte_flow_create rejection.
+
+Behaviour invariants:
+* Single-process / primary-mode / non-mp_topology Platforms:
+  byte-for-byte unchanged. The fallback gate is false in those
+  contexts, so the IPC path is dead code.
+* PMDs that support secondary install: zero IPC overhead. The
+  local rte_flow_create succeeds and the variant holds a
+  LocalFlowHandle, exact same end-to-end behaviour as the
+  pre-variant FlowRule.
+
+Hot path: zero touched. All four new code paths
+(install via IPC, destroy via IPC, primary-side install
+handler, primary-side destroy handler) are cold. Stream
+attach / detach is the one cold-path call site that takes the
+extra IPC roundtrip when the fallback fires.
+
+`docs/dpdk-multiprocess.md` PMD compat table updated; the "If
+your PMD rejects `rte_flow_create` in secondary, file an issue"
+note replaced with an "auto-handled" pointer to a new
+"FlowDir secondary fallback" section. New e2e binaries
+`dpdk_mp_fd_fallback_primary` / `dpdk_mp_fd_fallback_secondary`
+plus `dpdk_mp_fd_fallback_e2e.sh` exercise the IPC bidirectional
+channel; on hosts where the PMD allows primary-side
+rte_flow_create the destroy round-trip is also exercised, on
+PMD-limited hosts (ENA in RSS-active mode returns ENOSYS) the
+test passes with handler-path-only coverage and an INFO log.
+
 ### Added — Cross-process ICMP MTU propagation (auto-forwarding)
 
 When `cfg.mp_topology` is set, ICMP Frag Needed messages landing on
