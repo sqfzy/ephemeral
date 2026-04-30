@@ -2,6 +2,55 @@
 
 ## [Unreleased]
 
+### Added — `MpTopology` + shared registry: auto-derived MP resource layout
+
+Multi-process resource allocation now needs only `(self_index,
+total_procs)` for the typical uniform case. The new
+`eph::dpdk::MpTopology` value type (`include/eph/dpdk/mp_topology.hpp`)
+declares the full per-process layout (RX queue range + src_port
+window) and feeds it into `PlatformConfig::mp_topology`. At
+`Platform::create_primary` time the library reserves a
+hugepage-backed shared memzone (`eph_mp/<file_prefix>` — see
+`include/eph/dpdk/detail/mp_registry.hpp`), writes the topology, and
+CAS-claims this process's slot. `create_secondary` looks up the same
+memzone, cross-validates magic / version / file_prefix / total_procs
+/ per-slot self spec, and CAS-claims its own slot — two processes
+declaring the same `self_index` lose CAS and get a clear
+`InvalidConfig` diagnostic instead of silently corrupting each
+other's state.
+
+`Platform` gains two cold-getter accessors:
+  - `has_mp_topology()` — true iff this process attached the registry.
+  - `self_port_range()` — `std::optional<{port_lo, port_hi}>` that
+    `DpdkTcpStream::create_and_attach` / `DpdkUdpSocket::
+    create_and_attach` consult on the RSS-pinned path to narrow
+    `find_src_port_for_queue`'s search to the per-process window. The
+    helper's own signature is unchanged.
+
+The legacy hand-partitioned `rx_queue_range` + caller-allocated
+src_port path is fully preserved as the "Advanced usage" escape
+hatch — `mp_topology` left empty leaves every existing behaviour
+byte-for-byte identical, including the `{0, 0}` sentinel "full
+range" semantics. `validate_config` rejects setting both
+`mp_topology` and a non-sentinel `rx_queue_range` (the two paths
+must not have two sources of truth).
+
+Restart contract: `create_primary` always resets the registry. The
+operational rule "stop every secondary before restarting the
+primary" is unchanged — same contract DPDK already imposes for the
+shared mempool.
+
+`docs/dpdk-multiprocess.md` rewritten so the recommended path is the
+TL;DR; the legacy fields are demoted to "Advanced usage: manual
+partitioning". `examples/simple_hft_dpdk_mp.cpp` switched to drive
+`MpTopology::uniform`. New e2e binaries `dpdk_mp_topology_primary`
+/ `dpdk_mp_topology_secondary` plus orchestrator
+`tests/integration/dpdk_mp_topology_e2e.sh` exercise the full
+primary↔secondary cycle. Existing `dpdk_mp_e2e.sh` (legacy
+hand-partition path) and the 22-case
+`test_dpdk_multiprocess_config` suite remain unchanged and continue
+to pass — invariants verified.
+
 ### Fixed — `parse_arp_reply` reflection-attack mitigation
 
 `parse_arp_reply` previously only validated `sender_ip == target_ip`

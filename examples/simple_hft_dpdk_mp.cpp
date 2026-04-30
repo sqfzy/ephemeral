@@ -9,11 +9,14 @@
 ///     `--proc-type` / `--file-prefix` / `-l` / `-a`.
 ///   * `eph::dpdk::Platform::create_primary` / `create_secondary` — the
 ///     two factories that gate access to the shared NIC.
-///   * `PlatformConfig::file_prefix` + `rx_queue_range` — the only
-///     fields callers must set differently between roles. Both processes
-///     pass the same `file_prefix`; the queue range carves the NIC's
-///     RX queues into disjoint sub-ranges (this skeleton uses a 50/50
-///     partition over `nb_rx_queues = 4`).
+///   * `eph::dpdk::MpTopology::uniform(self_index, total_procs, nb_rx_queues)`
+///     — the recommended auto-derive path. Both processes pass the same
+///     `file_prefix` plus their own `self_index` (0 for primary, 1 for
+///     secondary in this skeleton); the library carves RX queues +
+///     src_port windows into disjoint sub-ranges and cross-validates
+///     via the shared hugepage registry. Manual `rx_queue_range` +
+///     hand-allocated src_port is still supported as the "Advanced
+///     usage" escape hatch — see eph-net-dpdk/docs/dpdk-multiprocess.md.
 ///
 /// Scope:
 ///   * UDP, not TCP — no connect handshake clutter (RawDatagramCodec).
@@ -27,13 +30,14 @@
 /// see `examples/simple_hft_dpdk.cpp`. For a full real-server probe (TLS
 /// + WS + ARP + DNS + reconnect), see `examples/binance_latency.cpp`.
 ///
-/// Source-port partitioning across MP processes is the *caller*'s
-/// responsibility — `eph-net-dpdk` does not auto-allocate src_port and
-/// has no global view to enforce disjointness. This skeleton keeps the
-/// demo tuple constant and would not actually share a real NIC; in a
-/// production deploy each role must pick a src_port from a sub-range
-/// disjoint from the other process. See `eph-net-dpdk/docs/dpdk-multiprocess.md`
-/// for partitioning guidance.
+/// Source-port partitioning across MP processes: with `mp_topology`
+/// set (the path this skeleton drives) the library auto-narrows
+/// `find_src_port_for_queue`'s search to `MpTopology::self().port_lo /
+/// port_hi` so primary and secondary draw from disjoint segments
+/// without the caller doing any manual range arithmetic. The legacy
+/// "caller-side hand-partition" mode still works when `mp_topology` is
+/// left empty — see `eph-net-dpdk/docs/dpdk-multiprocess.md` "Advanced
+/// usage" for that flow.
 ///
 /// Usage (two terminals, same host, same NIC):
 ///
@@ -80,6 +84,7 @@
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
+#include "eph/dpdk/mp_topology.hpp" // MpTopology::uniform
 #include "eph/dpdk/platform.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
@@ -184,9 +189,30 @@ AppArgs parse_args(int argc, char** argv) {
 
 // Build a primary or secondary `PlatformConfig` from `AppArgs`.
 //
-// The two roles share `port_id`, `nb_rx_queues`, `file_prefix` (those MUST
-// match), and differ only on `proc_type` + the half of `rx_queue_range`
-// they own.
+// Recommended path (the one we drive here): the two roles share
+// `port_id`, `nb_rx_queues`, `file_prefix` (those MUST match), and
+// each declares the same `MpTopology::uniform(self_index, total_procs,
+// nb_rx_queues)`. The library auto-derives `rx_queue_range` and the
+// per-process src_port window from the topology and cross-validates
+// disjointness via the shared hugepage registry. Two numbers per
+// process (`self_index`, `total_procs`) — no other coordination.
+//
+// Legacy path (manual partitioning) — for context, equivalent of this
+// would have been:
+//
+//   const uint16_t mid = a.nb_rx_queues / 2;
+//   if (primary)  cfg.rx_queue_range = {0, mid};
+//   else          cfg.rx_queue_range = {mid, a.nb_rx_queues};
+//   // and then the caller had to allocate src_port from
+//   //   primary:   [32768, 49151]
+//   //   secondary: [49152, 65535]
+//   // by hand on every stream attach.
+//
+// That path still works (rx_queue_range remains a public field — see
+// docs/dpdk-multiprocess.md "Advanced usage: manual partitioning"),
+// but the recommended path below is shorter and lets the library
+// detect cross-process self_index collisions instead of trusting the
+// operator to keep them disjoint.
 ed::PlatformConfig make_platform_config(const AppArgs& a) {
     ed::PlatformConfig cfg{};
     cfg.port_id      = a.port_id;
@@ -195,13 +221,9 @@ ed::PlatformConfig make_platform_config(const AppArgs& a) {
     cfg.proc_type    = a.role;
     cfg.file_prefix  = a.file_prefix;
 
-    // 50/50 partition. Primary owns the lower half, secondary the upper.
-    // `validate_config` will reject anything outside [0, nb_rx_queues].
-    const uint16_t mid = static_cast<uint16_t>(a.nb_rx_queues / 2);
-    if (a.role == ed::ProcType::Primary)
-        cfg.rx_queue_range = {uint16_t{0}, mid};
-    else
-        cfg.rx_queue_range = {mid, a.nb_rx_queues};
+    const uint8_t self_index = (a.role == ed::ProcType::Primary) ? 0 : 1;
+    cfg.mp_topology = ed::MpTopology::uniform(
+        self_index, /*total_procs=*/2, a.nb_rx_queues);
     return cfg;
 }
 

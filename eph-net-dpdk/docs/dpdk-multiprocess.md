@@ -12,34 +12,47 @@ This document is the operational contract. For the design rationale see
 
 ---
 
-## TL;DR
+## TL;DR (recommended path)
 
 ```cpp
-// Primary process
+// Primary process — declare only (self_index, total_procs).
 PlatformConfig p_cfg{
-    .port_id        = 0,
-    .nb_rx_queues   = 4,
-    .enable_rss     = true,
-    .proc_type      = ProcType::Primary,
-    .file_prefix    = "eph_mp_demo",
-    .rx_queue_range = {0, 2},            // owns queues [0, 2)
+    .port_id      = 0,
+    .nb_rx_queues = 4,
+    .enable_rss   = true,
+    .proc_type    = ProcType::Primary,
+    .file_prefix  = "eph_mp_demo",
+    .mp_topology  = MpTopology::uniform(/*self_index=*/0,
+                                        /*total_procs=*/2,
+                                        /*nb_rx_queues=*/4),
 };
 auto platform = Platform::create_primary(std::move(p_cfg));
-// When you create streams against `platform`, allocate src_port from a
-// disjoint sub-range (e.g. [32768, 49151]) — see "Source-port partitioning"
-// below.
+// Library auto-derives queues=[0,2) and src_port=[32768, 49152) for
+// this process. Stream create_and_attach picks src_ports from that
+// window automatically; no manual partition tables.
 
-// Secondary process (separate binary; same file_prefix)
+// Secondary process (separate binary; same file_prefix).
 PlatformConfig s_cfg{
-    .port_id        = 0,
-    .nb_rx_queues   = 4,                 // must match primary
-    .proc_type      = ProcType::Secondary,
-    .file_prefix    = "eph_mp_demo",
-    .rx_queue_range = {2, 4},            // owns queues [2, 4)
+    .port_id      = 0,
+    .nb_rx_queues = 4,                   // must match primary
+    .proc_type    = ProcType::Secondary,
+    .file_prefix  = "eph_mp_demo",
+    .mp_topology  = MpTopology::uniform(/*self_index=*/1,
+                                        /*total_procs=*/2,
+                                        /*nb_rx_queues=*/4),
 };
 auto platform_sec = Platform::create_secondary(std::move(s_cfg));
-// Pick src_port from a disjoint sub-range (e.g. [49152, 65535]).
+// Auto-derives queues=[2,4) and src_port=[49152, 65536). The shared
+// hugepage registry rejects two processes that declare the same
+// self_index — silent collisions become loud cold-path errors.
 ```
+
+For non-uniform layouts (e.g. one trader process gets 6 queues, the
+rest 1 each), use `MpTopology::custom(self_index, {ProcSpec{...}, ...})`.
+
+The same code with `mp_topology` left empty falls back to the legacy
+"hand-partitioned `rx_queue_range` + caller-allocated src_port" path;
+see "Advanced usage: manual partitioning" below if you need it.
 
 Hot-path code in both processes is **identical** to the single-process
 case: `inc_<StreamMetric::*>` is per-instance atomic, `rr_counter` is
@@ -77,7 +90,46 @@ primary's port state.
 
 ---
 
-## `PlatformConfig` multi-process fields
+## Primary restart semantics
+
+The cross-process registry uses the same operational rule that DPDK's
+shared mempool already imposes: **the primary must be the last to
+start and the last to stop**. Concretely:
+
+* `Platform::create_primary` always **resets** the registry on entry —
+  it frees any stale memzone left from a previous run, writes a fresh
+  header, and CAS-claims its own slot. There is no "rejoin" mode for
+  the primary; restarting the primary always invalidates secondaries.
+* If you need to restart the primary, **stop every secondary first**,
+  then bring up the primary, then re-attach the secondaries. A
+  secondary that survives a primary restart will see a fresh registry
+  and can succeed at `attach_secondary`, but its mempool / port view
+  will be torn — the same hazard DPDK already documents for the
+  shared mempool. There is no `epoch` / generation counter to detect
+  this; the contract is operational, not enforced.
+* Within a single primary's lifetime, secondaries may attach / detach
+  freely — the registry's `procs[i].claimed` CAS makes "I'm the only
+  one with self_index=i" mutually exclusive among live peers.
+
+## Advanced usage: manual partitioning
+
+> Most users should use `MpTopology` (above). The following sections
+> describe the hand-partitioned path: callers set
+> `cfg.rx_queue_range` directly and allocate src_port from disjoint
+> sub-ranges by hand. This path is preserved for two cases — neither
+> common in HFT:
+>
+>   1. Cross-node coordinated RSS, where the partition is dictated by
+>      a topology larger than a single host (the library has no view
+>      of the cluster, so it can't help).
+>   2. Hand-tuned non-uniform layouts where you want to bypass even
+>      `MpTopology::custom` and own every byte of the partition.
+>
+> In both cases the legacy contract still holds: the caller is
+> responsible for keeping the ranges disjoint. The library will not
+> detect collisions on this path.
+
+### `PlatformConfig` multi-process fields
 
 All three fields have safe single-process defaults. Existing call sites
 that don't set any MP fields continue to work byte-for-byte.
