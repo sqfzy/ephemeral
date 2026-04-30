@@ -60,6 +60,15 @@ inline int run_lat_ex_md_udp_loop(::bench::BenchCtx& ctx) noexcept {
                      payload_size, ::bench::kTimestampBlockSize);
         return 1;
     }
+    // UDP wire ceiling 64 KiB; ITCH/Mold64 datagrams are typically <=
+    // 1.5 KiB. Cap at 16 KiB to keep the noexcept body's std::vector
+    // payload allocation safely under bad_alloc threshold.
+    constexpr std::size_t kMaxPayloadBytes = 16ull * 1024ull;
+    if (payload_size > kMaxPayloadBytes) {
+        std::fprintf(stderr, "run_lat_ex_md_udp_loop: payload_size=%zu exceeds max %zu\n",
+                     payload_size, kMaxPayloadBytes);
+        return 1;
+    }
     const uint64_t duration_s =
         scenario.get_or<uint32_t>("duration_seconds", 30);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
