@@ -1126,6 +1126,25 @@ public:
                                               app_payload.size(),
                                               tls_send_buf_);
             if (!enc) {
+                // encrypt_for_send may fail mid-payload after one or more
+                // chunks already advanced the AEAD write seq (each successful
+                // EVP_AEAD_CTX_seal does seq_++; a later failure leaves the
+                // counter ahead of what the wire ever saw — even though we
+                // never enter the sess_.send loop, no ciphertext escapes).
+                // Once that partial-advance happens, peer's read seq will
+                // diverge on the very next record we manage to encrypt and
+                // ship, so the latch is the only correct response.
+                // Conservative: latch on every encrypt failure (single-chunk
+                // failures don't strictly need it, but a false-positive
+                // reconnect is benign — the caller is already on the error
+                // path).
+                tls_corrupt_ = true;
+                inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "DpdkTcpStream::send(TLS): encrypt_for_send failed "
+                    "({}) — latching tls_corrupt_; AEAD write seq may have "
+                    "partially advanced past wire, reconnect required",
+                    enc.error().detail);
                 return std::unexpected(enc.error());
             }
             // The encrypted buffer may exceed MSS (TLS record overhead +

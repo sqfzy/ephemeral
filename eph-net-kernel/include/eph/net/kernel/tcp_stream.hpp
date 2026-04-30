@@ -735,6 +735,25 @@ public:
             auto enc = tls_.encrypt_for_send(app_payload.data(), app_payload.size(),
                                               tx_ciphertext_);
             if (!enc) [[unlikely]] {
+                // Symmetric latch with the DPDK backend: encrypt_for_send
+                // chunks the plaintext into TLS records and bumps the AEAD
+                // write seq once per successful EVP_AEAD_CTX_seal. A
+                // failure on chunk N>0 leaves the counter ahead of what
+                // any peer ever saw on the wire (no ciphertext is yet
+                // written to the socket — that happens below in
+                // sock_.send). The peer's read seq will desync on the
+                // next encrypted record we manage to ship, so latch
+                // immediately and force the reconnect path. Conservative:
+                // we latch on single-chunk failures too (where seq did
+                // not advance) — the false-positive cost is one
+                // reconnect, which is benign on the error path.
+                tls_corrupt_ = true;
+                inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream::send(TLS): encrypt_for_send failed "
+                    "({}) — latching tls_corrupt_; AEAD write seq may have "
+                    "partially advanced past wire, reconnect required",
+                    enc.error().detail);
                 return std::unexpected(enc.error());
             }
             // `encrypt_for_send` advanced the TLS write sequence number
