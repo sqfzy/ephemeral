@@ -539,18 +539,58 @@ load_bench_conf(std::string_view path) {
     }
 
     // ── measurement ──────────────────────────────────────────────────
+    // toml++ surfaces integer values as int64_t; the destination fields
+    // are narrower (uint32_t/uint16_t). Without a range-check a typo
+    // like `warmup_samples = -1` or `nb_rx_queues = 100000` silently
+    // truncates to 4294967295 / 34464 — both produce strange bench
+    // behaviour without any breadcrumb pointing at config. Reject
+    // out-of-range values up front so the operator sees the typo.
     if (auto* m = raw["measurement"].as_table()) {
-        if (auto v = (*m)["warmup_samples"].value<int64_t>())
+        if (auto v = (*m)["warmup_samples"].value<int64_t>()) {
+            if (*v < 0 || *v > std::numeric_limits<uint32_t>::max()) {
+                return std::unexpected(ConfigErrorInfo{
+                    .code   = ConfigError::InvalidValue,
+                    .key    = "measurement.warmup_samples",
+                    .detail = std::to_string(*v) +
+                              " out of range [0, UINT32_MAX]",
+                    .file   = cfg.source_,
+                    .line   = 0});
+            }
             cfg.measurement.warmup_samples = static_cast<uint32_t>(*v);
-        if (auto v = (*m)["server_work_ns"].value<int64_t>())
+        }
+        if (auto v = (*m)["server_work_ns"].value<int64_t>()) {
+            if (*v < 0 || *v > std::numeric_limits<uint32_t>::max()) {
+                return std::unexpected(ConfigErrorInfo{
+                    .code   = ConfigError::InvalidValue,
+                    .key    = "measurement.server_work_ns",
+                    .detail = std::to_string(*v) +
+                              " out of range [0, UINT32_MAX]",
+                    .file   = cfg.source_,
+                    .line   = 0});
+            }
             cfg.measurement.server_work_ns = static_cast<uint32_t>(*v);
+        }
     }
 
     // ── dpdk.rss ─────────────────────────────────────────────────────
     if (auto* d = raw["dpdk"].as_table()) {
         if (auto* rss = (*d)["rss"].as_table()) {
-            if (auto v = (*rss)["nb_rx_queues"].value<int64_t>())
+            if (auto v = (*rss)["nb_rx_queues"].value<int64_t>()) {
+                // dpdk caps queues per port at uint16_t but practically
+                // a NIC has ≤ 64 queues; >UINT16_MAX here is almost
+                // certainly a typo. Reject negative + sub-1 too: 0 means
+                // "no RX queues" which is undefined for the bench.
+                if (*v < 1 || *v > std::numeric_limits<uint16_t>::max()) {
+                    return std::unexpected(ConfigErrorInfo{
+                        .code   = ConfigError::InvalidValue,
+                        .key    = "dpdk.rss.nb_rx_queues",
+                        .detail = std::to_string(*v) +
+                                  " out of range [1, UINT16_MAX]",
+                        .file   = cfg.source_,
+                        .line   = 0});
+                }
                 cfg.dpdk.nb_rx_queues = static_cast<uint16_t>(*v);
+            }
             if (auto v = (*rss)["lcore_per_queue"].value<std::string>())
                 cfg.dpdk.lcore_per_queue = *v;
         }
