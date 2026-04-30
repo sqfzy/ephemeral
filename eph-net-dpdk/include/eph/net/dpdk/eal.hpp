@@ -3,7 +3,9 @@
 /// @file eal.hpp
 /// DPDK EAL RAII guard re-exported under `eph::net::dpdk`.
 ///
-/// The underlying implementation lives in `eph-dpdk/include/eph/dpdk/eal.hpp`.
+/// The underlying implementation lives in `eph-net-dpdk/include/eph/dpdk/eal.hpp`
+/// (the directory was renamed from `eph-dpdk/` to `eph-net-dpdk/` in phase 7,
+/// while the inner `eph::dpdk::` namespace was preserved).
 /// This header provides a typedef so user code can write
 ///
 ///     eph::net::dpdk::Eal eal = ...;

@@ -107,9 +107,9 @@ the single `lat_<name>.cpp` file.
 
 | Module / File                         | Responsibility                                                  | Key Types                                | Depends On                   |
 |---------------------------------------|-----------------------------------------------------------------|------------------------------------------|------------------------------|
-| `xmake.lua`                           | Discover `**/lat_*.cpp`, emit kernel + DPDK targets             | -                                        | `eph-utils`, `eph-dpdk`      |
+| `xmake.lua`                           | Discover `**/lat_*.cpp`, emit kernel + DPDK targets             | -                                        | `eph-utils`, `eph-net-dpdk`  |
 | `bench.conf`                          | Single source of tuning (NIC, CPU, sweeps)                      | -                                        | -                            |
-| `lat` (bash)                          | NIC-B state machine + exec binary                               | -                                        | `eph-dpdk/scripts/dpdk-*.sh` |
+| `lat` (bash)                          | NIC-B state machine + exec binary                               | -                                        | `eph-net-dpdk/scripts/dpdk-*.sh` |
 | `core/config.hpp`                     | Parse `bench.conf`; also legacy `CommonConfig` CLI              | `BenchConfig`, `load_bench_conf`         | `<expected>`                 |
 | `core/runner.hpp`                     | Warmup -> measurement -> report orchestration                   | `BenchRunner`                            | `eph::utils::{Recorder,PhasedTimer}` |
 | `core/sample.hpp`                     | Latency sample structs                                          | `RttSample`, `OneWaySample`              | -                            |
@@ -319,14 +319,14 @@ All public APIs are header-only under `core/`.
               |                          v      |
               |                        core/ ---+
               |                                 |
-              |                                 +-- eph-dpdk
+              |                                 +-- eph-net-dpdk
               |                                     (EalGuard, Platform,
               |                                      UdpSender, TcpSession,
               |                                      arp::resolve)
               |                                        [only for _dpdk builds]
               |
-              +-- scripts/lat --> eph-dpdk/scripts/dpdk-setup.sh
-                                  eph-dpdk/scripts/dpdk-teardown.sh
+              +-- scripts/lat --> eph-net-dpdk/scripts/dpdk-setup.sh
+                                  eph-net-dpdk/scripts/dpdk-teardown.sh
 ```
 
 ### External

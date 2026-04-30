@@ -186,9 +186,9 @@ work; it widens the SRV leg without touching the TX/RX legs.
 |----------------------------------------|-----------------------------------------------|-------------------------------------------------------------------|
 | `TSC calibration failed`               | Host TSC not invariant                        | Check `/proc/cpuinfo`; the bench cannot measure without it        |
 | `enter_netns: open /var/run/netns/...` | `bench_ns` missing                            | Run via `scripts/lat` which creates it, not the binary directly   |
-| `EAL init` errors on DPDK build        | Hugepages / `vfio-pci` missing                | `eph-dpdk/scripts/dpdk-setup.sh --check-only` to diagnose         |
+| `EAL init` errors on DPDK build        | Hugepages / `vfio-pci` missing                | `eph-net-dpdk/scripts/dpdk-setup.sh --check-only` to diagnose     |
 | `ARP resolve gateway` timeout          | Gateway wrong or unreachable                  | Verify `GATEWAY_IP` in `bench.conf`; try `ip neigh` on host       |
-| NIC-B stuck after crash                | `.dpdk_state` inconsistent with current bind  | `sudo eph-dpdk/scripts/dpdk-teardown.sh` then retry               |
+| NIC-B stuck after crash                | `.dpdk_state` inconsistent with current bind  | `sudo eph-net-dpdk/scripts/dpdk-teardown.sh` then retry           |
 | `pin failed: not isolcpus`             | `CLIENT_CPU`/`MOCK_CPU` not on isolated cores | Set `ALLOW_NON_ISOLATED=true` for dev hosts                       |
 | "binary not found"                     | Target not built                              | `xmake build lat_<scenario>[_dpdk]` — `lat` tells you the command |
 
