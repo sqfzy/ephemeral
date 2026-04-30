@@ -164,16 +164,26 @@ static_assert(alignof(MpRegistryHeader) >= 64,
 [[nodiscard]] inline std::expected<std::array<char, kMpRegistryNameCap>,
                                    core::ErrorInfo>
 build_mp_registry_name(std::string_view file_prefix) noexcept {
-    if (file_prefix.empty())
+    if (file_prefix.empty()) {
+        SPDLOG_ERROR(
+            "MpRegistry::build_name: file_prefix is empty — "
+            "PlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "MpRegistry: file_prefix must be non-empty"});
-    if (file_prefix.size() >= kMpRegistryFilePrefixMax)
+    }
+    if (file_prefix.size() >= kMpRegistryFilePrefixMax) {
+        SPDLOG_ERROR(
+            "MpRegistry::build_name: file_prefix='{}' size={} >= max {} "
+            "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp/\") - 1; final byte "
+            "reserved for header NUL)",
+            file_prefix, file_prefix.size(), kMpRegistryFilePrefixMax);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "MpRegistry: file_prefix must be < 24 bytes "
             "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp/\") - 1; the final "
             "byte is reserved for the header NUL terminator)"});
+    }
 
     std::array<char, kMpRegistryNameCap> buf{};
     std::memcpy(buf.data(), kMpRegistryNamePrefix.data(),
@@ -306,10 +316,15 @@ public:
     /// Called by `Platform::create_primary`.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     create_primary(std::string_view file_prefix, MpTopology const& topo) {
-        if (!topo.valid())
+        if (!topo.valid()) {
+            SPDLOG_ERROR(
+                "MpRegistry::create_primary: MpTopology failed valid() "
+                "(self_index={} total_procs={} file_prefix='{}')",
+                topo.self_index, topo.total_procs, file_prefix);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry::create_primary: topology failed valid()"});
+        }
 
         auto name_r = build_mp_registry_name(file_prefix);
         if (!name_r) return std::unexpected(name_r.error());
@@ -355,6 +370,11 @@ public:
         uint8_t expected = 0;
         if (!hdr->procs[topo.self_index].claimed.compare_exchange_strong(
                 expected, 1, std::memory_order_acq_rel)) {
+            SPDLOG_ERROR(
+                "MpRegistry::create_primary: CAS-claim of self_index={} "
+                "failed on freshly-initialized header — torn write or "
+                "memzone collision (file_prefix='{}' total_procs={})",
+                topo.self_index, file_prefix, topo.total_procs);
             (void)rte_memzone_free(mz);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -392,10 +412,17 @@ public:
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary(std::string_view file_prefix, MpTopology const& topo,
                      bool already_claimed = false) {
-        if (!topo.valid())
+        if (!topo.valid()) {
+            SPDLOG_ERROR(
+                "MpRegistry::attach_secondary: MpTopology failed valid() "
+                "(self_index={} total_procs={} file_prefix='{}' "
+                "already_claimed={})",
+                topo.self_index, topo.total_procs, file_prefix,
+                already_claimed);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry::attach_secondary: topology failed valid()"});
+        }
 
         auto name_r = build_mp_registry_name(file_prefix);
         if (!name_r) return std::unexpected(name_r.error());
@@ -638,15 +665,24 @@ public:
     /// `Error::InvalidConfig` rather than silently double-claiming.
     [[nodiscard]] std::expected<uint8_t, core::ErrorInfo>
     try_claim_free_slot() noexcept {
-        if (hdr_ == nullptr)
+        if (hdr_ == nullptr) {
+            SPDLOG_ERROR(
+                "MpRegistry::try_claim_free_slot: handle is inert "
+                "(moved-from / never attached)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry::try_claim_free_slot: handle is inert"});
-        if (self_index_ != kMpRegistrySelfIndexUnset)
+        }
+        if (self_index_ != kMpRegistrySelfIndexUnset) {
+            SPDLOG_ERROR(
+                "MpRegistry::try_claim_free_slot: handle already owns "
+                "self_index={} — caller must use a fresh read-only handle",
+                self_index_);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry::try_claim_free_slot: handle already owns "
                 "a slot"});
+        }
 
         const uint32_t total = hdr_->total_procs;
         for (uint32_t i = 0; i < total; ++i) {
