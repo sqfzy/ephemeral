@@ -251,7 +251,27 @@ public:
         }
         if (precision < 0) precision = 0;
         if (precision > 15) precision = 15;
-        char tmp[32];
+        // Reject values whose integer magnitude exceeds the uint64_t range
+        // before they reach `format_double`. The downstream `static_cast<
+        // uint64_t>(val)` is undefined behaviour when `val` is outside the
+        // uint64_t range (C++23 fp→int conversion still produces an
+        // unspecified value for out-of-range inputs), AND the local `tmp[
+        // 40]` buffer below is only just large enough for a 20-digit
+        // uint64_t integer part — a value like 1e25 would write 26 integer
+        // digits and overrun the buffer with garbage from the bogus cast.
+        // 1e19 is the largest power of ten that fits in 20 digits; using
+        // < 1e19 (strict) keeps a comfortable margin from uint64::max
+        // (~1.844e19) so the float→uint64 cast cannot land on the boundary.
+        constexpr double kMaxDoubleMagnitude = 1e19;
+        if (std::abs(value) >= kMaxDoubleMagnitude) [[unlikely]] {
+            log_non_finite(t);
+            overflow_ = true;
+            return *this;
+        }
+        // tmp size derivation: 1 sign + 20 int digits (uint64::max) + 1 '.'
+        // + 15 fraction digits + 1 slack = 38; round up to 40. The previous
+        // 32-byte buffer overran for values near 1e19 with precision=15.
+        char tmp[40];
         size_t n = format_double(value, tmp, precision);
         return set_trusted(t, std::string_view(tmp, n));
     }

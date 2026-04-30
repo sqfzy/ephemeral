@@ -2325,6 +2325,53 @@ TEST(FixBuilder, set_double_finite_values_still_work) {
     EXPECT_GT(len, 0u);
 }
 
+// Reject finite values whose integer magnitude does not fit in uint64_t.
+// `format_double` casts via `static_cast<uint64_t>(val)` which is UB for
+// `val >= 2^64` (~1.844e19) and the local tmp buffer is only sized for
+// a 20-digit integer part — values >= 1e19 would overrun. Reject up
+// front to keep the unsafe path unreachable.
+TEST(FixBuilder, set_double_value_above_uint64_range_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, 1e25);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_value_at_uint64_boundary_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // 1e19 is the strict-cap boundary — uint64::max() ~= 1.844e19 so
+    // 1e19 itself just fits, but the rule is "< 1e19" to give the
+    // float→uint64 cast a comfortable margin away from overflow.
+    b.set_double(tag::Price, 1e19);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_negative_huge_value_causes_overflow) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_double(tag::Price, -1e30);
+    EXPECT_TRUE(b.has_overflow());
+    EXPECT_EQ(b.finish(), 0u);
+}
+
+TEST(FixBuilder, set_double_just_under_uint64_cap_still_accepted) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // 1e18 fits comfortably in uint64_t (~1.844e19). Verifies the
+    // overflow guard is not over-aggressive on realistic large prices.
+    b.set_double(tag::Price, 1e18, 2);
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    EXPECT_GT(len, 0u);
+}
+
 // ---------------------------------------------------------------------------
 // Constructor precondition checks
 // ---------------------------------------------------------------------------
