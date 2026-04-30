@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "eph/fix/risk_check.hpp"
 
 using namespace eph::fix;
@@ -356,6 +358,65 @@ TEST(RiskChecker, InvalidSideDoesNotMaskBuyDirectionExposureBreach) {
     EXPECT_NE(checker.check_order("AAPL", 'B', 30.0, 150.0, positions),
               RiskRejectReason::kOk)
         << "exchange-native 'B' must NOT silently slip a position breach";
+}
+
+// ---------------------------------------------------------------------------
+// Non-finite (NaN / Inf) qty or price — caller bug class
+// ---------------------------------------------------------------------------
+//
+// The risk checker computes notional, projected qty, projected exposure as
+// double arithmetic. NaN inputs propagate through and silently bypass every
+// `>` comparison (NaN > x is always false), so the order would pass all
+// risk checks despite being malformed. Inf produces a `notional = inf`
+// that DOES trip max_order_notional but obscures the original bug.
+// `check_order` returns kInvalidInput for both NaN and Inf to surface
+// the upstream bug at the gate rather than at a venue 401.
+
+TEST(RiskChecker, NaNQtyRejected) {
+    RiskLimits limits;
+    limits.max_order_qty      = 100.0;
+    limits.max_order_notional = 50000.0;
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    const double nan_qty = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(checker.check_order("AAPL", '1', nan_qty, 150.0, positions),
+              RiskRejectReason::kInvalidInput)
+        << "NaN qty must NOT silently bypass risk comparisons";
+}
+
+TEST(RiskChecker, NaNPriceRejected) {
+    RiskLimits limits;
+    limits.max_order_qty      = 100.0;
+    limits.max_order_notional = 50000.0;
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    const double nan_px = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(checker.check_order("AAPL", '1', 50.0, nan_px, positions),
+              RiskRejectReason::kInvalidInput);
+}
+
+TEST(RiskChecker, InfiniteQtyRejected) {
+    RiskLimits limits;
+    limits.max_order_qty = 100.0;
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    const double inf_qty = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(checker.check_order("AAPL", '1', inf_qty, 150.0, positions),
+              RiskRejectReason::kInvalidInput);
+}
+
+TEST(RiskChecker, InfinitePriceRejected) {
+    RiskLimits limits;
+    limits.max_order_notional = 50000.0;
+    RiskChecker checker(limits);
+    PositionTracker positions;
+
+    const double inf_px = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(checker.check_order("AAPL", '1', 50.0, inf_px, positions),
+              RiskRejectReason::kInvalidInput);
 }
 
 // ---------------------------------------------------------------------------
