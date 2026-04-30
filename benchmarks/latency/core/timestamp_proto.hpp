@@ -2,9 +2,21 @@
 /// Latency-bench timestamp protocol.
 ///
 /// A fixed 24-byte block carried at the front of every RTT-scenario
-/// payload (lat_{tcp,udp,ws,ex_md_udp}). Three little-endian `uint64`s
+/// payload (lat_{tcp,udp,ws,ex_md_udp}). Three host-endian `uint64`s
 /// record the clock-domain-shared CLOCK_MONOTONIC_RAW timestamps that
-/// decompose a round-trip into TX / SRV / RX legs:
+/// decompose a round-trip into TX / SRV / RX legs.
+///
+/// ENDIANNESS: this protocol is host-endian, i.e. it relies on both
+/// ends running the same architecture. Reads/writes use `std::memcpy`
+/// of a packed `uint64_t` struct, so the bytes on the wire match the
+/// host's native order. Bench is single-host (mock + client + DPDK
+/// all on the same Graviton/x86_64 box), so this is sound. If a
+/// future bench ever runs the mock and client on different
+/// architectures, switch to explicit LE encoding here AND in the
+/// echo handlers' stamp paths (tcp_echo.hpp:put_u64_le is already LE,
+/// rss_scaling_push.hpp uses memcpy → host-endian; the inconsistency
+/// is benign on aarch64 LE / x86_64 LE today, but would surface on
+/// a BE host as a mismatch).
 ///
 ///   [0:8]    client_ns     — set by the client before send()
 ///   [8:16]   mock_recv_ns  — set by the Python mock on recvfrom/recv
@@ -48,7 +60,7 @@ struct TimestampBlock {
     uint64_t mock_send_ns;  ///< T_mock_send — set by mock before send
 };
 static_assert(sizeof(TimestampBlock) == 24,
-              "TimestampBlock must be exactly 24 bytes (3x LE uint64)");
+              "TimestampBlock must be exactly 24 bytes (3x host-endian uint64)");
 static_assert(alignof(TimestampBlock) <= 8);
 
 /// Size of the wire-format timestamp block in bytes.
