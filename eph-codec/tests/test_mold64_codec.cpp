@@ -236,6 +236,26 @@ TEST(Mold64Codec, EncodeBufferFull) {
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
 
+// Payload-size check must run BEFORE `needed = 22 + payload.size()` to
+// prevent a SIZE_MAX-class wrap from slipping past the cap guard. We
+// can't materialise a SIZE_MAX-byte buffer, so we just assert that an
+// oversized span (size > 0xFFFF) is rejected with CodecOverflow even
+// when the destination buffer would be "large enough" by wrapped math.
+TEST(Mold64Codec, EncodeRejectsOversizedPayloadBeforeSizeMath) {
+    Mold64Codec enc;
+    uint8_t buf[256]{};
+    // Synthesise a span whose size exceeds the 16-bit on-wire limit.
+    // pointer is dummy (encode rejects before any read of payload data).
+    const uint8_t dummy[1]{};
+    std::span<const uint8_t> oversized{dummy, std::size_t{0x10000}};
+    auto r = enc.encode(buf, sizeof(buf), Mold64Codec::Frame{
+        .seq_num = 1,
+        .payload = oversized,
+    });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::CodecOverflow);
+}
+
 // ─── round-53 gap-detection boundary additions ─────────────────────
 //
 // Existing tests cover gap-of-4, replay, EOS (0xFFFF count), but these

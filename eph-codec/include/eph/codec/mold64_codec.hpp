@@ -188,6 +188,21 @@ public:
     /// wanting a proper producer should build the datagram themselves.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     encode(uint8_t* buf, std::size_t cap, Frame frame) noexcept {
+        // Bound payload BEFORE computing `needed` — otherwise a caller-
+        // supplied span with size() > SIZE_MAX - 22 would silently wrap
+        // around in the addition below, slip past the `needed > cap` guard
+        // (cap is small, wrapped needed is also small), and reach the
+        // memcpy with mlen = static_cast<uint16_t>(SIZE_MAX) = 0xFFFF —
+        // i.e. a 65535-byte heap overflow. The 16-bit length prefix is
+        // the wire-format ceiling, so reject anything bigger up front.
+        if (frame.payload.size() > 0xFFFFu) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+                "Mold64Codec::encode: payload {} exceeds 65535 bytes",
+                frame.payload.size());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecOverflow,
+                "Mold64Codec::encode: payload exceeds 65535 bytes"});
+        }
         const std::size_t needed =
             eph::itch::moldudp64::kHeaderLen + 2 + frame.payload.size();
         if (needed > cap) [[unlikely]] {
@@ -197,11 +212,6 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
                 "Mold64Codec::encode: destination buffer too small"});
-        }
-        if (frame.payload.size() > 0xFFFFu) [[unlikely]] {
-            return std::unexpected(core::ErrorInfo{
-                core::Error::CodecOverflow,
-                "Mold64Codec::encode: payload exceeds 65535 bytes"});
         }
 
         // 10-byte session (zeroed), 8-byte BE seq, 2-byte BE count=1.
