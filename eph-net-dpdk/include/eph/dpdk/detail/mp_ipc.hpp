@@ -263,7 +263,20 @@ mp_ipc_request_sync(std::string_view name,
             core::Error::InvalidConfig,
             "mp_ipc_request_sync: pack_msg failed"});
 
+    // A negative timeout would propagate to a negative tv_sec / tv_nsec
+    // (DPDK passes the timespec through to its own internal sem_timedwait
+    // path, which is unspecified for negative inputs — historical builds
+    // hung on this). A zero timeout is unspecified across DPDK versions
+    // ("try once" on some, "no-op" on others); reject both up-front so the
+    // caller gets a deterministic error rather than a flaky hang.
     const auto millis = timeout.count();
+    if (millis <= 0) {
+        SPDLOG_DEBUG("mp_ipc_request_sync('{}'): non-positive timeout={} ms "
+                     "rejected up-front", name, millis);
+        return std::unexpected(core::ErrorInfo{
+            core::Error::InvalidConfig,
+            "mp_ipc_request_sync: timeout must be > 0 ms"});
+    }
     timespec ts{
         .tv_sec  = static_cast<time_t>(millis / 1000),
         .tv_nsec = static_cast<long>((millis % 1000) * 1'000'000),

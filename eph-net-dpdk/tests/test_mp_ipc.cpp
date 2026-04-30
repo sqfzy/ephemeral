@@ -162,3 +162,31 @@ TEST(MpIpcAction, MoveAssignment_UnregistersPrev) {
     MpIpcAction reuse("eph_test_mv_b1", &test_handler_thunk);
     EXPECT_TRUE(static_cast<bool>(reuse));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mp_ipc_request_sync — input-validation guards
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Negative timeout would propagate to a negative tv_sec / tv_nsec on the
+// timespec passed to DPDK's internal sem_timedwait. Some DPDK versions hung
+// indefinitely on this; the wrapper now rejects up-front so the caller gets
+// a deterministic InvalidConfig instead of a flaky stuck-RPC.
+TEST(MpIpcRequestSync, NegativeTimeoutRejectedUpfront) {
+    TinyMsg req{.magic = 0xCAFEBABE, .value = 7};
+    auto r = eph::dpdk::detail::mp_ipc_request_sync<TinyMsg, TinyMsg>(
+        "eph_test_neg_to", req, std::chrono::milliseconds{-100});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+// Zero timeout is unspecified across DPDK versions ("try once" / "no-op");
+// reject too so the wrapper has consistent semantics regardless of the DPDK
+// version the binary links against.
+TEST(MpIpcRequestSync, ZeroTimeoutRejectedUpfront) {
+    TinyMsg req{};
+    auto r = eph::dpdk::detail::mp_ipc_request_sync<TinyMsg, TinyMsg>(
+        "eph_test_zero_to", req, std::chrono::milliseconds{0});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
