@@ -260,6 +260,33 @@ target("dpdk_mp_dynamic_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- Acceptance gate for reshape/rss-aware-connect: two autojoin peers
+-- both DPDK-TCP-connect to a kernel echo mock spawned inside primary.
+-- Pre-fix the secondary's connect hung silently because RSS hashed
+-- SYN-ACK to a queue secondary did not own. Coordinated by
+-- tests/integration/dpdk_mp_dynamic_tcp_handshake_e2e.sh.
+target("dpdk_mp_dynamic_tcp_handshake_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_dynamic_tcp_handshake_primary.cpp")
+    add_includedirs("tests/integration")
+    -- eph-net for posix_listener / posix_io helpers used by echo_mocks.hpp;
+    -- eph-codec for RawStreamCodec used in the connect+echo round-trip.
+    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_dynamic_tcp_handshake_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_dynamic_tcp_handshake_secondary.cpp")
+    add_includedirs("tests/integration")
+    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
+    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do
