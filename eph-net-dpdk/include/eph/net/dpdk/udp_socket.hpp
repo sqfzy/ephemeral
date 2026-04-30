@@ -176,6 +176,18 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
+            // Mirror of tcp_stream.hpp's RSS-aware fix (reshape/
+            // rss-aware-connect): always engineer src_port via
+            // find_src_port_for_queue so the inbound reply
+            // Toeplitz-hashes onto a queue this process owns.
+            // Pre-fix the no-pin branch used predict_rss_queue on
+            // the caller's random src_port and then required a
+            // poller on whichever queue the hash happened to land —
+            // which under autojoin would frequently be a queue
+            // owned by a different peer process (manifested as
+            // "no Poller registered for target queue" at attach
+            // time). Single-process callers see no behavioural
+            // change because all queues belong to one Platform.
             if (cfg.pin_to_queue) {
                 const uint16_t want = *cfg.pin_to_queue;
                 if (want >= nb_q) {
@@ -183,76 +195,54 @@ public:
                         core::Error::InvalidConfig,
                         "create_and_attach: pin_to_queue >= nb_rx_queues"});
                 }
-                // RSS input "src" is the REMOTE end on the inbound
-                // reply (peer→local direction). See the matching note
-                // in tcp_stream.hpp's create_and_attach for the full
-                // rationale on the pre-fix Toeplitz transposition bug.
-                //
-                // mp_topology auto-derive: when the platform has a self
-                // src_port window from the shared registry, narrow the
-                // search to it so peer processes don't collide on
-                // ephemeral ports.
-                const auto pr = platform.self_port_range();
-                const uint16_t port_lo_arg =
-                    pr ? static_cast<uint16_t>(pr->first)
-                       : uint16_t{32768};
-                const uint16_t port_hi_arg =
-                    pr ? static_cast<uint16_t>(pr->second - 1)
-                       : uint16_t{60999};
-                auto sp = ::eph::net::dpdk::find_src_port_for_queue(
-                    platform.port_id(), want,
-                    /*remote_ip=*/  cfg.legacy.dst_ip,
-                    /*remote_port=*/cfg.legacy.dst_port,
-                    /*local_ip=*/   cfg.legacy.src_ip,
-                    port_lo_arg, port_hi_arg);
-                if (!sp) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "create_and_attach: find_src_port_for_queue({}) failed: {}",
-                        want, sp.error());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::InvalidConfig,
-                        "create_and_attach: find_src_port_for_queue exhausted"});
-                }
-                cfg.legacy.src_port = *sp;
                 target_qid = want;
-                // TX queue alignment: send replies on the same queue
-                // family as the inbound traffic (most ENA / mlx5
-                // deployments keep RX/TX queue counts symmetric so a
-                // queue id valid on RX is valid on TX too).
-                //
-                // Note: `UdpConfig` has NO `rx_queue_id` field by
-                // design — it is a TX-only struct. The RX queue is
-                // owned by the per-queue Poller that
-                // `Platform::poller_for_queue(target_qid)` returns
-                // below; we don't double-store it on `cfg`. This is
-                // why we don't write `cfg.legacy.rx_queue_id = want`
-                // here even though tcp_stream.hpp does — TcpConfig
-                // has a real `rx_queue_id` field that drives the
-                // synchronous handshake's burst-poll loop, UdpConfig
-                // does not.
-                cfg.legacy.tx_queue_id = want;
-                SPDLOG_LOGGER_INFO(log,
-                    "create_and_attach: RSS pin → src_port={} hashes to queue={}",
-                    *sp, want);
             } else {
-                auto qr = ::eph::net::dpdk::predict_rss_queue(
-                    platform.port_id(),
-                    /*src_ip=*/cfg.legacy.dst_ip,
-                    /*src_port=*/cfg.legacy.dst_port,
-                    /*dst_ip=*/cfg.legacy.src_ip,
-                    /*dst_port=*/cfg.legacy.src_port);
-                if (!qr) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "create_and_attach: predict_rss_queue failed: {}",
-                        qr.error());
+                static std::atomic<uint16_t> rr_counter{0};
+                const auto [qlo, qhi] = platform.effective_rx_queue_range();
+                if (qhi <= qlo) {
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
-                        "create_and_attach: predict_rss_queue failed"});
+                        "create_and_attach: empty effective_rx_queue_range "
+                        "(Platform moved-from or misconfigured)"});
                 }
-                target_qid = *qr;
-                SPDLOG_LOGGER_INFO(log,
-                    "create_and_attach: RSS auto → queue={}", target_qid);
+                const uint16_t qrange = qhi - qlo;
+                target_qid = qlo + (rr_counter.fetch_add(1,
+                                std::memory_order_relaxed) % qrange);
             }
+
+            // RSS input "src" is the REMOTE end on the inbound reply
+            // (peer→local). find_src_port_for_queue puts the local sp
+            // in the dst_port slot. self_port_range narrows the search
+            // to this peer's autojoin-derived window when present.
+            const auto pr = platform.self_port_range();
+            const uint16_t port_lo_arg =
+                pr ? static_cast<uint16_t>(pr->first)
+                   : uint16_t{32768};
+            const uint16_t port_hi_arg =
+                pr ? static_cast<uint16_t>(pr->second - 1)
+                   : uint16_t{60999};
+            auto sp = ::eph::net::dpdk::find_src_port_for_queue(
+                platform.port_id(), target_qid,
+                /*remote_ip=*/  cfg.legacy.dst_ip,
+                /*remote_port=*/cfg.legacy.dst_port,
+                /*local_ip=*/   cfg.legacy.src_ip,
+                port_lo_arg, port_hi_arg);
+            if (!sp) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: find_src_port_for_queue({}) failed: {}",
+                    target_qid, sp.error());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: find_src_port_for_queue exhausted"});
+            }
+            cfg.legacy.src_port = *sp;
+            // TX queue alignment: same family as RX. UdpConfig has no
+            // rx_queue_id field by design (Poller owns the RX queue);
+            // see the long comment removed alongside this rewrite.
+            cfg.legacy.tx_queue_id = target_qid;
+            SPDLOG_LOGGER_INFO(log,
+                "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
+                *sp, target_qid, cfg.pin_to_queue.has_value());
         } else {  // FlowDirector
             if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
                 return std::unexpected(core::ErrorInfo{
