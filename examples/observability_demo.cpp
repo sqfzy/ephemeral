@@ -10,7 +10,7 @@
 ///   $ xmake run observability_demo
 ///
 /// Expected output (every 250 ms; `publish_metrics` walks the full
-/// `StreamMetric` enum so all 24 counters are emitted unconditionally —
+/// `StreamMetric` enum so all 25 counters are emitted unconditionally —
 /// the kernel TCP stream legitimately bumps only the first three for
 /// this workload, and the rest stay at zero):
 ///   [COUNTER] net.stream.bytes_sent              = N {venue=demo}
@@ -19,7 +19,7 @@
 ///   [COUNTER] net.stream.reasm_overflows         = 0 {venue=demo}
 ///   [COUNTER] net.stream.codec_errors            = 0 {venue=demo}
 ///   [COUNTER] net.stream.tls.cross_record_frames = 0 {venue=demo}
-///   ... 18 more zero-valued counters (TCP-specific, TLS, WS, DPDK) ...
+///   ... 19 more zero-valued counters (TCP-specific, TLS, WS, DPDK) ...
 ///   [COUNTER] net.stream.tls.handshake_count     = 0 {venue=demo}
 /// See docs/observability-guide.md for the full list.
 
