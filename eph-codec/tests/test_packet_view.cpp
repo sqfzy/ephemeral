@@ -38,6 +38,61 @@ struct NotAView {
 static_assert(!ec::PacketView<NotAView>,
               "A type missing writable_data must NOT satisfy PacketView");
 
+// Pin the OTHER required members too — a refactor that loosened the concept
+// (e.g. dropped `trim_back` because no in-tree caller used it) would otherwise
+// silently regress the contract. Each negative type exercises exactly one
+// missing member so a future failure points straight at the regression.
+
+struct MissingDataView {
+    uint8_t* writable_data() noexcept { return nullptr; }
+    size_t length() const noexcept { return 0; }
+    void trim_front(size_t) noexcept {}
+    void trim_back(size_t) noexcept {}
+    uint64_t arrival_tsc() const noexcept { return 0; }
+};
+static_assert(!ec::PacketView<MissingDataView>,
+              "PacketView must require const data()");
+
+struct MissingLengthView {
+    uint8_t* writable_data() noexcept { return nullptr; }
+    const uint8_t* data() const noexcept { return nullptr; }
+    void trim_front(size_t) noexcept {}
+    void trim_back(size_t) noexcept {}
+    uint64_t arrival_tsc() const noexcept { return 0; }
+};
+static_assert(!ec::PacketView<MissingLengthView>,
+              "PacketView must require length()");
+
+struct MissingTrimFrontView {
+    uint8_t* writable_data() noexcept { return nullptr; }
+    const uint8_t* data() const noexcept { return nullptr; }
+    size_t length() const noexcept { return 0; }
+    void trim_back(size_t) noexcept {}
+    uint64_t arrival_tsc() const noexcept { return 0; }
+};
+static_assert(!ec::PacketView<MissingTrimFrontView>,
+              "PacketView must require trim_front()");
+
+struct MissingTrimBackView {
+    uint8_t* writable_data() noexcept { return nullptr; }
+    const uint8_t* data() const noexcept { return nullptr; }
+    size_t length() const noexcept { return 0; }
+    void trim_front(size_t) noexcept {}
+    uint64_t arrival_tsc() const noexcept { return 0; }
+};
+static_assert(!ec::PacketView<MissingTrimBackView>,
+              "PacketView must require trim_back()");
+
+struct MissingArrivalTscView {
+    uint8_t* writable_data() noexcept { return nullptr; }
+    const uint8_t* data() const noexcept { return nullptr; }
+    size_t length() const noexcept { return 0; }
+    void trim_front(size_t) noexcept {}
+    void trim_back(size_t) noexcept {}
+};
+static_assert(!ec::PacketView<MissingArrivalTscView>,
+              "PacketView must require arrival_tsc()");
+
 // ─── Runtime cursor semantics on SpanPacketView ─────────────────────────────
 
 TEST(PacketViewConcept, SpanPacketViewBasicCursor) {
