@@ -36,7 +36,7 @@ static_assert(eph::net::Stream<KernelTcpStream<eph::codec::WsCodec>>);
 
 `create()` is synchronous: it performs the TCP connect, the optional HTTP
 CONNECT proxy handshake, the TLS 1.3 handshake (when `EnableTls=true`) and
-the optional WebSocket RFC 6455 upgrade (when `cfg.ws_path` is non-empty)
+the optional WebSocket RFC 6455 upgrade (when `cfg.ws.path` is non-empty)
 before returning. After `KernelPoller::add(stream.get())`, RX work runs
 inside `poller->poll()`.
 
@@ -114,23 +114,33 @@ Poller.
 ### Config types (`config.hpp`)
 
 ```cpp
+// Post-T3.19 layout: backend-shared concerns at the top level; kernel-only
+// knobs live in a nested `kernel` substruct. The DPDK twin mirrors the same
+// shape with a `dpdk` substruct in place of `kernel`.
 struct StreamConfig {
-    SocketAddr                          remote{};          // required
-    SocketAddr                          local{};           // optional bind
-    std::chrono::milliseconds           connect_timeout{3000};
-    std::size_t                         reasm_capacity{64 * 1024};
-    bool                                tcp_nodelay{true};
-    eph::net::TlsConfig                 tls{};             // used when EnableTls=true
+    SocketAddr                           remote{};          // required
+    std::chrono::milliseconds            connect_timeout{3000};
+    std::size_t                          reasm_capacity{64 * 1024};
+    eph::net::TlsConfig                  tls{};             // used when EnableTls=true
 
-    // WebSocket upgrade — non-empty ws_path activates RFC 6455 handshake.
-    std::string                         ws_path{};
-    std::string                         ws_host{};         // Host: override
-    std::vector<eph::net::HttpHeader>   ws_extra_headers{};
-    std::chrono::milliseconds           ws_timeout{10'000};
+    // WebSocket upgrade — non-empty ws.path activates RFC 6455 handshake.
+    // Sub-struct also carries `host`, `extra_headers`, `timeout`, and
+    // `permessage_deflate` (true by default).
+    eph::net::WsConfig                   ws{};
 
-    // HTTP CONNECT proxy — non-empty routes TCP through the proxy, then
-    // runs TLS / WS inside the tunnel.
+    // TCP keepalive (interval==0 disables). Kernel lowers this to
+    // setsockopt(SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT).
+    eph::net::KeepaliveConfig            keepalive{};
+
+    // HTTP CONNECT proxy — populated optional routes TCP through the proxy,
+    // then runs TLS / WS inside the tunnel. DPDK has no proxy field.
     std::optional<eph::net::ProxyConfig> proxy{};
+
+    // Kernel-only knobs.
+    struct Kernel {
+        SocketAddr local_bind{};         // optional bind before connect()
+        bool       tcp_nodelay{true};
+    } kernel;
 };
 
 struct UdpConfig {

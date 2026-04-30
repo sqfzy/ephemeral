@@ -36,7 +36,7 @@ auto poller = en::KernelPoller::create({}).value();
 auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
     .remote = en::SocketAddr{ /* resolved ip */, 443 },
     .tls    = { .hostname = "fstream.binance.com" },
-    .ws_path = "/ws/btcusdt@bookTicker",
+    .ws     = { .path = "/ws/btcusdt@bookTicker" },
 }).value();
 
 stream->on_message = [](std::span<const uint8_t> app_frame) {
@@ -54,10 +54,10 @@ while (running) {
 `KernelTcpStream::create()` runs — in order — the TCP `connect(2)`, the
 optional HTTP CONNECT proxy handshake (when `cfg.proxy` is set), the TLS 1.3
 handshake (when `EnableTls=true`), and finally the optional WebSocket RFC 6455
-upgrade (when `cfg.ws_path` is non-empty). Any of those may return an error
+upgrade (when `cfg.ws.path` is non-empty). Any of those may return an error
 inside the `std::expected`; there is no half-initialised stream.
 
-When `cfg.ws_permessage_deflate` is true (the default), the WS upgrade
+When `cfg.ws.permessage_deflate` is true (the default), the WS upgrade
 offers RFC 7692 `permessage-deflate`. If the server accepts, the
 `WsCodec` instance attached to this stream is configured to inflate
 inbound RSV1 frames automatically — application code sees the
