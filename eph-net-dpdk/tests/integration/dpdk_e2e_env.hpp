@@ -96,7 +96,8 @@ public:
         // ── 2. Resolve NIC_B PCI BDF ──────────────────────────────────
         // Prefer the env var; fall back to config.toml's
         // networking.nic_b_pci; else /sys/class/net/<nic_b>/device.
-        nic_b_pci_ = resolve_nic_b_pci_(cfg_->networking.nic_b);
+        nic_b_pci_ = resolve_nic_b_pci_(cfg_->networking.nic_b,
+                                        cfg_->networking.nic_b_pci);
         if (nic_b_pci_.empty()) {
             skip_reason_ =
                 "could not determine NIC_B PCI BDF. Set EPH_TEST_NIC_B_PCI=<bdf> "
@@ -215,18 +216,24 @@ private:
     }
 
     /// Resolve NIC_B's PCI BDF using (in priority order):
-    ///   1. EPH_TEST_NIC_B_PCI environment variable
-    ///   2. NIC_B_PCI=... line in benchmarks/latency/bench.conf
-    ///   3. /sys/class/net/$NIC_B/device symlink (only valid if NIC is
+    ///   1. EPH_TEST_NIC_B_PCI environment variable (override)
+    ///   2. networking.nic_b_pci from the loaded config.toml
+    ///   3. NIC_B_PCI=... line in legacy benchmarks/latency/bench.conf
+    ///      (kept for backward compat with pre-TOML setups)
+    ///   4. /sys/class/net/$NIC_B/device symlink (only valid if NIC is
     ///      currently bound to the kernel driver)
-    static std::string resolve_nic_b_pci_(const std::string& nic_name) {
+    static std::string resolve_nic_b_pci_(const std::string& nic_name,
+                                          const std::string& nic_b_pci_from_cfg) {
         if (const char* e = ::getenv("EPH_TEST_NIC_B_PCI"); e && *e) {
             return e;
         }
-        // Try parsing bench.conf directly for NIC_B_PCI=.  We try a
-        // compile-time absolute path first (set by xmake.lua) so the
-        // resolver works regardless of the test runner's cwd, then a
-        // few cwd-relative fallbacks.
+        if (!nic_b_pci_from_cfg.empty()) {
+            return nic_b_pci_from_cfg;
+        }
+        // Legacy fallback: parse bench.conf directly for NIC_B_PCI=.
+        // We try a compile-time absolute path first (set by xmake.lua)
+        // so the resolver works regardless of the test runner's cwd,
+        // then a few cwd-relative fallbacks.
         const char* paths[] = {
 #ifdef EPH_BENCH_CONF_ABS_PATH
             EPH_BENCH_CONF_ABS_PATH,
