@@ -814,6 +814,13 @@ public:
                         parsed.seq(), parsed.ack());
                     state_ = TcpState::Closed;
                     stats_.resets_received++;
+                    // Free current mbuf BEFORE the tail — `free_remaining`
+                    // starts at `i + 1` per its contract, so without this
+                    // the RST mbuf leaks back to the mempool only on
+                    // ~TcpSession (mempool cleanup), or never if the
+                    // session is moved/leaked. Match the SYN-ACK success
+                    // path's pattern at line 871-872.
+                    rte_pktmbuf_free(pkts[i]);
                     free_remaining(pkts, i + 1, nb_rx);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::ConnectFailed,
