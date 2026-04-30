@@ -461,6 +461,17 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
 /// @param[out] payload_len  Parsed payload length
 /// @return true if the record header describes a valid application data record
 ///         within the maximum TLS record size; false otherwise.
+///
+/// **RFC 8446 §5.2 cap caveat**: `TLSCiphertext.length` may be up to
+/// `2^14 + 256 = 16640` bytes (plaintext + content-type + padding +
+/// auth tag). The cap below — `kMaxRecordPayload + kAuthTagLen + 1 =
+/// 16401` — rejects any record with padding present. HFT exchanges
+/// (the only servers eph-net is built to talk to) do not emit padded
+/// TLS records, so the tighter bound is a defensive shrink on
+/// untrusted data rather than a strict-RFC compliance gate. If a
+/// future server starts using padding, raise this to
+/// `kTlsCiphertextHardLimit = 16640` and add per-record padding
+/// length validation (RFC 8446 §5.4).
 [[nodiscard]] inline bool parse_record_header(const uint8_t* src,
                                  uint8_t& content_type,
                                  uint16_t& payload_len) noexcept {
