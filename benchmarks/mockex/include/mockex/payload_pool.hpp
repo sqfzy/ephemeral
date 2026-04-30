@@ -45,6 +45,15 @@ struct PooledPayload {
 /// counter mod size — no allocation on the hot path.
 class PayloadPool {
 public:
+    // Default ctor is private (see below) so the only way to obtain a
+    // populated `PayloadPool` is `load_from_jsonl`, which guarantees
+    // `!payloads_.empty()`. Hot-path code can therefore skip a
+    // size-zero check on every `stamp_and_next`.
+    PayloadPool(PayloadPool&&) noexcept            = default;
+    PayloadPool& operator=(PayloadPool&&) noexcept = default;
+    PayloadPool(const PayloadPool&)                = delete;
+    PayloadPool& operator=(const PayloadPool&)     = delete;
+
     /// Load a JSONL file of real exchange frames. Each line must
     /// contain a `"T":<digits>` field; lines that don't are skipped
     /// with a WARN — a partial pool is better than a crash, and a
@@ -160,6 +169,10 @@ private:
             value /= 10;
         }
     }
+
+    // Private default ctor — only the static factory is allowed to
+    // produce a pool, and it never returns one with empty payloads_.
+    PayloadPool() = default;
 
     std::vector<PooledPayload> payloads_;
     size_t                     cursor_{0};
