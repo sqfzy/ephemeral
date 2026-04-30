@@ -9,13 +9,12 @@ Last verified: 2026-04-30 (none completed at this revision).
 
 ## P1 — quick wins (≤ 1 day each)
 
-- [ ] **`validate_config` reject `nb_rx_queues > 1 && nb_tx_queues == 1`**
-  early. Today only `nb_tx_queues == 0` is rejected — `=1` with
-  `nb_rx_queues > 1` silently lets a misconfigured user reach
-  Phase-1-style "secondary's RSS-aware tx_queue_id ≥ nb_tx_queues"
-  TX starvation. ~30 lines in
-  `eph-net-dpdk/include/eph/dpdk/platform.hpp:474-498`.
-  Source: `.artifacts/reshape-rss-aware-connect-final-20260430.md`.
+- [x] ~~**`validate_config` reject `nb_rx_queues > 1 && nb_tx_queues == 1`**
+  early.~~ Done in batch 23 (commit on `reshape/parallel-bench`):
+  rejection added to `validate_config` with explanatory comment +
+  three new test cases in `test_dpdk_platform_mempool.cpp`
+  (`ValidatorRejectsRssWithSingleTxQueue`,
+  `ValidatorAcceptsMatchedMultiQueue`, `ValidatorAcceptsSingleQueueBoth`).
 
 - [ ] **Per-slot result aggregation script**
   `benchmarks/latency/scripts/show_parallel_run.py`. Collate the

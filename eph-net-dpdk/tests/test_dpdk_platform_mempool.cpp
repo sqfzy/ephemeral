@@ -140,6 +140,42 @@ TEST(PlatformMempoolConfig, ValidatorRejectsExcessPerLcorePools) {
     EXPECT_NE(err.find("per_lcore_pools"), std::string_view::npos);
 }
 
+TEST(PlatformMempoolConfig, ValidatorRejectsRssWithSingleTxQueue) {
+    // RSS-aware connect pins `tx_queue_id = rx_queue_id`, so any stream
+    // landing on a non-zero RSS bucket would silently drive
+    // `tx_queue_id >= nb_tx_queues` when `nb_tx_queues == 1` and
+    // `nb_rx_queues > 1`. The Phase-1 retro
+    // (.artifacts/reshape-rss-aware-connect-final-20260430.md) calls
+    // out the symptom — a clean connect() followed by zero TX bytes —
+    // as the worst kind of misconfiguration: silent. This validator
+    // line surfaces it at create() time.
+    PlatformConfig cfg = kBaseCfg;
+    cfg.nb_rx_queues = 4;
+    cfg.nb_tx_queues = 1;  // intentionally mismatched
+    auto err = validate_config(cfg);
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_tx_queues"), std::string_view::npos);
+    EXPECT_NE(err.find("nb_rx_queues"), std::string_view::npos);
+}
+
+TEST(PlatformMempoolConfig, ValidatorAcceptsMatchedMultiQueue) {
+    // The matched case (rx == tx == N > 1) must continue to validate —
+    // this is the canonical RSS-aware multi-queue layout.
+    PlatformConfig cfg = kBaseCfg;
+    cfg.nb_rx_queues = 4;
+    cfg.nb_tx_queues = 4;
+    EXPECT_TRUE(validate_config(cfg).empty()) << validate_config(cfg);
+}
+
+TEST(PlatformMempoolConfig, ValidatorAcceptsSingleQueueBoth) {
+    // Single-queue bring-up (the test fixture default) must remain valid:
+    // the new check is gated on `nb_rx_queues > 1`.
+    PlatformConfig cfg = kBaseCfg;
+    cfg.nb_rx_queues = 1;
+    cfg.nb_tx_queues = 1;
+    EXPECT_TRUE(validate_config(cfg).empty());
+}
+
 TEST(PlatformMempoolConfig, DumpAndJsonContainPerLcoreField) {
     PlatformConfig cfg = kBaseCfg;
     cfg.per_lcore_pools = 3;

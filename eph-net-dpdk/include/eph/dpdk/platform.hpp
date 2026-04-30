@@ -474,6 +474,19 @@ namespace eph::dpdk {
 [[nodiscard]] constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
     if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
     if (cfg.nb_tx_queues  == 0) return "nb_tx_queues must be > 0";
+    // RSS-aware multi-queue layouts require at least one TX queue per
+    // RX queue: `DpdkTcpStream::create_and_attach`'s RSS-aware connect
+    // pins `tx_queue_id = rx_queue_id` so the egress half stays affine
+    // with the same RSS bucket the reply lands on. With only 1 TX queue
+    // and >1 RX queue, every stream past the first that picks a non-
+    // zero RSS queue would silently configure `tx_queue_id >= nb_tx_
+    // queues`, hit a Phase-1-style TX starvation, and never surface a
+    // configuration error — the symptom is a clean connect followed by
+    // zero TX bytes. Reject up-front. Source: TODO.md P1, retro
+    // .artifacts/reshape-rss-aware-connect-final-20260430.md.
+    if (cfg.nb_rx_queues > 1 && cfg.nb_tx_queues == 1)
+        return "nb_tx_queues must be >= nb_rx_queues when nb_rx_queues > 1 "
+               "(RSS-aware connect pins tx_queue_id = rx_queue_id)";
     if (cfg.nb_rx_desc    == 0) return "nb_rx_desc must be > 0";
     if (cfg.nb_tx_desc    == 0) return "nb_tx_desc must be > 0";
     if (cfg.link_timeout_ms < 0) return "link_timeout_ms must be >= 0";
