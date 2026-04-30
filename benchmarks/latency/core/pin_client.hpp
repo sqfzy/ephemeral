@@ -40,10 +40,27 @@ pin_client_from_cfg(const BenchConfig& cfg,
     const char* source = "fallback";
 
     if (const char* env = std::getenv("BENCH_CLIENT_CPU"); env && *env) {
-        // Best-effort parse; atoi returns 0 on garbage, which will fail
-        // pin_thread cleanly anyway.
-        cpu = std::atoi(env);
-        source = "BENCH_CLIENT_CPU";
+        // Validating parse: a typo'd BENCH_CLIENT_CPU=foo would
+        // previously coerce to atoi("foo")=0 (a valid CPU id) and pin
+        // to core 0 silently — exactly the "shared dev host" core that
+        // gets the most IRQ noise. Reject non-numeric input and fall
+        // through to the config / fallback chain so the misconfiguration
+        // surfaces in the log instead of skewing measurements.
+        char* end = nullptr;
+        long parsed = std::strtol(env, &end, 10);
+        if (end != env && *end == '\0' && parsed >= 0 && parsed < 1024) {
+            cpu = static_cast<int>(parsed);
+            source = "BENCH_CLIENT_CPU";
+        } else {
+            SPDLOG_WARN("[{}] BENCH_CLIENT_CPU='{}' is not a valid "
+                        "non-negative integer; falling back to config/default",
+                        thread_name, env);
+            // fall through to cfg/fallback below
+            if (cfg.cpu.cpu_client >= 0) {
+                cpu = cfg.cpu.cpu_client;
+                source = "config.toml cpu.cpu_client (env was invalid)";
+            }
+        }
     } else if (cfg.cpu.cpu_client >= 0) {
         cpu = cfg.cpu.cpu_client;
         source = "config.toml cpu.cpu_client";
