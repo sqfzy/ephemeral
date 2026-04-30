@@ -303,6 +303,12 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> wire_bytes) noexcept {
         if (fd_ < 0) {
+            // WARN-log: caller invoked send() on a closed socket. A caller
+            // that legitimately drops the expected<> would otherwise have
+            // no signal that the send was a no-op — surfaces a programmer
+            // error that's catastrophic on the order path.
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::send: fd closed (bytes={})", wire_bytes.size());
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "ByteSocket::send: fd closed"});
@@ -389,6 +395,9 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     recv(uint8_t* wire_out, std::size_t cap) noexcept {
         if (fd_ < 0) {
+            // WARN-log: pattern matches send() above — same rationale.
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::recv: fd closed (cap={})", cap);
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "ByteSocket::recv: fd closed"});
@@ -437,6 +446,10 @@ public:
     /// @brief Enable / disable TCP_NODELAY on the open fd.
     [[nodiscard]] std::expected<void, core::ErrorInfo> set_no_delay(bool enable) noexcept {
         if (fd_ < 0) {
+            // WARN-log: setting Nagle on a closed fd is a programmer error;
+            // matches the existing setsockopt-failure WARN below.
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_no_delay: fd closed (enable={})", enable);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "ByteSocket::set_no_delay: fd closed"});
@@ -469,6 +482,11 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     set_keepalive(int interval_secs, uint8_t probes) noexcept {
         if (fd_ < 0) {
+            // WARN-log: keepalive on a closed fd is a programmer error;
+            // matches set_no_delay() pattern.
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: fd closed "
+                "(interval_secs={} probes={})", interval_secs, probes);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "ByteSocket::set_keepalive: fd closed"});
