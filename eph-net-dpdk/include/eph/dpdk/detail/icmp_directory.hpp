@@ -384,7 +384,14 @@ public:
                 "IcmpDirectory::register_target: 0xFF is reserved as "
                 "no-owner sentinel"});
 
-        // Pass 1: reject duplicates (same tuple+proto already registered)
+        // Pass 1: best-effort early dup-check. This is **not** the
+        // authoritative dup detection — a concurrent peer may CAS-claim
+        // the same (tuple, proto) between this pass and Pass 2 below.
+        // The post-claim re-scan in Pass 2 is the canonical guard. We
+        // keep Pass 1 because in the common single-process / no-race
+        // case it surfaces the dup error before we burn a slot, giving
+        // a clearer diagnostic ("already registered" vs "raced and
+        // lost").
         for (size_t i = 0; i < hdr_->max_entries; ++i) {
             auto& e = hdr_->entries[i];
             if (e.claimed.load(std::memory_order_acquire) == 0) continue;
@@ -398,7 +405,20 @@ public:
             }
         }
 
-        // Pass 2: CAS-claim a free slot.
+        // Pass 2: CAS-claim a free slot, then re-scan for duplicates
+        // post-claim. This collapses a TOCTOU race where two peers
+        // with the same (tuple, proto) both cleared Pass 1, both
+        // CAS-claimed disjoint slots, and both wrote — leaving the
+        // directory with two entries owning the same tuple and
+        // `lookup` returning a non-deterministic owner_proc. The
+        // post-claim scan finds the conflict deterministically: each
+        // peer that wrote ITS payload checks whether anyone else is
+        // already publishing the same payload at a lower-or-different
+        // index. The peer with the higher index releases its slot
+        // and returns dup-error; the peer with the lower index keeps
+        // it. Both peers reach a consistent verdict because the
+        // tiebreaker (lower index wins) is total and observable
+        // through acquire loads.
         for (size_t i = 0; i < hdr_->max_entries; ++i) {
             auto& e = hdr_->entries[i];
             uint8_t expected = 0;
@@ -406,7 +426,14 @@ public:
                     expected, 1, std::memory_order_acq_rel)) {
                 continue;  // slot was just claimed by someone else
             }
-            // Race won — write payload before any reader can lookup.
+            // Race won on this slot — write payload before publishing
+            // it to readers (release-store on claimed already happened
+            // via the successful CAS, so we now need release semantics
+            // on the payload write that follows. Atomic operations
+            // serve as the publication fence: any reader who
+            // subsequently observes claimed=1 with acquire ordering
+            // will see the writes below).
+            //
             // Note: gen is NOT bumped on register; only on unregister
             // (so a fresh slot starts at gen=0 and increments per
             // detach cycle). This means dispatch IPC carrying gen=0
@@ -418,6 +445,62 @@ public:
             e.dst_ip     = tuple.dst_ip;
             e.src_port   = tuple.src_port;
             e.dst_port   = tuple.dst_port;
+
+            // Post-claim duplicate scan. We scan ALL slots (not just
+            // [0, i)) because a concurrent peer may have CAS-claimed
+            // a slot at index j > i AFTER our slot but before our
+            // payload write became visible. By scanning the full
+            // range and yielding to any peer at a strictly lower
+            // index, we get a stable lower-index-wins tiebreaker
+            // while still detecting symmetric concurrent writers.
+            for (size_t j = 0; j < hdr_->max_entries; ++j) {
+                if (j == i) continue;
+                auto& other = hdr_->entries[j];
+                if (other.claimed.load(std::memory_order_acquire) == 0)
+                    continue;
+                // Compare tuple+proto via direct field load. proto/
+                // ports/ips are non-atomic, but the acquire-load on
+                // `claimed` above synchronises-with the producer's
+                // CAS-publish so a fully-written payload is visible.
+                if (other.proto == proto &&
+                    other.src_ip == tuple.src_ip &&
+                    other.dst_ip == tuple.dst_ip &&
+                    other.src_port == tuple.src_port &&
+                    other.dst_port == tuple.dst_port) {
+                    if (j < i) {
+                        // We lose the tiebreaker — release our slot
+                        // so the dup-winner is the only owner. Do
+                        // NOT bump generation on this release: this
+                        // slot was never visible to dispatch (we
+                        // only just CAS-claimed it and the payload
+                        // we wrote is about to be invalidated), so
+                        // bumping gen would noisily invalidate any
+                        // future readers of THIS slot's gen counter.
+                        e.proto      = 0;
+                        e.owner_proc = kIcmpDirectoryNoOwner;
+                        e.src_ip     = 0;
+                        e.dst_ip     = 0;
+                        e.src_port   = 0;
+                        e.dst_port   = 0;
+                        e.claimed.store(0, std::memory_order_release);
+                        SPDLOG_DEBUG(
+                            "IcmpDirectory::register_target: lost "
+                            "TOCTOU race for (proto={} src=0x{:08x}:{} "
+                            "dst=0x{:08x}:{}) — peer claimed lower "
+                            "slot {} first; releasing slot {}",
+                            proto, tuple.src_ip, tuple.src_port,
+                            tuple.dst_ip, tuple.dst_port, j, i);
+                        return std::unexpected(core::ErrorInfo{
+                            core::Error::InvalidConfig,
+                            "IcmpDirectory::register_target: (tuple, "
+                            "proto) already registered (lost TOCTOU "
+                            "race against a concurrent peer)"});
+                    }
+                    // j > i: we hold the lower index, the other
+                    // peer must yield. Continue scanning to surface
+                    // any other duplicates.
+                }
+            }
             return i;
         }
         return std::unexpected(core::ErrorInfo{

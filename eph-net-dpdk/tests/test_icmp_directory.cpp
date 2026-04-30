@@ -255,3 +255,112 @@ TEST(IcmpDirectory, MoveSemantics_TransferOwnership) {
     EXPECT_TRUE(static_cast<bool>(moved));
     EXPECT_EQ(moved.header(), hdr_before);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOCTOU race regression — concurrent register_target() with the same
+// (tuple, proto) MUST converge to a single owner. Pre-fix, the dup-check
+// in Pass 1 and CAS-claim in Pass 2 had no synchronisation between them,
+// so two concurrent callers could both pass Pass 1 and both write the
+// same payload to disjoint slots, leaving the directory with two entries
+// owning the same tuple. The post-claim re-scan added in the fix yields
+// the higher-index slot back to the OutOfMemory pool and reports the dup
+// to one of the callers.
+//
+// We run many trials with N producer threads each calling register_target
+// for the SAME tuple. Exactly one must succeed; all others must report
+// `Error::InvalidConfig` ("already registered" or "lost TOCTOU race").
+// After all threads join, exactly one slot is claimed in the directory.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#include <thread>
+#include <vector>
+
+TEST(IcmpDirectory, ConcurrentRegisterSameTuple_ExactlyOneWinner) {
+    auto h_opt = IcmpDirectoryHandle::create_primary("idtest_race");
+    ASSERT_TRUE(h_opt.has_value()) << h_opt.error();
+    auto& h = *h_opt;
+
+    constexpr int kThreads = 8;
+    constexpr int kTrials  = 50;
+    constexpr uint8_t kProtoTcp = 6;
+
+    int total_winners = 0;
+    int total_dups    = 0;
+
+    for (int trial = 0; trial < kTrials; ++trial) {
+        // Build a unique tuple per trial so no cross-trial residue.
+        ConnectionTuple t{
+            .src_ip   = 0x0a000001u,
+            .dst_ip   = 0xC0A80101u,
+            .src_port = static_cast<uint16_t>(40000 + trial),
+            .dst_port = 443,
+        };
+
+        std::atomic<int> winners{0};
+        std::atomic<int> dups{0};
+        std::atomic<bool> start{false};
+        std::vector<std::thread> threads;
+        threads.reserve(kThreads);
+
+        for (int th = 0; th < kThreads; ++th) {
+            threads.emplace_back([&, th]() {
+                // Spin-wait so all threads start the CAS-claim race
+                // around the same instant — maximises contention.
+                while (!start.load(std::memory_order_acquire)) {
+                    // busy spin
+                }
+                auto r = h.register_target(
+                    t, kProtoTcp, /*owner_proc=*/static_cast<uint8_t>(th));
+                if (r.has_value()) {
+                    winners.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    EXPECT_EQ(r.error().code, Error::InvalidConfig)
+                        << "expected dup-class error, got: " << r.error();
+                    dups.fetch_add(1, std::memory_order_relaxed);
+                }
+            });
+        }
+
+        start.store(true, std::memory_order_release);
+        for (auto& th : threads) th.join();
+
+        // Invariant 1: exactly one CAS-claim wins.
+        EXPECT_EQ(winners.load(), 1)
+            << "trial " << trial << ": expected exactly 1 winner, got "
+            << winners.load();
+        // Invariant 2: every other thread reports a dup-class error.
+        EXPECT_EQ(dups.load(), kThreads - 1)
+            << "trial " << trial << ": expected " << kThreads - 1
+            << " dup errors, got " << dups.load();
+
+        // Invariant 3: lookup returns exactly one entry for this tuple.
+        auto found = h.lookup(t, kProtoTcp);
+        ASSERT_TRUE(found.has_value())
+            << "trial " << trial << ": tuple lost after race";
+
+        // Invariant 4: scanning the entire directory finds exactly one
+        // claimed entry matching the tuple — no duplicate slots survive.
+        size_t live_count = 0;
+        for (size_t i = 0; i < kIcmpDirectoryMaxEntries; ++i) {
+            const auto& e = h.header()->entries[i];
+            if (e.claimed.load(std::memory_order_acquire) == 0) continue;
+            if (e.proto == kProtoTcp &&
+                e.src_ip == t.src_ip && e.dst_ip == t.dst_ip &&
+                e.src_port == t.src_port && e.dst_port == t.dst_port) {
+                ++live_count;
+            }
+        }
+        EXPECT_EQ(live_count, 1u)
+            << "trial " << trial << ": found " << live_count
+            << " entries for the racing tuple — directory corrupt";
+
+        total_winners += winners.load();
+        total_dups    += dups.load();
+
+        // Clean up so the next trial isn't blocked by accumulating state.
+        h.unregister(found->slot_idx);
+    }
+
+    EXPECT_EQ(total_winners, kTrials);
+    EXPECT_EQ(total_dups, kTrials * (kThreads - 1));
+}
