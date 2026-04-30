@@ -212,6 +212,28 @@ TEST(MpTopologyValid, AdjacentRangesNotOverlap_Accepted) {
     EXPECT_TRUE(t.valid());
 }
 
+TEST(MpTopologyValid, PortHiAtBoundary_Accepted) {
+    // port_hi=65536 is the documented inclusive upper bound (the half-
+    // open `port_hi` may equal 65536 to express the full ephemeral
+    // window without uint16_t wrap).
+    auto t = MpTopology::custom(0, {
+        ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=65536},
+    });
+    EXPECT_TRUE(t.valid());
+}
+
+TEST(MpTopologyValid, PortHiOverflow_Rejected) {
+    // ProcSpec stores port_hi as uint32_t, so a `custom()` caller can
+    // technically set port_hi=200000 and silently corrupt downstream
+    // src_port allocation when it casts to uint16_t. valid() must
+    // reject this — see mp_topology.hpp doc claim "constrained to
+    // [0, 65536] by valid()".
+    auto t = MpTopology::custom(0, {
+        ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=200000u},
+    });
+    EXPECT_FALSE(t.valid());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Equality & dump
 // ─────────────────────────────────────────────────────────────────────────────

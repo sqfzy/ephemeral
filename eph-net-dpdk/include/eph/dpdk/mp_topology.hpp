@@ -149,6 +149,13 @@ struct MpTopology {
             const auto& p = procs[i];
             if (p.queue_lo >= p.queue_hi) return false;
             if (p.port_lo  >= p.port_hi)  return false;
+            // Enforce the documented [0, 65536] port range. ProcSpec
+            // holds port_hi as uint32_t so the half-open `port_hi=65536`
+            // can express the full ephemeral window without uint16_t
+            // wrap, but a `custom()` caller passing e.g. port_hi=200000
+            // would otherwise sail through valid() and later silently
+            // wrap when src_port allocation casts to uint16_t.
+            if (p.port_hi > 65536u)       return false;
         }
 
         // Pairwise overlap check. Half-open intervals `[a, b)` and
