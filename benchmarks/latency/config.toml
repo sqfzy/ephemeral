@@ -60,6 +60,31 @@ server_work_ns = 200               # mock spin ns simulating business work
 nb_rx_queues    = 1
 lcore_per_queue = "4,5,6,7"
 
+# ── Parallel runner (optional) ────────────────────────────────────────
+#
+# Drives `lat all --dpdk` (multi-scenario parallel runner via DPDK
+# autojoin). Single-scenario commands (`lat tcp --dpdk` etc.) ignore
+# this section completely — their behaviour is unchanged.
+#
+# `max_procs` is the maximum scenarios that run concurrently. Pick
+# based on your machine: lcore budget, hugepage budget, NIC RX queue
+# count. `0` or `1` runs serial (default; legacy behaviour).
+#
+# `lcores_per_proc` is the lcore allocation per peer (main + workers).
+# Defaults to 2.
+#
+# `enabled` lists the scenarios `lat all` will iterate over.
+# Empty / omitted = all 7 standard scenarios.
+#
+#[parallel]
+#max_procs       = 4
+#lcores_per_proc = 2
+#enabled = [
+#  "lat_tcp", "lat_udp", "lat_ws",
+#  "lat_ex_market", "lat_ex_market_2p",
+#  "lat_ex_order", "lat_ex_md_udp"
+#]
+
 # ── TLS (mock self-signed cert) ───────────────────────────────────────
 #
 # Used when a scenario sets `use_tls = true`. The cert/key are

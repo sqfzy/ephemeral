@@ -295,6 +295,46 @@ port = 20000
     EXPECT_EQ(tcp->get<uint16_t>("port").value(), 20000u);
 }
 
+// ─── ParallelConfig ────────────────────────────────────────────────────
+
+TEST(BenchConf, ParallelConfigAbsent_DefaultsSerial) {
+    TmpToml f{kMinimalValid};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    EXPECT_EQ(r->parallel.max_procs, 1u);
+    EXPECT_EQ(r->parallel.lcores_per_proc, 2u);
+    EXPECT_TRUE(r->parallel.enabled.empty());
+}
+
+TEST(BenchConf, ParallelConfigPartial_OnlyMaxProcs) {
+    TmpToml f{std::string{kMinimalValid} + R"(
+[parallel]
+max_procs = 4
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    EXPECT_EQ(r->parallel.max_procs, 4u);
+    EXPECT_EQ(r->parallel.lcores_per_proc, 2u);  // default
+    EXPECT_TRUE(r->parallel.enabled.empty());
+}
+
+TEST(BenchConf, ParallelConfigComplete) {
+    TmpToml f{std::string{kMinimalValid} + R"(
+[parallel]
+max_procs       = 7
+lcores_per_proc = 3
+enabled = ["lat_tcp", "lat_udp", "lat_ws"]
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    EXPECT_EQ(r->parallel.max_procs, 7u);
+    EXPECT_EQ(r->parallel.lcores_per_proc, 3u);
+    ASSERT_EQ(r->parallel.enabled.size(), 3u);
+    EXPECT_EQ(r->parallel.enabled[0], "lat_tcp");
+    EXPECT_EQ(r->parallel.enabled[1], "lat_udp");
+    EXPECT_EQ(r->parallel.enabled[2], "lat_ws");
+}
+
 // ─── format_error ──────────────────────────────────────────────────────
 
 TEST(BenchConf, FormatErrorContainsKeyAndCode) {

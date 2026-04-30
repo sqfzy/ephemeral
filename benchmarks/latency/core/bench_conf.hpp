@@ -131,6 +131,36 @@ struct DpdkRss {
     std::string lcore_per_queue;   ///< CSV; reserved (not yet consumed)
 };
 
+/// `[parallel]` section — drives `lat all --dpdk` (multi-scenario
+/// parallel runner via DPDK autojoin). Single-scenario commands
+/// (`lat tcp --dpdk` etc.) ignore this section completely; the only
+/// observable effect of a missing or `max_procs <= 1` block is that
+/// `lat all` runs scenarios serially (which is the legacy behaviour).
+///
+/// The user picks `max_procs` based on their machine's lcore /
+/// hugepage / NIC headroom — there's no universally-correct default
+/// because mockex / per-scenario lcore use varies by host.
+struct ParallelConfig {
+    /// Maximum scenarios to run concurrently. `0` and `1` both mean
+    /// "serial" (default; behaviour unchanged from before parallel
+    /// support landed). Mapped to `JoinDynamicConfig::max_procs` and
+    /// `pcfg_template.nb_rx_queues = nb_tx_queues = max_procs` per
+    /// peer, so going past your NIC's queue count is rejected at
+    /// `Platform::join_dynamic` time, not at `lat all` invocation.
+    uint32_t max_procs = 1;
+
+    /// CSV lcore allocation per scenario peer. The dispatcher slices
+    /// this list into `max_procs` chunks of equal size. Empty string
+    /// = let the dispatcher derive lcores from `cpu.eal_cores`.
+    /// Default chunk size is 2 lcores per peer (main + worker).
+    uint32_t lcores_per_proc = 2;
+
+    /// Scenarios eligible for `lat all`. Empty = all 7 standard
+    /// scenarios. Subset is honoured in the order given. Names match
+    /// the `lat_<name>` / `lat_<name>_dpdk` binary stem.
+    std::vector<std::string> enabled;
+};
+
 // ─── Internal helpers ─────────────────────────────────────────────────
 
 namespace detail {
@@ -330,10 +360,11 @@ private:
 class BenchConfig {
 public:
     // Top-level sections.
-    Networking  networking;
-    Cpu         cpu;
-    Measurement measurement;
-    DpdkRss     dpdk;
+    Networking     networking;
+    Cpu            cpu;
+    Measurement    measurement;
+    DpdkRss        dpdk;
+    ParallelConfig parallel;
 
     /// Lookup `[scenarios.<name>]`; returns nullptr if that scenario
     /// subtable is absent.
@@ -493,6 +524,24 @@ load_bench_conf(std::string_view path) {
                 cfg.dpdk.nb_rx_queues = static_cast<uint16_t>(*v);
             if (auto v = (*rss)["lcore_per_queue"].value<std::string>())
                 cfg.dpdk.lcore_per_queue = *v;
+        }
+    }
+
+    // ── parallel ─────────────────────────────────────────────────────
+    // Optional. Absent / max_procs<=1 → `lat all` runs serial.
+    if (auto* p = raw["parallel"].as_table()) {
+        if (auto v = (*p)["max_procs"].value<int64_t>()) {
+            cfg.parallel.max_procs = static_cast<uint32_t>(*v);
+        }
+        if (auto v = (*p)["lcores_per_proc"].value<int64_t>()) {
+            cfg.parallel.lcores_per_proc = static_cast<uint32_t>(*v);
+        }
+        if (auto* e = (*p)["enabled"].as_array()) {
+            for (const auto& el : *e) {
+                if (auto s = el.value<std::string>()) {
+                    cfg.parallel.enabled.push_back(*s);
+                }
+            }
         }
     }
 
