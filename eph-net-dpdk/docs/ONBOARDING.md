@@ -155,8 +155,10 @@ skeleton.
 1. Enable debug logs: `xmake f -m debug && xmake build -g tests`.
 2. Run `test_dpdk_tls_handshake`. It should pass on any host (no NIC binding
    required — uses a FakeStream).
-3. If the real DPDK path fails at `DpdkTcpStream::create()`, check
-   `eph::net::detail::tls_session.hpp` for the handshake state machine.
+3. If the real DPDK path fails at `DpdkTcpStream::create_and_attach()`,
+   check `eph::net::detail::tls_session.hpp` for the handshake state
+   machine. (The older `create(cfg, poller)` overload was removed —
+   its narrow subset is covered by `create_and_attach`.)
 4. If you see duplicate `RSA_*` / `CRYPTO_THREADID` symbols at link time, the
    build is picking up a second openssl implementation somewhere on the
    include / link path. Check your DPDK came from system libdpdk (not vcpkg)

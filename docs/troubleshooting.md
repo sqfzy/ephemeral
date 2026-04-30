@@ -39,8 +39,10 @@ and reconnection paths driven by `eph::net::ReconnectPolicy`.
 
 ### `Error::InvalidConfig`
 
-**Cause**: `StreamConfig` (kernel) or `eph::dpdk::TcpConfig` / `DpdkTcpStreamConfig`
-(DPDK) failed validation before any I/O.
+**Cause**: `eph::net::kernel::StreamConfig` (kernel) or
+`eph::net::dpdk::StreamConfig` (DPDK — including its
+`dpdk.tcp_low_level` wire-level `eph::dpdk::TcpConfig` substruct) failed
+validation before any I/O.
 
 | `detail` substring | Fix |
 |--------------------|-----|

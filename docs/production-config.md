@@ -9,10 +9,12 @@ The post-v3.3 type names are:
   `eph::net::kernel::UdpConfig` /
   `eph::net::kernel::PollerConfig`
   (see `eph-net-kernel/include/eph/net/kernel/config.hpp`)
-- **DPDK backend**: `eph::dpdk::PlatformConfig` (NIC bring-up) +
-  `eph::dpdk::TcpConfig` (per-session) +
-  `eph::dpdk::DpdkTcpStreamConfig` (turnkey factory args)
-  (see `eph-net-dpdk/include/eph/dpdk/{platform,tcp}.hpp`)
+- **DPDK backend**: `eph::dpdk::PlatformConfig` (NIC bring-up, in
+  `eph-net-dpdk/include/eph/dpdk/platform.hpp`) +
+  `eph::net::dpdk::StreamConfig` (turnkey factory args, in
+  `eph-net-dpdk/include/eph/net/dpdk/config.hpp` — backend-shared
+  knobs at the top level + a `dpdk.tcp_low_level` substruct of type
+  `eph::dpdk::TcpConfig` for the wire-level fields)
 
 All fallible APIs return `std::expected<T, eph::core::ErrorInfo>`; see
 [`troubleshooting.md`](troubleshooting.md) for the error taxonomy.
