@@ -188,6 +188,23 @@ decode_frame(IoStream& io) noexcept {
         return std::nullopt;
     }
 
+    // RFC 6455 §5.5: control frames (opcode high bit set) MUST have
+    // payload ≤ 125 bytes and MUST NOT be fragmented (we don't track
+    // FIN here, but length cap alone shuts the door on the OOM vector).
+    // Without this, a malicious client could send a Ping with raw_len=127
+    // claiming 8 EiB and force the mock to attempt a multi-MiB
+    // `vector::resize` inside a noexcept function. The bench's own
+    // client never sends control frames > 0 B, so this is a pure
+    // hardening cap with zero functional cost.
+    const bool is_control = (opcode_raw & 0x08) != 0;
+    if (is_control && length > 125) [[unlikely]] {
+        SPDLOG_WARN(
+            "[ws_server] control frame opcode=0x{:x} payload={} "
+            "exceeds RFC 6455 cap of 125; dropping",
+            static_cast<unsigned>(opcode_raw), length);
+        return std::nullopt;
+    }
+
     // Reject implausibly large payload claims before allocating.
     // `decode_frame` is `noexcept`; an unguarded `vector::resize` of
     // a 64-bit untrusted length would throw `bad_alloc` and call
