@@ -226,6 +226,17 @@ private:
 
         SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrder ref={} side={} shares={} price={}", ref, side, shares, price);
 
+        // ITCH wire format does not validate the side byte — a corrupt /
+        // adversarial feed could send any value. qty_map() treats any
+        // non-'B' as ask, which would silently route bids onto the ask
+        // side and corrupt every subsequent BBO read. Reject up-front.
+        if (side != 'B' && side != 'S') [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+                "AddOrder ref={} invalid side=0x{:02x} (expected 'B' or 'S') — dropping",
+                ref, static_cast<uint8_t>(side));
+            return false;
+        }
+
         // ITCH 5.0 §4 says order_ref is session-unique, but real feeds
         // occasionally retransmit AddOrder for the same ref during
         // gap-recovery / cancel-replace races. Treat re-add as
@@ -247,6 +258,14 @@ private:
         const double   price = eph::itch::add_order_mpid::price(msg);
 
         SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrderMPID ref={} side={} shares={} price={}", ref, side, shares, price);
+
+        // See handle_add_order for rationale.
+        if (side != 'B' && side != 'S') [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+                "AddOrderMPID ref={} invalid side=0x{:02x} (expected 'B' or 'S') — dropping",
+                ref, static_cast<uint8_t>(side));
+            return false;
+        }
 
         // Same duplicate-ref guard as handle_add_order — see comment there.
         evict_existing_ref(ref, "AddOrderMPID");

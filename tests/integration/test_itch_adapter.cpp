@@ -222,6 +222,29 @@ TEST(ItchBookBuilderTest, AddOrderUpdatesBidAndAsk) {
     EXPECT_NEAR(ba->qty, 300.0, kEps);
 }
 
+// ITCH wire format does not validate the side byte. A corrupt feed (or
+// adversarial sender) sending side='X' would fall through qty_map's
+// `side == 'B' ? bid : ask` ternary into the ASK side, silently routing
+// the rogue order onto the wrong book side and corrupting every BBO read
+// after that point. Verify the adapter rejects up-front.
+TEST(ItchBookBuilderTest, AddOrderInvalidSideRejected) {
+    ItchBookBuilder<10> builder;
+
+    AddOrderMsg bad(1099, 'X', 100, 100.0);
+    EXPECT_FALSE(builder.process(bad.view()));
+    EXPECT_EQ(builder.order_count(), 0u);
+    EXPECT_FALSE(builder.book().best_bid().has_value());
+    EXPECT_FALSE(builder.book().best_ask().has_value());
+}
+
+TEST(ItchBookBuilderTest, AddOrderMPIDInvalidSideRejected) {
+    ItchBookBuilder<10> builder;
+
+    AddOrderMPIDMsg bad(1199, 0x00, 100, 100.0);
+    EXPECT_FALSE(builder.process(bad.view()));
+    EXPECT_EQ(builder.order_count(), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // Test: AddOrderMPID works identically to AddOrder
 // ---------------------------------------------------------------------------
