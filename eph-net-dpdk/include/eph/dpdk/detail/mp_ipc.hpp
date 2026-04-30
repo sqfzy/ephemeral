@@ -197,15 +197,27 @@ template <typename MsgT>
 [[nodiscard]] inline std::expected<MsgT, core::ErrorInfo>
 parse_payload(const rte_mp_msg* m) noexcept {
     static_assert(std::is_trivially_copyable_v<MsgT>);
-    if (m == nullptr)
+    if (m == nullptr) {
+        // Pure programmer error — DPDK never delivers a null msg to
+        // an action handler. ERROR-log so the call site is identifiable.
+        SPDLOG_ERROR("parse_payload: msg pointer is null (sizeof(MsgT)={})",
+                     sizeof(MsgT));
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "parse_payload: msg pointer is null"});
-    if (m->len_param != static_cast<int>(sizeof(MsgT)))
+    }
+    if (m->len_param != static_cast<int>(sizeof(MsgT))) {
+        // Cross-version IPC mismatch is a genuine protocol-layer bug —
+        // log enough state so the operator can identify the offending
+        // peer (action name comes from `m->name`).
+        SPDLOG_ERROR("parse_payload: action='{}' wire len_param={} "
+                     "expected sizeof(MsgT)={} — cross-version IPC mismatch?",
+                     m->name, m->len_param, sizeof(MsgT));
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "parse_payload: wire len_param does not match sizeof(MsgT) "
             "— cross-version IPC mismatch?"});
+    }
     MsgT out;
     std::memcpy(&out, m->param, sizeof(MsgT));
     return out;
@@ -302,6 +314,12 @@ mp_ipc_request_sync(std::string_view name,
             "peer down / IPC unavailable)"});
     }
     if (reply.nb_received != 1 || reply.nb_sent != 1) {
+        // 0/1 mismatch under healthy IPC means the peer responded with an
+        // unexpected number of messages — protocol violation worth logging.
+        SPDLOG_ERROR(
+            "mp_ipc_request_sync('{}'): nb_sent={} nb_received={} — "
+            "expected exactly 1 reply (eph IPC is 1:1 primary↔secondary)",
+            name, reply.nb_sent, reply.nb_received);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "mp_ipc_request_sync: expected exactly 1 reply (eph IPC is 1:1 "
