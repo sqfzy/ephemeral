@@ -28,9 +28,9 @@ All five satisfy `eph::core::Codec`.
 using WsClient = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, /*Tls=*/true>;
 
 auto client = WsClient::create({
-    .remote_host = "ws.example.com",
-    .remote_port = 443,
-    .ws_path     = "/stream",
+    .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
+    .tls    = { .hostname = "ws.example.com", .verify_peer = true },
+    .ws     = { .path = "/stream" },
 }).value();
 ```
 
