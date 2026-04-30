@@ -259,7 +259,16 @@ public:
         return total;
     }
 
-    /// @brief Gross notional exposure: sum of abs(notional) across all positions.
+    /// @brief Gross notional exposure across all positions.
+    ///
+    /// Returns sum of abs(qty) * avg_price across every tracked symbol — i.e.
+    /// the **gross** measure used for risk-limit checks (`risk_check.hpp`
+    /// `max_total_exposure`), not signed net exposure.
+    ///
+    /// The legacy name is preserved for source-compat with existing call
+    /// sites and tests. Despite "net" in the name, longs and shorts both
+    /// add positively to this total. If you need signed net (Σ qty *
+    /// avg_price), iterate `positions()` directly.
     [[nodiscard]] double net_exposure() const noexcept
     {
         double total = 0.0;
@@ -267,6 +276,14 @@ public:
             total += pos.notional;  // notional is already abs(qty) * avg_price
         }
         return total;
+    }
+
+    /// @brief Alias for `net_exposure()` with the precise name.
+    ///
+    /// Prefer this in new code. Returns Σ abs(qty) * avg_price.
+    [[nodiscard]] double gross_exposure() const noexcept
+    {
+        return net_exposure();
     }
 
     /// @brief Reset all tracked positions.
