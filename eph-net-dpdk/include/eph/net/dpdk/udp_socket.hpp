@@ -161,6 +161,9 @@ public:
         const auto mode = platform.dispatch_mode();
         const uint16_t nb_q = platform.nb_rx_queues();
         if (nb_q == 0) {
+            SPDLOG_LOGGER_ERROR(log,
+                "DpdkUdpSocket::create_and_attach: Platform has 0 RX queues "
+                "(port_id={})", platform.port_id());
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "create_and_attach: Platform has 0 RX queues"});
@@ -170,6 +173,10 @@ public:
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.pin_to_queue && *cfg.pin_to_queue != 0) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkUdpSocket::create_and_attach: pin_to_queue={} != 0 "
+                    "in Software dispatch mode (single-queue Platform)",
+                    *cfg.pin_to_queue);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue != 0 in Software mode"});
@@ -191,6 +198,10 @@ public:
             if (cfg.pin_to_queue) {
                 const uint16_t want = *cfg.pin_to_queue;
                 if (want >= nb_q) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
+                        ">= nb_rx_queues={} (RssPartitioned)",
+                        want, nb_q);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
                         "create_and_attach: pin_to_queue >= nb_rx_queues"});
@@ -200,6 +211,11 @@ public:
                 static std::atomic<uint16_t> rr_counter{0};
                 const auto [qlo, qhi] = platform.effective_rx_queue_range();
                 if (qhi <= qlo) {
+                    SPDLOG_LOGGER_ERROR(log,
+                        "DpdkUdpSocket::create_and_attach: empty "
+                        "effective_rx_queue_range [{}, {}) — Platform "
+                        "moved-from or misconfigured",
+                        qlo, qhi);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
                         "create_and_attach: empty effective_rx_queue_range "
@@ -245,6 +261,10 @@ public:
                 *sp, target_qid, cfg.pin_to_queue.has_value());
         } else {  // FlowDirector
             if (cfg.pin_to_queue && *cfg.pin_to_queue >= nb_q) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
+                    ">= nb_rx_queues={} (FlowDirector)",
+                    *cfg.pin_to_queue, nb_q);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
