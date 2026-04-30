@@ -237,11 +237,16 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
+            SPDLOG_LOGGER_ERROR(log, "DpdkPoller::add: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkPoller::add: nullptr"});
         }
         if (n_entries_ >= cfg_.max_connections) {
+            SPDLOG_LOGGER_ERROR(log,
+                "DpdkPoller::add: entries table full "
+                "(n_entries={}, max_connections={}, kMaxConnHard={})",
+                n_entries_, cfg_.max_connections, kMaxConnHard);
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
                 "DpdkPoller::add: entries table full"});
@@ -266,6 +271,10 @@ public:
         // threading obj-pointer through the route table key.
         for (std::size_t i = 0; i < n_entries_; ++i) {
             if (entries_[i].obj == static_cast<void*>(obj)) {
+                SPDLOG_LOGGER_WARN(log,
+                    "DpdkPoller::add: pointer already registered obj={} "
+                    "at idx={} of n_entries={}",
+                    static_cast<void*>(obj), i, n_entries_);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "DpdkPoller::add: already registered"});
@@ -333,8 +342,9 @@ public:
     /// registered or was already removed (recoverable state mismatch).
     template <DpdkPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
-        [[maybe_unused]] auto* log = detail::poller_logger();
+        auto* log = detail::poller_logger();
         if (obj == nullptr) {
+            SPDLOG_LOGGER_ERROR(log, "DpdkPoller::remove: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkPoller::remove: nullptr"});
@@ -375,6 +385,9 @@ public:
                 static_cast<void*>(obj), n_entries_);
             return {};
         }
+        SPDLOG_LOGGER_WARN(log,
+            "DpdkPoller::remove: obj={} not registered (n_entries={})",
+            static_cast<void*>(obj), n_entries_);
         return std::unexpected(core::ErrorInfo{
             core::Error::NotFound,
             "DpdkPoller::remove: not registered"});
