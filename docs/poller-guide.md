@@ -112,16 +112,23 @@ namespace en = eph::net::dpdk;
 namespace ec = eph::codec;
 
 int main(int argc, char** argv) {
-    en::Eal eal{argc, argv};                 // RAII EAL init
+    // RAII EAL init. EalGuard::init takes (argc, argv); EalConfig +
+    // build_eal_argv is the typed alternative when you want lcore pins
+    // and named --proc-type. See eph-net-dpdk/docs/lcore-pin-integration.md.
+    auto eal = ::eph::dpdk::EalGuard::init(argc, argv).value();
 
     auto poller = en::DpdkPoller<>::create({
-        .port_id = 0, .queue_id = 0, .lcore = 4,
+        .port_id = 0, .rx_queue_id = 0, .max_connections = 16,
     }).value();
 
-    auto stream = en::DpdkTcpStream<ec::WsCodec>::create({
-        .remote_host = "fix.exchange.example",
-        .remote_port = 443,
-    }).value();
+    // DpdkTcpStream's create_and_attach is the production factory — it
+    // takes a much fuller StreamConfig (dpdk.tcp_low_level 4-tuple, MAC,
+    // mempool, queue selection) plus a Platform reference. See
+    // examples/binance_latency.cpp and examples/simple_hft_dpdk_rss.cpp
+    // for runnable end-to-end DPDK setups.
+    auto stream = /* see binance_latency.cpp for the full DpdkTcpStream
+                     setup — irreducibly more involved than the kernel
+                     snippet above */;
 
     stream->on_message = handle_message;
     poller->add(stream.get()).value();

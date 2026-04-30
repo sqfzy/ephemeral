@@ -152,9 +152,8 @@ static_assert(eph::core::StreamCodec<FixedHeaderCodec>);
 #include "eph/net/kernel/tcp_stream.hpp"
 
 auto stream = eph::net::kernel::KernelTcpStream<FixedHeaderCodec, /*EnableTls=*/true>::create({
-    .remote_host = "gateway.example",
-    .remote_port = 9000,
-    .use_tls     = true,
+    .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 9000 },
+    .tls    = { .hostname = "gateway.example" },
 }).value();
 ```
 
