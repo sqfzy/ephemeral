@@ -277,10 +277,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL init ───────────────────────────────────────────────────────
-    // Two paths share the same EalConfig scaffolding; the difference is
-    // whether we go through `init_with_pins` (typed) or the legacy
-    // `init` after `build_eal_argv` (raw).
+    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
+    // create_with_eal dispatches by pcfg.proc_type to create_primary
+    // (mp_topology auto-derive + registry reserve) or create_secondary
+    // (registry attach), and the returned Platform owns the EAL session.
+    // Single one-liner replaces the EalGuard::init_with_pins +
+    // Platform::create_primary/secondary two-step pattern.
+    ed::PlatformConfig pcfg = make_platform_config(args);
+
     ed::EalConfig eal_cfg{};
     eal_cfg.program_name  = (args.role == ed::ProcType::Primary)
                                 ? "simple_hft_dpdk_mp.primary"
@@ -291,50 +295,26 @@ int main(int argc, char** argv) {
     if (raw_lcores) eal_cfg.lcores = {args.lcores};
     if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
-    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
-        // Typed path: pins go through pre-EAL validation + registry write
-        // before rte_eal_init runs. SMT/NUMA/IRQ checks default to relaxed
-        // (CpuPinPolicy{}) — production deployments may want to flip
-        // require_no_sibling_conflict / require_same_numa to true after
-        // confirming their cpu layout.
-        spdlog::info("simple_hft_dpdk_mp[{}]: EAL init via init_with_pins "
-                     "({} pin(s))",
+        spdlog::info("simple_hft_dpdk_mp[{}]: bring-up via create_with_eal "
+                     "(typed pins, {} pin(s))",
                      args.role == ed::ProcType::Primary ? "primary" : "secondary",
                      args.pins.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
-                                           eph::utils::CpuPinPolicy{});
     } else {
-        // Raw path: legacy EalConfig::lcores → build_eal_argv → init.
-        // No pin registry interaction here; downstream pin_thread calls
-        // will not see EAL's lcore cpus and may collide silently.
-        spdlog::info("simple_hft_dpdk_mp[{}]: EAL init via raw lcores='{}' "
-                     "(legacy path; consider --pin for typed validation)",
+        spdlog::info("simple_hft_dpdk_mp[{}]: bring-up via create_with_eal "
+                     "(raw lcores='{}')",
                      args.role == ed::ProcType::Primary ? "primary" : "secondary",
                      args.lcores);
-        auto argv_owned = ed::build_eal_argv(eal_cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv_owned.size());
-        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                 argv_ptrs.data());
-    }
-    if (!eal) {
-        spdlog::error("simple_hft_dpdk_mp: EAL init failed: {}", eal.error());
-        return 2;
     }
 
-    // ── 2) Platform — primary brings the port up; secondary attaches ──────
-    ed::PlatformConfig pcfg = make_platform_config(args);
-    auto plat_r = (args.role == ed::ProcType::Primary)
-                      ? ed::Platform::create_primary(std::move(pcfg))
-                      : ed::Platform::create_secondary(std::move(pcfg));
+    auto plat_r = ed::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        std::span<ed::LcorePin const>{args.pins},
+        eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("simple_hft_dpdk_mp: Platform::create_{} failed: {}",
-                      args.role == ed::ProcType::Primary ? "primary"
-                                                         : "secondary",
+        spdlog::error("simple_hft_dpdk_mp: Platform::create_with_eal failed: {}",
                       plat_r.error());
-        return 3;
+        return 2;
     }
     auto platform = std::move(*plat_r);
 

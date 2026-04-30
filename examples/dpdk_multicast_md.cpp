@@ -184,46 +184,35 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL init ───────────────────────────────────────────────────────
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "dpdk_multicast_md";
-    if (raw_lcores) eal_cfg.lcores = {args.lcores};
-    eal_cfg.allowed_devs = {args.pci};
-
-    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
-    if (typed_pins) {
-        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
-                                           eph::utils::CpuPinPolicy{});
-    } else {
-        auto argv_owned = ed::build_eal_argv(eal_cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv_owned.size());
-        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                 argv_ptrs.data());
-    }
-    if (!eal) {
-        spdlog::error("dpdk_multicast_md: EAL init failed: {}", eal.error());
-        return 2;
-    }
-
-    // ── 2) Platform — single queue, RSS off (the safe shape for multicast) ─
-    // For RSS+multicast: bring the Platform up with `enable_rss=true` AND
+    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
+    // Single queue, RSS off (the safe shape for multicast). Platform owns
+    // EAL — ~Platform handles eal_cleanup atomically.
+    //
+    // For RSS+multicast: bring the Platform up with nb_rx_queues > 1 AND
     // install a FlowDirector rule pinning each multicast 5-tuple to one
     // queue, THEN clear `MulticastConfig::rss_active_multi_queue` to
     // acknowledge the explicit pin. The receiver cannot reverse-pick a
     // src_port (it doesn't control the sender) so RSS without FD is unsafe.
     ed::PlatformConfig pcfg{};
-    pcfg.port_id      = args.port_id;
-    pcfg.nb_rx_queues = 1;
-    pcfg.nb_tx_queues = 1;
-    pcfg.enable_promiscuous = false;  // multicast filter does the steering
+    pcfg.port_id            = args.port_id;
+    pcfg.nb_rx_queues       = 1;
+    pcfg.nb_tx_queues       = 1;
+    pcfg.enable_promiscuous = false;
+    pcfg.proc_type          = ed::ProcType::Primary;
 
-    auto plat_r = ed::Platform::create_primary(std::move(pcfg));
+    ed::EalConfig eal_cfg{};
+    eal_cfg.program_name = "dpdk_multicast_md";
+    if (raw_lcores) eal_cfg.lcores = {args.lcores};
+    eal_cfg.allowed_devs = {args.pci};
+
+    auto plat_r = ed::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        std::span<ed::LcorePin const>{args.pins},
+        eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("dpdk_multicast_md: Platform::create_primary failed: {}",
+        spdlog::error("dpdk_multicast_md: Platform::create_with_eal failed: {}",
                       plat_r.error());
-        return 3;
+        return 2;
     }
     auto platform = std::move(*plat_r);
     const bool rss_active_diag =

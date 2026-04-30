@@ -265,48 +265,38 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL init ───────────────────────────────────────────────────────
+    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
+    // Single binary, single peer ⇒ single-process bring-up. Platform
+    // owns the EAL session and runs eal_cleanup atomically on
+    // destruction; no separate EalGuard needed.
+    ed::PlatformConfig pcfg{};
+    pcfg.port_id          = args.port_id;
+    pcfg.nb_rx_queues     = args.nb_rx_queues;
+    pcfg.nb_tx_queues     = args.nb_rx_queues;
+    pcfg.per_lcore_pools  = args.per_lcore_pools;
+    pcfg.proc_type        = ed::ProcType::Primary;
+
     ed::EalConfig eal_cfg{};
     eal_cfg.program_name = "simple_hft_dpdk_rss";
     if (raw_lcores) eal_cfg.lcores = {args.lcores};
     if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
-    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
-        spdlog::info("simple_hft_dpdk_rss: EAL init via init_with_pins ({} pin(s))",
-                     args.pins.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
-                                           eph::utils::CpuPinPolicy{});
+        spdlog::info("simple_hft_dpdk_rss: bring-up via create_with_eal "
+                     "(typed pins, {} pin(s))", args.pins.size());
     } else {
-        spdlog::info("simple_hft_dpdk_rss: EAL init via raw lcores='{}'",
-                     args.lcores);
-        auto argv_owned = ed::build_eal_argv(eal_cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv_owned.size());
-        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                 argv_ptrs.data());
-    }
-    if (!eal) {
-        spdlog::error("simple_hft_dpdk_rss: EAL init failed: {}", eal.error());
-        return 2;
+        spdlog::info("simple_hft_dpdk_rss: bring-up via create_with_eal "
+                     "(raw lcores='{}')", args.lcores);
     }
 
-    // ── 2) Platform with RSS enabled ──────────────────────────────────────
-    // Single-process: no `proc_type` / `file_prefix` / `rx_queue_range`
-    // overrides. `effective_rx_queue_range()` below resolves the sentinel
-    // `{0, 0}` to `[0, nb_rx_queues)`.
-    ed::PlatformConfig pcfg{};
-    pcfg.port_id          = args.port_id;
-    pcfg.nb_rx_queues     = args.nb_rx_queues;
-    pcfg.nb_tx_queues     = args.nb_rx_queues;
-    pcfg.per_lcore_pools  = args.per_lcore_pools;  // 0 = single shared pool
-
-    auto plat_r = ed::Platform::create_primary(std::move(pcfg));
+    auto plat_r = ed::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        std::span<ed::LcorePin const>{args.pins},
+        eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("simple_hft_dpdk_rss: Platform::create_primary failed: {}",
+        spdlog::error("simple_hft_dpdk_rss: Platform::create_with_eal failed: {}",
                       plat_r.error());
-        return 3;
+        return 2;
     }
     auto platform = std::move(*plat_r);
 
@@ -504,11 +494,10 @@ int main(int argc, char** argv) {
                      lcore_id, rc);
     }
 
-    spdlog::info("simple_hft_dpdk_rss: shutting down — RAII teardown order: "
-                 "sockets → pollers → platform → eal");
+    spdlog::info("simple_hft_dpdk_rss: shutting down — RAII teardown");
     // RAII: ~UdpSock (each socket unregisters from its Poller) →
     //       ~DpdkPoller (each poller unregisters from Platform) →
-    //       ~Platform (dev_stop / dev_close / mempool_free in primary mode) →
-    //       ~EalGuard (rte_eal_cleanup).
+    //       ~Platform (dev_stop / dev_close / mempool_free / pin guards
+    //                  released / eal_cleanup all in one atomic chain).
     return 0;
 }

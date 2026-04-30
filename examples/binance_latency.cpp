@@ -341,15 +341,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "binance_latency";
-    if (!app_cfg.pci.empty())   eal_cfg.allowed_devs = {app_cfg.pci};
-    if (raw_lcores)             eal_cfg.lcores       = {app_cfg.lcores_raw};
-
     // Relaxed everything except IRQ overlap — preserves the warning
     // surfaced by the previous standalone `pin_thread(... warn_irq_overlap=
     // true)` call. validate_pin_policy runs against every LcorePin inside
-    // pin_lcores so the warning fires on the WS event-loop lcore.
+    // pin_lcores (called by create_with_eal) so the warning fires on the
+    // WS event-loop lcore.
     eph::utils::CpuPinPolicy pin_policy{
         .require_isolcpus            = false,
         .require_no_sibling_conflict = false,
@@ -357,50 +353,48 @@ int main(int argc, char** argv) {
         .warn_irq_overlap            = true,
     };
 
-    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
+    // ── 2) EAL + Platform via the unified create_with_eal factory ────────
+    // Single binary, single peer, real-server probe ⇒ Platform owns EAL
+    // and runs eal_cleanup atomically on destruction.
+    eph::dpdk::PlatformConfig pcfg{};
+    pcfg.port_id        = app_cfg.dpdk_port_id;
+    pcfg.nb_rx_queues   = 1;
+    pcfg.nb_tx_queues   = 1;
+    pcfg.mbuf_pool_size = 8191;  // 2^n-1; generous for a single session
+    pcfg.proc_type      = ed::ProcType::Primary;
+
+    ed::EalConfig eal_cfg{};
+    eal_cfg.program_name = "binance_latency";
+    if (!app_cfg.pci.empty())   eal_cfg.allowed_devs = {app_cfg.pci};
+    if (raw_lcores)             eal_cfg.lcores       = {app_cfg.lcores_raw};
+
     if (typed_pins) {
-        spdlog::info("binance_latency: EAL init via init_with_pins ({} pin(s))",
-                     app_cfg.pins.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, app_cfg.pins, pin_policy);
+        spdlog::info("binance_latency: bring-up via create_with_eal "
+                     "(typed pins, {} pin(s))", app_cfg.pins.size());
     } else {
-        spdlog::info("binance_latency: EAL init via raw lcores='{}' "
-                     "(legacy path; consider --pin for typed validation)",
-                     app_cfg.lcores_raw);
-        auto argv_owned = ed::build_eal_argv(eal_cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv_owned.size());
-        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                 argv_ptrs.data());
+        spdlog::info("binance_latency: bring-up via create_with_eal "
+                     "(raw lcores='{}')", app_cfg.lcores_raw);
     }
-    if (!eal) {
-        spdlog::error("EAL init failed: {}", eal.error());
+
+    auto plat = eph::dpdk::Platform::create_with_eal(
+        std::move(pcfg), std::move(eal_cfg),
+        std::span<ed::LcorePin const>{app_cfg.pins},
+        pin_policy);
+    if (!plat) {
+        spdlog::error("Platform::create_with_eal failed: {}", plat.error());
         return 2;
     }
 
     // ── 3) Thread name + TSC bring-up ─────────────────────────────────────
-    // The main thread's CPU affinity is already set by `rte_eal_init` to
-    // the EAL main lcore's cpu (`--pin 0=<cpu>`), and that cpu is in the
-    // pin registry via `init_with_pins`. We only need a readable thread
-    // name for `top -H` / `perf` output; no separate pin call is needed.
+    // The main thread's CPU affinity is set by `rte_eal_init` to the EAL
+    // main lcore's cpu (via the typed-pin path inside create_with_eal).
+    // No separate pin call needed.
     pthread_setname_np(pthread_self(), "ws-latency");
     if (!eph::utils::TSC::is_initialized() && !eph::utils::TSC::init()) {
         spdlog::error("TSC::init failed — recorder would be unusable");
         return 3;
     }
 
-    // ── 4) Platform: port + mempool + queues ──────────────────────────────
-    eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id = app_cfg.dpdk_port_id;
-    pcfg.nb_rx_queues = 1;
-    pcfg.nb_tx_queues = 1;
-    pcfg.mbuf_pool_size = 8191;  // 2^n-1; generous for a single session
-    auto plat = eph::dpdk::Platform::create(pcfg);
-    if (!plat) {
-        spdlog::error("Platform::create(port={}) failed: {}",
-                      app_cfg.dpdk_port_id, plat.error());
-        return 4;
-    }
     const uint16_t port_id = plat->port_id();
     rte_mempool* const pool = plat->mempool();
 
