@@ -696,6 +696,24 @@ private:
             return *this;
         }
 
+        // Pre-arithmetic guard: a caller-supplied `value.size()` close to
+        // SIZE_MAX would wrap the `tag_len + 1 + value.size() + 1` sum
+        // below to a small positive number and slip past the
+        // `pos_ + needed > capacity_` check, then memcpy `value.size()`
+        // bytes past the buffer end. value can never legitimately be
+        // larger than the buffer itself, so reject up front before any
+        // arithmetic. (set() validates SOH per-byte and so naturally
+        // bounds the loop, but set_trusted is called directly from
+        // set_int / set_bool / set_double via small fixed buffers — only
+        // the public set() path is exposed to caller-controlled sizes
+        // today, but a future direct caller of set_trusted would inherit
+        // the UB without this guard.)
+        if (value.size() > capacity_) [[unlikely]] {
+            log_overflow(t, value.size(), capacity_ - pos_);
+            overflow_ = true;
+            return *this;
+        }
+
         size_t tag_len = write_uint(t, pos_);
         size_t needed = tag_len + 1 + value.size() + 1;
         if (pos_ + needed > capacity_) [[unlikely]] {
