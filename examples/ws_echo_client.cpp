@@ -8,7 +8,7 @@
 ///
 /// and run:
 ///
-///   $ ./ws_echo_client_v3 127.0.0.1 9001
+///   $ ./ws_echo_client 127.0.0.1 9001
 
 #include <atomic>
 #include <chrono>
@@ -89,6 +89,6 @@ int main(int argc, char** argv) {
            && std::chrono::steady_clock::now() < deadline) {
         (void)poller->poll(100ms);
     }
-    spdlog::info("ws_echo_client_v3: exiting (pongs={})", pong_count);
+    spdlog::info("ws_echo_client: exiting (pongs={})", pong_count);
     return 0;
 }

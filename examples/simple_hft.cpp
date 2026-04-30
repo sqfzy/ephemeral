@@ -9,7 +9,7 @@
 ///   5. while (running) poller->poll(100ms);     — single driver loop
 ///
 /// Usage:
-///   ./simple_hft_v3 [--host fstream.binance.com] [--port 443]
+///   ./simple_hft [--host fstream.binance.com] [--port 443]
 ///                   [--symbol btcusdt] [--count 100] [--no-tls]
 ///
 /// NOTE: Because this uses the real kernel TLS path (aws-lc via
@@ -75,7 +75,7 @@ static AppConfig parse_args(int argc, char** argv) {
         else if (arg == "--no-tls") cfg.use_tls = false;
         else if (arg == "--help") {
             std::cerr <<
-                "Usage: simple_hft_v3 [--host H] [--port P] [--symbol S]\n"
+                "Usage: simple_hft [--host H] [--port P] [--symbol S]\n"
                 "                     [--count N] [--no-tls]\n";
             std::exit(0);
         } else {
@@ -153,7 +153,7 @@ static int run_with_tls(const AppConfig& cfg) {
         return 4;
     }
 
-    spdlog::info("simple_hft_v3: connected, entering poll loop "
+    spdlog::info("simple_hft: connected, entering poll loop "
                  "(count={}, tls={})", cfg.count, EnableTls);
 
     auto started = std::chrono::steady_clock::now();
@@ -164,13 +164,13 @@ static int run_with_tls(const AppConfig& cfg) {
 
     auto elapsed = std::chrono::steady_clock::now() - started;
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-    spdlog::info("simple_hft_v3: received {} messages in {} ms", msgs, ms);
+    spdlog::info("simple_hft: received {} messages in {} ms", msgs, ms);
 
     // ── Final metrics snapshot — direct read ─────────────────────────────
     // For a full observability hookup with periodic publish to a sink,
     // see examples/observability_demo.cpp. Here we simply read the raw
     // stream counters at exit so the operator sees the totals.
-    spdlog::info("simple_hft_v3: stream counters — "
+    spdlog::info("simple_hft: stream counters — "
                  "bytes_sent={}, bytes_recv={}, frames_decoded={}, "
                  "reasm_overflows={}, codec_errors={}",
                  stream->metric(eph::net::StreamMetric::kBytesSent),
@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     auto cfg = parse_args(argc, argv);
-    spdlog::info("simple_hft_v3: host={} port={} symbol={} tls={}",
+    spdlog::info("simple_hft: host={} port={} symbol={} tls={}",
                  cfg.host, cfg.port, cfg.symbol, cfg.use_tls);
 
     return cfg.use_tls ? run_with_tls<true>(cfg)

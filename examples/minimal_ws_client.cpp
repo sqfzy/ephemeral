@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
 
     auto ip = eph::net::Ipv4Addr::parse(ip_str);
     if (!ip) {
-        spdlog::error("minimal_ws_client_v3: bad IP literal '{}'", ip_str);
+        spdlog::error("minimal_ws_client: bad IP literal '{}'", ip_str);
         return 1;
     }
 
@@ -78,6 +78,6 @@ int main(int argc, char** argv) {
         (void)poller->poll(100ms);
     }
 
-    spdlog::info("minimal_ws_client_v3: exiting");
+    spdlog::info("minimal_ws_client: exiting");
     return 0;
 }

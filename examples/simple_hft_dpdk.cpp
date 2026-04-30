@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
     auto sr = Stream::create(std::move(scfg));
     if (!sr) {
         spdlog::warn(
-            "simple_hft_dpdk_v3: DpdkTcpStream::create failed (expected on a "
+            "simple_hft_dpdk: DpdkTcpStream::create failed (expected on a "
             "smoke-boot without a real mempool): {}", sr.error().detail);
         spdlog::info("simple_hft_dpdk: populate `scfg.dpdk.pool` with a real "
                      "rte_pktmbuf_pool_create() output to drive the loop.");
@@ -251,13 +251,13 @@ int main(int argc, char** argv) {
     }
 
     // ── 5) Drive the burst loop ───────────────────────────────────────────
-    spdlog::info("simple_hft_dpdk_v3: entering burst-poll loop");
+    spdlog::info("simple_hft_dpdk: entering burst-poll loop");
     auto deadline = std::chrono::steady_clock::now() + 2s;
     while (g_running.load(std::memory_order_acquire)
            && std::chrono::steady_clock::now() < deadline) {
         (void)poller->poll();
     }
 
-    spdlog::info("simple_hft_dpdk_v3: exiting");
+    spdlog::info("simple_hft_dpdk: exiting");
     return 0;
 }
