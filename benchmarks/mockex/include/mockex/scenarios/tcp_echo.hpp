@@ -161,19 +161,26 @@ inline void echo_client_loop(IoStream io,
         const int cfd = *cfd_e;
         if (cfd < 0) break;  // shutdown requested
 
-        if (client_threads.size() >= max_conn) {
-            SPDLOG_WARN("[tcp_echo] max_conn={} reached; rejecting fd={}",
-                        max_conn, cfd);
-            ::close(cfd);
-            continue;
-        }
-
+        // Cap on LIVE conns, not lifetime conns.  `client_threads` only
+        // ever grows (we never join finished workers mid-loop), so using
+        // its size as the cap meant N sequential reconnects would
+        // permanently exhaust the budget even though each prior client
+        // had long since exited.  `active_fds.size()` is the live count
+        // — workers self-erase on exit (under `active_fds_mu`).
+        std::size_t live = 0;
         {
             std::lock_guard lk(active_fds_mu);
+            live = active_fds.size();
+            if (live >= max_conn) {
+                SPDLOG_WARN("[tcp_echo] max_conn={} reached (live={}); "
+                            "rejecting fd={}", max_conn, live, cfd);
+                ::close(cfd);
+                continue;
+            }
             active_fds.push_back(cfd);
         }
-        SPDLOG_INFO("[tcp_echo] client connected fd={} (active={}/{})",
-                    cfd, client_threads.size() + 1, max_conn);
+        SPDLOG_INFO("[tcp_echo] client connected fd={} (live={}/{})",
+                    cfd, live + 1, max_conn);
 
         const bool use_tls = (ctx.tls != nullptr);
         client_threads.emplace_back(
