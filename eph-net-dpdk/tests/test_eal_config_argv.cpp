@@ -87,6 +87,22 @@ TEST(BuildEalArgv, ProcTypeSecondaryEmitted) {
     EXPECT_EQ(argv[idx + 1], "secondary");
 }
 
+TEST(BuildEalArgv, ProcTypeAutoEmitted) {
+    // The autojoin path (`Platform::join_dynamic`) requires
+    // `--proc-type=auto`; DPDK then resolves the role at
+    // `rte_eal_init` time. A regression that dropped Auto from
+    // the to_eal_string switch (returning "primary" via the
+    // conservative-default fallback) would silently break autojoin.
+    EalConfig cfg{};
+    cfg.proc_type     = ProcType::Auto;
+    cfg.proc_type_set = true;
+    auto argv = build_eal_argv(cfg);
+
+    int idx = index_of(argv, "--proc-type");
+    ASSERT_GE(idx, 0);
+    EXPECT_EQ(argv[idx + 1], "auto");
+}
+
 TEST(BuildEalArgv, ProcTypeSuppressedWhenNotSet) {
     // Default-constructed: proc_type_set=false. No --proc-type token
     // should appear, even though `proc_type` defaults to Primary.
