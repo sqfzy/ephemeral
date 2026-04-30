@@ -408,32 +408,58 @@ public:
 
         auto* hdr = static_cast<MpRegistryHeader*>(mz->addr);
 
-        if (hdr->magic != kMpRegistryMagic)
+        if (hdr->magic != kMpRegistryMagic) {
+            SPDLOG_ERROR(
+                "MpRegistry: header magic mismatch on '{}' "
+                "(got=0x{:08x}, expected=0x{:08x}) — memzone collided "
+                "with a non-eph layout under the same file_prefix",
+                name, hdr->magic, kMpRegistryMagic);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: header magic mismatch (memzone collided "
                 "with a non-eph layout under the same file_prefix)"});
-        if (hdr->version != kMpRegistryVersion)
+        }
+        if (hdr->version != kMpRegistryVersion) {
+            SPDLOG_ERROR(
+                "MpRegistry: header version mismatch on '{}' "
+                "(got={}, expected={}) — primary built with a different "
+                "eph-net-dpdk version",
+                name, hdr->version, kMpRegistryVersion);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: header version mismatch (primary built "
                 "with a different eph-net-dpdk version)"});
+        }
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),
-                                  kMpRegistryFilePrefixMax - 1)) != 0)
+                                  kMpRegistryFilePrefixMax - 1)) != 0) {
+            SPDLOG_ERROR(
+                "MpRegistry: file_prefix mismatch on '{}' "
+                "(header='{}', supplied='{}')",
+                name, hdr->file_prefix, file_prefix);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: file_prefix in header does not match the "
                 "one this secondary supplied"});
-        if (hdr->total_procs != topo.total_procs)
+        }
+        if (hdr->total_procs != topo.total_procs) {
+            SPDLOG_ERROR(
+                "MpRegistry: total_procs mismatch on '{}' "
+                "(header={}, secondary's topo={})",
+                name, hdr->total_procs, topo.total_procs);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: total_procs mismatch — secondary's topology "
                 "differs from the primary's view"});
-        if (topo.self_index >= hdr->total_procs)
+        }
+        if (topo.self_index >= hdr->total_procs) {
+            SPDLOG_ERROR(
+                "MpRegistry: self_index ({}) >= total_procs ({}) on '{}'",
+                topo.self_index, hdr->total_procs, name);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: self_index >= total_procs"});
+        }
 
         // Cross-validate self spec — secondary may not silently disagree
         // with primary's view of who owns what.
@@ -541,23 +567,41 @@ public:
 
         auto* hdr = static_cast<MpRegistryHeader*>(mz->addr);
 
-        if (hdr->magic != kMpRegistryMagic)
+        if (hdr->magic != kMpRegistryMagic) {
+            SPDLOG_ERROR(
+                "MpRegistry: header magic mismatch on '{}' "
+                "(got=0x{:08x}, expected=0x{:08x}) — memzone collided "
+                "with a non-eph layout under the same file_prefix "
+                "(read-only attach)",
+                name, hdr->magic, kMpRegistryMagic);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: header magic mismatch (memzone collided "
                 "with a non-eph layout under the same file_prefix)"});
-        if (hdr->version != kMpRegistryVersion)
+        }
+        if (hdr->version != kMpRegistryVersion) {
+            SPDLOG_ERROR(
+                "MpRegistry: header version mismatch on '{}' "
+                "(got={}, expected={}) — primary built with a different "
+                "eph-net-dpdk version (read-only attach)",
+                name, hdr->version, kMpRegistryVersion);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: header version mismatch (primary built "
                 "with a different eph-net-dpdk version)"});
+        }
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),
-                                  kMpRegistryFilePrefixMax - 1)) != 0)
+                                  kMpRegistryFilePrefixMax - 1)) != 0) {
+            SPDLOG_ERROR(
+                "MpRegistry: file_prefix mismatch on '{}' "
+                "(header='{}', supplied='{}') — read-only attach",
+                name, hdr->file_prefix, file_prefix);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: file_prefix in header does not match the "
                 "one this attach_secondary_readonly was called with"});
+        }
 
         SPDLOG_INFO(
             "MpRegistry: attached read-only to '{}' "

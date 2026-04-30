@@ -343,15 +343,27 @@ public:
         }
 
         auto* hdr = static_cast<IcmpDirectoryHeader*>(mz->addr);
-        if (hdr->magic != kIcmpDirectoryMagic)
+        if (hdr->magic != kIcmpDirectoryMagic) {
+            SPDLOG_ERROR(
+                "IcmpDirectory: header magic mismatch on '{}' "
+                "(got=0x{:08x}, expected=0x{:08x}) — memzone collision "
+                "or corruption",
+                name, hdr->magic, kIcmpDirectoryMagic);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "IcmpDirectory: header magic mismatch (memzone collision "
                 "or corruption)"});
-        if (hdr->version != kIcmpDirectoryVersion)
+        }
+        if (hdr->version != kIcmpDirectoryVersion) {
+            SPDLOG_ERROR(
+                "IcmpDirectory: header version mismatch on '{}' "
+                "(got={}, expected={}) — primary built with a different "
+                "eph-net-dpdk revision",
+                name, hdr->version, kIcmpDirectoryVersion);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "IcmpDirectory: header version mismatch (build-tree drift)"});
+        }
 
         SPDLOG_INFO(
             "IcmpDirectory: secondary attached to '{}' (max_entries={})",
