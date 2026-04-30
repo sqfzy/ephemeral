@@ -212,8 +212,15 @@ class HdrHistogram {
             ++dropped_count_;
             return false;
         }
-        // Saturate at UINT64_MAX to avoid undefined behavior from overflow.
-        if (value > static_cast<double>(UINT64_MAX)) [[unlikely]] {
+        // Reject values >= UINT64_MAX to avoid UB. `static_cast<double>(UINT64_MAX)`
+        // rounds UP to 2^64 (double has only 53-bit mantissa, so values in
+        // [UINT64_MAX, 2^64] all alias to the same double 2^64). Using `>` would
+        // let exactly-2^64 through, and the subsequent `static_cast<uint64_t>(2^64)`
+        // is undefined behavior per C++23 [conv.fpint] ("if the value cannot be
+        // represented in the destination type, the behavior is undefined").
+        // `>=` is the safe boundary because it rejects every double whose
+        // mathematical value is ≥ UINT64_MAX, including the rounded-up boundary.
+        if (value >= static_cast<double>(UINT64_MAX)) [[unlikely]] {
             ++dropped_count_;
             return false;
         }

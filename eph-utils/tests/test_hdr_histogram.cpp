@@ -2099,3 +2099,27 @@ TEST(HdrHistogramDoubleRecord, valid_positive_double_is_recorded) {
     EXPECT_EQ(h.get_total_count(), 1u);
     EXPECT_EQ(h.get_dropped_count(), 0u);
 }
+
+// Boundary: a double at-or-above 2^64 (the rounded-up alias of UINT64_MAX)
+// must be rejected. Previously the check was `value > static_cast<double>(UINT64_MAX)`,
+// which let `value == 2^64` through; the subsequent
+// `static_cast<uint64_t>(2^64)` is undefined behavior per C++23 [conv.fpint].
+// The correct boundary is `>=` so any double whose mathematical value is at
+// least UINT64_MAX is rejected before the UB cast.
+TEST(HdrHistogramDoubleRecord, at_uint64_max_rounded_alias_is_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    // `static_cast<double>(UINT64_MAX)` rounds up to exactly 2^64 — the
+    // "boundary alias" the previous `>` test would have accepted.
+    const double boundary = static_cast<double>(UINT64_MAX);
+    EXPECT_FALSE(h.record(boundary));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
+
+TEST(HdrHistogramDoubleRecord, above_uint64_max_is_rejected) {
+    HdrHistogram h(1, 10000, 3);
+    // 1e20 is well above UINT64_MAX (~1.84e19); must be rejected.
+    EXPECT_FALSE(h.record(1.0e20));
+    EXPECT_EQ(h.get_total_count(), 0u);
+    EXPECT_EQ(h.get_dropped_count(), 1u);
+}
