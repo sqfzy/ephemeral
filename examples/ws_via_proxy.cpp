@@ -2,15 +2,16 @@
 ///
 /// HTTP CONNECT proxy demo (kernel backend only).
 ///
-/// When `StreamConfig::proxy` (an `eph::net::HttpConnectConfig`) is set,
+/// When `StreamConfig::proxy` (an `eph::net::ProxyConfig`) is set,
 /// `KernelTcpStream::create` performs the full CONNECT handshake
 /// internally: it TCP-connects to `proxy.host:proxy.port`, sends a
 /// `CONNECT remote.host:remote.port HTTP/1.1` request, validates the
 /// `200 Connection Established` response, then (if enabled) runs TLS
 /// and/or the WS Upgrade inside the tunnel. On the DPDK backend the
-/// same field is rejected with `Error::InvalidConfig` by design — a
-/// proxy is a kernel-only scenario. SOCKS5 is intentionally not
-/// supported (see `.artifacts/phase-9-scope-decision.md`).
+/// `proxy` field has been removed from the StreamConfig entirely
+/// (post-T3.19) — passing a proxy is a **compile error**, not a
+/// runtime `InvalidConfig`. SOCKS5 is intentionally not supported
+/// (see `.artifacts/phase-9-scope-decision.md`).
 ///
 /// This example exposes the CLI surface (`--proxy-host`, `--proxy-port`)
 /// and demonstrates how to populate `cfg.proxy` when both flags are
