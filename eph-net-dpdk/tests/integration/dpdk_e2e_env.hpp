@@ -8,11 +8,11 @@
 ///     1. Load bench.conf
 ///     2. Verify NIC_B is bound to vfio-pci (else mark all tests SKIP)
 ///     3. fork() — child runs MockDispatcher::run, parent stores child PID
-///     4. Parent: DpdkBenchEnv::create_full() — EAL + Platform + ARP
+///     4. Parent: DpdkBenchEnv::create() — Platform owns EAL + ARP-resolved
 ///     5. Brief sleep to let child mocks finish bind/listen before tests run
 ///   TearDown:
 ///     1. SIGTERM child, waitpid
-///     2. Destroy DpdkBenchEnv (releases EAL)
+///     2. Destroy DpdkBenchEnv (~Platform releases DPDK + eal_cleanup)
 ///
 /// Tests access shared state via the static accessors below.
 

@@ -38,24 +38,18 @@
 
 namespace bench {
 
-/// Synthesize the EAL argv that `DpdkBenchEnv::create_full` expects.
+/// Synthesize the legacy bench EAL argv shape (kept for the
+/// `test_dpdk_env_argv.cpp` unit test only). Production bench
+/// bring-up now goes through `DpdkBenchEnv::create` (which builds
+/// EAL argv internally via `build_eal_argv`); this function is no
+/// longer on the live bring-up path.
 ///
 /// Given `cores_csv="0,1"` and `pci_bdf="0000:28:00.0"` the result is:
 ///
-///   ["lat_bench",
-///    "-l", "0,1",
-///    "-a", "0000:28:00.0",
-///    "--proc-type=auto",
-///    "--log-level=lib.eal:warning",
-///    "--"]
+///   ["lat_bench", "-l", "0,1", "-a", "0000:28:00.0",
+///    "--proc-type=auto", "--log-level=lib.eal:warning", "--"]
 ///
-/// If `pci_bdf` is empty the `-a <pci>` pair is omitted — the caller is
-/// responsible for deciding whether that is a hard error (typical bench
-/// run) or a soft-fallback (single-NIC smoke test).
-///
-/// Pure function: no I/O, no EAL calls, no env lookups. Exists as a
-/// standalone helper so `tests/unit/bench/test_dpdk_env_argv.cpp` can
-/// unit-test the argv shape without booting DPDK.
+/// Pure function: no I/O, no EAL calls, no env lookups.
 [[nodiscard]] inline std::vector<std::string>
 synthesize_eal_argv(std::string_view cores_csv,
                     std::string_view pci_bdf) {
@@ -77,8 +71,11 @@ synthesize_eal_argv(std::string_view cores_csv,
     argv.emplace_back("--proc-type=auto");
     // Silence non-warning EAL chatter so the bench report stays readable.
     argv.emplace_back("--log-level=lib.eal:warning");
-    // The `--` separator is required by `DpdkBenchEnv::create_full` to
-    // split EAL args from (empty) scenario args.
+    // The `--` separator is the legacy bench bring-up convention
+    // (split EAL args from scenario args). Preserved here so the
+    // argv-shape unit test continues to validate the historical
+    // contract; the new DpdkBenchEnv::create path does not consume
+    // it.
     argv.emplace_back("--");
     return argv;
 }
