@@ -147,19 +147,6 @@ public:
         // Parent: wait for the mock to bind/listen (7 mocks need a moment).
         std::this_thread::sleep_for(1s);
 
-        // Synthesize EAL argv pinning to the discovered NIC.
-        std::string allow_arg = "--allow=" + pci;
-        std::vector<std::string> args = {
-            "test_dpdk_rss_platform",
-            "-l", "0-3",
-            "-n", "4",
-            "--in-memory",
-            allow_arg,
-        };
-        std::vector<char*> argv;
-        argv.reserve(args.size());
-        for (auto& a : args) argv.push_back(a.data());
-
         // Multi-queue + enable_rss=true:
         //   * On non-ENA PMDs (Mellanox/Intel): configure_rss installs
         //     eph's key, dispatch_mode = RssPartitioned/FlowDirector.
@@ -170,20 +157,26 @@ public:
         //     detected capability (typically RssPartitioned).
         //   * On ENA with older driver (no probe support): Platform::create
         //     hard-fails — env never becomes ready, all tests SKIP.
-        // (The legacy "RETA collapse to queue 0 + Software pin" path
-        // was removed by the bring-up reshape; see test_dpdk_rss_bringup
-        // for the failure-path matrix.)
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
         pcfg.nb_tx_queues     = 4;
         pcfg.link_timeout_ms  = 0;
 
-        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(
-            static_cast<int>(argv.size()), argv.data(),
-            server_ip, client_ip, gw_ip, pcfg);
+        ::eph::dpdk::EalConfig eal_cfg{};
+        eal_cfg.program_name = "test_dpdk_rss_platform";
+        eal_cfg.lcores       = {"0-3"};
+        eal_cfg.allowed_devs = {pci};
+        eal_cfg.extra_args   = {"-n", "4", "--in-memory"};
+
+        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create(
+            std::move(pcfg),
+            std::move(eal_cfg),
+            /*pins=*/{},
+            ::eph::utils::CpuPinPolicy{},
+            server_ip, client_ip, gw_ip);
         if (!env_r) {
-            reason_ = "DpdkBenchEnv::create_full failed: " + env_r.error();
+            reason_ = "DpdkBenchEnv::create failed: " + env_r.error();
             // ChildReaper will reap on scope exit.
             return;
         }

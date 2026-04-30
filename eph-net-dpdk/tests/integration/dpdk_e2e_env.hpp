@@ -136,26 +136,25 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
         // ── 5. EAL + Platform + ARP in the parent ────────────────────
-        // Synthesize the minimum EAL argv from the resolved PCI BDF.
-        static std::string argv0 = "test_dpdk_e2e";
-        static std::string pci_arg;
-        pci_arg = std::string("--allow=") + nic_b_pci_;
-        static std::string log_arg = "--log-level=lib.eal:warning";
-        char* argv[] = {
-            const_cast<char*>(argv0.c_str()),
-            const_cast<char*>(pci_arg.c_str()),
-            const_cast<char*>(log_arg.c_str()),
-        };
-        int argc = 3;
+        // Unified factory: the env owns its Platform which owns EAL.
+        ::eph::dpdk::PlatformConfig pcfg{};
+        pcfg.port_id = 0;
 
-        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(
-            argc, argv,
+        ::eph::dpdk::EalConfig eal_cfg{};
+        eal_cfg.program_name = "test_dpdk_e2e";
+        eal_cfg.allowed_devs = {nic_b_pci_};
+        eal_cfg.extra_args   = {"--log-level=lib.eal:warning"};
+
+        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create(
+            std::move(pcfg),
+            std::move(eal_cfg),
+            /*pins=*/{},
+            ::eph::utils::CpuPinPolicy{},
             cfg_->networking.server_ip,
             cfg_->networking.client_ip,
-            cfg_->networking.gateway_ip,
-            /*dpdk_port_id=*/0);
+            cfg_->networking.gateway_ip);
         if (!env_r) {
-            skip_reason_ = "DpdkBenchEnv::create_full failed: " + env_r.error();
+            skip_reason_ = "DpdkBenchEnv::create failed: " + env_r.error();
             spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
             stop_mock_();
             return;

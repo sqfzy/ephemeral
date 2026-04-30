@@ -144,29 +144,26 @@ public:
 
         std::this_thread::sleep_for(1s);
 
-        std::string allow_arg = "--allow=" + pci;
-        std::vector<std::string> args = {
-            "test_dpdk_rss_fanout",
-            "-l", "0-3",
-            "-n", "4",
-            "--in-memory",
-            allow_arg,
-        };
-        std::vector<char*> argv;
-        argv.reserve(args.size());
-        for (auto& a : args) argv.push_back(a.data());
-
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
         pcfg.nb_tx_queues     = 4;
         pcfg.link_timeout_ms  = 0;
 
-        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create_full(
-            static_cast<int>(argv.size()), argv.data(),
-            server_ip, client_ip, gw_ip, pcfg);
+        ::eph::dpdk::EalConfig eal_cfg{};
+        eal_cfg.program_name = "test_dpdk_rss_fanout";
+        eal_cfg.lcores       = {"0-3"};
+        eal_cfg.allowed_devs = {pci};
+        eal_cfg.extra_args   = {"-n", "4", "--in-memory"};
+
+        auto env_r = ::eph::dpdk::test::DpdkBenchEnv::create(
+            std::move(pcfg),
+            std::move(eal_cfg),
+            /*pins=*/{},
+            ::eph::utils::CpuPinPolicy{},
+            server_ip, client_ip, gw_ip);
         if (!env_r) {
-            reason_ = "DpdkBenchEnv::create_full failed: " + env_r.error();
+            reason_ = "DpdkBenchEnv::create failed: " + env_r.error();
             return;
         }
         env_ = std::make_unique<::eph::dpdk::test::DpdkBenchEnv>(
