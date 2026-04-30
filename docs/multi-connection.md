@@ -23,19 +23,18 @@ using namespace std::chrono_literals;
 
 auto poller = en::KernelPoller::create({}).value();
 
-using WsStream = en::KernelTcpStream<ec::WsCodec>;
+using WsStream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 std::vector<std::unique_ptr<WsStream>> streams;
 
 for (auto& symbol : symbols) {
     auto s = WsStream::create({
-        .remote_host = "fstream.binance.com",
-        .remote_port = 443,
-        .ws_path     = std::format("/ws/{}@bookTicker", symbol),
-        .use_tls     = true,
+        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .tls    = { .hostname = "fstream.binance.com" },
+        .ws     = { .path = std::format("/ws/{}@bookTicker", symbol) },
     }).value();
 
-    s->on_message = [sym = symbol](const uint8_t* d, uint16_t n) {
-        route_tick(sym, d, n);      // runs on the poller thread
+    s->on_message = [sym = symbol](std::span<const uint8_t> app_frame) {
+        route_tick(sym, app_frame.data(), app_frame.size());  // runs on the poller thread
     };
 
     poller->add(s.get()).value();

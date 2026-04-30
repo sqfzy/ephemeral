@@ -49,11 +49,15 @@ en::StreamConfig cfg{
         .ca_cert_path = "/etc/ssl/certs/ca-bundle.crt",
     },
 
-    // WS upgrade (transparent: handshake happens inside create())
-    .ws_path     = "/ws",
-    .ws_host     = "fix-gateway.exchange.com",
-    .ws_timeout  = std::chrono::milliseconds{1000},
-    .ws_permessage_deflate = false,  // disable for order ack RTT
+    // WS upgrade (transparent: handshake happens inside create()).
+    // Post-T3.19 sub-struct shape — flat ws_path/ws_host/ws_timeout/
+    // ws_permessage_deflate were folded into the WsConfig sub-struct.
+    .ws = {
+        .path                = "/ws",
+        .host                = "fix-gateway.exchange.com",
+        .timeout             = std::chrono::milliseconds{1000},
+        .permessage_deflate  = false,  // disable for order ack RTT
+    },
 };
 
 auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create(cfg);
@@ -66,7 +70,7 @@ caller's responsibility (see CLAUDE rule "Bench 每个线程必须绑独立 CPU"
 
 **Key decisions:**
 - `connect_timeout=1000ms` — fail fast; reconnect via `ReconnectPolicy`.
-- `ws_permessage_deflate=false` — order acks are tiny; deflate adds
+- `ws.permessage_deflate=false` — order acks are tiny; deflate adds
   decode CPU without saving bytes.
 - `verify_peer=true` always in production. Only flip to `false` for
   isolated dev/staging.
@@ -89,17 +93,18 @@ en::StreamConfig cfg{
         .verify_peer  = true,
     },
 
-    .ws_path     = "/stream?streams=btcusdt@bookTicker/...",
-    .ws_host     = "stream.exchange.com",
-    .ws_timeout  = std::chrono::milliseconds{5000},
-
-    // Enable deflate — multi-symbol JSON compresses well
-    .ws_permessage_deflate = true,
+    .ws = {
+        .path                = "/stream?streams=btcusdt@bookTicker/...",
+        .host                = "stream.exchange.com",
+        .timeout             = std::chrono::milliseconds{5000},
+        // Enable deflate — multi-symbol JSON compresses well
+        .permessage_deflate  = true,
+    },
 };
 ```
 
 **Key decisions:**
-- `ws_permessage_deflate=true` — multi-symbol JSON compresses 3–5×;
+- `ws.permessage_deflate=true` — multi-symbol JSON compresses 3–5×;
   CPU savings from less TLS-decrypt work usually outweigh inflate cost.
 - Larger `reasm_capacity` so a slow consumer doesn't stall reassembly
   on a deflate-expanded burst.
@@ -141,7 +146,7 @@ ed::DpdkTcpStreamConfig scfg{
         // here; see eph-net-dpdk/docs/poller-guide.md.
     },
     .tls = { .hostname = "exchange.com", .verify_peer = true },
-    // ws_path / ws_host / ws_timeout same as kernel surface
+    // ws.path / ws.host / ws.timeout same as kernel surface
 };
 
 // 3. Turnkey: handles src_port allocation, RSS hash rebinding, TCP / TLS / WS
@@ -209,7 +214,7 @@ caller's responsibility.
 | `verify_peer=false` shipped to prod | MITM exposure | Hard-set `true` in deployment config |
 | `enable_rss=false` with `nb_rx_queues>1` | `Platform::create` hard-fails | Either enable RSS or set `nb_rx_queues=1` |
 | `proxy.host` set on DPDK backend | `Error::InvalidConfig: proxy on DPDK backend` | Kernel only — drop proxy on DPDK path |
-| `ws_path` set without `ws_host` and without TLS | Falls back to numeric `Host:` | Set `ws_host` explicitly |
+| `ws.path` set without `ws.host` and without TLS | Falls back to numeric `Host:` | Set `ws.host` explicitly |
 | `connect_timeout=0` | Stream stalls indefinitely | Always set a positive deadline |
 | Polling thread not pinned | p99 spike from cross-core migration | `pthread_setaffinity_np` before poll loop |
 | DPDK secondary started before primary | `rte_mempool_lookup` returns nullptr | Order primary-first; see `dpdk-multiprocess.md` |

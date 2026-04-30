@@ -366,7 +366,7 @@ cfg.remote                = en::SocketAddr{api_ip, 443};
 cfg.tls.hostname          = "api.binance.com";
 cfg.tls.verify_peer       = true;
 cfg.connect_timeout       = 5s;
-// no ws_path → plain HTTPS, no WS upgrade
+// no ws.path → plain HTTPS, no WS upgrade
 
 auto stream = TlsStream::create(cfg).value();
 poller->add(stream.get()).value();

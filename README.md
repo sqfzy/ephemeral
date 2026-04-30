@@ -106,11 +106,15 @@ using namespace std::chrono_literals;
 int main() {
     auto poller = en::KernelPoller::create({}).value();
 
-    auto stream = en::KernelTcpStream<ec::WsCodec>::create({
-        .remote_host = "fstream.binance.com",
-        .remote_port = 443,
-        .ws_path     = "/ws/btcusdt@bookTicker",
-        .use_tls     = true,
+    // EnableTls is the second template parameter (default false). Setting
+    // it true folds the TLS 1.3 handshake into create(). Resolve the
+    // host's IP via your usual mechanism (sync getaddrinfo or
+    // eph::dpdk::dns::resolve on the DPDK path) and pass it as a
+    // SocketAddr.
+    auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
+        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .tls    = { .hostname = "fstream.binance.com" },
+        .ws     = { .path = "/ws/btcusdt@bookTicker" },
     }).value();
 
     stream->on_message = [](std::span<const uint8_t> app_frame) {

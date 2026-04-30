@@ -61,11 +61,10 @@ using namespace std::chrono_literals;
 int main() {
     auto poller = en::KernelPoller::create({}).value();
 
-    auto stream = en::KernelTcpStream<ec::WsCodec>::create({
-        .remote_host = "echo.websocket.org",
-        .remote_port = 443,
-        .ws_path     = "/",
-        .use_tls     = true,
+    auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
+        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .tls    = { .hostname = "echo.websocket.org" },
+        .ws     = { .path = "/" },
     }).value();
 
     stream->on_message = [](std::span<const uint8_t> app_frame) {
@@ -145,13 +144,12 @@ magic:
 ```cpp
 auto poller = en::KernelPoller::create({}).value();
 
-std::vector<std::unique_ptr<en::KernelTcpStream<ec::WsCodec>>> streams;
+std::vector<std::unique_ptr<en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>>> streams;
 for (auto& symbol : symbols) {
-    auto s = en::KernelTcpStream<ec::WsCodec>::create({
-        .remote_host = "fstream.binance.com",
-        .remote_port = 443,
-        .ws_path     = std::format("/ws/{}@trade", symbol),
-        .use_tls     = true,
+    auto s = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
+        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .tls    = { .hostname = "fstream.binance.com" },
+        .ws     = { .path = std::format("/ws/{}@trade", symbol) },
     }).value();
     s->on_message = [&, sym = symbol](std::span<const uint8_t> app_frame) {
         route_trade(sym, app_frame.data(), app_frame.size());

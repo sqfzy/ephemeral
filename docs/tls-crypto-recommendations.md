@@ -301,7 +301,7 @@ eph::net::TlsConfig tls_for_venue(std::string_view venue_host) {
 
 Drop this into your venue adapter factory. The same shape works for
 all four primary venues; differences are confined to
-`TransportConfig::remote_host` / `remote_port` / `ws_path` (see
+`StreamConfig::remote` / `tls.hostname` / `ws.path` (see
 `docs/production-config.md`).
 
 ---
