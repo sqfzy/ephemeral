@@ -13,7 +13,20 @@
 ///
 /// The fix: latch `tls_corrupt_` on any partial-send failure, then refuse
 /// further send() / process_burst_ / poll_once_ so the reconnect loop
-/// replaces the TLS state entirely. This test uses the
+/// replaces the TLS state entirely.
+///
+/// Latch trigger sites (DpdkTcpStream::send TLS branch):
+///   1. `encrypt_for_send` failure — chunk N>0 may have already bumped
+///      the AEAD write seq via `seq_++` (tls_encryptor.hpp:189) on the
+///      preceding successful EVP_AEAD_CTX_seal calls; even though no
+///      ciphertext yet escapes (the sess_.send loop runs strictly after
+///      encrypt returns), the next encrypted record we manage to ship
+///      will be at a seq the peer cannot match.
+///   2. `sess_.send` failure mid-loop — encrypt_for_send already
+///      advanced seq across the entire payload; the partial wire write
+///      cannot be undone.
+///   3. `sess_.send` returning 0 — semantically same as #2 (NIC TX
+///      backpressure, ciphertext deferred indefinitely). This test uses the
 /// `EPH_DPDK_TCP_STREAM_TEST_HOOKS`-guarded accessor
 /// (`force_tls_desync_for_test_`) to drive the latch directly — exercising
 /// real partial-send semantics would require a full TLS handshake against
