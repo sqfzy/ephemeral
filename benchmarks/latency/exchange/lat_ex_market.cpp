@@ -62,6 +62,7 @@
 #  include "eph/net/kernel/tcp_stream.hpp"
 #endif
 
+#include "core/bench_ctx.hpp"
 #include "core/endpoint.hpp"          // Phase 4: resolve_endpoint
 #include "core/json_scan.hpp"
 #include "core/measurement.hpp"
@@ -69,6 +70,8 @@
 #if defined(EPH_USE_DPDK)
 #  include "core/dpdk_env.hpp"
 #endif
+
+#include "scenarios/lat_ex_market_loop.hpp"
 
 namespace {
 
@@ -103,78 +106,6 @@ constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
         return env;
     }
     return kDefaultConfigPath;
-}
-
-/// Inner measurement loop — templated over the stream type so the
-/// plain-TCP (mock) and TLS (real-server) branches share every line
-/// below it. The function takes ownership of the stream unique_ptr
-/// so lifetime bookkeeping stays in one place.
-///
-/// The loop is identical to pre-Phase-4 code: attach stream →
-/// install on_message → poll until the duration deadline or SIGTERM
-/// → print report → export JSON → teardown.
-template <class StreamT, class PollerT>
-int run_measurement(std::unique_ptr<StreamT> stream,
-                    std::unique_ptr<PollerT>& poller,
-                    eu::Recorder& rec,
-                    uint64_t warmup_samples,
-                    uint64_t duration_s,
-                    const char* backend) noexcept {
-    uint64_t sample_idx      = 0;
-    uint64_t malformed       = 0;
-    uint64_t clock_skew      = 0;
-    uint64_t t_measure_start = 0;
-
-    stream->on_message = [&](std::span<const uint8_t> app_frame) {
-        const uint64_t t_recv = bench::monotonic_raw_ns();
-        auto t_server_opt = bench::scan_json_uint_field(
-            app_frame.data(), app_frame.size(), "T");
-        if (!t_server_opt) { ++malformed; return; }
-        const uint64_t t_server = *t_server_opt;
-        if (t_recv <= t_server) { ++clock_skew; return; }
-        if (sample_idx == warmup_samples) t_measure_start = t_recv;
-        if (sample_idx >= warmup_samples) rec.record_ns(t_recv - t_server);
-        ++sample_idx;
-    };
-
-    // Stream is pre-attached by the caller — DPDK via Stream::create_and_attach,
-    // kernel via an explicit poller->add in main().  We don't re-attach here.
-
-    const uint64_t t_start = bench::monotonic_raw_ns();
-    const uint64_t t_deadline =
-        t_start + (duration_s + 2) * 1'000'000'000ull;
-
-    while (bench::monotonic_raw_ns() < t_deadline &&
-           !bench::shutdown_requested()) {
-        poller->poll();
-    }
-
-    if (malformed > 0 || clock_skew > 0) {
-        std::fprintf(stderr,
-                     "lat_ex_market: skipped %llu malformed + %llu clock-skew "
-                     "samples\n",
-                     static_cast<unsigned long long>(malformed),
-                     static_cast<unsigned long long>(clock_skew));
-    }
-
-    const uint64_t wall_time_ns =
-        (t_measure_start != 0)
-            ? (bench::monotonic_raw_ns() - t_measure_start)
-            : 0;
-    bench::print_report("lat_ex_market", backend, rec,
-                        warmup_samples, wall_time_ns);
-    if (!rec.export_json("benchmarks/latency/outputs")) {
-        std::fprintf(stderr,
-                     "[WARN] lat_ex_market: export_json to "
-                     "'benchmarks/latency/outputs' failed\n");
-    }
-
-    (void)stream->close_gracefully();
-#if !defined(EPH_USE_DPDK)
-    poller->poll(std::chrono::milliseconds{50});
-#endif
-    (void)poller->remove(stream.get());
-    return 0;
 }
 
 } // namespace
@@ -380,8 +311,9 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
-                             rec, warmup_samples, duration_s, backend);
+        rc = bench::scenarios::run_lat_ex_market_measurement(
+            std::move(stream_r.value()), *poller,
+            rec, warmup_samples, duration_s, backend);
     } else {
         auto stream_r = Stream::create_and_attach(std::move(cfg), env.platform);
         if (!stream_r) {
@@ -389,8 +321,9 @@ int main(int argc, char** argv) {
                          stream_r.error().detail);
             return 3;
         }
-        rc = run_measurement(std::move(stream_r.value()), poller,
-                             rec, warmup_samples, duration_s, backend);
+        rc = bench::scenarios::run_lat_ex_market_measurement(
+            std::move(stream_r.value()), *poller,
+            rec, warmup_samples, duration_s, backend);
     }
 #else
     // Kernel backend: pick the TLS-enabled stream typedef when the
@@ -413,8 +346,9 @@ int main(int argc, char** argv) {
                          r.error().detail);
             return 3;
         }
-        return run_measurement(std::move(stream_uptr), poller,
-                               rec, warmup_samples, duration_s, backend);
+        return bench::scenarios::run_lat_ex_market_measurement(
+            std::move(stream_uptr), *poller,
+            rec, warmup_samples, duration_s, backend);
     };
 
     if (endpoint.is_real_server) {
