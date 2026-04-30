@@ -68,6 +68,7 @@
 #include <rte_udp.h>
 
 #include "eph/core/error.hpp"
+#include "eph/dpdk/detail/icmp_directory.hpp"   // g_active_self_proc_index
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"
 #include "eph/dpdk/net_header.hpp"
@@ -955,6 +956,77 @@ on_fd_destroy_thunk(const rte_mp_msg* msg, const void* peer) {
 }
 
 } // namespace detail
+
+// ---------------------------------------------------------------------------
+// FlowDir IPC fallback (public API; depends on detail above)
+// ---------------------------------------------------------------------------
+
+/// @brief Secondary-side fallback: when `install_flow_rule`'s
+/// local `rte_flow_create` returns nullptr (PMD doesn't support
+/// secondary install), fire `eph_fd_install` IPC at the primary
+/// and wrap the returned handle_id in a `RemoteFlowHandle`. The
+/// returned `FlowRule`'s RAII dtor will fire `eph_fd_destroy` IPC
+/// when it falls out of scope.
+///
+/// @param owner_proc  primary's proc index (0 by convention under
+///                    MpTopology); informational, used for the
+///                    RemoteFlowHandle metadata + debug logs.
+[[nodiscard]] inline std::expected<FlowRule, std::string>
+try_install_flow_rule_via_ipc(uint16_t      port_id,
+                              uint16_t      queue_id,
+                              const ::eph::dpdk::net::ConnectionTuple& tuple,
+                              FlowProtocol  proto,
+                              uint8_t       owner_proc = 0) noexcept {
+    static std::atomic<uint32_t> next_req_id{1};
+    const uint8_t requester_proc =
+        ::eph::dpdk::detail::g_active_self_proc_index.load(
+            std::memory_order_acquire);
+    FdInstallMsg req{};
+    req.version        = 1;
+    req.proto          = (proto == FlowProtocol::Udp) ? uint8_t{17}
+                                                      : uint8_t{6};
+    req.requester_proc = requester_proc;
+    req.target_queue   = queue_id;
+    req.src_ip         = tuple.src_ip;
+    req.dst_ip         = tuple.dst_ip;
+    req.src_port       = tuple.src_port;
+    req.dst_port       = tuple.dst_port;
+    req.port_id        = port_id;
+    req.request_id     = next_req_id.fetch_add(1, std::memory_order_relaxed);
+
+    auto reply = ::eph::dpdk::detail::mp_ipc_request_sync<
+        FdInstallMsg, FdInstallReply>(
+            kFdInstallActionName, req, std::chrono::milliseconds{5000});
+    if (!reply) {
+        return std::unexpected(std::format(
+            "FlowDir IPC fallback failed: {} (primary may not be running, "
+            "or eph_fd_install handler not registered)",
+            reply.error().detail));
+    }
+    if (reply->version != 1) {
+        return std::unexpected(
+            "FlowDir IPC fallback: reply version mismatch");
+    }
+    if (reply->status != 0 || reply->handle_id == 0) {
+        return std::unexpected(std::format(
+            "FlowDir IPC fallback: primary returned error status={}",
+            reply->status));
+    }
+
+    SPDLOG_LOGGER_INFO(detail::flow_logger(),
+        "FlowDir IPC fallback succeeded: owner_proc={}, handle_id={}, "
+        "port={}, queue={}",
+        owner_proc, reply->handle_id, port_id, queue_id);
+
+    FlowRule rule;
+    rule.port_id  = port_id;
+    rule.queue_id = queue_id;
+    rule.handle   = RemoteFlowHandle{
+        .owner_proc = owner_proc,
+        .handle_id  = reply->handle_id,
+    };
+    return rule;
+}
 
 // ---------------------------------------------------------------------------
 // RSS hash prediction (Step 4) — Toeplitz over IPv4 5-tuple

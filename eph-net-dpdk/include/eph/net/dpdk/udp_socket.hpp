@@ -352,6 +352,18 @@ public:
             auto rule = ::eph::net::dpdk::install_flow_rule(
                 platform.port_id(), target_qid, ft,
                 ::eph::net::dpdk::FlowProtocol::Udp);
+            // Same try-secondary-then-fallback as DpdkTcpStream — see
+            // tcp_stream.hpp for the full rationale.
+            if (!rule && platform.is_secondary() &&
+                platform.has_mp_topology()) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: local rte_flow_create rejected "
+                    "({}); trying eph_fd_install IPC fallback",
+                    rule.error());
+                rule = ::eph::net::dpdk::try_install_flow_rule_via_ipc(
+                    platform.port_id(), target_qid, ft,
+                    ::eph::net::dpdk::FlowProtocol::Udp);
+            }
             if (!rule) {
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",

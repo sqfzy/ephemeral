@@ -739,6 +739,14 @@ public:
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
     self_port_range() const noexcept;
 
+    /// @brief True iff this Platform was created via
+    /// `Platform::create_secondary` (i.e. `cfg.proc_type ==
+    /// ProcType::Secondary`). Cold getter consumed by
+    /// `Stream::create_and_attach` to gate the FlowDir IPC-fallback
+    /// path: only secondaries hit `eph_fd_install` after a local
+    /// `rte_flow_create` rejection. Returns false on moved-from.
+    [[nodiscard]] bool is_secondary() const noexcept;
+
     /// @brief Register a per-queue Poller. Intended to be called once per
     /// queue at startup, before the lcore loops begin polling.
     /// Not thread-safe.
@@ -2163,6 +2171,10 @@ Platform::self_port_range() const noexcept {
     if (!impl_ || !impl_->mp_registry.has_value()) return std::nullopt;
     const auto& slot = impl_->mp_registry->self();
     return std::pair{slot.port_lo, slot.port_hi};
+}
+
+inline bool Platform::is_secondary() const noexcept {
+    return impl_ && impl_->config.proc_type == ProcType::Secondary;
 }
 
 inline std::expected<void, ::eph::core::ErrorInfo>

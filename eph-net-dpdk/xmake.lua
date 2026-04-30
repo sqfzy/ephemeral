@@ -222,6 +222,25 @@ target("dpdk_mp_icmp_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- FlowDir secondary-fallback e2e (reshape mp-icmp-flowdir milestone B).
+-- Secondary calls try_install_flow_rule_via_ipc directly, hitting
+-- primary's on_fd_install_thunk; primary installs the rule via local
+-- rte_flow_create and stashes the rte_flow* in remote_flow_rules. RAII
+-- on the secondary's FlowRule fires eph_fd_destroy at scope exit;
+-- primary's destroy handler removes the entry. Verifies size_for_test
+-- returns to 0 on the primary side.
+target("dpdk_mp_fd_fallback_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_fd_fallback_primary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_fd_fallback_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_fd_fallback_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

@@ -930,6 +930,24 @@ public:
             auto rule = ::eph::net::dpdk::install_flow_rule(
                 platform.port_id(), target_qid, fl_tuple,
                 ::eph::net::dpdk::FlowProtocol::Tcp);
+            // Try-secondary-then-fallback: when local rte_flow_create
+            // fails AND we're a secondary in mp_topology mode, attempt
+            // the IPC fallback to the primary. Some PMDs (notably non-
+            // ENA / non-mlx5 / non-i40e) reject rte_flow_create from
+            // secondaries — IPC fallback transparently delegates to
+            // the primary. Primary-mode failures, or secondary failures
+            // with no IPC available, fall through to the original
+            // unexpected return.
+            if (!rule && platform.is_secondary() &&
+                platform.has_mp_topology()) {
+                SPDLOG_LOGGER_WARN(log,
+                    "create_and_attach: local rte_flow_create rejected "
+                    "({}); trying eph_fd_install IPC fallback to primary",
+                    rule.error());
+                rule = ::eph::net::dpdk::try_install_flow_rule_via_ipc(
+                    platform.port_id(), target_qid, fl_tuple,
+                    ::eph::net::dpdk::FlowProtocol::Tcp);
+            }
             if (!rule) {
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",

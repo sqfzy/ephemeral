@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# dpdk_mp_icmp_e2e.sh — Cross-process ICMP forwarding e2e (reshape
-# mp-icmp-flowdir milestone A). Drives `dpdk_mp_icmp_primary` /
-# `dpdk_mp_icmp_secondary`: primary registers a fake ICMP target,
-# secondary IPC-forwards a synthesized Frag Needed msg, primary's
-# IcmpRegistry::dispatch fires its callback and observes the new MTU.
-# Validates the full IPC handler + IcmpDirectory lookup + gen-check
-# round-trip without needing raw-socket ICMP injection.
+# dpdk_mp_fd_fallback_e2e.sh — FlowDir secondary-fallback e2e
+# (reshape mp-icmp-flowdir milestone B). Drives
+# `dpdk_mp_fd_fallback_primary` / `dpdk_mp_fd_fallback_secondary`:
+# secondary calls `try_install_flow_rule_via_ipc` to fire the
+# eph_fd_install IPC at primary; primary's `on_fd_install_thunk`
+# installs an rte_flow rule on behalf and returns a handle_id;
+# secondary holds a `RemoteFlowHandle`; on scope exit, RAII fires
+# eph_fd_destroy and primary's handler removes the entry. Verifies
+# remote_flow_rules.size_for_test() returns to 0 after secondary
+# exit.
 #
 # Picks up the two gtest binaries from the xmake build tree and runs
 # them in coordinated roles:
@@ -32,10 +35,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-$REPO_ROOT/build/linux/arm64/release}"
 
-PRIMARY_BIN="$BUILD_DIR/dpdk_mp_icmp_primary"
-SECONDARY_BIN="$BUILD_DIR/dpdk_mp_icmp_secondary"
+PRIMARY_BIN="$BUILD_DIR/dpdk_mp_fd_fallback_primary"
+SECONDARY_BIN="$BUILD_DIR/dpdk_mp_fd_fallback_secondary"
 
-: "${EPH_MP_FILE_PREFIX:=eph_mp_icmp_$$}"
+: "${EPH_MP_FILE_PREFIX:=eph_mp_fdfb_$$}"
 : "${EPH_MP_PORT_ID:=0}"
 : "${EPH_MP_NB_RX_QUEUES:=4}"
 : "${EPH_MP_LCORES:=0,1}"
