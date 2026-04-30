@@ -481,8 +481,16 @@ public:
     /// multicast range, or `BufferFull` if the per-socket cap is reached.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     join_multicast(const SocketAddr& group) noexcept {
-        const uint32_t ip_be = group.ip.to_be32();
-        if (!::eph::dpdk::is_multicast_ip(ip_be)) {
+        // `Ipv4Addr::to_be32()` returns a HOST-ORDER `uint32_t` whose
+        // hex layout reads in dotted-quad order — i.e. for 224.0.0.5
+        // the value is 0xE0000005 (high byte = first octet). Both
+        // `is_multicast_ip` and `multicast_mac_from_ip` document
+        // host-order input, so no `htonl` is needed here. (Contrast
+        // with the kernel UDP path's `setsockopt(IP_ADD_MEMBERSHIP)`
+        // call site, which writes into `s_addr` and therefore *does*
+        // wrap the same value in `htonl`.)
+        const uint32_t ip_host = group.ip.to_be32();
+        if (!::eph::dpdk::is_multicast_ip(ip_host)) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::join_multicast: ip not in 224.0.0.0/4"});
@@ -492,7 +500,7 @@ public:
                 core::Error::BufferFull,
                 "DpdkUdpSocket::join_multicast: too many groups"});
         }
-        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_be);
+        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_host);
         // Idempotent — skip if already joined.
         for (std::size_t i = 0; i < mcast_count_; ++i) {
             if (std::memcmp(&mcast_macs_[i], &mac, sizeof(mac)) == 0) {
@@ -516,13 +524,14 @@ public:
 
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     leave_multicast(const SocketAddr& group) noexcept {
-        const uint32_t ip_be = group.ip.to_be32();
-        if (!::eph::dpdk::is_multicast_ip(ip_be)) {
+        // See `join_multicast` for the host-order vs network-order rationale.
+        const uint32_t ip_host = group.ip.to_be32();
+        if (!::eph::dpdk::is_multicast_ip(ip_host)) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::leave_multicast: ip not in 224.0.0.0/4"});
         }
-        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_be);
+        const rte_ether_addr mac = ::eph::dpdk::multicast_mac_from_ip(ip_host);
         for (std::size_t i = 0; i < mcast_count_; ++i) {
             if (std::memcmp(&mcast_macs_[i], &mac, sizeof(mac)) == 0) {
                 // Snapshot the slot for rollback before compacting:
