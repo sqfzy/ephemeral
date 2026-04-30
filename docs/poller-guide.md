@@ -191,12 +191,15 @@ auto orders = en::DpdkTcpStream<ec::WsCodec>::create({...}).value();
 orders->on_message = handle_exec_report;
 poller->add(orders.get()).value();
 
-// Market data: MoldUDP64 over DPDK UDP multicast
-auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create({
-    .bind_addr = eph::net::SocketAddr{{0,0,0,0}, 30000},
-}).value();
+// Market data: MoldUDP64 over DPDK UDP multicast.
+// DpdkUdpSocket uses a `legacy`-prefixed wire-level config (src/dst ip+port,
+// MAC, mempool) — see eph-net-dpdk/include/eph/net/dpdk/config.hpp::UdpConfig
+// and the runnable end-to-end setup in examples/async_dns_multi_resolve.cpp
+// and benchmarks/latency/lat_ex_md_udp_dpdk for the multicast subscribe path.
+auto md = /* see async_dns_multi_resolve.cpp for the full DpdkUdpSocket
+             setup — fixed-peer template, much fuller than the kernel
+             UDP snippet shape */;
 md->on_datagram = handle_itch_message;
-md->join_multicast({{233,54,12,111}, 30001}).value();
 poller->add(md.get()).value();
 
 while (running) {
