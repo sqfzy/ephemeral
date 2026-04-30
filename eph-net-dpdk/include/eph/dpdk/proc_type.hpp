@@ -28,9 +28,6 @@ namespace eph::dpdk {
 ///            port state. Has its own Poller(s), Stream(s), FlowRule(s),
 ///            and ICMP registry (all per-process). The primary must
 ///            start first and outlive every secondary.
-///
-/// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
-/// queue/src_port segmentation rules, and PMD-specific caveats.
 /// Auto: emits `--proc-type=auto`. DPDK then resolves at
 ///       `rte_eal_init` time: first peer to claim the
 ///       `--file-prefix` lockfile becomes primary, every later
@@ -39,6 +36,9 @@ namespace eph::dpdk {
 ///       Used exclusively by `Platform::join_dynamic` (the
 ///       autojoin path); declarative-path callers must pass
 ///       Primary or Secondary explicitly.
+///
+/// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
+/// queue/src_port segmentation rules, and PMD-specific caveats.
 enum class ProcType : uint8_t { Primary, Secondary, Auto };
 
 /// @brief Serialize a ProcType to the string DPDK expects after
