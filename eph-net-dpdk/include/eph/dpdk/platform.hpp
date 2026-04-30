@@ -41,7 +41,8 @@
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
-#include "eph/dpdk/join_dynamic.hpp"           // JoinDynamicConfig (autojoin user-facing POD)
+// NOTE: `eph/dpdk/join_dynamic.hpp` is included AFTER `PlatformConfig`
+// is defined — `JoinDynamicConfig::pcfg_template` embeds it by value.
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
@@ -452,6 +453,17 @@ struct PlatformConfig {
             mp_topology.has_value() ? mp_topology->total_procs : uint8_t{0});
     }
 };
+
+} // namespace eph::dpdk
+
+// JoinDynamicConfig embeds a PlatformConfig as a value member, so it
+// must be parsed after PlatformConfig is fully defined. We signal
+// that PlatformConfig is now in scope via the sentinel macro that
+// join_dynamic.hpp checks at the top.
+#define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
+#include "eph/dpdk/join_dynamic.hpp"
+
+namespace eph::dpdk {
 
 /// Validation result — empty string_view on success, error description otherwise.
 /// constexpr-evaluable: use in static_assert for compile-time configs, or
@@ -1175,22 +1187,14 @@ struct Platform::Impl {
         }
         remote_flow_rules.destroy_all();
 
-        // EAL ownership: when this Platform was constructed via
-        // `Platform::create_with_eal` (or `join_dynamic`), it
-        // bootstrapped EAL and is responsible for tearing it down.
-        // Order matters: `cleanup()` above already ran (DPDK port /
-        // mempool released while EAL was still alive). Field
+        // EAL ownership: `~Impl` must NOT call `eal_cleanup` — field
         // destruction in reverse declaration order continues AFTER
-        // this body — the only field that must outlive eal_cleanup
-        // is `pin_session_guards`, which only touches the process-
-        // wide CPU pin registry (EAL-independent), so its release
-        // post-eal_cleanup is harmless.
-        if (owns_eal_init) {
-            [[maybe_unused]] auto log = ::eph::dpdk::detail::platform_logger();
-            SPDLOG_LOGGER_DEBUG(log,
-                "Platform owns EAL — running eal_cleanup at teardown");
-            [[maybe_unused]] bool ok = ::eph::dpdk::eal_cleanup();
-        }
+        // this body, and `mp_registry` / `icmp_directory` destructors
+        // (declared earliest, destroyed latest) touch hugepage
+        // memzones which `rte_eal_cleanup` would have already torn
+        // down. The actual `eal_cleanup` call lives in `~Platform`,
+        // which runs AFTER `impl_.reset()` finishes destroying every
+        // Impl field — see the explicit `Platform::~Platform()` body.
     }
 
     [[nodiscard]] std::expected<void, std::string> enumerate_ports() {
@@ -1711,7 +1715,27 @@ struct Platform::Impl {
 inline Platform::Platform(std::unique_ptr<Impl> impl) noexcept
     : impl_(std::move(impl)) {}
 
-inline Platform::~Platform() = default;
+inline Platform::~Platform() {
+    // Explicit teardown order: destroy Impl fully FIRST (which runs
+    // ~Impl's body cleanup() + reverse-order field destructors,
+    // releasing every DPDK resource: mempool / port / mp_registry
+    // memzones / icmp_directory memzone / rte_mp_action handlers),
+    // THEN run eal_cleanup. If we let the implicit destructor handle
+    // this, ~Platform's body would run BEFORE impl_'s field
+    // destruction (C++ standard: dtor body first, then fields), so
+    // eal_cleanup would fire while mp_registry still holds memzone
+    // pointers — touching them after rte_eal_cleanup is a SEGV.
+    if (impl_) {
+        const bool owns_eal = impl_->owns_eal_init;
+        impl_.reset();   // triggers ~Impl → all DPDK resources gone
+        if (owns_eal) {
+            [[maybe_unused]] auto log = detail::platform_logger();
+            SPDLOG_LOGGER_DEBUG(log,
+                "~Platform: owns_eal_init=true — running eal_cleanup");
+            [[maybe_unused]] bool ok = ::eph::dpdk::eal_cleanup();
+        }
+    }
+}
 
 inline Platform::Platform(Platform&&) noexcept            = default;
 inline Platform& Platform::operator=(Platform&&) noexcept = default;
@@ -2381,12 +2405,14 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         return std::unexpected(std::string{
             "join_dynamic: pci must be non-empty (provide a PCI BDF "
             "such as '0000:28:00.0')"});
-    if (cfg.nb_rx_queues == 0)
+    if (cfg.pcfg_template.nb_rx_queues == 0)
         return std::unexpected(std::string{
-            "join_dynamic: nb_rx_queues must be > 0"});
+            "join_dynamic: pcfg_template.nb_rx_queues must be > 0"});
     if (cfg.queues_per_proc == 0)
         return std::unexpected(std::string{
             "join_dynamic: queues_per_proc must be > 0"});
+
+    const uint16_t nb_rx_queues = cfg.pcfg_template.nb_rx_queues;
 
     // ── 2. derive file_prefix ─────────────────────────────────────────────
     std::string derived_prefix;
@@ -2405,7 +2431,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     // ── 3. derive max_procs ───────────────────────────────────────────────
     uint8_t max_procs = cfg.max_procs;
     if (max_procs == 0) {
-        const uint16_t auto_max = cfg.nb_rx_queues / cfg.queues_per_proc;
+        const uint16_t auto_max = nb_rx_queues / cfg.queues_per_proc;
         if (auto_max == 0)
             return std::unexpected(std::string{
                 "join_dynamic: nb_rx_queues / queues_per_proc < 1; "
@@ -2418,17 +2444,47 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         return std::unexpected(std::string{
             "join_dynamic: max_procs out of range [1, kMaxProcs=64]"});
 
-    // ── 4. EAL init (proc-type=auto) ──────────────────────────────────────
+    // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
+    // Strings inside cfg are caller-owned; we copy them into a local
+    // EalConfig so create_with_eal's argv assembly is decoupled from
+    // cfg's lifetime.
     EalConfig eal_cfg{};
     eal_cfg.program_name  = "eph_join_dynamic";
-    // DPDK's default is `--proc-type=primary`, NOT auto. We must
-    // emit `--proc-type=auto` explicitly so the second peer joins
-    // as secondary instead of dying on a lockfile collision.
+    // DPDK's default is `--proc-type=primary`, NOT auto. We emit
+    // `--proc-type=auto` explicitly so the second peer joins as
+    // secondary instead of dying on a lockfile collision.
     eal_cfg.proc_type     = ProcType::Auto;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = file_prefix;
     eal_cfg.allowed_devs  = {std::string{cfg.pci}};
     eal_cfg.lcores        = cfg.lcores;
+    eal_cfg.extra_args    = cfg.eal_extras;
+
+    // ── 5. EAL init (we do this directly here, not via create_with_eal,
+    //                because we need to inspect rte_eal_process_type
+    //                BEFORE deciding which PlatformConfig to build).
+    //                pin_lcores happens in step 7 after role is known
+    //                — secondary path doesn't need to call create_with_eal
+    //                (it goes through create_secondary_impl_ with the
+    //                pre-claimed registry slot, then we manually
+    //                transfer EAL ownership into Impl).
+    if (!cfg.pins.empty() && !cfg.lcores.empty())
+        return std::unexpected(std::string{
+            "join_dynamic: cfg.pins and cfg.lcores are mutually "
+            "exclusive (pick the typed-pin path or the raw-lcores path)"});
+
+    std::vector<eph::utils::PinGuard> pin_guards;
+    if (!cfg.pins.empty()) {
+        auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
+        if (!pg) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic: pin_lcores rejected: {}", pg.error());
+            return std::unexpected(std::string{
+                "join_dynamic: pin_lcores: "} + pg.error());
+        }
+        pin_guards = std::move(*pg);
+        eal_cfg.extra_args.push_back(build_lcore_argv(cfg.pins));
+    }
 
     auto argv_owned = build_eal_argv(eal_cfg);
     std::vector<char*> argv;
@@ -2439,11 +2495,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     if (!eal_r) {
         SPDLOG_LOGGER_ERROR(log,
             "join_dynamic: eal_init failed: {}", eal_r.error());
+        // pin_guards local-destruct rolls back CPU registry on return.
         return std::unexpected(std::string{
             "join_dynamic: eal_init failed: "} + eal_r.error());
     }
 
-    // ── 5. role detection ─────────────────────────────────────────────────
+    // ── 6. role detection ─────────────────────────────────────────────────
     const enum rte_proc_type_t role = rte_eal_process_type();
     SPDLOG_LOGGER_INFO(log,
         "join_dynamic: rte_eal_process_type() resolved to {} "
@@ -2451,88 +2508,101 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         role == RTE_PROC_PRIMARY   ? "primary"
         : role == RTE_PROC_SECONDARY ? "secondary"
                                      : "<invalid>",
-        file_prefix, max_procs, cfg.nb_rx_queues);
+        file_prefix, max_procs, nb_rx_queues);
 
-    // Common PlatformConfig template — both roles populate the same
-    // fields except for proc_type / mp_topology (set per-branch).
-    PlatformConfig pcfg{};
-    pcfg.port_id      = cfg.port_id;
-    pcfg.nb_rx_queues = cfg.nb_rx_queues;
-    pcfg.nb_tx_queues = cfg.nb_rx_queues;
-    pcfg.file_prefix  = file_prefix;
+    // Build the role-specific PlatformConfig from the user's template.
+    // Autojoin owns three fields: proc_type, mp_topology, file_prefix.
+    PlatformConfig pcfg = cfg.pcfg_template;
+    pcfg.file_prefix    = file_prefix;
+    // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
+    if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
 
-    // ── 6/7. branch on role ───────────────────────────────────────────────
+    auto attach_eal_session = [&pin_guards](
+        std::expected<Platform, std::string>&& r)
+        -> std::expected<Platform, std::string> {
+            if (r && r->impl_) {
+                r->impl_->pin_session_guards = std::move(pin_guards);
+                r->impl_->owns_eal_init      = true;
+            }
+            return std::move(r);
+        };
+
+    auto rollback_eal_on_error = [&pin_guards](
+        std::expected<Platform, std::string>&& r)
+        -> std::expected<Platform, std::string> {
+            if (!r) {
+                // Roll back EAL we init'd; pin_guards roll back via local
+                // destruction at function return.
+                [[maybe_unused]] bool ok = eal_cleanup();
+            }
+            return std::move(r);
+        };
+
+    // ── 7. branch on role ────────────────────────────────────────────────
     if (role == RTE_PROC_PRIMARY) {
         pcfg.proc_type   = ProcType::Primary;
         pcfg.mp_topology = MpTopology::uniform(
-            /*self_index=*/0, max_procs, cfg.nb_rx_queues);
-        return Platform::create_primary(std::move(pcfg));
+            /*self_index=*/0, max_procs, nb_rx_queues);
+        auto plat_r = Platform::create_primary(std::move(pcfg));
+        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
+        return attach_eal_session(std::move(plat_r));
     }
 
     if (role == RTE_PROC_SECONDARY) {
-        // 6S. attach read-only and validate the primary's view.
+        // 7S. attach read-only and validate the primary's view.
         auto ro = ::eph::dpdk::detail::MpRegistryHandle::
             attach_secondary_readonly(file_prefix);
         if (!ro) {
             SPDLOG_LOGGER_ERROR(log,
                 "join_dynamic[secondary]: attach_secondary_readonly "
                 "failed: {}", ro.error().detail);
-            return std::unexpected(std::string{ro.error().detail});
+            std::expected<Platform, std::string> err{
+                std::unexpected(std::string{ro.error().detail})};
+            return rollback_eal_on_error(std::move(err));
         }
 
-        // Cross-check: primary's max_procs must match what THIS peer
-        // would have computed — otherwise the queue partitions don't
-        // line up. Conservative: refuse rather than silently pick a
-        // narrower / wider partition than the primary chose.
         const uint32_t primary_total = ro->header()->total_procs;
         if (primary_total != max_procs) {
             SPDLOG_LOGGER_ERROR(log,
                 "join_dynamic[secondary]: primary's total_procs={} "
                 "differs from this peer's derived max_procs={} "
-                "(both peers must derive the same value — supply the "
-                "same nb_rx_queues / queues_per_proc / max_procs to "
-                "every join_dynamic call sharing this NIC)",
+                "(both peers must derive the same value)",
                 primary_total, max_procs);
-            return std::unexpected(std::string{
+            std::expected<Platform, std::string> err{std::unexpected(std::string{
                 "join_dynamic[secondary]: max_procs disagreement with "
                 "primary's registry — peers must derive identical "
-                "max_procs"});
+                "max_procs"})};
+            return rollback_eal_on_error(std::move(err));
         }
 
-        // 7S. CAS-claim the lowest free slot.
+        // 8S. CAS-claim the lowest free slot.
         auto idx_r = ro->try_claim_free_slot();
         if (!idx_r) {
             SPDLOG_LOGGER_ERROR(log,
                 "join_dynamic[secondary]: try_claim_free_slot failed: {}",
                 idx_r.error().detail);
-            return std::unexpected(std::string{idx_r.error().detail});
+            std::expected<Platform, std::string> err{
+                std::unexpected(std::string{idx_r.error().detail})};
+            return rollback_eal_on_error(std::move(err));
         }
         const uint8_t self_idx = *idx_r;
 
-        // 8S. Synthesize a topology view that agrees with the primary's
-        // (uniform layout, same max_procs / nb_rx_queues / port base).
-        // Using `MpTopology::uniform` produces the exact same per-slot
-        // ProcSpec the primary wrote at its own create_primary, so the
-        // self-spec cross-validation in attach_secondary will pass.
         pcfg.proc_type   = ProcType::Secondary;
         pcfg.mp_topology = MpTopology::uniform(
-            self_idx, max_procs, cfg.nb_rx_queues);
+            self_idx, max_procs, nb_rx_queues);
+        ro->disarm_slot();  // hand off slot ownership to next handle
 
-        // 9S. Disarm `ro`'s slot-ownership (the slot is claimed in
-        // shared memory, but we don't want `ro`'s destructor to clear
-        // it — the new handle from create_secondary_impl_ will own it).
-        // After this, `ro` is a pure view; its destructor is a no-op
-        // re slot state, only releasing the memzone reference.
-        ro->disarm_slot();
-
-        return Platform::create_secondary_impl_(std::move(pcfg),
-                                                /*registry_preclaimed=*/true);
+        auto plat_r = Platform::create_secondary_impl_(std::move(pcfg),
+                                                       /*registry_preclaimed=*/true);
+        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
+        return attach_eal_session(std::move(plat_r));
     }
 
     // RTE_PROC_INVALID or future enum values.
     SPDLOG_LOGGER_ERROR(log,
         "join_dynamic: rte_eal_process_type returned invalid role={}",
         static_cast<int>(role));
+    [[maybe_unused]] bool ok = eal_cleanup();
     return std::unexpected(std::string{
         "join_dynamic: rte_eal_process_type returned an invalid role "
         "(EAL not properly initialized)"});

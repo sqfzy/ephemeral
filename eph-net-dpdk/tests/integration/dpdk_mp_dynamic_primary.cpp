@@ -29,7 +29,6 @@
 #include <gtest/gtest.h>
 
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/join_dynamic.hpp"
 #include "eph/dpdk/platform.hpp"
 
 namespace {
@@ -62,38 +61,34 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
         << "autojoin test requires nb_rx_queues >= 2";
 
     eph::dpdk::JoinDynamicConfig cfg{};
-    cfg.pci          = pci;
-    cfg.nb_rx_queues = nb_rx_queues;
-    cfg.lcores       = {lcores};
+    cfg.pci                          = pci;
+    cfg.pcfg_template.nb_rx_queues   = nb_rx_queues;
+    cfg.lcores                       = {lcores};
+
+    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
+    ASSERT_TRUE(plat_r) << "join_dynamic failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
+
+    EXPECT_FALSE(platform.is_secondary())
+        << "first peer should resolve as primary";
+    EXPECT_TRUE(platform.has_mp_topology());
+
+    // queues_per_proc=1 default + nb_rx_queues queues → max_procs =
+    // nb_rx_queues. Primary owns slot 0 → queue range [0, 1).
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first, 0);
+    EXPECT_EQ(qr.second, 1);
+
+    auto pr = platform.self_port_range();
+    ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
+    EXPECT_EQ(pr->first, 32768u);
 
     {
-        auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
-        ASSERT_TRUE(plat_r) << "join_dynamic failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+        std::ofstream f(ready_file);
+        f << "dynamic primary ready " << std::time(nullptr) << "\n";
+    }
 
-        EXPECT_FALSE(platform.is_secondary())
-            << "first peer should resolve as primary";
-        EXPECT_TRUE(platform.has_mp_topology());
-
-        // queues_per_proc=1 default + nb_rx_queues queues → max_procs =
-        // nb_rx_queues. Primary owns slot 0 → queue range [0, 1).
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first, 0);
-        EXPECT_EQ(qr.second, 1);
-
-        auto pr = platform.self_port_range();
-        ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
-        // Uniform layout, slot 0 → port_lo = 32768, port_hi = 32768 +
-        // (65536-32768)/max_procs = 32768 + 32768/nb_rx_queues
-        EXPECT_EQ(pr->first, 32768u);
-
-        {
-            std::ofstream f(ready_file);
-            f << "dynamic primary ready " << std::time(nullptr) << "\n";
-        }
-
-        std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
-    }  // ← ~Platform fires here while EAL still alive
-
-    (void)eph::dpdk::eal_cleanup();
+    std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));
+    // ~Platform at function exit owns EAL: it releases DPDK resources
+    // and runs eal_cleanup itself. No nested-scope idiom needed.
 }

@@ -64,7 +64,6 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/join_dynamic.hpp"
 #include "eph/dpdk/platform.hpp"
 
 namespace {
@@ -143,9 +142,9 @@ int main(int argc, char** argv) {
 
     // ── Bring up via autojoin ──────────────────────────────────────────
     eph::dpdk::JoinDynamicConfig cfg{};
-    cfg.pci          = args.pci;
-    cfg.nb_rx_queues = args.nb_queues;
-    cfg.lcores       = {args.lcores};
+    cfg.pci                        = args.pci;
+    cfg.pcfg_template.nb_rx_queues = args.nb_queues;
+    cfg.lcores                     = {args.lcores};
 
     SPDLOG_INFO("calling Platform::join_dynamic (pci={}, nb_queues={}, "
                 "lcores='{}')",
@@ -174,12 +173,9 @@ int main(int argc, char** argv) {
                 args.hold_seconds);
     std::this_thread::sleep_for(std::chrono::seconds(args.hold_seconds));
 
-    SPDLOG_INFO("tearing down");
-    // ~Platform must fire BEFORE eal_cleanup (Impl::cleanup calls
-    // rte_eth_dev_stop / mempool_free; both illegal post-EAL teardown).
-    {
-        auto _drop = std::move(platform);
-    }
-    (void)eph::dpdk::eal_cleanup();
+    SPDLOG_INFO("tearing down — Platform owns EAL, ~Platform handles "
+                "DPDK cleanup + eal_cleanup atomically");
+    // No nested-scope idiom needed: ~Platform releases DPDK resources
+    // first, then runs eal_cleanup internally.
     return 0;
 }

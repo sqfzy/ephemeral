@@ -23,7 +23,6 @@
 #include <gtest/gtest.h>
 
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/join_dynamic.hpp"
 #include "eph/dpdk/platform.hpp"
 
 namespace {
@@ -52,39 +51,34 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
     ASSERT_GE(nb_rx_queues, 2u);
 
     eph::dpdk::JoinDynamicConfig cfg{};
-    cfg.pci          = pci;
-    cfg.nb_rx_queues = nb_rx_queues;
-    cfg.lcores       = {lcores};
+    cfg.pci                          = pci;
+    cfg.pcfg_template.nb_rx_queues   = nb_rx_queues;
+    cfg.lcores                       = {lcores};
 
-    {
-        auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
-        ASSERT_TRUE(plat_r)
-            << "join_dynamic failed: " << plat_r.error();
-        auto platform = std::move(*plat_r);
+    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
+    ASSERT_TRUE(plat_r)
+        << "join_dynamic failed: " << plat_r.error();
+    auto platform = std::move(*plat_r);
 
-        EXPECT_TRUE(platform.is_secondary())
-            << "second peer must resolve as secondary";
-        EXPECT_TRUE(platform.has_mp_topology());
+    EXPECT_TRUE(platform.is_secondary())
+        << "second peer must resolve as secondary";
+    EXPECT_TRUE(platform.has_mp_topology());
 
-        // queues_per_proc=1 default → secondary should land on slot 1
-        // (lowest free), owning queue range [1, 2).
-        const auto qr = platform.effective_rx_queue_range();
-        EXPECT_EQ(qr.first, 1)
-            << "expected secondary to claim slot 1 (lowest free)";
-        EXPECT_EQ(qr.second, 2);
+    // queues_per_proc=1 default → secondary should land on slot 1
+    // (lowest free), owning queue range [1, 2).
+    const auto qr = platform.effective_rx_queue_range();
+    EXPECT_EQ(qr.first, 1)
+        << "expected secondary to claim slot 1 (lowest free)";
+    EXPECT_EQ(qr.second, 2);
 
-        // Disjointness check: any non-zero `qr.first` already proves
-        // disjointness from the primary's slot 0, but assert
-        // explicitly to surface a future regression where slot
-        // claiming silently overlaps.
-        EXPECT_GT(qr.first, 0)
-            << "secondary queue range must not overlap primary's [0, 1)";
+    EXPECT_GT(qr.first, 0)
+        << "secondary queue range must not overlap primary's [0, 1)";
 
-        auto pr = platform.self_port_range();
-        ASSERT_TRUE(pr.has_value());
-        EXPECT_GT(pr->first, 32768u)
-            << "secondary's port range must start above the primary's";
-    }
+    auto pr = platform.self_port_range();
+    ASSERT_TRUE(pr.has_value());
+    EXPECT_GT(pr->first, 32768u)
+        << "secondary's port range must start above the primary's";
 
-    (void)eph::dpdk::eal_cleanup();
+    // ~Platform at function exit owns EAL: it releases DPDK resources
+    // and runs eal_cleanup itself. No nested-scope idiom needed.
 }
