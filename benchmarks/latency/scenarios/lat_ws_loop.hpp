@@ -64,6 +64,16 @@ inline int run_lat_ws_loop(::bench::BenchCtx& ctx) noexcept {
                      payload_size, ::bench::kTimestampBlockSize);
         return 1;
     }
+    // Cap payload_size at 16 MiB. The bench frame buffer is allocated as a
+    // single std::vector in a noexcept function — a config typo of e.g.
+    // 4 GiB would terminate the process via bad_alloc instead of producing
+    // a clean error. 16 MiB is well above any realistic exchange payload.
+    constexpr std::size_t kMaxPayloadBytes = 16ull * 1024ull * 1024ull;
+    if (payload_size > kMaxPayloadBytes) {
+        std::fprintf(stderr, "run_lat_ws_loop: payload_size=%zu exceeds max %zu\n",
+                     payload_size, kMaxPayloadBytes);
+        return 1;
+    }
     const uint64_t duration_s =
         scenario.get_or<uint32_t>("duration_seconds", 10);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;

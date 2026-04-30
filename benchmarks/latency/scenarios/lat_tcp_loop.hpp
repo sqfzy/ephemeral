@@ -96,6 +96,18 @@ inline int run_lat_tcp_loop(::bench::BenchCtx& ctx) noexcept {
                      payload_size, ::bench::kTimestampBlockSize);
         return 1;
     }
+    // Cap payload_size: bench buffers (payload + reasm = payload * 4) are
+    // allocated as plain std::vectors in a noexcept function — a config
+    // typo of e.g. 1 GiB would terminate the process via bad_alloc rather
+    // than producing a clean error. 16 MiB exceeds any realistic exchange
+    // payload and keeps reasm * 4 well below 100 MiB.
+    constexpr std::size_t kMaxPayloadBytes = 16ull * 1024ull * 1024ull;
+    if (payload_size > kMaxPayloadBytes) {
+        std::fprintf(stderr,
+                     "run_lat_tcp_loop: payload_size=%zu exceeds max %zu\n",
+                     payload_size, kMaxPayloadBytes);
+        return 1;
+    }
     const uint64_t duration_s =
         scenario.get_or<uint32_t>("duration_seconds", 10);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;

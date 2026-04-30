@@ -66,6 +66,17 @@ inline int run_lat_udp_loop(::bench::BenchCtx& ctx) noexcept {
                      payload_size, ::bench::kTimestampBlockSize);
         return 1;
     }
+    // UDP datagrams have a hard 64 KiB IP ceiling. Cap at 16 KiB which
+    // exceeds any realistic ITCH-style market-data datagram and prevents
+    // a config typo from triggering bad_alloc inside the noexcept bench
+    // body (std::vector cannot fail soft).
+    constexpr std::size_t kMaxPayloadBytes = 16ull * 1024ull;
+    if (payload_size > kMaxPayloadBytes) {
+        std::fprintf(stderr,
+                     "run_lat_udp_loop: payload_size=%zu exceeds max %zu\n",
+                     payload_size, kMaxPayloadBytes);
+        return 1;
+    }
     const uint64_t duration_s =
         scenario.get_or<uint32_t>("duration_seconds", 10);
     const uint64_t warmup_samples = bench_cfg.measurement.warmup_samples;
