@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -256,6 +257,54 @@ TEST(OutputBuffer, EmptyAppendIsNoop) {
     auto r = ob.append(std::span<const uint8_t>{});  // empty span
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(ob.size(), 0u);
+}
+
+TEST(OutputBuffer, AppendOverflowSafeAgainstSizeMaxSpan) {
+    // Pin the doc'd overflow-safe shape: a hostile / malformed `src.size()`
+    // close to SIZE_MAX must NOT wrap `len_ + src.size()` into a small value
+    // that silently passes a naive `< cap_` check. The OutputBuffer rewrites
+    // the comparison as `src.size() > cap_ - len_` to keep both sides
+    // unsigned-non-negative under the `len_ <= cap_` invariant. A regression
+    // that flipped back to the wrap-able shape would silently corrupt
+    // memory; this test catches it without actually dereferencing the
+    // bogus pointer (the bytes-too-large branch fires before memcpy).
+    uint8_t storage[4] = {};
+    OutputBuffer ob{storage, sizeof(storage)};
+
+    // span over a non-null pointer with size SIZE_MAX. The memcpy is
+    // never reached because the overflow check returns BufferFull first.
+    // We point at `storage` so the span ctor stays defined; the size is
+    // the only thing the validator sees.
+    std::span<const uint8_t> hostile{storage, std::numeric_limits<size_t>::max()};
+    auto r = ob.append(hostile);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::BufferFull);
+    // No partial mutation: the rejection must be all-or-nothing.
+    EXPECT_EQ(ob.size(), 0u);
+
+    // Same shape for reserve() and writable_tail().
+    auto rr = ob.reserve(std::numeric_limits<size_t>::max());
+    ASSERT_FALSE(rr.has_value());
+    EXPECT_EQ(rr.error().code, Error::BufferFull);
+
+    EXPECT_EQ(ob.writable_tail(std::numeric_limits<size_t>::max()), nullptr);
+}
+
+TEST(OutputBuffer, AppendBoundaryExactFitAccepted) {
+    // The overflow-safe form `src.size() > cap_ - len_` must accept
+    // `src.size() == cap_ - len_` (the exact-fill case). A regression
+    // that wrote `>=` instead of `>` would reject the legitimate edge.
+    uint8_t storage[4] = {};
+    OutputBuffer ob{storage, sizeof(storage)};
+    const uint8_t src[] = {1, 2, 3, 4};
+    auto r = ob.append(std::span<const uint8_t>(src, sizeof(src)));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(ob.size(), 4u);
+    EXPECT_EQ(ob.available(), 0u);
+
+    // One more byte must now hit BufferFull (no silent advancement).
+    auto rr = ob.append(std::span<const uint8_t>(src, 1));
+    EXPECT_FALSE(rr.has_value());
 }
 
 // ============================================================================
