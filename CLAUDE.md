@@ -49,7 +49,7 @@ The scope decisions for the current feature set are archived in
   Reader: `metric(StreamMetric m)` direct read (bounds-checked — out-of-range
   values return 0), or `publish_metrics(*stream, sink, tags)` to forward every
   counter into any `MetricsSink`. See `docs/observability-guide.md` and
-  `examples/observability_demo.cpp`. The 13 entries include 7 TCP/ICMP
+  `examples/observability_demo.cpp`. The 25 entries include 8 TCP/ICMP
   session-level metrics (`net.stream.tcp.*` + `net.stream.icmp.*`) exposed
   by `DpdkTcpStream::metric` via lazy-read from `TcpSession::Stats`.
 - DPDK keepalive — public surface is now `cfg.keepalive.interval` /
