@@ -15,37 +15,42 @@ This document is the operational contract. For the design rationale see
 ## TL;DR — autojoin (recommended path)
 
 Two unrelated processes share one NIC by agreeing on **only the
-PCI BDF and `nb_rx_queues`** — no shared file_prefix, no manual
-topology, no primary-vs-secondary launch protocol. Whoever calls
-`rte_eal_init` first becomes primary; the next peer auto-attaches
-as secondary and CAS-claims the lowest free slot.
+PCI BDF and `pcfg_template.nb_rx_queues`** — no shared file_prefix,
+no manual topology, no primary-vs-secondary launch protocol.
+Whoever calls `rte_eal_init` first becomes primary; the next peer
+auto-attaches as secondary and CAS-claims the lowest free slot.
 
 ```cpp
 #include "eph/dpdk/platform.hpp"
-#include "eph/dpdk/join_dynamic.hpp"
 
 // Same code in BOTH binaries. Run them in any order.
 auto platform = eph::dpdk::Platform::join_dynamic({
-    .pci          = "0000:28:00.0",
-    .nb_rx_queues = 4,
-    .lcores       = {"0,1"},   // process-specific lcore set
+    .pci           = "0000:28:00.0",
+    .pcfg_template = { .nb_rx_queues = 4 },  // any PlatformConfig field
+    .lcores        = {"0,1"},                 // process-specific lcore set
 });
 // First peer  → primary, owns queue/port slot 0.
 // Second peer → secondary, CAS-claims slot 1, owns queue/port slot 1.
 //
-// File_prefix derived as "eph_0000_28_00_0" (sanitized BDF) so
+// file_prefix derived as "eph_0000_28_00_0" (sanitized BDF) so
 // both peers automatically agree on the hugepage segment name.
-// max_procs derived as nb_rx_queues / queues_per_proc (default 1).
+// max_procs derived as pcfg_template.nb_rx_queues / queues_per_proc.
 //
-// Hot-path code is byte-for-byte identical to a single-process
-// platform with the same self_index — only the cold setup path
-// differs. inc_<StreamMetric::*>, rr_counter, ICMP / FlowDirector /
-// Poller state are all per-process.
+// Platform owns EAL: ~Platform releases DPDK resources, then runs
+// eal_cleanup atomically. No manual eal_cleanup() needed.
+//
+// Hot-path code is byte-for-byte identical to a declarative-path
+// platform with the same self_index. inc_<StreamMetric::*>,
+// rr_counter, ICMP / FlowDirector / Poller state are all per-process.
 ```
 
-`JoinDynamicConfig` only requires `pci` and `nb_rx_queues`; everything
-else (`queues_per_proc`, `max_procs`, `file_prefix`, `port_id`) has a
-sensible default. See `examples/simple_hft_dpdk_mp_dynamic.cpp` for
+**Mental model**: `JoinDynamicConfig` only carries autojoin-specific
+inputs (pci, queues_per_proc, max_procs, file_prefix override). All
+PlatformConfig-level customization (`per_lcore_pools`,
+`mbuf_pool_size`, `enable_promiscuous`, `port_id`, …) flows through
+`pcfg_template`. **Single source of truth**: PlatformConfig.
+
+See `examples/simple_hft_dpdk_mp_dynamic.cpp` for
 a runnable end-to-end demo.
 
 ### When to use which path

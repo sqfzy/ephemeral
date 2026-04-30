@@ -2,6 +2,134 @@
 
 ## [Unreleased]
 
+### Added — `Platform::create_with_eal` (unified one-call factory)
+
+The new top-level user-facing factory: brings up EAL + Platform in
+a single call, and the returned Platform **owns the EAL session**.
+`~Platform` releases DPDK resources, then runs `eal_cleanup`
+atomically. No more `EalGuard + Platform::create_X` two-step
+pattern; no more `{ auto _drop = std::move(plat); } eal_cleanup();`
+idiom.
+
+```cpp
+auto plat = eph::dpdk::Platform::create_with_eal(
+    pcfg, eal_cfg,
+    pins, policy);
+// ~Platform at scope exit → DPDK teardown → pin-guards release →
+// eal_cleanup, in that order, atomically.
+```
+
+Mental model: **Platform is the root of DPDK + EAL ownership**.
+A factory's job is to build that root; how much it does for you
+is the only difference between the three options:
+
+| Factory | EAL ownership | Use when |
+|---------|---------------|----------|
+| `Platform::create(pcfg)` | caller-managed (e.g. EalGuard) | sharing one EAL across multiple Platforms; legacy |
+| `Platform::create_with_eal(pcfg, eal_cfg, pins, policy)` | Platform owns EAL | almost every example / bench / production single-process + declarative MP |
+| `Platform::join_dynamic(JoinDynamicConfig)` | Platform owns EAL | autojoin (zero-coordination MP) |
+
+### Changed — `Platform::Impl` extends EAL-ownership state (BREAKING)
+
+**BREAKING CHANGE**: This is an internal-only struct change but
+worth noting:
+  - Added `std::vector<eph::utils::PinGuard> pin_session_guards;`
+  - Added `bool owns_eal_init{false};`
+  - `~Platform()` is now explicit (was `= default`); manually
+    `impl_.reset()` first, then runs `eal_cleanup` if
+    `owns_eal_init`. The order is critical: with the default
+    destructor, ~Impl's body runs BEFORE Impl's fields destruct,
+    so `eal_cleanup` would have torn down hugepage memzones that
+    `mp_registry` / `icmp_directory` field destructors then
+    accessed → SEGV. The explicit body sequences these correctly.
+
+### Changed — `JoinDynamicConfig` collapsed via pcfg_template (BREAKING)
+
+**BREAKING CHANGE**: `JoinDynamicConfig` no longer accepts
+PlatformConfig fields at top level. Single source of truth is
+`pcfg_template`:
+
+```cpp
+// Before:
+Platform::join_dynamic({
+    .pci          = "0000:28:00.0",
+    .nb_rx_queues = 4,         // top-level
+    .port_id      = 0,         // top-level
+    .lcores       = {"0,1"},
+});
+
+// After:
+Platform::join_dynamic({
+    .pci           = "0000:28:00.0",
+    .pcfg_template = {.nb_rx_queues = 4},  // any PlatformConfig field
+    .lcores        = {"0,1"},
+});
+```
+
+Removed top-level fields: `nb_rx_queues`, `port_id`. Removed
+unused: legacy `lcores` was already at top level — kept (it's an
+EAL-level option).
+
+Added: `pcfg_template` (PlatformConfig embedded by value), `pins`
++ `pin_policy` (typed-pin path), `eal_extras` (raw EAL argv
+passthrough).
+
+Migrating: replace `cfg.nb_rx_queues = N` with
+`cfg.pcfg_template.nb_rx_queues = N`. Replace `cfg.port_id = X`
+with `cfg.pcfg_template.port_id = X`. Other PlatformConfig
+fields (`per_lcore_pools`, `mbuf_pool_size`,
+`enable_promiscuous`, etc.) — same pattern.
+
+### Changed — `DpdkBenchEnv` API collapsed to one factory (BREAKING)
+
+**BREAKING CHANGE**: `eph::dpdk::test::DpdkBenchEnv` (used by
+benchmarks and integration test fixtures):
+  - Removed `create_full(int argc, char** argv, ...)` — both
+    overloads.
+  - Removed `create_full_with_pins(eal_cfg, pins, policy, ...)`.
+  - Added `create(PlatformConfig pcfg, EalConfig eal_cfg,
+                  std::span<LcorePin const> pins,
+                  CpuPinPolicy pin_policy,
+                  mock_ip, client_ip, gateway_ip)`.
+  - Removed `eph::dpdk::EalGuard eal` field on the struct.
+    Platform owns EAL via `create_with_eal` now;
+    `~DpdkBenchEnv` → `~Platform` → eal_cleanup chains
+    automatically.
+
+Migrating: replace `create_full(argc, argv, ...)` with
+`create(PlatformConfig{...}, EalConfig{...}, /*pins=*/{},
+CpuPinPolicy{}, mock_ip, client_ip, gateway_ip)`. The 6-arg argv
+splitter is gone — pass EalConfig directly with `program_name`,
+`allowed_devs`, `lcores`, etc.
+
+### Changed — every example + integration test migrated
+
+Every user-facing example and integration test binary now uses the
+unified factory:
+  - **Examples migrated to `Platform::create_with_eal`**:
+    `simple_hft_dpdk_rss`, `dpdk_multicast_md`, `binance_latency`,
+    `simple_hft_dpdk_mp` (all 4 — last reshape's
+    `simple_hft_dpdk_mp_dynamic` already used `join_dynamic`).
+  - **Examples NOT migrated (deliberately)**:
+    `simple_hft_dpdk` (smoke-boot demo, no Platform),
+    `multi_port_platform_demo` (uses MultiPortPlatform aggregator),
+    `async_dns_multi_resolve` (no Platform — DPDK Poller only).
+  - **Integration tests migrated**: `dpdk_mp_primary` /
+    `dpdk_mp_secondary` and the topology / icmp / fd_fallback
+    pairs (8 binaries total).
+  - **Tests using `DpdkBenchEnv`**: `test_dpdk_rss_platform`,
+    `test_dpdk_rss_fanout`, `test_dpdk_e2e` (via
+    `dpdk_e2e_env.hpp`).
+  - **Bench infra**: `benchmarks/latency/core/dpdk_env.hpp` —
+    `load_dpdk_env` now calls `DpdkBenchEnv::create`. lat_*_dpdk
+    binaries automatically pick up the new path. Bench parity
+    verified ≤ 5% on lat_tcp_dpdk + lat_udp_dpdk p50/p99.
+
+The `EalGuard::init` / `init_with_pins` public API is **preserved
+unchanged** as the advanced path for callers that need to share
+one EAL across multiple Platform constructions (typical in unit
+test fixtures). It is NOT marked `[[deprecated]]`.
+
 ### Added — `Platform::join_dynamic` (autojoin MP factory)
 
 Zero-coordination multi-process bring-up. Two unrelated
