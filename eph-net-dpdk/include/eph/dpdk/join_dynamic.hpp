@@ -138,6 +138,14 @@ struct JoinDynamicConfig {
     /// lcores; lcore consensus across processes is the caller's
     /// responsibility (the same problem the declarative path leaves
     /// to the caller). Mutually exclusive with `pins`.
+    ///
+    /// **Footgun**: identical to `EalConfig::lcores` — DPDK only
+    /// honours the LAST `-l` token on the command line, so a
+    /// multi-entry vector like `{"0", "1", "2"}` collapses to `-l 2`.
+    /// To run on multiple lcores via this raw path, pass a SINGLE
+    /// entry using DPDK list/range syntax (`{"0-3"}` or
+    /// `{"0,2,4,6"}`). The typed `pins` path above sidesteps this
+    /// by emitting a single `--lcores=...` token instead.
     std::vector<std::string> lcores{};
 
     /// Extra raw EAL argv tokens (e.g. `--log-level=lib.eal:warning`).
