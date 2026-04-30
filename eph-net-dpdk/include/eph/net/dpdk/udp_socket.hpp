@@ -187,11 +187,24 @@ public:
                 // reply (peer→local direction). See the matching note
                 // in tcp_stream.hpp's create_and_attach for the full
                 // rationale on the pre-fix Toeplitz transposition bug.
+                //
+                // mp_topology auto-derive: when the platform has a self
+                // src_port window from the shared registry, narrow the
+                // search to it so peer processes don't collide on
+                // ephemeral ports.
+                const auto pr = platform.self_port_range();
+                const uint16_t port_lo_arg =
+                    pr ? static_cast<uint16_t>(pr->first)
+                       : uint16_t{32768};
+                const uint16_t port_hi_arg =
+                    pr ? static_cast<uint16_t>(pr->second - 1)
+                       : uint16_t{60999};
                 auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                     platform.port_id(), want,
                     /*remote_ip=*/  cfg.legacy.dst_ip,
                     /*remote_port=*/cfg.legacy.dst_port,
-                    /*local_ip=*/   cfg.legacy.src_ip);
+                    /*local_ip=*/   cfg.legacy.src_ip,
+                    port_lo_arg, port_hi_arg);
                 if (!sp) {
                     SPDLOG_LOGGER_WARN(log,
                         "create_and_attach: find_src_port_for_queue({}) failed: {}",

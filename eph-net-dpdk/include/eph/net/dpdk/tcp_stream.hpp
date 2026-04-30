@@ -730,11 +730,26 @@ public:
                 // src_port slot, transposing two Toeplitz inputs and
                 // producing a wrong-queue prediction ~75% of the time.
                 const auto& t = cfg.dpdk.tcp_low_level.tuple;
+                // mp_topology auto-derive: if the platform has a self
+                // src_port window from the shared registry, use it
+                // instead of the default Linux ephemeral range so
+                // primary and secondary processes draw from disjoint
+                // segments. find_src_port_for_queue takes a CLOSED
+                // upper bound (port_range_end is inclusive), so we
+                // hand it `port_hi - 1`.
+                const auto pr = platform.self_port_range();
+                const uint16_t port_lo_arg =
+                    pr ? static_cast<uint16_t>(pr->first)
+                       : uint16_t{32768};
+                const uint16_t port_hi_arg =
+                    pr ? static_cast<uint16_t>(pr->second - 1)
+                       : uint16_t{60999};
                 auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                     platform.port_id(), want,
                     /*remote_ip=*/  t.dst_ip,
                     /*remote_port=*/t.dst_port,
-                    /*local_ip=*/   t.src_ip);
+                    /*local_ip=*/   t.src_ip,
+                    port_lo_arg, port_hi_arg);
                 if (!sp) {
                     SPDLOG_LOGGER_WARN(log,
                         "create_and_attach: find_src_port_for_queue({}) failed: {}",
