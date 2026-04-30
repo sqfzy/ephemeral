@@ -89,7 +89,7 @@ fields on `StreamConfig` (there is no separate helper you have to call):
 |-----------------------------|-------------------------------------------|------------------------------------------------------------------------------------------|
 | `proxy` (kernel only)       | `std::optional<ProxyConfig>` is populated | TCP-connect to the proxy, drive the HTTP CONNECT exchange, continue with the tunneled fd.|
 | `EnableTls` template param  | `/*EnableTls=*/true`                      | Run the TLS 1.3 client handshake via aws-lc (SNI from `cfg.tls.hostname`).               |
-| `ws_path`                   | non-empty string                          | Send an RFC 6455 client `Upgrade`, validate `Sec-WebSocket-Accept`, then return.         |
+| `ws.path`                   | non-empty string                          | Send an RFC 6455 client `Upgrade`, validate `Sec-WebSocket-Accept`, then return.         |
 
 Most examples here set **none** of these (`minimal_ws_client.cpp`,
 `ws_echo_client.cpp`, …) so `create()` does only a raw TCP connect.

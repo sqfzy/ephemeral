@@ -414,7 +414,7 @@ the backend `TcpStream` / `UdpSocket` implementations.
   masking pool.
 - `ws_handshake.hpp` — client-side `Upgrade: websocket` handshake over a
   generic ByteSink. Called transparently from
-  `{Kernel,Dpdk}TcpStream::create()` when `StreamConfig::ws_path` is
+  `{Kernel,Dpdk}TcpStream::create()` when `StreamConfig::ws.path` is
   non-empty (decision D-2: config-driven rather than a separate
   `connect_async`-style entry point).
 - `http_connect.hpp` — HTTP CONNECT proxy handshake over a generic

@@ -47,8 +47,8 @@ int main(int argc, char** argv) {
     // a full RFC 6455 client handshake: KernelTcpStream drives the HTTP
     // Upgrade, validates the Sec-WebSocket-Accept, and only returns the
     // stream once the handshake completes — see
-    // eph-net-kernel/.../tcp_stream.hpp and `StreamConfig::ws_path`.
-    // This minimal skeleton leaves `ws_path` empty so the demo opens
+    // eph-net-kernel/.../tcp_stream.hpp and `StreamConfig::ws.path`.
+    // This minimal skeleton leaves `cfg.ws.path` empty so the demo opens
     // only a raw TCP socket; `WsCodec` is still the frame parser and
     // will decode WS frames once they arrive.
     using Stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/false>;

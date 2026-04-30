@@ -84,9 +84,9 @@ int main(int argc, char** argv) {
 
     // When a proxy is given, wire `cfg.proxy` — `KernelTcpStream::create`
     // then TCP-connects to the proxy, runs the HTTP CONNECT handshake,
-    // and (since `EnableTls=false` + empty `ws_path` here) returns the
+    // and (since `EnableTls=false` + empty `cfg.ws.path` here) returns the
     // post-CONNECT plaintext stream. Flip `EnableTls=true` or set
-    // `ws_path` to layer TLS / WS inside the tunnel.
+    // `cfg.ws.path` to layer TLS / WS inside the tunnel.
     if (!proxy_host.empty()) {
         eph::net::ProxyConfig pcfg{};
         pcfg.host = proxy_host;

@@ -53,7 +53,7 @@ Public surface, grouped:
 10. `include/eph/net/detail/ws_handshake.hpp` and
     `include/eph/net/detail/http_connect.hpp` — the wire handshakes
     the backends invoke transparently from `TcpStream::create()` when
-    `StreamConfig::ws_path` / `StreamConfig::proxy` are set.
+    `StreamConfig::ws.path` / `StreamConfig::proxy` are set.
 
 ## Running the tests
 

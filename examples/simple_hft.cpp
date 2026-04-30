@@ -116,7 +116,7 @@ static int run_with_tls(const AppConfig& cfg) {
 
     // 3) Build the stream. The RFC 6455 client handshake is triggered
     //    transparently by `KernelTcpStream::create()` when
-    //    `StreamConfig::ws_path` is non-empty (see eph-net-kernel
+    //    `StreamConfig::ws.path` is non-empty (see eph-net-kernel
     //    config.hpp). This demo leaves `ws.path` empty, so `create()`
     //    does only TCP (+TLS if EnableTls) — no WS Upgrade is sent. The
     //    socket is returned in a state where any bytes read would feed

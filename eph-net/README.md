@@ -141,7 +141,7 @@ so tests no longer reverse-include benchmarks.
 ### Shared wire-level detail (`include/eph/net/detail/`)
 
 Implementation details used by both the kernel and DPDK backends when
-`EnableTls=true` or `ws_path` is set. Users never reference these directly.
+`EnableTls=true` or `cfg.ws.path` is non-empty. Users never reference these directly.
 
 - `tls_session.hpp` — TLS 1.3 session wrapping `aws-lc::SSL*`, templated on
   the byte-socket adapter the backend supplies.
@@ -152,7 +152,7 @@ Implementation details used by both the kernel and DPDK backends when
 - `websocket.hpp` — RFC 6455 frame encode/decode + masking pool.
 - `ws_handshake.hpp` — client-side `Upgrade: websocket` handshake over a
   generic ByteSink. Called transparently from
-  `{Kernel,Dpdk}TcpStream::create()` when `StreamConfig::ws_path` is
+  `{Kernel,Dpdk}TcpStream::create()` when `StreamConfig::ws.path` is
   non-empty.
 - `http_connect.hpp` — HTTP CONNECT proxy handshake (kernel backend only).
 
