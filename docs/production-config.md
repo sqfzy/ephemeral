@@ -134,19 +134,29 @@ auto plat = ed::Platform::create(pcfg).value();  // Hard-fails on RSS
                                                   // bring-up failure (no
                                                   // silent collapse to q0).
 
-// 2. Per-stream config
-ed::DpdkTcpStreamConfig scfg{
-    .remote          = en::SocketAddr::resolve("exchange.com", 443).value(),
+// 2. Per-stream config — eph::net::dpdk::StreamConfig (post-T3.19 shape).
+//    Backend-shared knobs (connect_timeout / tls / ws / keepalive) sit at
+//    the top level so the surface is symmetric with the kernel twin; DPDK-
+//    only wire-level knobs live inside the `dpdk` substruct.
+namespace end = eph::net::dpdk;
+end::StreamConfig scfg{
     .connect_timeout = std::chrono::milliseconds{500},
-    .tcp = {
-        .mss                  = 1460,
-        .keepalive_interval   = std::chrono::seconds{5},   // optional
-        .keepalive_probes     = 3,                          // optional
-        // Software / RSS-pinned / FlowDirector queue selection happens
-        // here; see eph-net-dpdk/docs/poller-guide.md.
+    .tls       = { .hostname = "exchange.com", .verify_peer = true },
+    // .ws.path / .ws.host / .ws.timeout same as kernel surface
+    .keepalive = {
+        .interval = std::chrono::seconds{5},   // optional; 0 = disabled
+        .probes   = 3,                         // optional
     },
-    .tls = { .hostname = "exchange.com", .verify_peer = true },
-    // ws.path / ws.host / ws.timeout same as kernel surface
+    .dpdk = {
+        .tcp_low_level = {
+            // 4-tuple, MAC, MSS, recv_window, port/queue IDs.
+            // .mss is left at the default (1460) for Ethernet; negotiated
+            // down on Frag-Needed ICMP via TcpSession::on_icmp_frag_needed.
+        },
+        .pool = mempool_ptr,
+        // .pin_to_queue: nullopt = RSS-decides / FlowDirector RR / SW q0.
+        // See eph-net-dpdk/docs/rss-control-plane.md.
+    },
 };
 
 // 3. Turnkey: handles src_port allocation, RSS hash rebinding, TCP / TLS / WS
@@ -161,9 +171,11 @@ auto stream = ed::DpdkTcpStream<ec::WsCodec, true>::create_and_attach(scfg, *pla
 - `nb_rx_queues>1` requires `enable_rss=true`. The pair `enable_rss=false
   && nb_rx_queues>1` hard-fails with a recovery hint (see CLAUDE.md, RSS
   bring-up section).
-- `keepalive_interval` is optional; the tick fires inside `DpdkPoller::poll`
-  via the `on_poll_tick_` hook, so single-stream users driving
-  `poll_once_` directly must `tick_keepalive(now_tsc)` themselves.
+- `cfg.keepalive.interval` is optional; the tick fires inside
+  `DpdkPoller::poll` via the `on_poll_tick_` hook, so single-stream users
+  driving `poll_once_` directly must `tick_keepalive(now_tsc)` themselves.
+  The user-facing field is lowered into `dpdk.tcp_low_level.keepalive_*`
+  at factory time — do not set the wire-level fields directly.
 - For multi-process (primary + secondary) deployments, see
   `eph-net-dpdk/docs/dpdk-multiprocess.md` — partitioning src_port across
   processes is the **caller's** responsibility.
@@ -196,7 +208,7 @@ one call.
 | UDP recv buffer (kernel)      | `UdpConfig::rcv_buf`                 | 16 MB for multicast bursts |
 | Mempool size (DPDK)           | `PlatformConfig::nb_mbufs`           | ≥ 2 × (rx_q × 1024 + tx_q × 1024) |
 | RSS queues (DPDK)             | `PlatformConfig::nb_rx_queues`       | 1 for single-symbol; 4–8 for fan-out |
-| TCP MSS (DPDK)                | `TcpConfig::mss`                     | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
+| TCP MSS (DPDK)                | `StreamConfig::dpdk.tcp_low_level.mss` | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
 | epoll burst (kernel)          | `PollerConfig::max_events_per_wait`  | 64 (default)          |
 
 The previous `tx_burst_size` / `rx_burst_size` / `tx_cpu` / `rx_cpu`
@@ -219,7 +231,7 @@ caller's responsibility.
 | Polling thread not pinned | p99 spike from cross-core migration | `pthread_setaffinity_np` before poll loop |
 | DPDK secondary started before primary | `rte_mempool_lookup` returns nullptr | Order primary-first; see `dpdk-multiprocess.md` |
 | Same `src_port` across DPDK MP processes | Connection state collision | Caller partitions src_port range |
-| `keepalive_interval` set but `poll_once_` driven directly | Idle timeouts never fire | Call `tick_keepalive(now_tsc)` per cycle |
+| `cfg.keepalive.interval` set but `poll_once_` driven directly | Idle timeouts never fire | Call `tick_keepalive(now_tsc)` per cycle |
 
 ---
 

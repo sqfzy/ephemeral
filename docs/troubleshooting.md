@@ -294,10 +294,13 @@ not WARN.
 
 **Diagnosis**:
 1. DPDK: check `TcpSession::Stats::idle_timeout_fired` — if non-zero, peer
-   keepalive interval is too long. Tune `TcpConfig::keepalive_interval` /
-   `keepalive_probes`.
-2. Kernel: check `SO_KEEPALIVE` settings or rely on application-layer ping
-   (WS ping/pong via codec).
+   keepalive interval is too long. Tune `cfg.keepalive.interval` /
+   `cfg.keepalive.probes` on the user-facing `eph::net::dpdk::StreamConfig`
+   (lowered into `dpdk.tcp_low_level.keepalive_*` at factory time).
+2. Kernel: tune `cfg.keepalive.interval` / `cfg.keepalive.probes` on
+   `eph::net::kernel::StreamConfig` (wires `setsockopt(SO_KEEPALIVE / TCP_
+   KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`), or rely on application-layer
+   ping (WS ping/pong via codec).
 3. Server-side idle timeout: many venues close after 5-30 min of no
    activity. Application-layer ping is the canonical fix.
 

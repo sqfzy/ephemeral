@@ -287,7 +287,10 @@ Poller, and Stream, and safe under concurrent register / unregister
 
 ## 6. Keepalive
 
-Opt-in via `TcpConfig::keepalive_interval` (default 0 = disabled).
+Opt-in via the user-facing `eph::net::dpdk::StreamConfig::keepalive`
+(`KeepaliveConfig{.interval, .probes}`, default `interval == 0` = disabled).
+`DpdkTcpStream::create_and_attach` lowers this into the wire-level
+`TcpConfig::keepalive_interval / keepalive_probes` at factory time.
 When positive, the caller must drive `tick_keepalive(now_tsc)`:
 
 - **DpdkPoller production**: `poll()` invokes `on_poll_tick_` on
