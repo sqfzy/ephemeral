@@ -281,10 +281,15 @@ public:
             const double projected_exposure =
                 current_exposure - current_notional + projected_symbol_notional;
             if (projected_exposure > limits_.max_total_exposure) [[unlikely]] {
+                // Log `current_notional` (the live recompute that drives the
+                // projected_exposure math), not `pos.notional` — the cached
+                // copy can lag the live qty/avg_price when the snapshot is
+                // taken between fills. Reporting the stale value here would
+                // make the rejection arithmetic look inconsistent in the log.
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected total exposure {} "
                             "(current={}, symbol {} notional {} -> {}) exceeds limit {}",
                             projected_exposure, current_exposure, symbol,
-                            pos.notional, projected_symbol_notional,
+                            current_notional, projected_symbol_notional,
                             limits_.max_total_exposure);
                 return RiskRejectReason::kTotalExposureExceeded;
             }
