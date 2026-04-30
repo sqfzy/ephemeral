@@ -365,13 +365,27 @@ public:
                     "TlsState::process_records: TLS decrypt failed"});
             }
             // TLS 1.3 inner content type filter (RFC 8446 §5.2):
-            // Only application_data (0x17) reaches the codec. Post-handshake
-            // control messages (NewSessionTicket=0x16, alerts=0x15) are
-            // silently consumed to keep the sequence counter in sync.
+            //   0x17 (23) = application_data → forward to codec
+            //   0x16 (22) = handshake        (NewSessionTicket, KeyUpdate) → skip
+            //   0x15 (21) = alert            → skip (TCP close will follow on
+            //                                  fatal alert; close_notify is
+            //                                  observable via the TCP FIN
+            //                                  read on the next poll cycle)
+            // Non-appdata records are consumed (sequence counter advances)
+            // but their plaintext is discarded so the codec only sees the
+            // application byte stream. DEBUG-log them so operators can
+            // distinguish "peer sent KeyUpdate" from "peer sent alert"
+            // when triaging a connection that closes shortly after — the
+            // DPDK side logs the same way (symmetry).
             if (inner_ct == 0x17) {
                 plaintext_out.resize(out_off + plaintext_len);
             } else {
                 plaintext_out.resize(out_off);  // discard non-appdata plaintext
+                SPDLOG_LOGGER_DEBUG(tls_state_logger(),
+                    "TlsState::process_records: skipping non-appdata record "
+                    "inner_ct=0x{:02x} plaintext_len={} record_total={} "
+                    "offset={}",
+                    inner_ct, plaintext_len, total, consumed);
             }
             consumed += total;
         }
