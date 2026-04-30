@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 #include <gtest/gtest.h>
 
@@ -563,4 +564,31 @@ TEST(ArrayBookTest, NanQtyOnNewPriceDoesNotInsertNanLevel) {
         EXPECT_FALSE(std::isnan(lvl.qty))
             << "no level qty may be NaN";
     }
+}
+
+// +/-Inf price would reach update_side and be inserted at the BBO end of
+// the array (descending sort: +Inf wins as best_bid; ascending sort: -Inf
+// wins as best_ask). The only way to displace it is the matching feed
+// update with qty=0 at exactly the same Inf price, which feeds rarely
+// emit. Guard the same as NaN — !isfinite covers both.
+TEST(ArrayBookTest, InfPriceIsIgnored) {
+    ArrayBook<5> book;
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    book.update_bid(kInf, 10.0);
+    EXPECT_TRUE(book.bids().empty());
+    book.update_bid(-kInf, 10.0);
+    EXPECT_TRUE(book.bids().empty());
+    book.update_ask(kInf, 5.0);
+    EXPECT_TRUE(book.asks().empty());
+}
+
+TEST(ArrayBookTest, InfQtyIsIgnored) {
+    ArrayBook<5> book;
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    book.update_bid(100.0, kInf);
+    EXPECT_TRUE(book.bids().empty());
+    EXPECT_DOUBLE_EQ(book.total_bid_qty(), 0.0);
+    book.update_ask(101.0, kInf);
+    EXPECT_TRUE(book.asks().empty());
+    EXPECT_DOUBLE_EQ(book.total_ask_qty(), 0.0);
 }

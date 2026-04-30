@@ -269,23 +269,30 @@ private:
                      double price, double qty,
                      bool descending) noexcept {
 
-        // -- Reject NaN prices — they would corrupt sort order ---------------
-        if (std::isnan(price)) {
-            SPDLOG_LOGGER_WARN(detail::array_book_logger(), "update_side ignoring NaN price");
+        // -- Reject non-finite prices — NaN corrupts sort order; +/-Inf
+        //    would pin the BBO at the infinity end of the book and the
+        //    only way to displace it is a feed update with the same Inf
+        //    price plus qty=0, which feeds rarely emit for fictional
+        //    levels. !isfinite catches NaN and +/-Inf in one branch.
+        if (!std::isfinite(price)) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::array_book_logger(),
+                "update_side ignoring non-finite price={}", price);
             return;
         }
 
-        // -- Reject NaN qty — every NaN comparison is false, so NaN slips
-        //    past both the negative-clamp guard and the `qty <= 0.0` removal
-        //    branch and writes NaN straight into levels[i].qty. Downstream
-        //    consequences: total_*_qty() returns NaN and every signal that
+        // -- Reject non-finite qty — every NaN comparison is false, so
+        //    NaN slips past the negative-clamp and `qty <= 0.0` removal
+        //    branches and writes NaN straight into levels[i].qty.
+        //    Downstream: total_*_qty() returns NaN and every signal that
         //    reads it (vwap, depth_ratio, order_imbalance, mid_price,
-        //    spread) cascades NaN forever; is_crossed() / is_locked() get
-        //    NaN comparisons that hide real crossed-book conditions.
-        //    Treat NaN qty the same fail-soft way as NaN price.
-        if (std::isnan(qty)) [[unlikely]] {
+        //    spread) cascades NaN forever; is_crossed() / is_locked()
+        //    silently hide real crossed-book conditions. +Inf qty has
+        //    the symmetric problem on aggregations: a single Inf -> the
+        //    sum is Inf for the rest of the session. Treat both fail-
+        //    soft like NaN price.
+        if (!std::isfinite(qty)) [[unlikely]] {
             SPDLOG_LOGGER_WARN(detail::array_book_logger(),
-                "update_side ignoring NaN qty at price={}", price);
+                "update_side ignoring non-finite qty={} at price={}", qty, price);
             return;
         }
 
