@@ -12,6 +12,7 @@
 #include <cstring>
 #include <expected>
 #include <format>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -185,6 +186,26 @@ inline void json_escape_append(std::string& out, std::string_view sv) {
 
     uint64_t epoch_sec = static_cast<uint64_t>(days) * 86400
                        + hour * 3600 + minute * 60 + second;
+    // Reject epoch_sec values whose nanosecond expansion would overflow
+    // uint64_t. uint64_t::max() / 1e9 ≈ 1.844e10 seconds ≈ year 2554;
+    // FIX UTCTimestamp's 4-digit year (YYYY) can express up to 9999,
+    // so a hostile or misconfigured peer can drive `epoch_sec` past
+    // the boundary and silently wrap to a small bogus ns value. The
+    // wrap is dangerous because callers feed the return value into
+    // freshness / staleness comparisons; "bogus ns < now" looks like
+    // a fresh timestamp from a hostile peer's far-future clock.
+    constexpr uint64_t kMaxEpochSec = std::numeric_limits<uint64_t>::max()
+                                    / 1'000'000'000ULL;
+    if (epoch_sec > kMaxEpochSec) return std::nullopt;
+    // The remaining `+ frac_ns` cannot overflow: frac_ns < 1e9 and
+    // epoch_sec * 1e9 leaves headroom of (uint64_t::max() % 1e9) ~= 5e8,
+    // which is < 1e9, so a strict inequality on epoch_sec is necessary
+    // and sufficient to keep the multiply+add inside uint64_t.
+    if (epoch_sec == kMaxEpochSec &&
+        frac_ns > (std::numeric_limits<uint64_t>::max() -
+                   kMaxEpochSec * 1'000'000'000ULL)) {
+        return std::nullopt;
+    }
     return epoch_sec * 1'000'000'000ULL + frac_ns;
 }
 

@@ -1566,6 +1566,39 @@ TEST(FixParser, get_timestamp_apr_31_returns_nullopt) {
     EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
 }
 
+// Far-future year that, when multiplied by 1e9, overflows uint64_t. The
+// 4-digit YYYY field accepts up to 9999, but uint64_t epoch nanoseconds
+// only span to ~year 2554 (uint64::max() / 1e9 ≈ 1.844e10 seconds). A
+// hostile peer (or a clock-skewed venue) sending a year > 2554 would
+// previously wrap silently to a tiny ns value that "looks fresh" in any
+// downstream freshness/staleness comparison. Reject explicitly instead.
+TEST(FixParser, get_timestamp_year_9999_overflow_returns_nullopt) {
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=99991231-23:59:59.999\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_year_2555_overflow_returns_nullopt) {
+    // 2555 is just past the uint64 epoch-ns boundary (year 2554 fits,
+    // 2555 does not). Documented separately so a future regression
+    // that loosens the boundary still fails this test.
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=25550101-00:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_FALSE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_year_2400_still_accepted) {
+    // Defense-in-depth: ensure the overflow guard does not prematurely
+    // reject realistic far-future timestamps a venue might use to
+    // express "no expiry" or a long-dated future order.
+    auto raw = make_fix_msg("FIX.4.4", "35=D\x01" "52=24000101-00:00:00.000\x01");
+    auto msg = parse(raw.data(), raw.size());
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_TRUE(msg->get_timestamp(tag::SendingTime).has_value());
+}
+
 // ===========================================================================
 // dispatch() — type-safe MsgType routing
 // ===========================================================================
