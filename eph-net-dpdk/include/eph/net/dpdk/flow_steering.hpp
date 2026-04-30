@@ -50,11 +50,15 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -65,6 +69,7 @@
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/detail/mp_ipc.hpp"
 #include "eph/dpdk/net_header.hpp"
 
 namespace eph::net::dpdk {
@@ -690,21 +695,263 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
 
 namespace detail {
 
-/// @brief Stage-5 stub for the FlowRule RemoteFlowHandle destroy
-/// path. Emits a debug log and returns success without touching IPC
-/// — at this stage the on-primary `eph_fd_destroy` handler does not
-/// yet exist, so a real IPC send would only timeout. Stage 6
-/// replaces the body with `mp_ipc_request_sync<FdDestroyMsg,
-/// FdDestroyReply>(kFdDestroyActionName, ...)` once the handler is
-/// in place.
+/// @brief Real IPC implementation of the FlowRule RemoteFlowHandle
+/// destroy path. Stage 6 wires this once the on-primary
+/// `eph_fd_destroy` handler exists. Best-effort: a 2 s timeout is
+/// generous enough for the cold-path IPC roundtrip; if primary has
+/// died first, the request_sync returns `Timeout` and the caller
+/// (FlowRule's RAII dtor) only logs — primary's process exit will
+/// free the rule's hugepage state regardless.
+///
+/// The `owner_proc` parameter is currently unused because DPDK's
+/// rte_mp 1:1 primary↔secondary model makes the responder
+/// implicit; carried here for diagnostic logs and future N:M
+/// extensibility.
 [[nodiscard]] inline std::expected<void, ::eph::core::ErrorInfo>
 fd_destroy_via_ipc(uint8_t  owner_proc,
                    uint64_t handle_id) noexcept {
-    SPDLOG_LOGGER_DEBUG(flow_logger(),
-        "fd_destroy_via_ipc (stage 5 stub): owner_proc={}, handle_id={} "
-        "— IPC not yet wired; primary will GC at teardown",
-        owner_proc, handle_id);
+    static std::atomic<uint32_t> next_req_id{1};
+    FdDestroyMsg req{};
+    req.version    = 1;
+    req.handle_id  = handle_id;
+    req.request_id = next_req_id.fetch_add(1, std::memory_order_relaxed);
+
+    auto reply = ::eph::dpdk::detail::mp_ipc_request_sync<
+        FdDestroyMsg, FdDestroyReply>(
+            kFdDestroyActionName, req, std::chrono::milliseconds{2000});
+    if (!reply) {
+        SPDLOG_LOGGER_DEBUG(flow_logger(),
+            "fd_destroy_via_ipc: IPC request failed (owner_proc={}, "
+            "handle_id={}, err={})",
+            owner_proc, handle_id, reply.error().detail);
+        return std::unexpected(reply.error());
+    }
+    if (reply->version != 1 || reply->status != 0) {
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "fd_destroy_via_ipc: primary returned non-zero status "
+            "(handle_id not known? version mismatch?)"});
+    }
     return {};
+}
+
+// ─── RemoteFlowRulesMap: primary-side storage of rules installed
+//                        on behalf of secondaries ─────────────────
+//
+// Owned by `Platform::Impl` (one per Platform). Maps a synthetic
+// 64-bit handle_id (returned to secondary in FdInstallReply, stored
+// in RemoteFlowHandle) back to the primary-local rte_flow* + the
+// port the rule was installed on.
+//
+// Thread-safe under `mu_`. The thunks below load the active
+// instance via `g_active_remote_flow_rules` set by
+// `Platform::create_primary` (cleared in ~Impl).
+
+class RemoteFlowRulesMap {
+public:
+    /// @brief Insert a primary-installed rule and return its id.
+    /// Returns 0 on internal failure (extremely rare — id wrap would
+    /// take centuries at HFT-scale install rates).
+    [[nodiscard]] uint64_t
+    insert(uint16_t port_id, rte_flow* flow) noexcept {
+        if (flow == nullptr) return 0;
+        const uint64_t id = next_id_.fetch_add(1, std::memory_order_relaxed);
+        if (id == 0) return 0;   // wraparound sentinel; effectively never
+        std::lock_guard<std::mutex> g(mu_);
+        rules_.emplace(id, std::pair<uint16_t, rte_flow*>{port_id, flow});
+        return id;
+    }
+
+    /// @brief Look up a rule by id, rte_flow_destroy it, remove the
+    /// map entry. Returns true on success.
+    [[nodiscard]] bool destroy_by_id(uint64_t handle_id) noexcept {
+        rte_flow* victim = nullptr;
+        uint16_t  victim_port = 0;
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            auto it = rules_.find(handle_id);
+            if (it == rules_.end()) return false;
+            victim_port = it->second.first;
+            victim      = it->second.second;
+            rules_.erase(it);
+        }
+        // rte_flow_destroy outside the lock — it can take the PMD's
+        // own internal locks and we don't want to nest.
+        if (victim != nullptr) {
+            rte_flow_error err{};
+            const int rc = rte_flow_destroy(victim_port, victim, &err);
+            if (rc != 0) {
+                SPDLOG_LOGGER_WARN(flow_logger(),
+                    "RemoteFlowRulesMap::destroy_by_id: rte_flow_destroy "
+                    "failed (handle_id={}, port={}, rc={}, msg={})",
+                    handle_id, victim_port, rc,
+                    err.message ? err.message : "unknown");
+            }
+        }
+        return true;
+    }
+
+    /// @brief ~Platform::Impl helper: destroy every still-tracked
+    /// rule. Called once on Platform teardown so a primary that dies
+    /// before its peer secondaries doesn't leak NIC flow state.
+    void destroy_all() noexcept {
+        std::vector<std::pair<uint16_t, rte_flow*>> snapshot;
+        {
+            std::lock_guard<std::mutex> g(mu_);
+            snapshot.reserve(rules_.size());
+            for (auto& kv : rules_) snapshot.push_back(kv.second);
+            rules_.clear();
+        }
+        for (auto& [port, flow] : snapshot) {
+            if (flow == nullptr) continue;
+            rte_flow_error err{};
+            (void)rte_flow_destroy(port, flow, &err);
+        }
+    }
+
+    [[nodiscard]] size_t size_for_test() const noexcept {
+        std::lock_guard<std::mutex> g(mu_);
+        return rules_.size();
+    }
+
+private:
+    mutable std::mutex                                          mu_;
+    std::unordered_map<uint64_t, std::pair<uint16_t, rte_flow*>> rules_;
+    std::atomic<uint64_t>                                        next_id_{1};
+};
+
+/// @brief Process-level pointer to the active RemoteFlowRulesMap.
+/// Set by `Platform::create_primary` when the eph_fd_install IPC
+/// handler is registered; cleared (CAS) by `~Impl`. Loaded by the
+/// static `on_fd_install_thunk` / `on_fd_destroy_thunk` below.
+inline std::atomic<RemoteFlowRulesMap*> g_active_remote_flow_rules{nullptr};
+
+/// @brief Reply helper that uses `rte_mp_reply` from the action
+/// handler context. Wrapped here so the static thunks below stay
+/// readable.
+template <typename ReplyT>
+inline void
+fd_send_reply_(std::string_view action_name, const ReplyT& payload,
+               const void* peer) noexcept {
+    rte_mp_msg out{};
+    if (!::eph::dpdk::detail::pack_msg(out, action_name, payload)) {
+        SPDLOG_LOGGER_ERROR(flow_logger(),
+            "fd_send_reply_: pack_msg failed for action '{}'", action_name);
+        return;
+    }
+    const int rc = rte_mp_reply(&out, static_cast<const char*>(peer));
+    if (rc != 0) {
+        SPDLOG_LOGGER_ERROR(flow_logger(),
+            "fd_send_reply_: rte_mp_reply failed for '{}' (rc={})",
+            action_name, rc);
+    }
+}
+
+/// @brief rte_mp_t handler for incoming `eph_fd_install` IPC msgs.
+/// Runs on DPDK's IPC thread; calls the local `install_flow_rule`,
+/// stashes the resulting rte_flow* in the active RemoteFlowRulesMap,
+/// and replies with the synthetic handle_id (0 on failure).
+inline int
+on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
+    auto* rules = g_active_remote_flow_rules.load(std::memory_order_acquire);
+    auto parsed = ::eph::dpdk::detail::parse_payload<FdInstallMsg>(msg);
+
+    FdInstallReply reply{};
+    reply.version = 1;
+    reply.status  = 1;       // assume failure until proven otherwise
+    reply.handle_id = 0;
+
+    if (rules == nullptr || !parsed) {
+        SPDLOG_LOGGER_WARN(flow_logger(),
+            "on_fd_install_thunk: rules={} parsed={} — IPC degraded; "
+            "replying error",
+            static_cast<const void*>(rules),
+            parsed.has_value() ? "ok" : "fail");
+        fd_send_reply_(kFdInstallActionName, reply, peer);
+        return 0;
+    }
+    if (parsed->version != 1) {
+        SPDLOG_LOGGER_WARN(flow_logger(),
+            "on_fd_install_thunk: msg version={} != 1, refusing",
+            parsed->version);
+        fd_send_reply_(kFdInstallActionName, reply, peer);
+        return 0;
+    }
+
+    ::eph::dpdk::net::ConnectionTuple t{};
+    t.src_ip   = parsed->src_ip;
+    t.dst_ip   = parsed->dst_ip;
+    t.src_port = parsed->src_port;
+    t.dst_port = parsed->dst_port;
+    const auto proto = (parsed->proto == 17)
+        ? FlowProtocol::Udp
+        : FlowProtocol::Tcp;
+
+    auto rule = install_flow_rule(parsed->port_id, parsed->target_queue,
+                                  t, proto);
+    if (!rule) {
+        SPDLOG_LOGGER_WARN(flow_logger(),
+            "on_fd_install_thunk: install_flow_rule failed: {}",
+            rule.error());
+        fd_send_reply_(kFdInstallActionName, reply, peer);
+        return 0;
+    }
+
+    // Pull the rte_flow* out of the rule, neutralise the variant so
+    // the rule's RAII dtor doesn't double-destroy.
+    auto* local = std::get_if<LocalFlowHandle>(&rule->handle);
+    rte_flow* flow = local ? local->h : nullptr;
+    rule->handle = std::monostate{};   // owned by RemoteFlowRulesMap from here
+
+    const uint64_t id = rules->insert(parsed->port_id, flow);
+    if (id == 0) {
+        SPDLOG_LOGGER_ERROR(flow_logger(),
+            "on_fd_install_thunk: RemoteFlowRulesMap::insert returned 0 "
+            "— flow leak (cleaned up at primary exit)");
+        fd_send_reply_(kFdInstallActionName, reply, peer);
+        return 0;
+    }
+
+    SPDLOG_LOGGER_INFO(flow_logger(),
+        "on_fd_install_thunk: installed rule on behalf of secondary "
+        "(requester_proc={}, request_id={}, handle_id={}, port={}, queue={})",
+        parsed->requester_proc, parsed->request_id, id,
+        parsed->port_id, parsed->target_queue);
+
+    reply.status    = 0;
+    reply.handle_id = id;
+    fd_send_reply_(kFdInstallActionName, reply, peer);
+    return 0;
+}
+
+/// @brief rte_mp_t handler for `eph_fd_destroy`. Looks up the
+/// handle_id in the active RemoteFlowRulesMap, destroys the
+/// rte_flow*, replies with status 0/1.
+inline int
+on_fd_destroy_thunk(const rte_mp_msg* msg, const void* peer) {
+    auto* rules = g_active_remote_flow_rules.load(std::memory_order_acquire);
+    auto parsed = ::eph::dpdk::detail::parse_payload<FdDestroyMsg>(msg);
+
+    FdDestroyReply reply{};
+    reply.version = 1;
+    reply.status  = 1;
+
+    if (rules == nullptr || !parsed) {
+        fd_send_reply_(kFdDestroyActionName, reply, peer);
+        return 0;
+    }
+    if (parsed->version != 1) {
+        fd_send_reply_(kFdDestroyActionName, reply, peer);
+        return 0;
+    }
+
+    const bool ok = rules->destroy_by_id(parsed->handle_id);
+    reply.status = ok ? 0 : 1;
+    SPDLOG_LOGGER_DEBUG(flow_logger(),
+        "on_fd_destroy_thunk: handle_id={} → status={}",
+        parsed->handle_id, reply.status);
+    fd_send_reply_(kFdDestroyActionName, reply, peer);
+    return 0;
 }
 
 } // namespace detail

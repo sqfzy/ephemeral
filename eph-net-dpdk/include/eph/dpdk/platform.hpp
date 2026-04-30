@@ -945,6 +945,22 @@ struct Platform::Impl {
     /// proc path inactive.
     uint8_t self_proc_index = 0xFF;
 
+    /// @brief Primary-side bookkeeping of rules installed on behalf
+    /// of secondaries via the eph_fd_install IPC fallback path.
+    /// Populated only on the primary; secondary processes leave it
+    /// in default-constructed state (empty).
+    ::eph::net::dpdk::detail::RemoteFlowRulesMap remote_flow_rules;
+
+    /// @brief RAII handle for the `eph_fd_install` action. Registered
+    /// only on primary (via `Platform::create_primary` when
+    /// mp_topology + IPC handler bring-up both succeed). Secondary
+    /// never registers this — it is only the requester side.
+    std::optional<::eph::dpdk::detail::MpIpcAction> fd_install_action;
+
+    /// @brief RAII handle for `eph_fd_destroy`. Same primary-only
+    /// rule as fd_install_action.
+    std::optional<::eph::dpdk::detail::MpIpcAction> fd_destroy_action;
+
     PlatformConfig config;
     /// Canonical pool — points at the single shared pool when
     /// `per_lcore_pools == 0`, or at `pools_[0]` when
@@ -1015,6 +1031,23 @@ struct Platform::Impl {
             ::eph::dpdk::detail::g_active_self_proc_index.compare_exchange_strong(
                 expected_idx, uint8_t{0xFF}, std::memory_order_acq_rel);
         }
+        // FlowDir IPC handoff: clear the primary-only global pointing
+        // at our `remote_flow_rules`, then destroy any rules still
+        // tracked (a secondary that died after install but before its
+        // RAII destroy IPC arrived would otherwise leak NIC state).
+        // Order: clear global first → fd_install/destroy_action's
+        // RAII (declared after this destructor body — fires next on
+        // reverse declaration order) is rte_mp_action_unregister,
+        // which blocks until any in-flight handler returns; we want
+        // those handlers to see global=null and reply error rather
+        // than touch `remote_flow_rules` mid-cleanup.
+        {
+            auto* expected_rules = &remote_flow_rules;
+            ::eph::net::dpdk::detail::g_active_remote_flow_rules
+                .compare_exchange_strong(
+                    expected_rules, nullptr, std::memory_order_acq_rel);
+        }
+        remote_flow_rules.destroy_all();
     }
 
     [[nodiscard]] std::expected<void, std::string> enumerate_ports() {
@@ -1838,6 +1871,20 @@ Platform::create_primary(PlatformConfig config) {
             // can still send to us if our registration eventually
             // succeeds via a future Platform reload.
         }
+
+        // FlowDir secondary-fallback IPC handlers — primary only.
+        // Wire the global pointing at this Platform's
+        // RemoteFlowRulesMap so the static thunks can find it,
+        // then register the two `eph_fd_install` / `eph_fd_destroy`
+        // actions. Same degrade-on-failure semantics as ICMP.
+        ::eph::net::dpdk::detail::g_active_remote_flow_rules.store(
+            &p->impl_->remote_flow_rules, std::memory_order_release);
+        p->impl_->fd_install_action.emplace(
+            ::eph::net::dpdk::kFdInstallActionName,
+            &::eph::net::dpdk::detail::on_fd_install_thunk);
+        p->impl_->fd_destroy_action.emplace(
+            ::eph::net::dpdk::kFdDestroyActionName,
+            &::eph::net::dpdk::detail::on_fd_destroy_thunk);
     }
     return p;
 }
