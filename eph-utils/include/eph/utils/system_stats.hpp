@@ -261,6 +261,17 @@ class SystemStats {
         double stime_s =
             time_diff(initial_rusage_.ru_stime, current.ru_stime);
 
+        // getrusage's ru_maxrss is documented as KB on Linux but BYTES
+        // on macOS / xnu (the BSD inheritance hits here — see man 2
+        // getrusage on darwin: "the maximum resident set size utilized
+        // (in bytes)"). Without this normalisation, snapshot().maxrss_kb
+        // is off by 1024× on macOS, surfacing as 1 GB-looking values
+        // that are actually 1 MB and breaking any monitoring threshold.
+#if defined(__APPLE__)
+        long maxrss_kb_norm = current.ru_maxrss / 1024;
+#else
+        long maxrss_kb_norm = current.ru_maxrss;
+#endif
         return SystemResourceStats{
             .majflt      = current.ru_majflt - initial_rusage_.ru_majflt,
             .minflt      = current.ru_minflt - initial_rusage_.ru_minflt,
@@ -269,7 +280,7 @@ class SystemStats {
             .user_cpu_s  = utime_s,
             .sys_cpu_s   = stime_s,
             .total_cpu_s = utime_s + stime_s,
-            .maxrss_kb   = current.ru_maxrss,  // Peak RSS from getrusage
+            .maxrss_kb   = maxrss_kb_norm,  // Peak RSS in KB (normalised cross-platform)
             .rss_kb      = read_current_rss_kb(),
             .thread_count = read_thread_count(),
         };
