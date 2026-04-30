@@ -124,8 +124,22 @@ udp_bind(std::string_view ip, uint16_t port) {
 }
 
 /// Block on `accept()` until a client connects, polling `running` every
-/// 100 ms so the caller can be woken by SIGTERM. Returns -1 if shutdown
-/// was requested before a client arrived.
+/// 100 ms so the caller can be woken by SIGTERM.
+///
+/// Return contract:
+///   - `expected{cfd}` with `cfd >= 0`  — valid client fd (caller owns it).
+///   - `expected{-1}`                   — shutdown requested before any
+///                                        client arrived (`running` flipped
+///                                        to false). Caller MUST check for
+///                                        this sentinel; treating `-1` as a
+///                                        valid fd in subsequent recv()
+///                                        calls would yield EBADF. The six
+///                                        in-tree call sites under
+///                                        `benchmarks/mockex/scenarios/*`
+///                                        already check `*cfd_e < 0` and
+///                                        break.
+///   - `unexpected(msg)`                — system error (poll/accept failed
+///                                        with a non-EINTR errno).
 ///
 /// TCP_NODELAY is applied to the new client socket too, since low-latency
 /// echo is the whole point.
