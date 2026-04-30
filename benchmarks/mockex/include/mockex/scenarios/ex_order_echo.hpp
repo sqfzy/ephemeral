@@ -109,14 +109,18 @@ ex_order_handle(IoStream& io, const std::atomic<bool>& running) noexcept {
 
         // Capture t_mock_recv IMMEDIATELY after decode — this is the
         // ns-resolution server-side recv timestamp the client will
-        // read from the JSON. Do the splice work, then capture
-        // t_mock_send right before sendall.
+        // read from the JSON.
         const uint64_t t_recv = bench::monotonic_raw_ns();
-        // Build with a placeholder for t_send, then rewrite after the
-        // final ns sample. Simpler: build the full object twice — but
-        // second monotonic_raw_ns() must be as close to sendall as
-        // possible for the TX/RX leg split to be meaningful. Put t_send
-        // as 0 here and patch inline right before send.
+        // t_send is captured here, before `inject_timestamps` does its
+        // vector allocation + memcpy and before `send_frame` writes to
+        // the socket. The gap (a few hundred ns at most on Graviton)
+        // shows up as positive bias in the RX-leg latency the client
+        // computes; since both kernel and DPDK clients see the same
+        // bias the kernel-vs-DPDK comparison stays fair. A
+        // placeholder-patch optimisation (write 0 here, splice the
+        // real ns just before sendall) was considered but adds enough
+        // code complexity that we deferred it — see git log for
+        // history if revisiting.
         auto patched = detail::ex_order_echo::inject_timestamps(
             frame->payload, t_recv, bench::monotonic_raw_ns());
         if (!ws::send_frame(io, ws::kOpcodeBinary,
