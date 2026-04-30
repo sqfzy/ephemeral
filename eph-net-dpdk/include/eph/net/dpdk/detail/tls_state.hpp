@@ -96,14 +96,31 @@ public:
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
     handshake(::eph::dpdk::TcpSession<>& sess,
                const ::eph::net::TlsConfig& cfg) noexcept {
+        // Bring DPDK-side TLS handshake diagnostics up to parity with the
+        // kernel sibling (eph-net-kernel/.../detail/tls_state.hpp), which
+        // logs an ERROR with hostname/verify_peer context on every error
+        // branch. Without these the operator sees only the typed
+        // `TlsHandshakeFailed` ErrorInfo and has to retry under a debugger
+        // to find out *which* sub-step failed.
+        auto* log = tls_state_logger();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::handshake: entry hostname='{}' verify_peer={}",
+            cfg.hostname, cfg.verify_peer);
+
         auto sess_r =
             ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>::create(sess, cfg);
         if (!sess_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: TlsSession::create failed "
+                "hostname='{}'", cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: TlsSession::create failed"});
         }
         if (auto h = sess_r->handshake(); !h) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: handshake() failed hostname='{}'",
+                cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: handshake() failed"});
@@ -113,18 +130,25 @@ public:
         // resumed flag must survive into the stream's metric path.
         was_resumed_ = sess_r->was_resumed();
         captured_ticket_ = sess_r->take_resumption_ticket();
-        SPDLOG_LOGGER_DEBUG(tls_state_logger(),
+        SPDLOG_LOGGER_DEBUG(log,
             "TlsState::handshake: resumed={} captured_ticket={}B",
             was_resumed_, captured_ticket_.size());
 
         auto state_r = sess_r->extract_hot_state();
         if (!state_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: extract_hot_state failed "
+                "hostname='{}'", cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: extract_hot_state failed"});
         }
         const std::size_t key_len = sess_r->cipher_key_len();
         if (key_len != 16 && key_len != 32) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: unsupported AEAD key_len={} "
+                "(expected 16 or 32) hostname='{}'",
+                key_len, cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsCipherFailed,
                 "TlsState::handshake: unsupported AEAD key length"});
@@ -136,6 +160,10 @@ public:
             state_r->read.ki.iv,  ::eph::net::tls_const::kTls13NonceLen,
             state_r->read.seq);
         if (!dec_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: TlsInPlaceDecryptor::create failed "
+                "hostname='{}' key_len={} detail='{}'",
+                cfg.hostname, key_len, dec_r.error().detail);
             return std::unexpected(dec_r.error());
         }
         dec_ = std::make_unique<::eph::net::detail::TlsInPlaceDecryptor>(
@@ -146,6 +174,10 @@ public:
         // existing implementation handles the TLS record framing.
         auto enc_r = ::eph::net::TlsEncryptor::create(*state_r, key_len);
         if (!enc_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake: TlsEncryptor::create failed "
+                "hostname='{}' key_len={}",
+                cfg.hostname, key_len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsCipherFailed,
                 "TlsState::handshake: TlsEncryptor::create failed"});
@@ -185,6 +217,10 @@ public:
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
     process_records_in_place(uint8_t* buf, std::size_t len, Emit&& emit) noexcept {
         if (!established_ || !dec_) {
+            SPDLOG_LOGGER_WARN(tls_state_logger(),
+                "TlsState::process_records_in_place: not established "
+                "(established_={} dec_={} len={})",
+                established_, static_cast<bool>(dec_), len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::process_records_in_place: not established"});
@@ -235,6 +271,10 @@ public:
     encrypt_for_send(const uint8_t* data, std::size_t len,
                       std::vector<uint8_t>& out) noexcept {
         if (!established_ || !enc_) {
+            SPDLOG_LOGGER_WARN(tls_state_logger(),
+                "TlsState::encrypt_for_send: not established "
+                "(established_={} enc_={} len={})",
+                established_, static_cast<bool>(enc_), len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::encrypt_for_send: not established"});
