@@ -23,6 +23,14 @@
 ///   - contains at least one `:` AND at least one `.` (PCI BDF
 ///     always has both)
 ///
+/// **Case is preserved, not normalized.** `"0000:AF:BC.D"` and
+/// `"0000:af:bc.d"` validate independently and produce *different*
+/// file_prefixes (`"0000_AF_BC_D"` vs `"0000_af_bc_d"`). Two autojoin
+/// peers that pass the same NIC's BDF in different cases will NOT
+/// agree on the hugepage segment name and will silently fail to
+/// rendezvous — callers must normalize their input upstream. Tested
+/// in `test_bdf_sanitize.cpp::HexCaseInsensitive_Accepted`.
+///
 /// Hot path: NONE. This is invoked exactly once per process during
 /// `Platform::join_dynamic`'s cold setup.
 
