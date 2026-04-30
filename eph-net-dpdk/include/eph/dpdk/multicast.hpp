@@ -377,6 +377,10 @@ public:
     [[nodiscard]] std::expected<size_t, std::string>
     join_group(const MulticastGroup& group) {
         if (running_.load(std::memory_order_acquire)) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "join_group({}:{}) rejected: receiver already running — "
+                "join must be called before start()",
+                net::format_ipv4(group.group_ip).data(), group.group_port);
             return std::unexpected("join_group() must be called before start()");
         }
 
@@ -475,10 +479,19 @@ public:
     [[nodiscard]] std::expected<void, std::string>
     leave_group(size_t group_idx) {
         if (running_.load(std::memory_order_acquire)) {
+            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+                "leave_group({}) rejected: receiver already running — "
+                "leave must be called before start()", group_idx);
             return std::unexpected("leave_group() must be called before start()");
         }
 
         if (group_idx >= group_count_ || !groups_[group_idx].active) {
+            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                "leave_group({}): invalid index (count={}, active={})",
+                group_idx, group_count_,
+                group_idx < group_count_
+                    ? (groups_[group_idx].active ? "true" : "false")
+                    : "<oob>");
             return std::unexpected(std::format(
                 "Invalid group index {} (count={})", group_idx, group_count_));
         }
@@ -512,6 +525,10 @@ public:
                 return leave_group(i);
             }
         }
+        SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+            "leave_group({}:{}): not found among {} active group(s)",
+            net::format_ipv4(group.group_ip).data(), group.group_port,
+            group_count_);
         return std::unexpected("Group not found");
     }
 
@@ -540,6 +557,11 @@ public:
         // stop() (a rare but possible orchestration glitch) must observe
         // stop()'s release-store.
         if (running_.load(std::memory_order_acquire)) {
+            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                "start() rejected: receiver already running "
+                "(active_groups={}, port={}, queue={})",
+                active_group_count(), config_.port_id,
+                config_.rx_queue_id);
             return std::unexpected("Already running");
         }
 
