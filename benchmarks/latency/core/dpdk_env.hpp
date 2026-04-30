@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
 #include <random>
 #include <string>
@@ -222,6 +223,31 @@ load_dpdk_env(const BenchConfig& cfg,
         .require_same_numa           = false,
         .warn_irq_overlap            = false,
     };
+
+    // ── EPH_LAT_AUTOJOIN_* envvar diversion (diagnostic only) ────────────
+    // When EPH_LAT_AUTOJOIN_MAX_PROCS is set, use create_via_autojoin so
+    // lat_*_dpdk binaries can run as either primary or secondary within one
+    // NIC session. Used by diag/ena-mp-root-cause scripts to reproduce the
+    // two-condition ENA MP crash. NOT wired into normal bench operation.
+    if (const char* max_procs_s = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
+        max_procs_s && *max_procs_s) {
+        const uint32_t max_procs = static_cast<uint32_t>(std::atoi(max_procs_s));
+        const char* lcores_s     = std::getenv("EPH_LAT_AUTOJOIN_LCORES");
+        const char* gw_mac_file  = std::getenv("EPH_LAT_AUTOJOIN_GW_MAC_FILE");
+        std::string lcores_str   = lcores_s ? lcores_s : eal_cores;
+        std::string gw_mac_path  = gw_mac_file ? gw_mac_file : "";
+        spdlog::info(
+            "load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS={} lcores={} gw_mac_file={}",
+            max_procs, lcores_str, gw_mac_path);
+        auto env_r = eph::dpdk::test::DpdkBenchEnv::create_via_autojoin(
+            dpdk_pci, max_procs, lcores_str,
+            mock_ip, client_ip, gateway_ip, gw_mac_path);
+        if (!env_r) {
+            return std::unexpected(
+                "load_dpdk_env: DpdkBenchEnv::create_via_autojoin: " + env_r.error());
+        }
+        return std::move(*env_r);
+    }
 
     auto env_r = eph::dpdk::test::DpdkBenchEnv::create(
         std::move(pcfg),

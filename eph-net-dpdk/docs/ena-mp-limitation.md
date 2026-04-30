@@ -1,13 +1,17 @@
 # AWS ENA PMD: Multi-Process secondary RX crashes under traffic
 
-> **TL;DR.** On AWS ENA, a secondary DPDK process can attach (mempool /
-> memzone are shared correctly) and burst calls against **idle** queues
-> work. The SIGSEGV inside `ena_com_get_next_rx_cdesc` requires **both**
-> conditions simultaneously (2026-04-30 A/B isolation):
-> **(1)** primary doing high-rate `DpdkPoller`-driven I/O (Stream / Socket
-> send+poll loop), **and (2)** secondary driving `DpdkPoller::poll()` →
-> `DpdkUdpSocket` receive path — raw `rte_eth_rx_burst` alone does not
-> crash. See "Isolation log" for the A/B evidence table.
+> **TL;DR.** On AWS ENA, a secondary DPDK process crashes with SIGSEGV inside
+> `ena_com_get_next_rx_cdesc` when **both** of the following are true simultaneously:
+> **(1)** primary is doing high-rate `DpdkPoller`-driven I/O **and** **(2)** secondary
+> is driving `DpdkPoller::poll()` → `DpdkUdpSocket` receive path.
+>
+> **Confirmed root cause (2026-04-30):** Primary's `rte_eth_dev_stop` calls
+> `ena_queue_stop` for **all** queues — including the secondary's queue — and
+> `ena_com_io_queue_free` writes `io_cq->cdesc_addr.virt_addr = NULL` into shared
+> hugepage memory. Secondary's concurrent `rte_eth_rx_burst(queue=1)` reads this NULL
+> and faults at `ldr w3, [x2, w1, sxtw]` (`x2 = 0x0`, `x1 = 2224`, faulting address
+> `0x8b0`). See "Confirmed root cause" section for GDB register evidence and source
+> trace.
 
 ## Scope (precise)
 
@@ -143,6 +147,95 @@ Neither condition alone is sufficient. Raw `rte_eth_rx_burst` in the
 secondary does not trigger the crash even under heavy primary load and
 live traffic. An idle primary does not trigger the crash even when the
 secondary is running the full `DpdkPoller`/`DpdkUdpSocket` machinery.
+
+## Confirmed root cause (2026-04-30 GDB analysis)
+
+### Crash register state
+
+Captured via `gdb -batch -ex "handle SIGSEGV stop print" -ex "run" -ex "info registers"` on
+`lat_udp_dpdk` as secondary process (PID 1550440, queue=1):
+
+| Register | Value | Meaning |
+|----------|-------|---------|
+| `x0` | `0x100393800` | `io_cq*` — in shared hugepages (`0x100200000–0x100e00000`) |
+| `x1` | `0x8b0` (2224) | `byte_offset = (head-1) & mask * entry_size = 139 * 16` |
+| `x2` | **`0x0`** | `io_cq->cdesc_addr.virt_addr` — **NULL** (root cause) |
+| `x3` | `0x10` (16) | `entry_size` (still in register from `ldrb w3, [x0, #149]`) |
+| `pc` | `0xfffff5847364` | `ena_com_get_next_rx_cdesc + 36` |
+
+Faulting instruction: `ldr w3, [x2, w1, sxtw]` — reads from `NULL + 2224 = 0x8b0`.
+
+`x1 = 2224` is computed from `head ≈ 140` (meaning ~140 completion descriptors were
+processed, confirming RSS delivered real traffic to queue 1). At that same moment,
+`cdesc_addr.virt_addr` (at `io_cq + 8`) was **already NULL**, though head was non-zero —
+the ring-buffer pointer had been torn down while the hardware head counter kept advancing.
+
+### Mechanical cause: primary tears down ALL queues on stop
+
+`rte_eth_dev_stop(port=0)` (called by primary's `~Platform()`) dispatches to
+`ena_stop(dev)` in the ENA PMD. The function's first instruction checks the process type:
+
+```asm
+; ena_stop  (librte_net_ena.so.25, 0x174e0):
+17504:  bl   rte_eal_process_type
+17508:  cbnz w0, 17694      ; if SECONDARY → log error + return -1 (no teardown)
+1750c:  ...  (PRIMARY continues)
+17530:  loop over ALL rx_ring[]:
+           bl  ena_queue_stop(ring[q])   ; q = 0, 1, ..., nb_rx_queues-1
+1757c:  loop over ALL tx_ring[]:
+           bl  ena_queue_stop(ring[q])
+```
+
+There is no per-queue ownership check: **primary stops every queue, including queue 1
+which is exclusively owned by the secondary**. The per-process guard (`cbnz`) only
+prevents a _secondary caller_ from stopping the device; it does not protect secondary-owned
+queues from a _primary caller_'s stop.
+
+`ena_queue_stop(ring[1])` calls `ena_com_destroy_io_queue`, which calls
+`ena_com_io_queue_free(ena_dev, io_sq, io_cq)`:
+
+```c
+/* drivers/net/ena/base/ena_com.c, line 960–969 */
+static void ena_com_io_queue_free(..., struct ena_com_io_cq *io_cq)
+{
+    if (io_cq->cdesc_addr.virt_addr) {
+        ENA_MEM_FREE_COHERENT(..., io_cq->cdesc_addr.virt_addr, ...);
+        io_cq->cdesc_addr.virt_addr = NULL;   /* ← writes NULL into shared hugepage */
+    }
+    ...
+}
+```
+
+Because `io_cq` lives in **shared hugepage memory** (same VA mapped in both processes via
+`/dev/hugepages/eph_0000_28_00_0map_*`), this store of `NULL` is immediately visible to
+the secondary. If secondary calls `rte_eth_rx_burst(0, 1, ...)` at or after this point,
+`eth_ena_recv_pkts` reads `cdesc_addr.virt_addr = NULL` and crashes at the
+`ldr w3, [x2, w1, sxtw]` load.
+
+### Why both conditions are required
+
+| Condition | Effect |
+|-----------|--------|
+| Primary high-rate DpdkPoller I/O | Primary's 15 s benchmark completes → `~Platform()` → `rte_eth_dev_stop` → writes NULL to queue 1's `virt_addr` in shared hugepage |
+| Secondary full DpdkUdpSocket + DpdkPoller | Secondary has real traffic flowing to queue 1, runs for its full 15 s duration. When primary teardown races with secondary's `rte_eth_rx_burst(queue=1)` call, the NULL load triggers the SIGSEGV |
+
+**Idle primary (no `rte_eth_dev_stop` while secondary is alive):** if primary stays
+running past secondary's completion window (or exits before starting its full teardown
+sequence), the race window never opens — no crash.
+
+**Raw `rte_eth_rx_burst` secondary (no real traffic, short lifetime):** the
+`repro_ena_mp_secondary_rxburst` sentinel exits its fixed short run before primary's
+teardown fires — no race window.
+
+### Summary
+
+The bug is in the ENA PMD's `ena_stop`: it guards against _secondary callers_ but does
+not guard against _primary callers destroying secondary-owned queues_. A primary
+`rte_eth_dev_stop` nullifies `io_cq->cdesc_addr.virt_addr` for **all** queues in shared
+hugepage memory, with no synchronisation against concurrently-polling secondary processes.
+This is an ENA PMD limitation; the DPDK spec permits PMDs to not support secondary I/O
+burst, but ENA's failure mode is silent memory corruption rather than a documented
+`ENOTSUP`.
 
 ## Recovery
 
