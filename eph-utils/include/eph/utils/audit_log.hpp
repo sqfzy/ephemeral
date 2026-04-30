@@ -207,6 +207,19 @@ public:
     /// Record an audit event (multi-writer safe via atomic index reservation).
     /// @return true if recorded without overwriting old data, false if the ring
     ///         buffer wrapped around (oldest entry was overwritten).
+    ///
+    /// **Wrap-around reader race (KNOWN LIMITATION)**: under heavy
+    /// concurrent traffic where a reader runs `at(0)` exactly between this
+    /// function's `head_.fetch_add` and the subsequent
+    /// `committed_[slot].store(false, ...)`, the reader can observe the
+    /// PREVIOUS wrap's `committed_[slot] == true` while the entry data
+    /// is being overwritten — yielding a torn read. The window is a few
+    /// instructions and only opens after the ring has wrapped at least
+    /// once, but it is NOT impossible. For strict correctness under high
+    /// reader concurrency on a wrapped ring, prefer the single-writer
+    /// `record()` path or take an external snapshot mutex while reading.
+    /// A proper fix (LMAX-disruptor-style per-slot sequence number) is
+    /// tracked under TODO follow-ups.
     [[nodiscard]] bool record_mt(AuditEvent event, uint64_t order_id,
                    double price, double quantity,
                    Side side, uint8_t venue_id,
