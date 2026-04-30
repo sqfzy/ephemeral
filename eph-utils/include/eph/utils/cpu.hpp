@@ -871,6 +871,8 @@ pin_thread(int cpu) noexcept {
 [[nodiscard]] inline std::expected<void, std::string>
 register_external_pin(int cpu, std::string role) {
     if (cpu < 0) {
+        spdlog::error("register_external_pin: cpu={} must be >= 0 (role='{}')",
+                      cpu, role);
         return std::unexpected("register_external_pin: cpu must be >= 0");
     }
     std::lock_guard g(detail::g_pin_mutex);
