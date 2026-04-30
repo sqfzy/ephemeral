@@ -23,3 +23,29 @@ TEST(NetnsCompile, MissingNetnsReturnsErrorWithPath) {
               std::string::npos)
         << "error string should embed the resolved path; got: " << r.error();
 }
+
+TEST(NetnsCompile, EmptyNameRejected) {
+    auto r = eph::utils::linux_::enter_netns("");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("empty"), std::string::npos)
+        << "expected empty-name diagnostic; got: " << r.error();
+}
+
+TEST(NetnsCompile, PathTraversalRejected) {
+    // `..` would let a buggy caller resolve to a non-netns file under
+    // /var/run/netns/. The function must reject it before open(2).
+    auto r = eph::utils::linux_::enter_netns("../etc/passwd");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("must not contain"), std::string::npos)
+        << "expected path-traversal diagnostic; got: " << r.error();
+}
+
+TEST(NetnsCompile, DotDotRejected) {
+    auto r = eph::utils::linux_::enter_netns("..");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(NetnsCompile, DotRejected) {
+    auto r = eph::utils::linux_::enter_netns(".");
+    ASSERT_FALSE(r.has_value());
+}
