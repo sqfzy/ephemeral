@@ -88,3 +88,39 @@ TEST(KeepaliveConfig, LargeNegativeIntervalRejected) {
     ASSERT_FALSE(v.has_value());
     EXPECT_EQ(v.error().code, Error::InvalidConfig);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Upper-bound interval — rejected to avoid silent truncation when lowered
+// into `setsockopt(TCP_KEEPIDLE, int)` (kernel) or wrapping the TSC-cycle
+// conversion in `tick_keepalive` (DPDK). 1 day is the documented ceiling.
+// ═══════════════════════════════════════════════════════════════════════════
+
+TEST(KeepaliveConfig, OneDayIntervalAccepted) {
+    // The exact upper bound is inclusive — useful as a hard ceiling
+    // probe without forcing callers to subtract a millisecond.
+    KeepaliveConfig cfg{.interval = KeepaliveConfig::kMaxInterval, .probes = 3};
+    auto v = cfg.validate();
+    EXPECT_TRUE(v.has_value()) << (v ? "" : v.error().detail);
+}
+
+TEST(KeepaliveConfig, IntervalAboveOneDayRejected) {
+    KeepaliveConfig cfg{
+        .interval = KeepaliveConfig::kMaxInterval + 1ms,
+        .probes   = 3};
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
+TEST(KeepaliveConfig, ChronoMaxIntervalRejected) {
+    // The pre-bound case: the user passes
+    // `chrono::milliseconds::max()` (e.g. via a forgotten cast or a
+    // misconfigured config-file parse). Without the upper-bound check
+    // this would silently corrupt the kernel and DPDK lowering paths.
+    KeepaliveConfig cfg{
+        .interval = std::chrono::milliseconds::max(),
+        .probes   = 3};
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}

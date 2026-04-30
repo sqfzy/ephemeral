@@ -48,6 +48,24 @@ struct KeepaliveConfig {
         return interval == std::chrono::milliseconds::zero();
     }
 
+    /// @brief Hard upper bound on `interval`: 1 day (86 400 000 ms).
+    ///
+    /// Rationale: the kernel backend lowers `interval` to seconds via
+    /// `chrono::ceil<seconds>(interval).count()` and feeds the result
+    /// into a `setsockopt(TCP_KEEPIDLE / TCP_KEEPINTVL, int)` call —
+    /// values larger than `INT_MAX` seconds would silently truncate
+    /// in the static_cast<int> on the way to setsockopt. The DPDK
+    /// backend converts the same `chrono::milliseconds` into a TSC
+    /// cycle delta inside `tick_keepalive`; on a 3 GHz host
+    /// `chrono::milliseconds::max()` overflows uint64_t cycles by a
+    /// factor of ~3e9 and wraps to a tiny delta, firing the probe
+    /// every poll cycle. A keepalive interval longer than a day is
+    /// also unconditionally a config bug (every HFT venue we know
+    /// of disconnects after ≤120 s of silence), so reject at the
+    /// boundary rather than producing a corrupted downstream value.
+    static constexpr std::chrono::milliseconds kMaxInterval{
+        std::chrono::hours{24}};
+
     /// @brief Validate the config. `noexcept` + allocation-free.
     ///
     /// @return `{}` on success. `ErrorInfo{InvalidConfig, "..."}` when:
@@ -56,6 +74,9 @@ struct KeepaliveConfig {
     ///     nor DPDK `tick_keepalive`) has defined behaviour for them;
     ///     reject at the config boundary so callers don't discover it
     ///     as a wrapped TSC delta or an EINVAL setsockopt months later.
+    ///   * `interval` exceeds `kMaxInterval` (1 day) — silently truncates
+    ///     when lowered to `int` seconds (kernel) or wraps the TSC-cycle
+    ///     conversion (DPDK); see `kMaxInterval` for the full rationale.
     ///   * `probes` is 0 or > 10 while `interval > 0`.
     ///
     /// Disabled (default-constructed) is always valid — it asks the
@@ -68,6 +89,13 @@ struct KeepaliveConfig {
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig,
                 "KeepaliveConfig: interval must be >= 0 (use 0 to disable)"});
+        }
+        if (interval > kMaxInterval) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "KeepaliveConfig: interval exceeds 1-day upper bound "
+                "(would silently truncate to int seconds for setsockopt "
+                "or wrap the DPDK TSC-cycle conversion)"});
         }
         if (empty()) {
             return {}; // disabled = always valid
