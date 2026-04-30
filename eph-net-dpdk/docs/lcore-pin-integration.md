@@ -167,7 +167,6 @@ to triage than `lcore-0(rx-worker)`.
 
 ## Reference
 
-* Plan: `.claude/plans/polished-hopping-piglet.md`
 * eph-utils API: `eph-utils/include/eph/utils/cpu.hpp`
 * eph-net-dpdk API: `eph-net-dpdk/include/eph/dpdk/lcore_pin.hpp`,
   `eph-net-dpdk/include/eph/dpdk/eal.hpp`

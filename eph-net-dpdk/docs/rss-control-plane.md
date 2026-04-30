@@ -177,7 +177,6 @@ If you add a new DPDK control-plane API that does its own RX polling
 
 ## Reference
 
-* Plan: `.claude/plans/polished-hopping-piglet.md` (the dns-rss-fix plan)
 * Code:
   * `eph-net-dpdk/include/eph/dpdk/dns.hpp` — `select_dns_src_port`
   * `eph-net-dpdk/include/eph/dpdk/arp.hpp` — `arp::resolve`
