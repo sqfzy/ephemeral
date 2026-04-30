@@ -171,15 +171,24 @@ static_assert(alignof(IcmpDirectoryHeader) >= 64,
 [[nodiscard]] inline std::expected<std::array<char, kIcmpDirectoryNameCap>,
                                    core::ErrorInfo>
 build_icmp_directory_name(std::string_view file_prefix) noexcept {
-    if (file_prefix.empty())
+    if (file_prefix.empty()) {
+        SPDLOG_ERROR(
+            "IcmpDirectory::build_name: file_prefix is empty — "
+            "PlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "IcmpDirectory: file_prefix must be non-empty"});
-    if (file_prefix.size() > kIcmpDirectoryFilePrefixMax)
+    }
+    if (file_prefix.size() > kIcmpDirectoryFilePrefixMax) {
+        SPDLOG_ERROR(
+            "IcmpDirectory::build_name: file_prefix='{}' size={} exceeds "
+            "{} bytes (RTE_MEMZONE_NAMESIZE - len(\"eph_mp_icmp/\") - 1)",
+            file_prefix, file_prefix.size(), kIcmpDirectoryFilePrefixMax);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "IcmpDirectory: file_prefix exceeds 19 bytes "
             "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp_icmp/\") - 1)"});
+    }
 
     std::array<char, kIcmpDirectoryNameCap> buf{};
     std::memcpy(buf.data(), kIcmpDirectoryNamePrefix.data(),
@@ -386,15 +395,25 @@ public:
     register_target(net::ConnectionTuple const& tuple,
                     uint8_t                     proto,
                     uint8_t                     owner_proc) noexcept {
-        if (hdr_ == nullptr)
+        if (hdr_ == nullptr) {
+            SPDLOG_ERROR(
+                "IcmpDirectory::register_target: handle is moved-from "
+                "(proto={} owner_proc={})", proto, owner_proc);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "IcmpDirectory::register_target: handle is moved-from"});
-        if (owner_proc == kIcmpDirectoryNoOwner)
+        }
+        if (owner_proc == kIcmpDirectoryNoOwner) {
+            SPDLOG_ERROR(
+                "IcmpDirectory::register_target: owner_proc=0xFF is the "
+                "no-owner sentinel (proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
+                proto, tuple.src_ip, tuple.src_port,
+                tuple.dst_ip, tuple.dst_port);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "IcmpDirectory::register_target: 0xFF is reserved as "
                 "no-owner sentinel"});
+        }
 
         // Pass 1: best-effort early dup-check. This is **not** the
         // authoritative dup detection — a concurrent peer may CAS-claim
@@ -410,6 +429,12 @@ public:
             if (e.proto == proto &&
                 e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
                 e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
+                SPDLOG_WARN(
+                    "IcmpDirectory::register_target: duplicate (tuple, proto) "
+                    "found at slot {} (proto={} src=0x{:08x}:{} "
+                    "dst=0x{:08x}:{} existing owner_proc={})",
+                    i, proto, tuple.src_ip, tuple.src_port,
+                    tuple.dst_ip, tuple.dst_port, e.owner_proc);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "IcmpDirectory::register_target: (tuple, proto) "
@@ -515,6 +540,12 @@ public:
             }
             return i;
         }
+        SPDLOG_ERROR(
+            "IcmpDirectory::register_target: directory full ({} slots) "
+            "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{} owner_proc={}) — "
+            "increase kIcmpDirectoryMaxEntries or shorten stream lifetime",
+            hdr_->max_entries, proto, tuple.src_ip, tuple.src_port,
+            tuple.dst_ip, tuple.dst_port, owner_proc);
         return std::unexpected(core::ErrorInfo{
             core::Error::OutOfMemory,
             "IcmpDirectory::register_target: directory full (1024 slots)"});
