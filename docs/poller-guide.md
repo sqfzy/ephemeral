@@ -186,7 +186,11 @@ data over UDP multicast:
 
 auto poller = en::DpdkPoller<>::create({...}).value();
 
-// Order channel: TLS WebSocket over DPDK TCP
+// Order channel: TLS WebSocket over DPDK TCP. In production code prefer
+// DpdkTcpStream::create_and_attach(cfg, platform) — it picks a queue,
+// allocates a conflict-free src_port, runs the TCP/TLS/WS handshakes
+// AND attaches to the poller in one shot. The `create({...})` form
+// here is the test-only narrow factory.
 auto orders = en::DpdkTcpStream<ec::WsCodec>::create({...}).value();
 orders->on_message = handle_exec_report;
 poller->add(orders.get()).value();
