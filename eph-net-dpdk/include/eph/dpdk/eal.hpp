@@ -232,6 +232,15 @@ struct EalConfig {
     ProcType                 proc_type   {};            ///< Primary if default
     bool                     proc_type_set{false};      ///< explicit opt-in
     std::string_view         file_prefix {};            ///< --file-prefix
+    /// @brief One DPDK `-l` flag is emitted per entry, but DPDK only
+    /// honours the LAST `-l` on the command line (any earlier `-l`
+    /// values are silently overridden). To run on multiple lcores in
+    /// one process, pass a SINGLE entry that uses DPDK's range/list
+    /// syntax — e.g. `lcores = {"0-3"}` or `lcores = {"0,2,4,6"}`.
+    /// Passing `lcores = {"0", "1", "2"}` produces `-l 0 -l 1 -l 2`
+    /// which DPDK collapses to `-l 2` only — a silent footgun the
+    /// typed `init_with_pins` path avoids by emitting `--lcores=...`
+    /// instead.
     std::vector<std::string> lcores      {};            ///< one per -l entry
     std::vector<std::string> allowed_devs{};            ///< one per -a entry
     std::vector<std::string> extra_args  {};            ///< raw passthrough
