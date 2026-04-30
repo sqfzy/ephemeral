@@ -329,9 +329,12 @@ resolve_with_io(uint16_t port_id,
                 std::chrono::milliseconds timeout = std::chrono::milliseconds{1000},
                 std::optional<rte_ether_addr> expected_mac = std::nullopt) {
 
-    [[maybe_unused]] auto log = detail::arp_logger();
+    auto log = detail::arp_logger();
 
     if (!pool) {
+        SPDLOG_LOGGER_ERROR(log,
+            "ARP resolve: mempool is null (target={} port={} queue={})",
+            net::format_ipv4(target_ip).data(), port_id, queue_id);
         return std::unexpected("ARP resolve: mempool is null");
     }
 
