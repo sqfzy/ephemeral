@@ -14,6 +14,7 @@
 ///   - `poll_once_()` drains one recvmsg into the codec; one datagram per
 ///     call is sufficient for epoll level-triggered operation.
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <utility>
@@ -114,22 +116,42 @@ public:
                     "errno={} ({})", errno, std::strerror(errno));
             }
         }
+        // SO_RCVBUF / SO_SNDBUF take an int — clamp to INT_MAX so an
+        // oversized size_t (e.g. 4 GiB+) doesn't truncate to a negative
+        // or near-zero value via static_cast and silently neuter the
+        // buffer sizing the caller asked for. The kernel cap is governed
+        // by sysctl net.core.{r,w}mem_max, which is typically <= a few
+        // hundred MiB; INT_MAX is a comfortable upper bound.
         if (cfg.rcv_buf > 0) {
-            int v = static_cast<int>(cfg.rcv_buf);
+            const std::size_t clamped = std::min<std::size_t>(
+                cfg.rcv_buf, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+            if (clamped != cfg.rcv_buf) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelUdpSocket::create: rcv_buf={} exceeds INT_MAX, "
+                    "clamping to {}", cfg.rcv_buf, clamped);
+            }
+            int v = static_cast<int>(clamped);
             if (::setsockopt(s, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v)) != 0) {
                 SPDLOG_LOGGER_WARN(log,
                     "KernelUdpSocket::create: setsockopt(SO_RCVBUF={}) "
                     "errno={} ({}) — kernel default in effect",
-                    cfg.rcv_buf, errno, std::strerror(errno));
+                    clamped, errno, std::strerror(errno));
             }
         }
         if (cfg.snd_buf > 0) {
-            int v = static_cast<int>(cfg.snd_buf);
+            const std::size_t clamped = std::min<std::size_t>(
+                cfg.snd_buf, static_cast<std::size_t>(std::numeric_limits<int>::max()));
+            if (clamped != cfg.snd_buf) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelUdpSocket::create: snd_buf={} exceeds INT_MAX, "
+                    "clamping to {}", cfg.snd_buf, clamped);
+            }
+            int v = static_cast<int>(clamped);
             if (::setsockopt(s, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v)) != 0) {
                 SPDLOG_LOGGER_WARN(log,
                     "KernelUdpSocket::create: setsockopt(SO_SNDBUF={}) "
                     "errno={} ({}) — kernel default in effect",
-                    cfg.snd_buf, errno, std::strerror(errno));
+                    clamped, errno, std::strerror(errno));
             }
         }
 

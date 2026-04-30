@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -66,6 +67,23 @@ TEST(KernelUdpSocket, CreateBindsToEphemeralPort) {
     ASSERT_NE(s.get(), nullptr);
     EXPECT_GE(s->fd(), 0);
     EXPECT_FALSE(s->is_attached());
+}
+
+// SO_RCVBUF / SO_SNDBUF take an int via setsockopt. A 64-bit size_t value
+// past INT_MAX would have truncated to a negative or near-zero int, which
+// the kernel would either reject (ENOMEM/EINVAL) or, worse, accept with a
+// nonsense value — silently neutering the buffer sizing the caller asked
+// for. The clamp ensures create() still succeeds with a saturated value.
+TEST(KernelUdpSocket, OversizeRcvBufClampsAndSucceeds) {
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    cfg.rcv_buf = static_cast<std::size_t>(std::numeric_limits<int>::max())
+                + std::size_t{1};  // 1 past INT_MAX
+    cfg.snd_buf = cfg.rcv_buf;
+
+    auto r = RawUdp::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_GE(r->get()->fd(), 0);
 }
 
 TEST(KernelUdpSocket, SendToBeforeAttachReturnsNotAttached) {
