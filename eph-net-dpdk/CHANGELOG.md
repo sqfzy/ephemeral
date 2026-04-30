@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+### Added — Cross-process ICMP MTU propagation (auto-forwarding)
+
+When `cfg.mp_topology` is set, ICMP Frag Needed messages landing on
+a peer process's RX queue are now auto-forwarded to the owning
+process via DPDK's `rte_mp_*` IPC. Pre-reshape behaviour: a Frag
+Needed on a non-owner queue silently drops, the owning stream's
+`effective_mss` never shrinks, and the resulting "router fires
+Frag Needed → we send oversized → router fires again" loop produces
+hard-to-diagnose packet storms. After this change: the receiving
+process consults a hugepage-backed `IcmpDirectory` to find the
+owner, fires a one-way `eph_icmp_dispatch` IPC msg, the owner's
+`IcmpRegistry::dispatch` runs as if the message had arrived locally,
+and `TcpSession::on_icmp_frag_needed` shrinks `effective_mss`
+correctly.
+
+API surface: zero changes to user code. `Platform::register_icmp_
+target` still returns `IcmpTargetHandle`; the alias now points at a
+new `IcmpTargetCompoundHandle` that internally wraps both the
+existing `IcmpRegistry::Handle` and an `IcmpDirectorySlotGuard`.
+Move-only, RAII destruct in the right order (directory side first,
+which bumps generation, so any in-flight peer forward observing the
+old gen drops as stale before the local target slot is freed).
+
+Implementation:
+* `detail/mp_ipc.hpp` — typed RAII wrapper around `rte_mp_*`
+  (`MpIpcAction`, `mp_ipc_send_oneway<T>`, `mp_ipc_request_sync<T,
+  R>`, `pack_msg<T>` / `parse_payload<T>`). Degrade-on-failure: if
+  EAL rejects action registration, the handle reports `bool ==
+  false` and call sites skip IPC paths.
+* `detail/icmp_directory.hpp` — POD `IcmpDirectoryEntry` (atomic
+  claimed + 4-tuple + proto + owner_proc + atomic generation),
+  cacheline-aligned `IcmpDirectoryHeader` with `magic`/`version`/
+  per-slot generation + atomic stats counters
+  (`ipc_msgs_sent`/`ipc_msgs_received`/`dropped_stale`/
+  `dropped_no_owner`). 1024 slots cap (~4 procs × 256 streams). The
+  `on_icmp_dispatch_thunk` is the static `rte_mp_t` handler that
+  receives forwarded msgs, gen-checks, and dispatches into the
+  local `IcmpRegistry`.
+* `detail/icmp_registry.hpp` — added `dispatch_returns_hit(parsed)
+  -> bool` (existing `void dispatch` unchanged for invariant). Used
+  by the Poller closure to decide local-hit vs cross-proc forward.
+
+Hot path: zero changes. Every step is cold path (Platform
+bring-up, stream attach, ICMP miss path, IPC handler thread).
+Verified by force-rebuild bench: `lat_tcp_dpdk` p50 21.6 µs (vs
+baseline 22.2 µs, -3 %), `lat_udp_dpdk` p50 19.6 µs (vs 19.6 µs,
+0 %).
+
+Degrade-on-failure: `rte_mp_action_register` failure (e.g. EAL
+`--no-shconf`) → `SPDLOG_ERROR` + continue, cross-proc forwarding
+silently falls back to per-process drop (= pre-reshape behavior).
+
+Restart contract: `Platform::create_primary` resets the
+`eph_mp_icmp/<file_prefix>` memzone (clears stale entries from a
+previous run). Same operational rule as the existing MpRegistry —
+stop every secondary before restarting the primary. Per-slot
+`generation` (uint32) drops in-flight stale forwards even within a
+single primary's lifetime.
+
+`docs/dpdk-multiprocess.md` adds a "Cross-process ICMP MTU
+propagation" section; the corresponding `out of scope` line is
+removed. New e2e binaries `dpdk_mp_icmp_primary` / `dpdk_mp_icmp_
+secondary` plus `dpdk_mp_icmp_e2e.sh` exercise the full forward
+round trip.
+
 ### Added — `MpTopology` + shared registry: auto-derived MP resource layout
 
 Multi-process resource allocation now needs only `(self_index,

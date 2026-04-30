@@ -301,6 +301,75 @@ as success.
 
 ---
 
+## Cross-process ICMP MTU propagation
+
+When `mp_topology` is set, ICMP Frag Needed messages that land on a
+peer's RX queue are auto-forwarded to the owning process. Background:
+routers pick which RX queue an ICMP Type 3 Code 4 lands on using
+their own hashing — they don't know our RSS configuration. The Frag
+Needed often hits a secondary's queue when the affected stream lives
+in primary (or vice-versa). Without forwarding, the local
+`IcmpRegistry` finds no matching target, the message is silently
+dropped, and the owning stream's `effective_mss` never shrinks. The
+result is a packet storm: the stream keeps sending oversized
+segments, the router keeps replying with Frag Needed, both sides
+churn. Hard to diagnose in production.
+
+The library's solution is automatic and transparent to user code:
+
+1. **Cross-process directory**: `Platform::create_*` reserves an
+   extra hugepage memzone `eph_mp_icmp/<file_prefix>`, parallel to
+   `eph_mp/<file_prefix>` (the existing MpRegistry). It holds a
+   1024-slot POD table mapping `(4-tuple, proto) →
+   owner_proc_index`. Each slot has a per-slot `std::atomic<uint32_t>
+   generation` that is bumped on unregister so any in-flight forward
+   carrying a stale gen is dropped at the owner side.
+2. **Dual register at stream attach**: `Platform::register_icmp_target`
+   now registers both in the local `IcmpRegistry` (unchanged) and in
+   the cross-proc directory. The returned handle is a compound RAII
+   object that releases both on destruction; the directory side is
+   released first so any peer-in-flight forward observing gen=N hits
+   the bumped gen=N+1 and drops stale before the local side is freed.
+3. **Forward on miss**: the Poller's ICMP callback closure now does
+   `local IcmpRegistry::dispatch_returns_hit(parsed) ? done :
+   directory.lookup → mp_ipc_send_oneway("eph_icmp_dispatch", ...)`.
+   Fire-and-forget — does not block the secondary's RX poll loop.
+4. **Owner-side dispatch**: `Platform::create_*` registers an
+   `eph_icmp_dispatch` rte_mp action handler. On incoming msg it
+   validates magic / version / generation, rebuilds enough of the
+   `ParsedIcmp` struct to feed `IcmpRegistry::dispatch`, and the
+   existing per-process callback path takes over from there.
+
+Hot path is unchanged. Every step above runs only when an ICMP Frag
+Needed actually arrives — IcmpDirectory is a cold-path lookup, IPC
+is a cold-path RPC, and the receiving thunk runs on DPDK's IPC
+thread (not your RX poll lcore).
+
+Degrade-on-failure: if `rte_mp_action_register` returns an error
+(e.g. an EAL `--no-shconf` mode), `Platform::create_*` logs ERROR
+and continues. Cross-proc forwarding then falls back to silent drop
+— equivalent to pre-reshape behavior, the rest of the eph stack
+keeps working.
+
+The `IcmpDirectoryHeader` exposes four `std::atomic<uint64_t>`
+counters for live monitoring:
+
+* `ipc_msgs_sent` — incremented by the Poller closure each time a
+  forward succeeds.
+* `ipc_msgs_received` — incremented by the owner-side thunk on each
+  arriving msg.
+* `dropped_stale` — generation mismatch / version skew on a forwarded
+  msg.
+* `dropped_no_owner` — local miss + directory lookup found nothing
+  (target not registered anywhere — may indicate a torn-down stream
+  or a mistargeted ICMP).
+
+Counters are visible to any process that has the directory attached;
+read via `&platform.impl_->icmp_directory->header()->...` or, in
+diagnostic code, the global `eph::dpdk::detail::g_active_icmp_directory`.
+
+---
+
 ## What is explicitly out of scope
 
 The current implementation deliberately does **not** support:
@@ -308,7 +377,6 @@ The current implementation deliberately does **not** support:
 * Cross-process connection migration / failover
 * Cross-process real-time metric aggregation (each process publishes its
   own; external aggregator is the caller's responsibility)
-* Cross-process ICMP/MTU propagation (each process has its own registry)
 * `fork()`-based multi-process (DPDK official stance is "not recommended";
   `mempool` per-lcore cache semantics do not survive fork)
 * Independent-primary multi-process (N processes each with their own
