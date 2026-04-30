@@ -128,6 +128,17 @@ struct MulticastGroup {
         if (group_ip == 0) return "group_ip must not be zero";
         if (!is_multicast_ip(group_ip)) return "group_ip is not in multicast range (224.0.0.0/4)";
         if (group_port == 0) return "group_port must not be zero";
+        // SSM filter must be a unicast source — multicast / broadcast / "any
+        // host on this network" can never appear as a valid IPv4 source
+        // address in a real datagram, so process_packet() would silently
+        // drop every packet. Catch this misconfig at validate() rather than
+        // letting the receiver run forever with zero deliveries.
+        if (source_ip != 0) {
+            if (is_multicast_ip(source_ip))
+                return "source_ip must be a unicast address (got multicast)";
+            if (source_ip == 0xFFFFFFFFu)
+                return "source_ip must be a unicast address (got 255.255.255.255)";
+        }
         return {};
     }
 

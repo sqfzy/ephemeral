@@ -226,6 +226,41 @@ TEST(MulticastGroup, ZeroPortInvalid) {
     EXPECT_FALSE(err.empty());
 }
 
+// SSM filter must be a unicast source — multicast / broadcast values can
+// never appear as a real datagram's source IP, so the receiver would
+// silently drop every packet. validate() catches the misconfig early.
+TEST(MulticastGroup, SourceIpMulticastInvalid) {
+    MulticastGroup grp{
+        .group_ip   = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip  = parse_ipv4("239.1.2.3"), // also multicast
+    };
+    auto err = grp.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("unicast"), std::string_view::npos);
+}
+
+TEST(MulticastGroup, SourceIpBroadcastInvalid) {
+    MulticastGroup grp{
+        .group_ip   = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip  = 0xFFFFFFFFu, // 255.255.255.255
+    };
+    auto err = grp.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("unicast"), std::string_view::npos);
+}
+
+TEST(MulticastGroup, SourceIpUnicastValid) {
+    MulticastGroup grp{
+        .group_ip   = parse_ipv4("233.54.12.111"),
+        .group_port = 26477,
+        .source_ip  = parse_ipv4("10.0.0.1"),
+    };
+    auto err = grp.validate();
+    EXPECT_TRUE(err.empty());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // UDP packet parsing
 // ─────────────────────────────────────────────────────────────────────────────
