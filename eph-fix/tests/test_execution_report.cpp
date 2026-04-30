@@ -410,3 +410,54 @@ TEST(TryParseExecutionReport, empty_input_returns_nullopt) {
     auto parsed = try_parse_execution_report<256>(nullptr, 0);
     EXPECT_FALSE(parsed.has_value());
 }
+
+// ---------------------------------------------------------------------------
+// Fractional Qty (FIX 4.4 Qty is decimal — common on crypto venues)
+// ---------------------------------------------------------------------------
+
+// Crypto exchanges (Binance, Coinbase) report fractional fills like "0.001
+// BTC". The integer accessors silently drop those (parse_int rejects '.'),
+// so callers must use the *_d accessors. Document and pin behaviour.
+TEST(ExecutionReport, fractional_qty_int_accessor_drops_silently) {
+    auto body = make_exec_report_body('1', '1',
+        "ORDFRAC", "EXCHFRAC", "EXECFRAC", "BTCUSDT", '1',
+        "30000.5", "0.001", "30000.5", "0.001", "0.999");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse<256>({raw.data(), raw.size()});
+    ASSERT_TRUE(result.has_value());
+
+    ExecutionReportView<256> er(result.value());
+    // Integer accessors fail on fractional Qty — caller would silently miss
+    // the partial fill if it only checked last_qty().
+    EXPECT_FALSE(er.last_qty().has_value());
+    EXPECT_FALSE(er.cum_qty().has_value());
+    EXPECT_FALSE(er.leaves_qty().has_value());
+
+    // Double accessors recover the actual values.
+    ASSERT_TRUE(er.last_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.last_qty_d(), 0.001);
+    ASSERT_TRUE(er.cum_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.cum_qty_d(), 0.001);
+    ASSERT_TRUE(er.leaves_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.leaves_qty_d(), 0.999);
+}
+
+TEST(ExecutionReport, integer_qty_works_on_both_accessors) {
+    auto body = make_exec_report_body('1', '1',
+        "ORDINT", "EXCH", "EXEC", "AAPL", '1',
+        "150.25", "100", "150.25", "100", "150");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse<256>({raw.data(), raw.size()});
+    ASSERT_TRUE(result.has_value());
+
+    ExecutionReportView<256> er(result.value());
+    EXPECT_EQ(er.last_qty(), 100);
+    ASSERT_TRUE(er.last_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.last_qty_d(), 100.0);
+    EXPECT_EQ(er.cum_qty(), 100);
+    ASSERT_TRUE(er.cum_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.cum_qty_d(), 100.0);
+    EXPECT_EQ(er.leaves_qty(), 150);
+    ASSERT_TRUE(er.leaves_qty_d().has_value());
+    EXPECT_DOUBLE_EQ(*er.leaves_qty_d(), 150.0);
+}

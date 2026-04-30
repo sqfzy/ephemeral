@@ -228,8 +228,21 @@ public:
     }
 
     /// Last fill quantity (tag 32).
+    ///
+    /// @warning FIX 4.4 tag 32 has type Qty (decimal). This integer accessor
+    /// returns nullopt when the wire value is fractional (e.g. crypto venues
+    /// reporting "0.001"), silently dropping the fill from int-only callers.
+    /// Use last_qty_d() for fractional Qty support.
     [[nodiscard]] std::optional<int64_t> last_qty() const noexcept {
         return msg_.get_int(tag::LastQty);
+    }
+
+    /// Last fill quantity (tag 32) as a double — supports fractional Qty.
+    /// FIX 4.4 Qty is a decimal field; many crypto venues report fills like
+    /// "0.001" and equity venues do not. Use this when the venue may report
+    /// non-integer fill quantities.
+    [[nodiscard]] std::optional<double> last_qty_d() const noexcept {
+        return msg_.get_double(tag::LastQty);
     }
 
     // -- Cumulative fields --
@@ -240,13 +253,25 @@ public:
     }
 
     /// Cumulative filled quantity (tag 14).
+    /// @warning FIX 4.4 tag 14 has type Qty (decimal). See last_qty() warning.
     [[nodiscard]] std::optional<int64_t> cum_qty() const noexcept {
         return msg_.get_int(tag::CumQty);
     }
 
+    /// Cumulative filled quantity (tag 14) as a double — supports fractional Qty.
+    [[nodiscard]] std::optional<double> cum_qty_d() const noexcept {
+        return msg_.get_double(tag::CumQty);
+    }
+
     /// Remaining open quantity (tag 151).
+    /// @warning FIX 4.4 tag 151 has type Qty (decimal). See last_qty() warning.
     [[nodiscard]] std::optional<int64_t> leaves_qty() const noexcept {
         return msg_.get_int(tag::LeavesQty);
+    }
+
+    /// Remaining open quantity (tag 151) as a double — supports fractional Qty.
+    [[nodiscard]] std::optional<double> leaves_qty_d() const noexcept {
+        return msg_.get_double(tag::LeavesQty);
     }
 
     // -- Misc --
