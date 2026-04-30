@@ -348,10 +348,16 @@ int main(int argc, char** argv) {
     }
 
     // ── 4) DpdkUdpSocket via create_and_attach (turnkey factory) ─────────
-    // Hardcoded demo tuple. In production each role MUST allocate
-    // src_port from a sub-range disjoint from the other process — see
-    // file header. This skeleton does not actually drive traffic, so the
-    // tuple values don't matter beyond passing validation.
+    // Hardcoded demo tuple. With `mp_topology` set in PlatformConfig (the
+    // path this skeleton drives), the library auto-narrows src_port
+    // selection to each role's `port_lo / port_hi` window inside
+    // `find_src_port_for_queue` — primary and secondary draw from
+    // disjoint segments without manual coordination. The legacy hand-
+    // partitioned path (`mp_topology` empty + caller picks ports from
+    // `[32768, 49151]` / `[49152, 65535]`) still works; see file header
+    // and `eph-net-dpdk/docs/dpdk-multiprocess.md` "Advanced usage".
+    // This skeleton does not actually drive traffic, so the tuple values
+    // here only need to pass validation.
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
