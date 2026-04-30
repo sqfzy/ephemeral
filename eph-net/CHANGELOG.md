@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed (2026-04-30) — `build_coinbase_jwt` rejects out-of-range params
+
+- `include/eph/net/jwt_signed_request.hpp` — `build_coinbase_jwt`
+  now surfaces `Error::InvalidConfig` at the call site instead of
+  silently producing a JWT the venue would reject at the wire with
+  an opaque 401:
+    - `ttl_secs == 0` → rejected (`exp == nbf` violates Coinbase's
+      strict `nbf < exp` rule).
+    - `ttl_secs > 120` → rejected (Coinbase docs cap `exp - nbf` at
+      120 seconds).
+    - `now_unix_secs == 0` → rejected (caller forgot to populate;
+      would mint a token with `nbf=0` that the venue treats as past-
+      validity).
+    - `now_unix_secs + ttl_secs` overflowing uint64_t → rejected.
+- New public constants `kCoinbaseJwtTtlSecsMin` (= 1) and
+  `kCoinbaseJwtTtlSecsMax` (= 120) document the inclusive cap so
+  callers can build their own clamps without re-deriving the
+  numbers from venue docs.
+- **Behaviour change**: a previously-accepted `CoinbaseJwtParams{
+  .ttl_secs = 0}` or `{ .ttl_secs = 200}` now returns
+  `Error::InvalidConfig` instead of building a token that 401s at
+  the venue. Callers that intentionally relied on the silent
+  acceptance should clamp their inputs to `[1, 120]`. New tests
+  cover all four reject cases plus a `ttl_secs == 120` boundary
+  acceptance.
+
 ### Added (2026-04-29) — `StreamSnapshot` unified post-create state view
 
 - `include/eph/net/stream_snapshot.hpp` — `StreamSnapshot` aggregate
