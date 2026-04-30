@@ -964,7 +964,53 @@ public:
             poller->set_icmp_callback(
                 [reg_sp = std::move(reg_sp)](
                     const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
-                    reg_sp->dispatch(parsed);
+                    // 1. Try local registry first (fast path; matches
+                    //    reshape stage 2 behavior byte-for-byte when
+                    //    the target stream is owned by this process).
+                    if (reg_sp->dispatch_returns_hit(parsed)) return;
+
+                    // 2. Local miss. Consult cross-proc directory if
+                    //    mp_topology was set on this Platform; if not,
+                    //    drop silently (= old behavior).
+                    auto* dir = ::eph::dpdk::detail::g_active_icmp_directory
+                                    .load(std::memory_order_acquire);
+                    if (dir == nullptr) return;
+
+                    ::eph::dpdk::net::ConnectionTuple t{
+                        .src_ip   = parsed.embedded_src_ip,
+                        .dst_ip   = parsed.embedded_dst_ip,
+                        .src_port = parsed.embedded_src_port,
+                        .dst_port = parsed.embedded_dst_port,
+                    };
+                    auto found = dir->lookup(t, parsed.embedded_proto);
+                    if (!found) {
+                        if (auto* hdr = dir->header()) {
+                            hdr->dropped_no_owner.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
+                        return;
+                    }
+
+                    // Race: directory still says we own but local
+                    // registry already moved on (unregister between
+                    // dispatch and lookup). Drop — caller would have
+                    // observed the removal.
+                    const uint8_t self_idx =
+                        ::eph::dpdk::detail::g_active_self_proc_index
+                            .load(std::memory_order_acquire);
+                    if (found->owner_proc == self_idx) return;
+
+                    // 3. Forward via fire-and-forget IPC.
+                    auto msg = ::eph::dpdk::detail::make_icmp_dispatch_msg(
+                        parsed, found->slot_idx, found->generation);
+                    auto r = ::eph::dpdk::detail::mp_ipc_send_oneway(
+                        ::eph::dpdk::detail::kIcmpDispatchActionName, msg);
+                    if (r) {
+                        if (auto* hdr = dir->header()) {
+                            hdr->ipc_msgs_sent.fetch_add(
+                                1, std::memory_order_relaxed);
+                        }
+                    }
                 });
         }
 

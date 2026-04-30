@@ -54,7 +54,10 @@
 #include <rte_memzone.h>
 
 #include "eph/core/error.hpp"
-#include "eph/dpdk/packet_core.hpp"   // ConnectionTuple
+#include "eph/dpdk/detail/icmp_registry.hpp"  // IcmpRegistry (for thunk)
+#include "eph/dpdk/detail/mp_ipc.hpp"         // pack/parse_payload<T>
+#include "eph/dpdk/packet_core.hpp"           // ConnectionTuple
+#include "eph/dpdk/packet_parse.hpp"          // ParsedIcmp
 
 namespace eph::dpdk::detail {
 
@@ -501,5 +504,196 @@ private:
     const struct rte_memzone* mz_           = nullptr;
     bool                      owns_memzone_ = false;
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IcmpDirectorySlotGuard — RAII slot release for compound handles
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owned by `Platform::IcmpTargetCompoundHandle` to make the directory
+// slot's unregister run automatically alongside the local
+// `IcmpRegistry::Handle` unregister. Holds a non-owning pointer to
+// the directory; the directory itself is owned by `Platform::Impl`
+// and outlives every Stream.
+
+class IcmpDirectorySlotGuard {
+public:
+    IcmpDirectorySlotGuard() noexcept = default;
+
+    IcmpDirectorySlotGuard(IcmpDirectoryHandle* dir, size_t slot_idx) noexcept
+        : dir_(dir), slot_idx_(slot_idx), engaged_(true) {}
+
+    ~IcmpDirectorySlotGuard() noexcept { release_(); }
+
+    IcmpDirectorySlotGuard(const IcmpDirectorySlotGuard&) = delete;
+    IcmpDirectorySlotGuard& operator=(const IcmpDirectorySlotGuard&) = delete;
+
+    IcmpDirectorySlotGuard(IcmpDirectorySlotGuard&& o) noexcept
+        : dir_(o.dir_), slot_idx_(o.slot_idx_), engaged_(o.engaged_) {
+        o.engaged_ = false;
+    }
+
+    IcmpDirectorySlotGuard& operator=(IcmpDirectorySlotGuard&& o) noexcept {
+        if (this != &o) {
+            release_();
+            dir_      = o.dir_;
+            slot_idx_ = o.slot_idx_;
+            engaged_  = o.engaged_;
+            o.engaged_ = false;
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool engaged() const noexcept { return engaged_; }
+
+private:
+    void release_() noexcept {
+        if (engaged_ && dir_) {
+            dir_->unregister(slot_idx_);
+        }
+        engaged_ = false;
+    }
+
+    IcmpDirectoryHandle* dir_      = nullptr;
+    size_t               slot_idx_ = 0;
+    bool                 engaged_  = false;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IPC payload + dispatch thunk
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `IcmpDispatchMsg` is the wire format for cross-process ICMP Frag
+// Needed forwarding. POD, trivially copyable, version-tagged.
+//
+// `g_active_icmp_directory` / `g_active_icmp_registry` are
+// process-level pointers set by `Platform::create_*` when
+// `mp_topology` is set. The DPDK `rte_mp_t` handler signature gives
+// no context parameter, so these globals are how the static thunk
+// finds its way back to the owning Platform's directory + registry.
+// One Platform per process is the eph contract; multi-Platform
+// processes (some unit tests) leave only the most-recently-created
+// active.
+
+struct alignas(8) IcmpDispatchMsg {
+    uint8_t  version;         ///< schema version (= 1 currently)
+    uint8_t  proto;           ///< IP protocol (TCP=6 / UDP=17)
+    uint16_t reserved0;
+    uint32_t src_ip;          ///< embedded packet's src IP, host order
+    uint32_t dst_ip;          ///< embedded packet's dst IP, host order
+    uint16_t src_port;        ///< embedded packet's src port, host order
+    uint16_t dst_port;        ///< embedded packet's dst port, host order
+    uint16_t next_hop_mtu;    ///< from ICMP Frag Needed
+    uint16_t reserved1;
+    uint32_t slot_idx;        ///< IcmpDirectory slot the secondary looked up
+    uint32_t generation;      ///< gen at lookup; owner re-checks for stale drop
+};
+static_assert(sizeof(IcmpDispatchMsg) == 32);  // 28 bytes payload + alignas(8) pad
+static_assert(std::is_trivially_copyable_v<IcmpDispatchMsg>);
+
+inline constexpr std::string_view kIcmpDispatchActionName = "eph_icmp_dispatch";
+
+/// @brief Process-level pointer to the active IcmpDirectory. Set by
+/// `Platform::create_primary/secondary` when mp_topology is in
+/// effect; cleared on Platform destruction. Loaded by the static
+/// dispatch thunk and by `tcp_stream`'s closure.
+inline std::atomic<IcmpDirectoryHandle*> g_active_icmp_directory{nullptr};
+
+/// @brief Process-level pointer to the active IcmpRegistry. Same
+/// lifecycle as `g_active_icmp_directory`.
+inline std::atomic<IcmpRegistry*> g_active_icmp_registry{nullptr};
+
+/// @brief This process's index in MpTopology. Used by the closure to
+/// short-circuit "I am the owner" lookups (race window where the
+/// directory says I own but local registry already moved on).
+/// 0xFF = uninitialized / mp_topology not set.
+inline std::atomic<uint8_t> g_active_self_proc_index{0xFF};
+
+/// @brief DPDK rte_mp_t handler for incoming `eph_icmp_dispatch`
+/// messages. Validates payload version + slot generation, rebuilds
+/// the essentials of `ParsedIcmp`, and delivers to the local
+/// `IcmpRegistry::dispatch`.
+///
+/// Best-effort: on any validation failure (size mismatch, version
+/// mismatch, stale gen, no active registry) increments the
+/// appropriate stats counter and returns 0 (DPDK ignores nonzero
+/// returns from msg actions). Never throws. Never blocks beyond the
+/// IcmpRegistry mutex.
+inline int
+on_icmp_dispatch_thunk(const struct rte_mp_msg* msg,
+                       const void* /*peer*/) {
+    auto* dir = g_active_icmp_directory.load(std::memory_order_acquire);
+    auto* reg = g_active_icmp_registry.load(std::memory_order_acquire);
+    if (dir == nullptr || reg == nullptr) {
+        // Platform not yet up, or already torn down. Silent drop —
+        // the IPC msg arrived in a transient window.
+        return 0;
+    }
+
+    auto parsed_msg = parse_payload<IcmpDispatchMsg>(msg);
+    if (!parsed_msg) {
+        // size / null mismatch — not our msg version
+        if (auto* hdr = dir->header()) {
+            hdr->dropped_stale.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+    const IcmpDispatchMsg& m = *parsed_msg;
+
+    if (m.version != 1) {
+        if (auto* hdr = dir->header()) {
+            hdr->dropped_stale.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    if (auto* hdr = dir->header()) {
+        hdr->ipc_msgs_received.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Stale-handle gate: if the slot was unregistered between the
+    // sender's lookup and our dispatch, drop silently.
+    if (!dir->is_slot_alive(m.slot_idx, m.generation)) {
+        if (auto* hdr = dir->header()) {
+            hdr->dropped_stale.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
+    // Reconstruct just enough of ParsedIcmp for IcmpRegistry::dispatch.
+    // The matcher only reads embedded_* + next_hop_mtu fields.
+    ::eph::dpdk::net::ParsedIcmp parsed{};
+    parsed.embedded_valid    = true;
+    parsed.embedded_proto    = m.proto;
+    parsed.embedded_src_ip   = m.src_ip;
+    parsed.embedded_dst_ip   = m.dst_ip;
+    parsed.embedded_src_port = m.src_port;
+    parsed.embedded_dst_port = m.dst_port;
+    parsed.next_hop_mtu      = m.next_hop_mtu;
+    parsed.type              = 3;   // Destination Unreachable
+    parsed.code              = 4;   // Frag Needed
+
+    reg->dispatch(parsed);   // void; uses mu_ + UAF-safe callback path
+    return 0;
+}
+
+/// @brief Build an IPC dispatch msg from a ParsedIcmp + directory
+/// lookup result. Used by the secondary's Poller closure when local
+/// dispatch misses but the directory finds an owner_proc != self.
+[[nodiscard]] inline IcmpDispatchMsg
+make_icmp_dispatch_msg(const ::eph::dpdk::net::ParsedIcmp& parsed,
+                       size_t slot_idx,
+                       uint32_t generation) noexcept {
+    IcmpDispatchMsg m{};
+    m.version      = 1;
+    m.proto        = parsed.embedded_proto;
+    m.src_ip       = parsed.embedded_src_ip;
+    m.dst_ip       = parsed.embedded_dst_ip;
+    m.src_port     = parsed.embedded_src_port;
+    m.dst_port     = parsed.embedded_dst_port;
+    m.next_hop_mtu = parsed.next_hop_mtu;
+    m.slot_idx     = static_cast<uint32_t>(slot_idx);
+    m.generation   = generation;
+    return m;
+}
 
 } // namespace eph::dpdk::detail

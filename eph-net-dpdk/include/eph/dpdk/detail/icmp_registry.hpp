@@ -257,6 +257,40 @@ public:
         }
     }
 
+    /// @brief Same dispatch logic as `dispatch()`, but returns whether
+    ///        the message hit a registered target. Added for the
+    ///        cross-process ICMP path: if a Frag Needed lands on a
+    ///        secondary's RX queue but no local target matches, the
+    ///        Poller closure needs to know "miss" so it can forward
+    ///        the message to the owner process via IPC. Returning a
+    ///        bool from the existing `dispatch()` would change its
+    ///        signature and break the reshape's "IcmpRegistry public
+    ///        API unchanged" invariant — this is a strict superset.
+    /// @return true iff some entry matched (and its callback was
+    ///         invoked); false otherwise (no-op including the
+    ///         `embedded_valid==false` short-circuit).
+    /// @note Thread-safe under `mu_`. Same UAF-safe callback-under-
+    ///       lock semantics as `dispatch()`.
+    [[nodiscard]] bool
+    dispatch_returns_hit(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
+        if (!parsed.embedded_valid) return false;
+
+        std::lock_guard<std::mutex> g(mu_);
+        for (std::size_t i = 0; i < n_targets_; ++i) {
+            const auto& e = targets_[i];
+            if (e.proto            == parsed.embedded_proto   &&
+                e.tuple.src_ip     == parsed.embedded_src_ip  &&
+                e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
+                e.tuple.src_port   == parsed.embedded_src_port &&
+                e.tuple.dst_port   == parsed.embedded_dst_port) {
+                ++dispatched_;
+                if (e.cb) e.cb(e.stream, parsed.next_hop_mtu);
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// @brief Cumulative count of successful dispatches.
     /// @note Thread-safe; takes `mu_` for a consistent snapshot.
     [[nodiscard]] uint64_t dispatched() const noexcept {

@@ -205,6 +205,23 @@ target("dpdk_mp_topology_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- Cross-process ICMP forwarding e2e (reshape mp-icmp-flowdir milestone A).
+-- Primary registers a fake ICMP target via Platform::register_icmp_target;
+-- secondary synthesizes a Frag Needed msg and IPC-forwards it. Validates
+-- IcmpDirectory lookup + rte_mp_sendmsg + on_icmp_dispatch_thunk +
+-- IcmpRegistry::dispatch round-trip end-to-end.
+target("dpdk_mp_icmp_primary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_icmp_primary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
+target("dpdk_mp_icmp_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_icmp_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do

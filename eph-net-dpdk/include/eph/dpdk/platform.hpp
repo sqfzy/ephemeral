@@ -34,8 +34,10 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
+#include "eph/dpdk/detail/icmp_directory.hpp"  // detail::IcmpDirectoryHandle, IPC thunk
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
+#include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
@@ -800,7 +802,64 @@ public:
     //       reasons (mempool / port lifetime), but an accidental
     //       reverse order no longer causes UAF in the ICMP path.
     using IcmpMtuCallback  = ::eph::dpdk::detail::IcmpRegistry::MtuCallback;
-    using IcmpTargetHandle = ::eph::dpdk::detail::IcmpRegistry::Handle;
+
+    /// @brief Compound RAII handle returned by `register_icmp_target`.
+    /// Wraps the per-process `IcmpRegistry::Handle` (existing weak_ptr-
+    /// based unregister) PLUS an optional `IcmpDirectorySlotGuard`
+    /// that releases the cross-process directory slot. The directory
+    /// guard is only populated when the Platform was created with
+    /// `mp_topology` set; single-process Platforms produce a compound
+    /// handle whose directory portion is a no-op default.
+    ///
+    /// Both portions are move-only; the compound type inherits move-
+    /// only and lets default member dtor do the work — `local_` and
+    /// `dir_` each handle their own cleanup independently and in the
+    /// declaration order given here (`dir_` last → released first
+    /// per reverse-construction order; this drops the cross-proc
+    /// slot before the local registry slot, so any in-flight forward
+    /// from a peer that observed gen=N now finds gen=N+1 and drops
+    /// stale before we tear down the local target).
+    ///
+    /// `engaged()` reports the local side (the cross-proc slot may
+    /// or may not be engaged independently — irrelevant to most
+    /// callers).
+    class IcmpTargetCompoundHandle {
+    public:
+        IcmpTargetCompoundHandle() noexcept = default;
+
+        explicit IcmpTargetCompoundHandle(
+            ::eph::dpdk::detail::IcmpRegistry::Handle local) noexcept
+            : local_(std::move(local)) {}
+
+        IcmpTargetCompoundHandle(
+            ::eph::dpdk::detail::IcmpRegistry::Handle  local,
+            ::eph::dpdk::detail::IcmpDirectorySlotGuard dir) noexcept
+            : local_(std::move(local)), dir_(std::move(dir)) {}
+
+        IcmpTargetCompoundHandle(const IcmpTargetCompoundHandle&)            = delete;
+        IcmpTargetCompoundHandle& operator=(const IcmpTargetCompoundHandle&) = delete;
+        IcmpTargetCompoundHandle(IcmpTargetCompoundHandle&&) noexcept            = default;
+        IcmpTargetCompoundHandle& operator=(IcmpTargetCompoundHandle&&) noexcept = default;
+        ~IcmpTargetCompoundHandle() noexcept = default;
+
+        [[nodiscard]] bool engaged() const noexcept { return local_.engaged(); }
+
+    private:
+        // Order matters: dir_ destructs first (++gen on directory) so
+        // any in-flight IPC forward from a peer drops stale at the
+        // owner-side dispatch, BEFORE local_ frees the registry slot.
+        ::eph::dpdk::detail::IcmpRegistry::Handle   local_{};
+        ::eph::dpdk::detail::IcmpDirectorySlotGuard dir_{};
+    };
+
+    /// @brief Public alias kept for source-compat with reshape stage 0.
+    /// Now points at the compound handle (was `IcmpRegistry::Handle`
+    /// before stage 3). Existing call sites that store
+    /// `Platform::IcmpTargetHandle` by name compile unchanged; sites
+    /// that reach into `IcmpRegistry::Handle` directly (the legacy
+    /// unit tests) are unaffected because they don't go through this
+    /// alias.
+    using IcmpTargetHandle = IcmpTargetCompoundHandle;
 
     /// @brief Register an ICMP Frag Needed target. Returns an RAII
     ///        handle — destroy it (or overwrite via move-assignment) to
@@ -859,6 +918,33 @@ struct Platform::Impl {
     /// be reading it.
     std::optional<::eph::dpdk::detail::MpRegistryHandle> mp_registry;
 
+    /// @brief Cross-process ICMP target directory. Populated only
+    /// when `cfg.mp_topology` is set (single-process Platforms leave
+    /// this empty and ICMP path stays purely intra-process — same
+    /// behavior as reshape stage 2 and earlier). Same declaration-
+    /// order rationale as `mp_registry`: outlives every other DPDK-
+    /// resource-owning field so the directory's hugepage memzone is
+    /// released last, after pollers / streams / IPC handlers are
+    /// torn down.
+    std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_directory;
+
+    /// @brief RAII handle for the `eph_icmp_dispatch` IPC action that
+    /// receives forwarded ICMP Frag Needed messages from peer
+    /// secondaries. Registered in `Platform::create_*` if and only if
+    /// `mp_topology` is set AND `icmp_directory` came up cleanly.
+    /// `bool(action) == false` after a degraded registration is the
+    /// signal that ICMP cross-proc forward will fall back to silent
+    /// drop (= reshape stage 2 behavior).
+    std::optional<::eph::dpdk::detail::MpIpcAction> icmp_dispatch_action;
+
+    /// @brief This process's index within MpTopology. Cached on
+    /// `Platform::create_*` so the Poller closure can short-circuit
+    /// "I am the owner" after a directory lookup (the look-up race
+    /// where directory says self_proc_index but local registry
+    /// already moved on). 0xFF = mp_topology not set, ICMP cross-
+    /// proc path inactive.
+    uint8_t self_proc_index = 0xFF;
+
     PlatformConfig config;
     /// Canonical pool — points at the single shared pool when
     /// `per_lcore_pools == 0`, or at `pools_[0]` when
@@ -903,7 +989,33 @@ struct Platform::Impl {
     std::shared_ptr<::eph::dpdk::detail::IcmpRegistry> icmp_registry_sp{
         std::make_shared<::eph::dpdk::detail::IcmpRegistry>()};
 
-    ~Impl() { cleanup(); }
+    ~Impl() {
+        cleanup();
+        // Clear process-level ICMP IPC globals if they still point at
+        // us. CAS so a concurrently-created replacement Platform isn't
+        // clobbered (the contract is "one Platform per process at a
+        // time", but unit tests that destruct/reconstruct in sequence
+        // still benefit from explicit handoff). After this point the
+        // field destructors run in reverse declaration order:
+        // icmp_dispatch_action's RAII fires rte_mp_action_unregister
+        // (which blocks until any in-flight handler finishes), then
+        // icmp_directory's RAII frees the memzone.
+        if (icmp_directory.has_value()) {
+            auto* expected_dir = &*icmp_directory;
+            ::eph::dpdk::detail::g_active_icmp_directory.compare_exchange_strong(
+                expected_dir, nullptr, std::memory_order_acq_rel);
+        }
+        if (auto* reg = icmp_registry_sp.get()) {
+            auto* expected_reg = reg;
+            ::eph::dpdk::detail::g_active_icmp_registry.compare_exchange_strong(
+                expected_reg, nullptr, std::memory_order_acq_rel);
+        }
+        if (self_proc_index != 0xFF) {
+            uint8_t expected_idx = self_proc_index;
+            ::eph::dpdk::detail::g_active_self_proc_index.compare_exchange_strong(
+                expected_idx, uint8_t{0xFF}, std::memory_order_acq_rel);
+        }
+    }
 
     [[nodiscard]] std::expected<void, std::string> enumerate_ports() {
         [[maybe_unused]] auto log = detail::platform_logger();
@@ -1639,6 +1751,8 @@ Platform::create_primary(PlatformConfig config) {
     // `has_mp_topology()` and `self_port_range()` consult it for the
     // stream-attach src_port narrowing path.
     std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
+    std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_dir;
+    uint8_t captured_self_idx = 0xFF;   // mp_topology not set
     if (config.mp_topology.has_value()) {
         if (auto err = validate_config(config); !err.empty()) {
             SPDLOG_LOGGER_ERROR(log,
@@ -1664,21 +1778,66 @@ Platform::create_primary(PlatformConfig config) {
         reg = std::move(*r);
         const auto& self = config.mp_topology->self();
         config.rx_queue_range = {self.queue_lo, self.queue_hi};
+        captured_self_idx = config.mp_topology->self_index;
+
+        // ICMP cross-process directory (degrade-on-failure).
+        // Reserve a parallel hugepage memzone `eph_mp_icmp/<prefix>`
+        // so secondary processes that receive a Frag Needed for an
+        // owner-elsewhere stream can look up the owner_proc and
+        // forward via IPC. Failure here only degrades cross-proc
+        // ICMP forwarding — Platform creation continues so the rest
+        // of the eph stack remains usable.
+        auto icmp_r = ::eph::dpdk::detail::IcmpDirectoryHandle::create_primary(
+            config.file_prefix);
+        if (icmp_r) {
+            icmp_dir = std::move(*icmp_r);
+        } else {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_primary: IcmpDirectory reserve failed: {} "
+                "— ICMP cross-process forwarding degraded to per-process drop",
+                icmp_r.error().detail);
+        }
+
         // Consumed: clear so create()'s validate_config doesn't trip
         // the mp_topology⇄rx_queue_range mutual-exclusion check.
         config.mp_topology.reset();
 
         SPDLOG_LOGGER_INFO(log,
             "Platform::create_primary: mp_topology derived "
-            "rx_queue_range=[{},{}) for self_index (registry attached)",
-            config.rx_queue_range.first, config.rx_queue_range.second);
+            "rx_queue_range=[{},{}) self_index={} (registry attached, "
+            "icmp_directory={})",
+            config.rx_queue_range.first, config.rx_queue_range.second,
+            captured_self_idx,
+            icmp_dir.has_value() ? "ready" : "degraded");
     }
 
     auto p = create(config);
     if (!p) return p;  // reg's RAII frees the memzone on early-out
 
     if (reg.has_value() && p->impl_) {
-        p->impl_->mp_registry = std::move(reg);
+        p->impl_->mp_registry      = std::move(reg);
+        p->impl_->self_proc_index  = captured_self_idx;
+        if (icmp_dir.has_value()) {
+            p->impl_->icmp_directory = std::move(icmp_dir);
+            // Wire up process-level globals BEFORE installing the IPC
+            // handler — otherwise an in-flight forward from a peer
+            // could race into a thunk that loads nullptr globals.
+            ::eph::dpdk::detail::g_active_icmp_directory.store(
+                &*p->impl_->icmp_directory, std::memory_order_release);
+            ::eph::dpdk::detail::g_active_icmp_registry.store(
+                p->impl_->icmp_registry_sp.get(), std::memory_order_release);
+            ::eph::dpdk::detail::g_active_self_proc_index.store(
+                captured_self_idx, std::memory_order_release);
+
+            p->impl_->icmp_dispatch_action.emplace(
+                ::eph::dpdk::detail::kIcmpDispatchActionName,
+                &::eph::dpdk::detail::on_icmp_dispatch_thunk);
+            // bool(icmp_dispatch_action) == false is a SPDLOG_ERROR
+            // path inside MpIpcAction; we leave globals set anyway so
+            // any LATER-arriving secondary that registers successfully
+            // can still send to us if our registration eventually
+            // succeeds via a future Platform reload.
+        }
     }
     return p;
 }
@@ -1727,6 +1886,8 @@ Platform::create_secondary(PlatformConfig config) {
     // Impl after the rest of secondary attach succeeds; the handle's
     // RAII destructor releases the slot on early-out.
     std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
+    std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_dir;
+    uint8_t captured_self_idx = 0xFF;
     if (config.mp_topology.has_value()) {
         auto r = ::eph::dpdk::detail::MpRegistryHandle::attach_secondary(
             config.file_prefix, *config.mp_topology);
@@ -1739,11 +1900,30 @@ Platform::create_secondary(PlatformConfig config) {
         reg = std::move(*r);
         const auto& self = config.mp_topology->self();
         config.rx_queue_range = {self.queue_lo, self.queue_hi};
+        captured_self_idx = config.mp_topology->self_index;
+
+        // Cross-process ICMP directory attach (degrade-on-failure).
+        // The primary should have reserved the memzone; if not, drop
+        // back to per-process ICMP.
+        auto icmp_r = ::eph::dpdk::detail::IcmpDirectoryHandle::attach_secondary(
+            config.file_prefix);
+        if (icmp_r) {
+            icmp_dir = std::move(*icmp_r);
+        } else {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create_secondary: IcmpDirectory attach failed: {} "
+                "— ICMP cross-process forwarding degraded to per-process drop",
+                icmp_r.error().detail);
+        }
+
         config.mp_topology.reset();
         SPDLOG_LOGGER_INFO(log,
             "Platform::create_secondary: mp_topology derived "
-            "rx_queue_range=[{},{}) (registry attached)",
-            config.rx_queue_range.first, config.rx_queue_range.second);
+            "rx_queue_range=[{},{}) self_index={} (registry attached, "
+            "icmp_directory={})",
+            config.rx_queue_range.first, config.rx_queue_range.second,
+            captured_self_idx,
+            icmp_dir.has_value() ? "ready" : "degraded");
     }
 
     // --- Phase-3 real secondary attach ---
@@ -1836,7 +2016,23 @@ Platform::create_secondary(PlatformConfig config) {
     }
 
     if (reg.has_value()) {
-        impl->mp_registry = std::move(reg);
+        impl->mp_registry     = std::move(reg);
+        impl->self_proc_index = captured_self_idx;
+        if (icmp_dir.has_value()) {
+            impl->icmp_directory = std::move(icmp_dir);
+            // Wire process-level globals before installing the IPC
+            // handler — same race-free ordering as create_primary.
+            ::eph::dpdk::detail::g_active_icmp_directory.store(
+                &*impl->icmp_directory, std::memory_order_release);
+            ::eph::dpdk::detail::g_active_icmp_registry.store(
+                impl->icmp_registry_sp.get(), std::memory_order_release);
+            ::eph::dpdk::detail::g_active_self_proc_index.store(
+                captured_self_idx, std::memory_order_release);
+
+            impl->icmp_dispatch_action.emplace(
+                ::eph::dpdk::detail::kIcmpDispatchActionName,
+                &::eph::dpdk::detail::on_icmp_dispatch_thunk);
+        }
     }
 
     SPDLOG_LOGGER_INFO(log,
@@ -2000,12 +2196,41 @@ Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
                                 uint8_t  proto,
                                 void*    stream,
                                 IcmpMtuCallback cb) noexcept {
+    [[maybe_unused]] auto log = detail::platform_logger();
     if (!impl_ || !impl_->icmp_registry_sp) {
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "Platform::register_icmp_target: Platform is moved-from"});
     }
-    return impl_->icmp_registry_sp->register_target(tuple, proto, stream, cb);
+    // Local register first — if this fails (registry full, duplicate
+    // tuple, null stream/cb), bail before touching the cross-proc
+    // directory.
+    auto local = impl_->icmp_registry_sp->register_target(tuple, proto, stream, cb);
+    if (!local) return std::unexpected(local.error());
+
+    // mp_topology not set, or icmp_directory degraded → return local-
+    // only compound handle. Behavior matches reshape stage 2.
+    if (!impl_->icmp_directory.has_value() ||
+        impl_->self_proc_index == 0xFF) {
+        return IcmpTargetHandle{std::move(*local)};
+    }
+
+    // Dual-register: tell the cross-proc directory we own this tuple.
+    // On failure, log + fall back to local-only — losing cross-proc
+    // forwarding isn't worth aborting the stream attach.
+    auto slot = impl_->icmp_directory->register_target(
+        tuple, proto, impl_->self_proc_index);
+    if (!slot) {
+        SPDLOG_LOGGER_WARN(log,
+            "register_icmp_target: cross-proc directory register failed: "
+            "{} — falling back to per-process ICMP only",
+            slot.error().detail);
+        return IcmpTargetHandle{std::move(*local)};
+    }
+
+    ::eph::dpdk::detail::IcmpDirectorySlotGuard dir_guard(
+        &*impl_->icmp_directory, *slot);
+    return IcmpTargetHandle{std::move(*local), std::move(dir_guard)};
 }
 
 inline uint64_t Platform::icmp_frag_needed_dispatched() const noexcept {
