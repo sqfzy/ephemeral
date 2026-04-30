@@ -124,16 +124,31 @@ build_lcore_argv(std::span<LcorePin const> pins) {
 [[nodiscard]] inline std::expected<eph::utils::PinGuard, std::string>
 pin_lcore(std::uint16_t lcore_id, int cpu, std::string_view label,
           eph::utils::CpuPinPolicy policy = {}) {
+    [[maybe_unused]] auto* log = detail::lcore_pin_logger();
     if (cpu < 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "pin_lcore: lcore={} has invalid cpu_id={} label='{}'",
+            lcore_id, cpu, label);
         return std::unexpected(std::format(
             "pin_lcore: lcore={} has invalid cpu_id={}", lcore_id, cpu));
     }
     if (auto v = eph::utils::detail::validate_pin_policy(cpu, policy); !v) {
+        SPDLOG_LOGGER_ERROR(log,
+            "pin_lcore: policy validation failed lcore={} cpu={} label='{}': {}",
+            lcore_id, cpu, label, v.error());
         return std::unexpected(std::format(
             "pin_lcore: lcore={},cpu={}: {}", lcore_id, cpu, v.error()));
     }
     std::string role = std::format("lcore-{}({})", lcore_id, label);
     if (auto r = eph::utils::register_external_pin(cpu, std::move(role)); !r) {
+        // Most common failure: cpu already pinned by another lcore /
+        // bench thread / external owner. Caller's diagnostic includes
+        // the existing role, but the log line gives the operator a
+        // stable trace of the registry contention without parsing the
+        // unexpected message.
+        SPDLOG_LOGGER_ERROR(log,
+            "pin_lcore: register_external_pin failed lcore={} cpu={} "
+            "label='{}': {}", lcore_id, cpu, label, r.error());
         return std::unexpected(std::format(
             "pin_lcore: lcore={},cpu={}: {}", lcore_id, cpu, r.error()));
     }
@@ -175,6 +190,11 @@ pin_lcores(std::span<LcorePin const> pins,
         // for cpu errors so the call site sees a coherent message.
         for (std::size_t j = 0; j < i; ++j) {
             if (pins[j].lcore_id == p.lcore_id) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "pin_lcores: pin[{}] lcore_id={} duplicates pin[{}] "
+                    "(prev cpu={} role='{}', new cpu={} role='{}')",
+                    i, p.lcore_id, j, pins[j].cpu_id, pins[j].role,
+                    p.cpu_id, p.role);
                 return std::unexpected(std::format(
                     "pin_lcores: pin[{}]: lcore_id={} duplicates pin[{}] "
                     "(cpu={}, role='{}'); each EAL lcore must map to one cpu",
@@ -184,7 +204,14 @@ pin_lcores(std::span<LcorePin const> pins,
 
         auto g = pin_lcore(p.lcore_id, p.cpu_id, p.role, policy);
         if (!g) {
-            // `guards` going out of scope here unregisters every staged cpu.
+            // pin_lcore already ERROR-logged with the granular reason; the
+            // batch-level WARN here adds the index + total so the operator
+            // can map the failure back into the LcorePin span without
+            // re-parsing nested error strings. `guards` going out of scope
+            // unregisters every staged cpu.
+            SPDLOG_LOGGER_WARN(log,
+                "pin_lcores: aborting batch at pin[{}/{}]: {}",
+                i, pins.size(), g.error());
             return std::unexpected(std::format(
                 "pin_lcores: pin[{}]: {}", i, g.error()));
         }
