@@ -323,6 +323,34 @@ private:
                     }
                 } else if constexpr (std::is_integral_v<U>) {
                     if (auto v = elem->value<int64_t>(); v) {
+                        // Mirror the scalar-path range check (see line ~283).
+                        // Without this, a typo'd `ports = [70000]` silently
+                        // truncates to vector{4464}, which then surfaces as
+                        // an opaque connect-failure downstream. Surface the
+                        // out-of-range case at config-load with the actual
+                        // value baked into the diagnostic.
+                        using Limits = std::numeric_limits<U>;
+                        if constexpr (std::is_unsigned_v<U>) {
+                            if (*v < 0 ||
+                                static_cast<uint64_t>(*v) >
+                                    static_cast<uint64_t>(Limits::max())) [[unlikely]] {
+                                return std::unexpected(detail::make_wrong_type(
+                                    dotted_key + "[" + std::to_string(i) + "]",
+                                    "integer in range [0, " +
+                                        std::to_string(Limits::max()) +
+                                        "] (got " + std::to_string(*v) + ")"));
+                            }
+                        } else {
+                            if (*v < static_cast<int64_t>(Limits::min()) ||
+                                *v > static_cast<int64_t>(Limits::max())) [[unlikely]] {
+                                return std::unexpected(detail::make_wrong_type(
+                                    dotted_key + "[" + std::to_string(i) + "]",
+                                    "integer in range [" +
+                                        std::to_string(Limits::min()) + ", " +
+                                        std::to_string(Limits::max()) +
+                                        "] (got " + std::to_string(*v) + ")"));
+                            }
+                        }
                         out.push_back(static_cast<U>(*v));
                         continue;
                     }

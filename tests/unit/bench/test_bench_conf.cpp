@@ -281,6 +281,59 @@ port = -1
         << (port_neg ? *port_neg : 0);
 }
 
+// Mirror the scalar-path range check for the vector path. A typo'd
+// `ports = [70000]` in the toml previously slipped through with a silently
+// truncated 4464, then surfaced as an opaque connect failure downstream.
+TEST(BenchConf, ScenarioVectorIntegerOutOfRangeRejected) {
+    TmpToml f_high{std::string{kMinimalValid} + R"(
+[scenarios.lat_ex_order]
+port = 20004
+inflights = [1, 4, 70000, 64]
+)"};
+    auto r_high = load_bench_conf(f_high.path.string());
+    ASSERT_TRUE(r_high.has_value()) << format_error(r_high.error());
+    auto ord_h = r_high->scenario("lat_ex_order");
+    ASSERT_NE(ord_h, nullptr);
+    // vector<uint16_t> with a 70000 element must be rejected at extract time
+    // (not silently truncated to 4464).
+    auto v_high = ord_h->get<std::vector<uint16_t>>("inflights");
+    EXPECT_FALSE(v_high.has_value())
+        << "vector<uint16_t>{1,4,70000,64} must reject the 70000 element";
+    if (!v_high) {
+        EXPECT_EQ(v_high.error().code, ConfigError::WrongType);
+        EXPECT_NE(v_high.error().key.find("inflights[2]"), std::string::npos)
+            << "diagnostic must point at the offending index";
+    }
+
+    // Negative element in an unsigned vector likewise rejected.
+    TmpToml f_neg{std::string{kMinimalValid} + R"(
+[scenarios.lat_ex_order]
+port = 20004
+inflights = [1, -1, 16, 64]
+)"};
+    auto r_neg = load_bench_conf(f_neg.path.string());
+    ASSERT_TRUE(r_neg.has_value());
+    auto ord_n = r_neg->scenario("lat_ex_order");
+    ASSERT_NE(ord_n, nullptr);
+    auto v_neg = ord_n->get<std::vector<uint16_t>>("inflights");
+    EXPECT_FALSE(v_neg.has_value())
+        << "vector<uint16_t>{1,-1,16,64} must reject the -1 element";
+
+    // Sanity: an in-range vector is still accepted.
+    TmpToml f_ok{std::string{kMinimalValid} + R"(
+[scenarios.lat_ex_order]
+port = 20004
+inflights = [1, 4, 16, 64]
+)"};
+    auto r_ok = load_bench_conf(f_ok.path.string());
+    ASSERT_TRUE(r_ok.has_value());
+    auto ord_o = r_ok->scenario("lat_ex_order");
+    ASSERT_NE(ord_o, nullptr);
+    auto v_ok = ord_o->get<std::vector<uint16_t>>("inflights");
+    ASSERT_TRUE(v_ok.has_value()) << format_error(v_ok.error());
+    EXPECT_EQ(*v_ok, (std::vector<uint16_t>{1, 4, 16, 64}));
+}
+
 TEST(BenchConf, MovedBenchConfigKeepsScenariosValid) {
     TmpToml f{std::string{kMinimalValid} + R"(
 [scenarios.lat_tcp]
