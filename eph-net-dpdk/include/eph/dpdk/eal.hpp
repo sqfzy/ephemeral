@@ -293,6 +293,10 @@ EalGuard::init_with_pins(EalConfig                 cfg,
     [[maybe_unused]] auto* log = detail::eal_logger();
 
     if (!pins.empty() && !cfg.lcores.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "init_with_pins: rejected — typed pins ({}) AND cfg.lcores "
+            "({} entries) supplied simultaneously",
+            pins.size(), cfg.lcores.size());
         return std::unexpected(
             "init_with_pins: cfg.lcores must be empty when typed pins "
             "are supplied (escape hatch and typed path are mutually "
@@ -313,6 +317,10 @@ EalGuard::init_with_pins(EalConfig                 cfg,
         for (const auto& a : cfg.extra_args) {
             if (a == "--lcores" ||
                 a.rfind("--lcores=", 0) == 0) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "init_with_pins: rejected — typed pins supplied "
+                    "({}) but cfg.extra_args already contains '{}'",
+                    pins.size(), a);
                 return std::unexpected(
                     "init_with_pins: cfg.extra_args already contains "
                     "--lcores=...; cannot combine with typed pins (the "
@@ -327,6 +335,9 @@ EalGuard::init_with_pins(EalConfig                 cfg,
     // resources have been touched yet.
     auto pin_guards = pin_lcores(pins, policy);
     if (!pin_guards) {
+        SPDLOG_LOGGER_ERROR(log,
+            "init_with_pins: pin_lcores rejected ({} pins): {}",
+            pins.size(), pin_guards.error());
         return std::unexpected(std::format(
             "init_with_pins: {}", pin_guards.error()));
     }
@@ -353,6 +364,9 @@ EalGuard::init_with_pins(EalConfig                 cfg,
     if (!eal_result) {
         // pin_guards destructor (here on stack) unregisters every cpu via
         // each PinGuard's dtor as we return. Caller sees a clean slate.
+        SPDLOG_LOGGER_ERROR(log,
+            "init_with_pins: rte_eal_init failed (argc={}, lcores={}): {}",
+            argv_ptrs.size(), pins.size(), eal_result.error());
         return std::unexpected(std::format(
             "init_with_pins: {}", eal_result.error()));
     }
