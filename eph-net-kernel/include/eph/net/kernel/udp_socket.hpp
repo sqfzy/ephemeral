@@ -292,6 +292,12 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     connect_to(const SocketAddr& peer) noexcept {
         if (fd_ < 0) {
+            // WARN-log: cold-path guard, matches the WARN below on
+            // setsockopt-style failures so callers that drop the
+            // expected<> return still see the misuse in the journal.
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "KernelUdpSocket::connect_to: fd closed (peer={})",
+                peer.to_string());
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelUdpSocket::connect_to: fd closed"});
@@ -304,6 +310,9 @@ public:
         // `disconnect()` API can carry that intent without overloading
         // the same entry point.
         if (peer.ip == Ipv4Addr{} && peer.port == 0) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "KernelUdpSocket::connect_to: rejecting (0.0.0.0:0) "
+                "peer — caller likely wanted explicit disconnect()");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelUdpSocket::connect_to: peer (0.0.0.0:0) is not a "
@@ -497,6 +506,13 @@ private:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     set_membership_(const SocketAddr& group, int optname) noexcept {
         if (fd_ < 0) {
+            // WARN-log: cold-path guard. Matches the existing
+            // setsockopt-failure WARN below so a caller that drops
+            // the expected<> return still has signal in the log.
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "KernelUdpSocket::set_membership_: fd closed "
+                "(group={} optname={})",
+                group.to_string(), optname);
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelUdpSocket::set_membership_: fd closed"});
