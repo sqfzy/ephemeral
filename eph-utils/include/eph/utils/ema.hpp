@@ -130,8 +130,14 @@ class EmaCrossover {
     }
 
     /// Update with a new price. Returns crossover signal (if any).
-    /// Both EMAs must have been initialized (i.e., at least one prior update)
-    /// before a crossover can be detected, so the first call always returns None.
+    ///
+    /// Both EMAs must have been initialized AND must have diverged
+    /// (`prev_fast != prev_slow`) before a crossover can be detected.
+    /// The first update seeds both EMAs to the same price; on the
+    /// SECOND update the EMAs are still equal at the moment we sample
+    /// `prev_*`, so any motion would otherwise look like a crossover
+    /// from the seed-equality state. Skipping signals until the EMAs
+    /// have visibly separated avoids emitting that spurious cross.
     /// NaN/Inf prices are silently rejected (returns None, state unchanged).
     [[nodiscard]] Signal update(double price) noexcept {
         if (std::isnan(price) || std::isinf(price)) [[unlikely]] {
@@ -150,6 +156,25 @@ class EmaCrossover {
         if (!was_initialized) [[unlikely]] {
             SPDLOG_LOGGER_DEBUG(detail::ema_logger(),"EmaCrossover: seeded with price={:.6f}", price);
             return Signal::None;
+        }
+
+        // Suppress the spurious "second-update cross" that occurs when both
+        // EMAs were just seeded equal and any price motion immediately
+        // separates them — fast moves more, so prev_fast == prev_slow
+        // becomes fast < slow (or fast > slow), looking like a bearish
+        // (or bullish) cross from a degenerate equal state. Wait until the
+        // EMAs have actually diverged once before treating any future
+        // re-touch as a real cross.
+        if (!has_diverged_) [[unlikely]] {
+            if (prev_fast != prev_slow) {
+                has_diverged_ = true;
+            } else {
+                SPDLOG_LOGGER_TRACE(detail::ema_logger(),
+                    "EmaCrossover: pre-divergence update price={:.6f} "
+                    "(fast={:.6f}, slow={:.6f}) — suppressing spurious cross",
+                    price, fast_.value(), slow_.value());
+                return Signal::None;
+            }
         }
 
         // Detect crossing: compare previous relative position to current.
@@ -183,6 +208,10 @@ class EmaCrossover {
   private:
     Ema fast_;
     Ema slow_;
+    /// Set to true the first time `prev_fast != prev_slow` — i.e., the EMAs
+    /// have actually separated after the initial equal-seed state. Until
+    /// then, no crossover signal can be emitted (see update() for rationale).
+    bool has_diverged_ = false;
 };
 
 }  // namespace eph::utils

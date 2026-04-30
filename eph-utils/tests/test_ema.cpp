@@ -178,6 +178,31 @@ TEST(EmaCrossoverTest, first_update_returns_none) {
     EXPECT_EQ(sig, EmaCrossover::Signal::None);
 }
 
+// Regression: the second update (after the seed) must NOT emit a spurious
+// crossover even though the EMAs have not yet "diverged" — both are still
+// equal to the seed at the moment we sample the previous values, so any
+// price motion would otherwise look like fast crossing slow from an
+// equality state. The has_diverged_ gate suppresses that.
+TEST(EmaCrossoverTest, second_update_after_seed_returns_none_on_price_drop) {
+    EmaCrossover cross(2, 5);
+    auto sig0 = cross.update(100.0);  // seed
+    EXPECT_EQ(sig0, EmaCrossover::Signal::None);
+    // Big drop — fast moves down faster than slow, so fast < slow after this
+    // update. With the old `prev_fast >= prev_slow` (true at seed equality)
+    // and `now_above` false logic, this would have emitted a BearishCross.
+    auto sig1 = cross.update(80.0);
+    EXPECT_EQ(sig1, EmaCrossover::Signal::None)
+        << "Spurious bearish cross emitted on second update post-seed";
+}
+
+TEST(EmaCrossoverTest, second_update_after_seed_returns_none_on_price_rise) {
+    EmaCrossover cross(2, 5);
+    (void)cross.update(100.0);  // seed
+    auto sig1 = cross.update(120.0);
+    EXPECT_EQ(sig1, EmaCrossover::Signal::None)
+        << "Spurious bullish cross emitted on second update post-seed";
+}
+
 TEST(EmaCrossoverTest, fast_and_slow_accessors) {
     EmaCrossover cross(2, 5);
     (void)cross.update(100.0);
