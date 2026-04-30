@@ -353,6 +353,19 @@ struct CoinbaseJwtParams {
     std::span<const uint8_t> nonce_override = {};
 };
 
+/// @brief Coinbase Advanced Trade documents `exp - nbf` MUST NOT exceed
+///        120 seconds. Tokens with longer windows are rejected at the
+///        venue with a 401 that carries no machine-readable hint of
+///        WHY — surfacing the cap up-front saves operators a 30-minute
+///        chase. Default `CoinbaseJwtParams::ttl_secs` (120) hits this
+///        limit exactly.
+inline constexpr uint64_t kCoinbaseJwtTtlSecsMax = 120;
+
+/// @brief Coinbase requires `nbf < exp` strictly; `ttl_secs == 0` would
+///        mint a token whose nbf == exp and the venue rejects it. We
+///        enforce ≥ 1 to keep this representable.
+inline constexpr uint64_t kCoinbaseJwtTtlSecsMin = 1;
+
 namespace detail {
 
 /// @brief Convert a DER-encoded ECDSA signature to fixed-width
@@ -459,6 +472,49 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "missing required JWT param"});
+    }
+
+    // ttl_secs bounds — Coinbase docs say `exp - nbf` MUST be in (0, 120]s.
+    // ttl=0 would generate `exp == nbf` which the venue rejects strictly;
+    // ttl > 120 is the most common silent JWT failure (401 without a
+    // useful message). Surface both up-front rather than after the round
+    // trip so debugging is local. We also reject the obviously-wrong
+    // now_unix_secs == 0 path: any modern unix epoch second is > 1.5e9,
+    // so 0 means the caller forgot to populate the field. A bogus now
+    // would produce `nbf=0,exp=<ttl>`, which the venue accepts as a
+    // pre-1970-validity token only if it's ALSO past 1970, i.e. never —
+    // but the failure mode is identical to the ttl issue (silent 401).
+    if (p.ttl_secs < kCoinbaseJwtTtlSecsMin ||
+        p.ttl_secs > kCoinbaseJwtTtlSecsMax) {
+        SPDLOG_ERROR("build_coinbase_jwt: ttl_secs={} out of range "
+                     "[{}, {}] per Coinbase docs",
+                     p.ttl_secs, kCoinbaseJwtTtlSecsMin,
+                     kCoinbaseJwtTtlSecsMax);
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "ttl_secs out of [1, 120] (Coinbase exp - nbf cap)"});
+    }
+    if (p.now_unix_secs == 0) {
+        SPDLOG_ERROR("build_coinbase_jwt: now_unix_secs == 0 (caller "
+                     "forgot to populate? — venue would reject token "
+                     "with nbf=0,exp=ttl as past-validity)");
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "now_unix_secs is 0 (uninitialized?)"});
+    }
+    // Defensive overflow guard: now + ttl must not wrap. ttl is bounded
+    // above by 120, so the only way this fires is if now_unix_secs is
+    // implausibly close to UINT64_MAX (year ~5.8e11) — but the cost is
+    // a single comparison and the failure mode otherwise is wraparound
+    // to an "expired in the past" exp claim, which is the exact bug
+    // class we're trying to surface.
+    if (p.now_unix_secs > UINT64_MAX - p.ttl_secs) {
+        SPDLOG_ERROR("build_coinbase_jwt: now_unix_secs={} + ttl_secs={} "
+                     "would overflow uint64_t",
+                     p.now_unix_secs, p.ttl_secs);
+        return std::unexpected(::eph::core::ErrorInfo{
+            ::eph::core::Error::InvalidConfig,
+            "now_unix_secs + ttl_secs overflow"});
     }
 
     // ── 1) Resolve nonce: caller-supplied or fresh CSPRNG ─────────────────

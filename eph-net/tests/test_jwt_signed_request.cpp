@@ -351,6 +351,104 @@ TEST(BuildCoinbaseJwt, RejectsEmptyRequiredFields) {
     EXPECT_FALSE(build_coinbase_jwt(*key_exp, p4).has_value());
 }
 
+// ── ttl_secs / now_unix_secs bounds — Coinbase exp-nbf MUST be in (0, 120]s ─
+//
+// Pre-fix, these foot-guns silently produced JWTs the venue rejected at
+// the wire with a 401 that gave operators no actionable hint. Surface
+// them locally with InvalidConfig + a SPDLOG_ERROR carrying the bad
+// value.
+
+TEST(BuildCoinbaseJwt, RejectsZeroTtl) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 1714867200,
+        .ttl_secs      = 0,
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+TEST(BuildCoinbaseJwt, RejectsTtlAbove120) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 1714867200,
+        .ttl_secs      = 121,  // 1 over the venue's documented cap
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+TEST(BuildCoinbaseJwt, AcceptsTtlExactly120) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 1714867200,
+        .ttl_secs      = 120,  // exactly the cap
+    };
+
+    EXPECT_TRUE(build_coinbase_jwt(*key_exp, p).has_value());
+}
+
+TEST(BuildCoinbaseJwt, RejectsZeroNow) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = 0,    // caller forgot to populate
+        .ttl_secs      = 60,
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
+TEST(BuildCoinbaseJwt, RejectsNowPlusTtlOverflow) {
+    auto key_exp = Es256PrivateKey::from_pem(kEcP256PemValid);
+    ASSERT_TRUE(key_exp.has_value());
+
+    // UINT64_MAX - 50: any ttl ≥ 51 would overflow. 60 is in our valid
+    // range, so this exercises specifically the overflow guard rather
+    // than the ttl cap.
+    CoinbaseJwtParams p{
+        .key_id        = "kid",
+        .api_key_name  = "name",
+        .method        = "GET",
+        .uri           = "host/path",
+        .now_unix_secs = UINT64_MAX - 50,
+        .ttl_secs      = 60,
+    };
+
+    auto r = build_coinbase_jwt(*key_exp, p);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Cryptographic round-trip — extract pubkey, verify signature
 // ────────────────────────────────────────────────────────────────────────────
