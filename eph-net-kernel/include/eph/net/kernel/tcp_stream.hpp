@@ -1371,8 +1371,13 @@ private:
     struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
 
     /// @brief Compile-time size = `StreamMetric::kCount`. Backend-specific
-    ///        N/A entries (none for KernelTcpStream — all 6 are wired)
-    ///        simply remain at 0.
+    ///        N/A entries (the DPDK-only TCP / RX-checksum / cross-record
+    ///        / fragment-rejected family — see `stream_metric.hpp`)
+    ///        simply remain at 0 on the kernel backend; the slots that
+    ///        ARE wired here are kBytesSent / kBytesRecv / kFramesDecoded
+    ///        / kReasmOverflows / kCodecErrors / kRxSessionResets /
+    ///        kTlsSendDesyncs / kTlsHandshakeCount / kTlsResumeCount,
+    ///        plus the two WS deflate counters lazily read from the codec.
     std::array<Counter,
                static_cast<std::size_t>(::eph::net::StreamMetric::kCount)>
         counters_{};
