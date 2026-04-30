@@ -1307,11 +1307,17 @@ resolve(uint16_t port_id,
     }
 
     if (hostname.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "DNS resolve: hostname is empty (port_id={} queue_id={})",
+            port_id, queue_id);
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
             "DNS resolve: hostname is empty"});
     }
     if (!pool) {
+        SPDLOG_LOGGER_ERROR(log,
+            "DNS resolve: mempool is null (hostname='{}' port_id={} queue_id={})",
+            hostname, port_id, queue_id);
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
             "DNS resolve: mempool is null"});
@@ -1327,6 +1333,13 @@ resolve(uint16_t port_id,
     // which would conflict with the aws-lc TLS path in the same TU.
     uint16_t tx_id;
     if (::getrandom(&tx_id, sizeof(tx_id), GRND_NONBLOCK) != sizeof(tx_id)) {
+        // GRND_NONBLOCK only returns short on EAGAIN (entropy pool not
+        // initialised) — extraordinary on Linux long after boot. Surface
+        // errno so operators can diagnose seccomp / kernel-too-old.
+        SPDLOG_LOGGER_ERROR(log,
+            "DNS resolve: CSPRNG (getrandom) failure: errno={} ({}) "
+            "hostname='{}' port_id={} queue_id={}",
+            errno, std::strerror(errno), hostname, port_id, queue_id);
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
             "DNS resolve: CSPRNG failure for transaction ID"});
