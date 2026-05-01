@@ -24,6 +24,7 @@
 #include <string_view>
 #include <thread>
 #include <unistd.h>     // getpid for live-pid claims in tests
+#include <sys/wait.h>   // waitpid for is_pid_alive child-reap test
 
 #include <gtest/gtest.h>
 
@@ -838,4 +839,62 @@ TEST(MpRegistryConcurrent, AcquireLoadOnClaimedSeesPublishedLcoreMask) {
            "leaking past round-1's release-side clear, or a torn "
            "intermediate write — both of which are forbidden by the "
            "MpRegistry slot-state invariants.";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// is_pid_alive — direct boundary tests for the kill(pid, 0) liveness probe
+// (the primitive that gates stale-slot reclaim in try_claim_free_slot pass-2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(IsPidAlive, OwnPid_True) {
+    // Self-pid is always alive while the test is running.
+    EXPECT_TRUE(eph::dpdk::detail::is_pid_alive(
+        static_cast<int32_t>(::getpid())));
+}
+
+TEST(IsPidAlive, ZeroAndNegative_False) {
+    // pid=0 in kill(2) has special meaning ("send to current process
+    // group") rather than "is process 0 alive"; the helper must
+    // explicitly reject non-positive PIDs to avoid that semantic
+    // landmine and to match the documented "pid <= 0 is invalid"
+    // contract.
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(0));
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(-1));
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(-99));
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(INT32_MIN));
+}
+
+TEST(IsPidAlive, Int32MaxIsDead) {
+    // INT32_MAX = 2_147_483_647 is far above Linux's pid_max
+    // (default 32768, max 4_194_304); kill(INT32_MAX, 0) → ESRCH.
+    // This is the same value the stale-slot reclaim test uses, so
+    // pinning the helper's behavior here directly is a sanity gate
+    // for that downstream test.
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(INT32_MAX));
+}
+
+TEST(IsPidAlive, Init_True) {
+    // PID 1 (init / systemd) is always alive on a Linux host while
+    // any process is running, and it's owned by root → kill(1, 0)
+    // from a non-root tester returns -1/EPERM, which the helper
+    // explicitly treats as "alive". This documents the EPERM branch.
+    EXPECT_TRUE(eph::dpdk::detail::is_pid_alive(1));
+}
+
+TEST(IsPidAlive, RecentlyReapedChild_False) {
+    // Fork a child that exits immediately, reap it, then check the
+    // PID. Once reaped, it no longer exists in the kernel's process
+    // table → kill(pid, 0) returns ESRCH → false. This pins the
+    // exact path stale-slot reclaim depends on.
+    pid_t pid = ::fork();
+    ASSERT_NE(pid, -1) << "fork() failed";
+    if (pid == 0) {
+        ::_exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+    // After reap, the PID slot is freed (modulo immediate reuse race;
+    // the Linux pid_max is high enough that immediate-reuse on a
+    // single-threaded test is statistically negligible).
+    EXPECT_FALSE(eph::dpdk::detail::is_pid_alive(static_cast<int32_t>(pid)));
 }
