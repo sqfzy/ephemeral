@@ -96,24 +96,31 @@ The scope decisions for the current feature set are archived in
 - `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
   noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
   registered entry — used by TCP keepalive; UDP implements as no-op.
-- `eph::dpdk::ProcType` (`Primary` / `Secondary`) + `PlatformConfig::proc_type`
-  / `file_prefix` / `rx_queue_range` + `Platform::create_primary` /
-  `create_secondary` — single-NIC DPDK multi-process (primary+secondary).
-  Primary does the full port bringup; secondary attaches via
-  `rte_mempool_lookup` and skips configure/start/stop/close. Hot path is
-  zero-cost: `inc_<M>` / `rr_counter` / `poll` are per-instance/per-process
-  and don't change. `rr_counter` algorithm is `lo + fetch_add % (hi - lo)`
-  reading `Platform::effective_rx_queue_range()` (cold path, single-process
-  default `{0, 0}` resolves to `[0, nb_rx_queues)` — byte-for-byte identical
-  to the pre-MP `% nb_q`). `validate_config` policies `rx_queue_range`
-  (sentinel `{0,0}` or `lo < hi <= nb_rx_queues`); `create_secondary`
-  additionally rejects empty `file_prefix`. Source-port partitioning across
-  MP processes is the **caller's** responsibility — `eph-net-dpdk` does not
-  auto-allocate src_port and has no global view to enforce disjointness.
-  `eph::dpdk::EalConfig` + `build_eal_argv` is the typed helper for
-  assembling `--proc-type` / `--file-prefix` / `-l` / `-a` argv. See
-  `eph-net-dpdk/docs/dpdk-multiprocess.md` for the startup ordering,
-  partitioning rules, PMD caveats and orchestrator script.
+- `eph::dpdk::PlatformConfig` (zero-consensus shape: `max_procs` /
+  `queues_per_proc` + `file_prefix`) + `Platform::create` /
+  `Platform::attach(PlatformAttachConfig)` — single-NIC DPDK
+  multi-process (primary+secondary). Primary calls `create()`, does
+  the full port bringup, and publishes a hugepage registry whose
+  size is determined by `max_procs`. Secondary calls `attach()` with
+  only `file_prefix` (+ `port_id` if multi-NIC), reads NIC state from
+  the registry / live device, and skips configure/start/stop/close.
+  Hot path is zero-cost: `inc_<M>` / `rr_counter` / `poll` are
+  per-instance/per-process and don't change. `rr_counter` algorithm
+  is `lo + fetch_add % (hi - lo)` reading
+  `Platform::effective_rx_queue_range()` (cold path, single-process
+  default `{0, 0}` resolves to `[0, nb_rx_queues)` — byte-for-byte
+  identical to the pre-MP `% nb_q`). Source-port partitioning across
+  MP processes is the **caller's** responsibility — `eph-net-dpdk`
+  does not auto-allocate src_port and has no global view to enforce
+  disjointness. `eph::dpdk::EalConfig` + `build_eal_argv` is the
+  typed helper for assembling `--proc-type` / `--file-prefix` /
+  `-l` / `-a` argv (the v3 `*_with_eal` factories inject proc_type
+  and file_prefix automatically). See `eph-net-dpdk/docs/dpdk-multi
+  process.md` for the startup ordering, partitioning rules, PMD
+  caveats and orchestrator script. The pre-v3 v2 shape (with
+  `proc_type` / `mp_topology` / `rx_queue_range`) lives on as
+  `LegacyPlatformConfig` for internal lifecycle delegation only and
+  is **not** part of the supported public API.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale

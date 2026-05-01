@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Changed — `PlatformConfig` is now the v3 shape (BREAKING)
+
+Following the v3 zero-consensus rollout below, the canonical name
+`eph::dpdk::PlatformConfig` now refers to the **v3** shape (no
+`proc_type`, no `mp_topology`, no `rx_queue_range`; adds
+`max_procs` / `queues_per_proc`). The struct previously known as
+`PlatformConfig` (v2 shape with the older fields) has been renamed
+to `eph::dpdk::LegacyPlatformConfig` and is internal-only —
+nothing in `examples/`, `benchmarks/`, integration tests, or
+public docs targets it any longer.
+
+Same treatment for `JoinDynamicConfig` (v3 shape, formerly
+`JoinDynamicConfigV3`) — the v2-shape struct is now
+`LegacyJoinDynamicConfig` and exists only to back the
+transitional `Platform::join_dynamic(LegacyJoinDynamicConfig)`
+overload.
+
+**BREAKING CHANGE**: any caller that constructed
+`eph::dpdk::PlatformConfig` with `proc_type`, `mp_topology`, or
+`rx_queue_range` is silently misaligned — those fields no longer
+exist on the canonical type. The compiler flags every misuse.
+Migration: replace with `max_procs` / `queues_per_proc` +
+`PlatformAttachConfig` for the secondary-attach role
+(`Platform::attach`).
+
+The legacy `Platform::create_primary` / `create_secondary` /
+`create_with_eal(LegacyPlatformConfig, ...)` overloads remain
+callable from inside `eph-net-dpdk` so the v3 entry points keep
+working through the existing translation helper
+(`detail::v3_to_legacy_`); a follow-up will inline the bringup
+bodies into the v3 entries and delete the Legacy types entirely.
+
 ### Added — v3 zero-consensus MP API (BREAKING in registry schema)
 
 **Design principle**: in competitive multi-process mode (primary
@@ -10,12 +42,12 @@ know what primary chose. Any field a caller has to set identically
 in both primary and secondary binaries is a misdesign — secondary
 is a tenant, primary is the resource owner.
 
-**New surface** (alongside the v2 surface during transition):
+**New surface** (canonical names after the rename above):
 
 ```cpp
 // Single-process or MP primary
-struct PlatformConfigV3 { ... };  // no proc_type, no mp_topology
-auto plat = Platform::create(PlatformConfigV3{...});
+struct PlatformConfig { ... };  // no proc_type, no mp_topology
+auto plat = Platform::create(PlatformConfig{...});
 
 // MP secondary attach — the smallest possible "how to find primary"
 struct PlatformAttachConfig {
@@ -26,16 +58,16 @@ struct PlatformAttachConfig {
 auto plat = Platform::attach(PlatformAttachConfig{.file_prefix="..."});
 
 // Autojoin — `pci` is the only required input
-struct JoinDynamicConfigV3 {
+struct JoinDynamicConfig {
     std::string_view pci;               // required
-    PlatformConfigV3 primary_config{};   // ignored on secondary path
+    PlatformConfig   primary_config{};   // ignored on secondary path
     // ... lcores / pins / pin_policy ...
 };
-auto plat = Platform::join_dynamic(JoinDynamicConfigV3{.pci="..."});
+auto plat = Platform::join_dynamic(JoinDynamicConfig{.pci="..."});
 ```
 
 **One-shot EAL+Platform variants** split by role:
-- `Platform::create_with_eal(PlatformConfigV3, EalConfig, ...)`
+- `Platform::create_with_eal(PlatformConfig, EalConfig, ...)`
 - `Platform::attach_with_eal(PlatformAttachConfig, EalConfig, ...)`
 
 The v3 factories inject `EalConfig::proc_type` / `file_prefix`
@@ -70,12 +102,19 @@ identical) — the bump signals API generation only.
   test_dpdk_multiprocess_config) deleted entirely.
 
 **Deferred (future cleanup commits)**:
-- Rename `PlatformConfigV3` → `PlatformConfig` + delete v2 PlatformConfig
-  (blocked on `create_primary/secondary` internal rewrite).
-- Rename `JoinDynamicConfigV3` → `JoinDynamicConfig`.
+- ~~Rename `PlatformConfigV3` → `PlatformConfig`~~ — done in
+  the "Changed" section above. v2-shape struct now lives as
+  `LegacyPlatformConfig` and is internal-only.
+- ~~Rename `JoinDynamicConfigV3` → `JoinDynamicConfig`~~ — done.
+  v2-shape lives as `LegacyJoinDynamicConfig`.
+- ~~MultiPortPlatform v3 migration~~ — done; `create()` now
+  takes `std::span<const PlatformConfig>`.
+- Inline `Platform::create_primary` / `create_secondary_impl_` /
+  `create_with_eal(Legacy, ...)` bodies into the v3 entry points
+  and delete the Legacy entries + types entirely. Currently the
+  v3 entries still translate via `detail::v3_to_legacy_`.
 - Move `MpTopology` to `detail::` namespace.
 - Delete `EalConfig::proc_type / proc_type_set / file_prefix` fields.
-- MultiPortPlatform v3 migration.
 
 The v2 surface remains functional during the transition — every
 existing caller still compiles. New code should target v3.

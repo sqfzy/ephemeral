@@ -9,6 +9,22 @@ strategies that must share a single expensive 25/100 Gbps card.
 This document is the operational contract. For the design rationale see
 `eph-net-dpdk/CHANGELOG.md`.
 
+> **API note (post-v3 merge)**: the canonical public surface is
+> `Platform::create(PlatformConfig)` for primary / single-process and
+> `Platform::attach(PlatformAttachConfig)` for secondary attach.
+> `PlatformConfig` is the v3 zero-consensus shape (`max_procs` /
+> `queues_per_proc` + `file_prefix`); secondary peers do not restate
+> `nb_rx_queues` / topology — they read it from the registry + live
+> NIC.
+>
+> Sections below that reference `Platform::create_primary` /
+> `Platform::create_secondary` / `LegacyPlatformConfig::mp_topology` /
+> `rx_queue_range` describe the **internal lifecycle path** the v3
+> entry points still delegate to. New code should not target those
+> names; they're documented here only because some operational
+> failure modes (registry preclaim, file_prefix mismatch) surface
+> through the legacy-named diagnostics in DPDK logs.
+
 ---
 
 ## TL;DR — autojoin (recommended path)
@@ -24,16 +40,21 @@ auto-attaches as secondary and CAS-claims the lowest free slot.
 
 // Same code in BOTH binaries. Run them in any order.
 auto platform = eph::dpdk::Platform::join_dynamic({
-    .pci           = "0000:28:00.0",
-    .pcfg_template = { .nb_rx_queues = 4 },  // any PlatformConfig field
-    .lcores        = {"0,1"},                 // process-specific lcore set
+    .pci            = "0000:28:00.0",
+    .primary_config = {
+        .nb_rx_queues    = 4,
+        .max_procs       = 2,        // 2 process slots
+        .queues_per_proc = 2,        // each process owns 2 RX queues
+    },
+    .lcores         = {"0,1"},        // process-specific lcore set
 });
 // First peer  → primary, owns queue/port slot 0.
 // Second peer → secondary, CAS-claims slot 1, owns queue/port slot 1.
 //
 // file_prefix derived as "eph_0000_28_00_0" (sanitized BDF) so
 // both peers automatically agree on the hugepage segment name.
-// max_procs derived as pcfg_template.nb_rx_queues / queues_per_proc.
+// Secondary peers can leave primary_config at default — the library
+// reads nb_rx_queues / max_procs from primary's registry post-EAL.
 //
 // Platform owns EAL: ~Platform releases DPDK resources, then runs
 // eal_cleanup atomically. No manual eal_cleanup() needed.
@@ -43,11 +64,15 @@ auto platform = eph::dpdk::Platform::join_dynamic({
 // rr_counter, ICMP / FlowDirector / Poller state are all per-process.
 ```
 
-**Mental model**: `JoinDynamicConfig` only carries autojoin-specific
-inputs (pci, queues_per_proc, max_procs, file_prefix override). All
-PlatformConfig-level customization (`per_lcore_pools`,
-`mbuf_pool_size`, `enable_promiscuous`, `port_id`, …) flows through
-`pcfg_template`. **Single source of truth**: PlatformConfig.
+**Mental model**: `JoinDynamicConfig` carries only the autojoin-
+specific inputs (pci, lcores, pin policy). NIC-physical-state and
+multi-process layout (`per_lcore_pools`, `mbuf_pool_size`,
+`enable_promiscuous`, `port_id`, `max_procs`, `queues_per_proc`)
+all live inside `primary_config` (a `PlatformConfig`). Secondary
+peers ignore `primary_config` entirely — DPDK's
+`rte_eal_process_type` resolves the role post-init, and the
+secondary path queries the primary's registry / live NIC for any
+field it needs.
 
 For the declarative path (explicit `--role primary|secondary`,
 shared `--file-prefix`), see `examples/dpdk_mp_demo.cpp`.
