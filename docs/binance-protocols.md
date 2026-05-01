@@ -179,9 +179,12 @@ The difference matters when processing L2 depth (20 levels × higher frequency).
 
 ## 3. FIX 4.4 Market Data
 
-ephemeral's `eph-fix` module handles message parsing and building. FIX Market Data subscription requires FIX session management (Logon, Heartbeat, sequence numbers) which is **not yet implemented**.
+ephemeral's `eph-fix` module handles message parsing, building, and full FIX 4.4
+session management — Logon/Logout, automatic Heartbeat, TestRequest probing,
+bidirectional `MsgSeqNum` gap detection, optional `ResendRequest`, and
+`SequenceReset`/`GapFill`. See `eph-fix/README.md` for the session API.
 
-### What works today
+### Build a MarketDataRequest
 
 ```cpp
 // Build a MarketDataRequest (subscription)
@@ -202,23 +205,18 @@ if (msg && msg->msg_type() == std::string_view("X")) {
 }
 ```
 
-### What's missing
+### Session integration
 
-FIX session management (required before any market data flows):
-- **Logon** (MsgType=A) with encryption method, heartbeat interval
-- **Heartbeat** (MsgType=0) / TestRequest (MsgType=1) keepalive
-- **Sequence number** tracking (MsgSeqNum tag 34) for gap detection
-- **Resend Request** (MsgType=2) for missed messages
-- **GapFill** (MsgType=4) for sequence number synchronization
-
-This is a 40-80 hour project requiring formal design. Use `/design FIX session layer` when ready.
+Drive the session over a `KernelTcpStream<RawStreamCodec>` — `FixSession::on_rx()`
+is fed from the stream's `on_message` callback, and `session.logon()` / `logout()`
+handle the handshake. See the "Run a session" example in `eph-fix/README.md`.
 
 ### Recommendation
 
 For Binance market data today:
 - **Most users**: WebSocket JSON via `simple_hft.cpp` pattern — works now, good enough for most strategies
 - **Low-latency production**: WebSocket SBE with the constexpr offset pattern above
-- **Institutional/FIX infrastructure**: Wait for FIX session layer, or implement session management at application level using `eph-fix` parser/builder
+- **Institutional/FIX infrastructure**: `eph-fix` session + parser/builder over `KernelTcpStream<RawStreamCodec>` (or DPDK equivalent)
 
 ## Auto-Culling vs EvictingQueue
 
