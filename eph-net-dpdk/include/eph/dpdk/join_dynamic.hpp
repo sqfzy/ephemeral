@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file join_dynamic.hpp
-/// `JoinDynamicConfig` — the user-facing config for the **autojoin**
+/// `LegacyJoinDynamicConfig` — the user-facing config for the **autojoin**
 /// MP factory (`Platform::join_dynamic`). Autojoin is the
 /// zero-coordination multi-process bring-up: two unrelated processes
 /// that share a NIC agree on nothing except the PCI BDF and
@@ -9,14 +9,14 @@
 /// becomes primary; later peers attach as secondaries and CAS-claim
 /// the next free process slot themselves.
 ///
-/// **Mental model**: `JoinDynamicConfig` only carries
-/// **autojoin-specific** inputs — everything `PlatformConfig` already
+/// **Mental model**: `LegacyJoinDynamicConfig` only carries
+/// **autojoin-specific** inputs — everything `LegacyPlatformConfig` already
 /// has (per_lcore_pools / mbuf_pool_size / port_id / nb_rx_queues /
 /// every other field) flows through `pcfg_template`. Autojoin only
 /// overrides three fields it must own: `proc_type` (resolved at EAL
 /// init), `mp_topology` (synthesized from claimed slot), and
 /// `file_prefix` (auto-derived from BDF unless caller overrides).
-/// Single source of truth: PlatformConfig.
+/// Single source of truth: LegacyPlatformConfig.
 ///
 /// Compared to the **declarative** path (`Platform::create_primary` /
 /// `create_secondary` + a hand-written `MpTopology`), autojoin
@@ -46,18 +46,18 @@
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin (typed pin spec)
 #include "eph/utils/cpu.hpp"        // CpuPinPolicy
 
-// This header references `eph::dpdk::PlatformConfig` (`pcfg_template`
+// This header references `eph::dpdk::LegacyPlatformConfig` (`pcfg_template`
 // is a value member) but cannot directly `#include
 // "eph/dpdk/platform.hpp"` without a circular include — platform.hpp
-// includes this header from inside its own body, after PlatformConfig
+// includes this header from inside its own body, after LegacyPlatformConfig
 // is fully parsed. The contract: include `eph/dpdk/platform.hpp` to
-// get `JoinDynamicConfig`. Users who try to include this header
+// get `LegacyJoinDynamicConfig`. Users who try to include this header
 // standalone get a loud diagnostic instead of a confusing
-// "PlatformConfig has not been declared".
+// "LegacyPlatformConfig has not been declared".
 #ifndef EPH_DPDK_PLATFORM_CONFIG_DEFINED
 #  error "Include eph/dpdk/platform.hpp instead of join_dynamic.hpp directly: " \
-         "JoinDynamicConfig embeds a PlatformConfig and must be parsed " \
-         "after PlatformConfig is fully defined."
+         "LegacyJoinDynamicConfig embeds a LegacyPlatformConfig and must be parsed " \
+         "after LegacyPlatformConfig is fully defined."
 #endif
 
 namespace eph::dpdk {
@@ -66,7 +66,7 @@ namespace eph::dpdk {
 ///
 /// Required: `pci`, `pcfg_template.nb_rx_queues > 0`. Everything
 /// else has a sensible default.
-struct JoinDynamicConfig {
+struct LegacyJoinDynamicConfig {
     // ─── Autojoin-specific inputs ────────────────────────────────────────
 
     /// PCI BDF of the NIC to attach (e.g. `"0000:28:00.0"` or short
@@ -94,9 +94,9 @@ struct JoinDynamicConfig {
     /// usually a configuration mistake).
     std::string_view file_prefix{};
 
-    // ─── PlatformConfig pass-through ─────────────────────────────────────
+    // ─── LegacyPlatformConfig pass-through ─────────────────────────────────────
 
-    /// Template PlatformConfig — every field that `Platform::create_*`
+    /// Template LegacyPlatformConfig — every field that `Platform::create_*`
     /// understands flows through here unchanged. Autojoin only
     /// overrides three fields it must own at construction time:
     ///   - `proc_type`     resolved by `rte_eal_process_type()`
@@ -112,7 +112,7 @@ struct JoinDynamicConfig {
     /// future fields) lands verbatim on the constructed Platform.
     /// **Required: `pcfg_template.nb_rx_queues > 0`** (autojoin
     /// derives `max_procs` from it).
-    PlatformConfig pcfg_template{};
+    LegacyPlatformConfig pcfg_template{};
 
     // ─── EAL options ─────────────────────────────────────────────────────
 
@@ -167,10 +167,10 @@ struct JoinDynamicConfig {
 };
 
 // ─────────────────────────────────────────────────────────────────────
-// v3 JoinDynamicConfig (zero-consensus autojoin)
+// v3 LegacyJoinDynamicConfig (zero-consensus autojoin)
 // ─────────────────────────────────────────────────────────────────────
 //
-// Parallel to v2 `JoinDynamicConfig` during the v3 transition.
+// Parallel to v2 `LegacyJoinDynamicConfig` during the v3 transition.
 // Differences:
 //   - `pcfg_template` renamed to `primary_config` (only consulted on
 //     primary path; secondary discards every field except for the
@@ -181,7 +181,7 @@ struct JoinDynamicConfig {
 //   - `file_prefix` removed entirely (always auto-derived from `pci`
 //     to enforce zero-consensus).
 //
-// Stage 5 will rename `JoinDynamicConfigV3` -> `JoinDynamicConfig`
+// Stage 5 will rename `JoinDynamicConfigV3` -> `LegacyJoinDynamicConfig`
 // after the v2 struct + v2 entry points are deleted.
 
 /// @brief Zero-consensus autojoin config (v3).
@@ -195,7 +195,7 @@ struct JoinDynamicConfigV3 {
     /// namespace without sharing any string.
     std::string_view pci;
 
-    /// Primary-side full PlatformConfig — used ONLY when this peer
+    /// Primary-side full LegacyPlatformConfig — used ONLY when this peer
     /// resolves to primary (first to call `eal_init`). Secondary peers
     /// have every field of this struct ignored. The `max_procs` /
     /// `queues_per_proc` knobs live here, not at the top level, so

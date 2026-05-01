@@ -122,7 +122,7 @@ constexpr PlatformConfigV3 kBaseCfg{
 // becomes a direct call.
 inline auto validate_v3(const PlatformConfigV3& cfg) {
     return ::eph::dpdk::validate_config(
-        ::eph::dpdk::detail::v3_to_v2_primary(cfg));
+        ::eph::dpdk::detail::v3_to_legacy_(cfg));
 }
 
 // ---------------------------------------------------------------------------

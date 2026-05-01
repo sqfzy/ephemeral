@@ -174,7 +174,7 @@ build_icmp_directory_name(std::string_view file_prefix) noexcept {
     if (file_prefix.empty()) {
         SPDLOG_ERROR(
             "IcmpDirectory::build_name: file_prefix is empty — "
-            "PlatformConfig.file_prefix must be set for MP-IPC");
+            "LegacyPlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "IcmpDirectory: file_prefix must be non-empty"});

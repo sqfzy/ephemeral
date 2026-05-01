@@ -14,7 +14,7 @@
 ///   - v3 types (`PlatformConfigV3`, `PlatformAttachConfig`,
 ///     `JoinDynamicConfigV3`) compile and have expected fields.
 ///   - v3 entry-point function pointers have the documented signatures.
-///   - The internal v3→v2 translator (`detail::v3_to_v2_primary`)
+///   - The internal v3→v2 translator (`detail::v3_to_legacy_`)
 ///     correctly maps fields.
 ///
 /// Stage 3 will add behavior-level tests when v3 is no longer a wrapper
@@ -52,7 +52,7 @@ TEST(PlatformConfigV3, NicPhysicalFieldsMirrorV2Defaults) {
     // Sanity: v3's NIC physical defaults match v2's so silent semantic
     // shift is impossible in stage 1.
     PlatformConfigV3 v3{};
-    PlatformConfig   v2{};
+    LegacyPlatformConfig   v2{};
     EXPECT_EQ(v3.nb_rx_queues,    v2.nb_rx_queues);
     EXPECT_EQ(v3.nb_tx_queues,    v2.nb_tx_queues);
     EXPECT_EQ(v3.nb_rx_desc,      v2.nb_rx_desc);
@@ -120,7 +120,7 @@ TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Translation logic (detail::v3_to_v2_primary)
+// Translation logic (detail::v3_to_legacy_)
 // ──────────────────────────────────────────────────────────────────────
 
 TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
@@ -138,7 +138,7 @@ TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
     v3.per_lcore_pools  = 2;
     // max_procs stays at default 1 → single-process
 
-    auto v2 = detail::v3_to_v2_primary(v3);
+    auto v2 = detail::v3_to_legacy_(v3);
     EXPECT_EQ(v2.port_id,          v3.port_id);
     EXPECT_EQ(v2.file_prefix,      v3.file_prefix);
     EXPECT_EQ(v2.nb_rx_queues,     v3.nb_rx_queues);
@@ -163,7 +163,7 @@ TEST(V3ToV2Primary, MpPrimarySynthesizesTopology) {
     v3.max_procs    = 2;
     v3.file_prefix  = "mp_demo";
 
-    auto v2 = detail::v3_to_v2_primary(v3);
+    auto v2 = detail::v3_to_legacy_(v3);
     ASSERT_TRUE(v2.mp_topology.has_value());
     EXPECT_EQ(v2.mp_topology->self_index, 0);
     EXPECT_EQ(v2.mp_topology->total_procs, 2);
@@ -176,7 +176,7 @@ TEST(V3ToV2Primary, SelfLcoreMaskPropagates) {
     v3.max_procs        = 2;
     v3.self_lcore_mask  = 0b1100ULL;  // lcores 2,3
 
-    auto v2 = detail::v3_to_v2_primary(v3);
+    auto v2 = detail::v3_to_legacy_(v3);
     ASSERT_TRUE(v2.mp_topology.has_value());
     EXPECT_EQ(v2.mp_topology->procs[0].lcore_mask, 0b1100ULL);
 }
@@ -212,7 +212,7 @@ TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
     // sanitize_bdf_for_file_prefix(cfg.pci); a malformed BDF makes
     // sanitize fail. The wrapped error must name the actual cfg.pci
     // value the caller supplied.
-    JoinDynamicConfig cfg{};
+    LegacyJoinDynamicConfig cfg{};
     cfg.pci = "not_a_bdf";  // valid string_view but not a BDF
     cfg.pcfg_template.nb_rx_queues = 4;
     cfg.queues_per_proc            = 1;
@@ -231,7 +231,7 @@ TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
     // line ~2645. Error must report the offending max_procs, the
     // kMaxProcs cap, and the inputs the auto-derive would have used
     // (caller cfg.max_procs / nb_rx_queues / queues_per_proc).
-    JoinDynamicConfig cfg{};
+    LegacyJoinDynamicConfig cfg{};
     cfg.pci                        = "0000:28:00.0";
     cfg.pcfg_template.nb_rx_queues = 4;
     cfg.queues_per_proc            = 1;
@@ -252,7 +252,7 @@ TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
 TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
     // cfg.pins and cfg.lcores are mutually exclusive — error must
     // report both sizes so the caller knows which side has stuff.
-    JoinDynamicConfig cfg{};
+    LegacyJoinDynamicConfig cfg{};
     cfg.pci                        = "0000:28:00.0";
     cfg.pcfg_template.nb_rx_queues = 2;
     cfg.queues_per_proc            = 1;

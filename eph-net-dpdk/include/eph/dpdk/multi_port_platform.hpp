@@ -135,7 +135,7 @@ public:
         // the rejected set matches the runtime path one-for-one.
         for (std::size_t i = 0; i < configs.size(); ++i) {
             auto err = validate_config(
-                ::eph::dpdk::detail::v3_to_v2_primary(configs[i]));
+                ::eph::dpdk::detail::v3_to_legacy_(configs[i]));
             if (!err.empty()) {
                 SPDLOG_LOGGER_ERROR(log,
                     "MultiPortPlatform::create: configs[{}] invalid: {}",
