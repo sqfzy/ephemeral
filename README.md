@@ -150,31 +150,34 @@ namespace en = eph::net::dpdk;
 namespace ec = eph::codec;
 
 int main(int argc, char** argv) {
-    en::Eal eal{argc, argv};      // RAII DPDK EAL init
+    // Eal::init is the only public factory — there is no bare ctor.
+    // Returns a move-only RAII guard that runs rte_eal_cleanup on
+    // scope exit; bare `en::Eal{argc, argv}` does NOT compile.
+    auto eal = en::Eal::init(argc, argv).value();
 
+    // PollerConfig has port_id + rx_queue_id (caller pins the lcore
+    // themselves; DpdkPoller does not spawn its own thread).
     auto poller = en::DpdkPoller<>::create({
-        .port_id  = 0,
-        .queue_id = 0,
-        .lcore    = 4,
+        .port_id     = 0,
+        .rx_queue_id = 0,
     }).value();
 
-    // Order channel — TLS 1.3 WebSocket over DPDK TCP
-    auto order_ch = en::DpdkTcpStream<ec::WsCodec>::create({
-        .remote_host = "fix.exchange.example",
-        .remote_port = 443,
-    }).value();
+    // Production factory is `create_and_attach(cfg, platform)` —
+    // it picks an RX queue, allocates a non-conflicting src_port,
+    // runs the TCP/TLS/WS handshakes, attaches to the poller, and
+    // registers as an ICMP target. Sketch only — see
+    // `examples/simple_hft_dpdk.cpp` for the full scfg / ucfg + a
+    // `Platform` set up via `Platform::create_with_eal(...)`.
+    auto order_ch = en::DpdkTcpStream<ec::WsCodec>::create_and_attach(
+        order_scfg, *platform).value();
     order_ch->on_message = handle_exec_report;
-    poller->add(order_ch.get()).value();
 
-    // Market data — CME ITCH multicast
-    auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create({
-        .bind_addr = eph::net::SocketAddr{{0,0,0,0}, 30000},
-    }).value();
+    auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create_and_attach(
+        md_ucfg, *platform).value();
     md->on_datagram = handle_itch_message;
     md->join_multicast({{233,54,12,111}, 30001}).value();
-    poller->add(md.get()).value();
 
-    // Single loop drives both TCP and UDP on the same lcore
+    // Single loop drives both TCP and UDP on the same lcore.
     while (running) {
         poller->poll();
     }
