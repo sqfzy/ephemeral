@@ -266,3 +266,54 @@ TEST(SoupBinTcpFramer, encode_at_max_payload_len_succeeds) {
     EXPECT_EQ(wire[1], 0xFF);
     EXPECT_EQ(wire[2], 'S');
 }
+
+// ─── soupbin::is_heartbeat — constexpr classification ──────────────────────
+//
+// `is_heartbeat` is consumed indirectly by every successful decode (sets
+// `DecodedFrame::is_control`) but the function itself was untested in
+// isolation. Lock the full classification across every soupbin packet
+// type so a future addition (or accidental swap of two enum values)
+// can't silently mis-classify control vs data on the wire.
+
+TEST(SoupBinIsHeartbeat, ServerAndClientHeartbeatsClassifyTrue) {
+    using namespace eph::itch::soupbin;
+    static_assert(is_heartbeat(kServerHeartbeat));
+    static_assert(is_heartbeat(kClientHeartbeat));
+    EXPECT_TRUE(is_heartbeat(kServerHeartbeat));
+    EXPECT_TRUE(is_heartbeat(kClientHeartbeat));
+}
+
+TEST(SoupBinIsHeartbeat, EveryNonHeartbeatTypeClassifiesFalse) {
+    using namespace eph::itch::soupbin;
+    // Every other declared packet type — must NOT be misread as a
+    // control / heartbeat. If a future commit reorders the enum or
+    // introduces a value that collides with 'H' / 'R' the static_asserts
+    // here trip at compile time AND the runtime EXPECTs surface it
+    // separately if static_assert is somehow disabled.
+    static_assert(!is_heartbeat(kDebug));
+    static_assert(!is_heartbeat(kSequencedData));
+    static_assert(!is_heartbeat(kLoginAccepted));
+    static_assert(!is_heartbeat(kLoginRejected));
+    static_assert(!is_heartbeat(kLoginRequest));
+    static_assert(!is_heartbeat(kUnsequencedData));
+    static_assert(!is_heartbeat(kLogoutRequest));
+    EXPECT_FALSE(is_heartbeat(kDebug));
+    EXPECT_FALSE(is_heartbeat(kSequencedData));
+    EXPECT_FALSE(is_heartbeat(kLoginAccepted));
+    EXPECT_FALSE(is_heartbeat(kLoginRejected));
+    EXPECT_FALSE(is_heartbeat(kLoginRequest));
+    EXPECT_FALSE(is_heartbeat(kUnsequencedData));
+    EXPECT_FALSE(is_heartbeat(kLogoutRequest));
+}
+
+TEST(SoupBinIsHeartbeat, UnknownByteClassifiesFalse) {
+    // Defensive: any byte the SoupBinTCP spec doesn't define MUST NOT be
+    // treated as a heartbeat. Pick three non-letter bytes including the
+    // zero byte (a real risk if a sender ships an uninitialised buffer).
+    using eph::itch::soupbin::is_heartbeat;
+    static_assert(!is_heartbeat(0x00));
+    static_assert(!is_heartbeat(0xFF));
+    EXPECT_FALSE(is_heartbeat(0x00));
+    EXPECT_FALSE(is_heartbeat(0x7F));  // DEL — sometimes used as a placeholder
+    EXPECT_FALSE(is_heartbeat(0xFF));
+}
