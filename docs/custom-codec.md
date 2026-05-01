@@ -83,7 +83,7 @@ Protocol on the wire:
 class FixedHeaderCodec {
 public:
     static constexpr size_t kHeaderSize = 4;
-    static constexpr size_t kMaxPayload = (1 << 24) - 1;  // 16 MiB
+    static constexpr size_t kMaxPayload = (1 << 24) - 1;  // 16 MiB - 1 (24-bit field max)
     static constexpr size_t max_overhead = kHeaderSize;
     static constexpr bool   is_streaming = true;
 
@@ -112,7 +112,7 @@ public:
 
         if (payload_len > kMaxPayload) {
             return std::unexpected{eph::core::ErrorInfo{
-                eph::core::Error::CodecOverflow, "payload > 16 MiB"}};
+                eph::core::Error::CodecOverflow, "payload exceeds 24-bit field max"}};
         }
         if (view.length() < kHeaderSize + payload_len) {
             return std::nullopt;  // need more bytes
