@@ -2,6 +2,60 @@
 
 ## [Unreleased]
 
+### Fixed — MP mental-model "user error → silent run" closure (5 fixes + 1 doc)
+
+Driven by a `/pax --review` audit (`.artifacts/review-mp-mental-model-20260501.md`)
+that systematically scanned for cases where misuse produces no
+diagnostic instead of fail-fast. 5 vulnerabilities closed, 1 doc
+gap filled.
+
+* **MpRegistry v2 schema** (commits `fceb0f78` + `1b2d13f8`):
+  * `ProcSlot` += `uint64_t lcore_mask` and `int32_t pid`.
+  * `MpTopology::valid()` rejects topologies with overlapping
+    lcore masks (skipped if all slots opt out via `lcore_mask=0`).
+  * `attach_secondary` cross-checks self's lcore_mask against
+    currently-claimed peers; conflict → `Error::InvalidConfig`.
+  * `try_claim_free_slot` runs a 2-pass scan: pass-1 free slots,
+    pass-2 stale slots whose owner pid fails `kill(pid, 0)` —
+    auto-reclaim with WARN log. Closes "kill -9 secondary leaves
+    permanent ghost slot" gap.
+* **JSON output `_pid<N>` suffix in MP mode** (commit `d849d58a`):
+  `bench::mp_output_suffix()` adds per-process suffix when
+  `EPH_LAT_AUTOJOIN_MAX_PROCS` is set. Single-process bench
+  commands keep byte-equal filenames with the legacy path. Prevents
+  silent overwrite when 2+ peers run the same scenario.
+* **lat dispatcher mockex diagnostics** (commit `3b94a09a`):
+  bash wrapper captures mockex stdout/stderr to a per-PID
+  `mktemp` log; on init-time death, tails the log into the
+  user's terminal + lists 3 most common bind-failure causes.
+  Mid-run death also surfaces non-zero exit + tail.
+* **Strict `EPH_LAT_AUTOJOIN_MAX_PROCS` parse** (commit `c7989efb`):
+  `strtoul` + range check `[2, 64]`. Previous `std::atoi` silently
+  coerced `"bad"` to 0 and `"-1"` to 4294967295.
+* **`docs/dpdk-mp-teardown-protocol.md`** (commit `f2e45a0d`):
+  new "Same-scenario fan-out semantics" section documenting what
+  N peers running the same scenario actually produce (independent
+  measurement streams) and the use cases it does / does not support.
+
+Schema bump is hard (no v1 compat layer). Peers must rebuild from
+the same eph-net-dpdk source.
+
+Acceptance: 116 unit/integration cases PASS across test_mp_registry
+(34, +9 new for v2), test_mp_topology (22), test_mp_ipc (14),
+test_dpdk_e2e (14), test_dpdk_platform_mempool (14), test_bench_conf
+(18). Pre-existing legacy test failures (test_dpdk_multiprocess_config
+13 + test_dpdk_platform 1 — string-match brittleness) verified
+unchanged from main.
+
+Deferred (logged in `.artifacts/review-mp-mental-model-20260501.md`):
+* Vuln 3 (pin_to_queue runtime probe of NIC-actual RSS hash) —
+  current code already hard-errors on predict-no-match; the residual
+  silent-software-vs-hardware-mismatch case needs runtime probe
+  infrastructure (~1 day) for a low-frequency failure mode.
+* Application-layer wiring of `lcore_mask` through `JoinDynamicConfig`
+  + `dpdk_env.hpp` CSV→bitmask parsing — library-level protection
+  is in place; bench needs to opt in via a follow-up commit.
+
 ### Fixed — DPDK MP `~Platform()` no longer breaks secondary I/O
 
 The bug previously documented as "AWS ENA PMD multi-process secondary RX
