@@ -58,9 +58,18 @@
 ///        --pci 0000:28:00.0 --lcores '4-7'
 ///        --local-ip 10.0.0.16 --gateway-mac aa:bb:cc:dd:ee:ff [--smoke]
 ///
+///   # explicit DPDK port id (only relevant when more than one --pci
+///   # is bound and the desired port is not the first in the
+///   # allowlist; default 0):
+///   sudo ./async_dns_multi_resolve --
+///        --pci 0000:28:00.0 --pci 0000:28:00.1 --dpdk-port 1 --pin 0=4
+///        --local-ip 10.0.0.16 --gateway-mac aa:bb:cc:dd:ee:ff [--smoke]
+///
 /// `--host` may be passed multiple times. Default set is the four
 /// canonical crypto venue WS endpoints. `--smoke` forces the no-NIC
 /// path so this example can be run as a doc-test on any host.
+/// `--dpdk-port` selects the DPDK port enumeration index (default 0)
+/// — handy when the target NIC is not the first allowlisted port.
 
 #include <atomic>
 #include <chrono>
