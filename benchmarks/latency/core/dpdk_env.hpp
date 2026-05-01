@@ -204,7 +204,7 @@ load_dpdk_env(const BenchConfig& cfg,
 
     std::string eal_cores = cfg.cpu.eal_cores;
     if (eal_cores.empty()) {
-        spdlog::warn("load_dpdk_env: cpu.eal_cores not set; defaulting to \"0,1\"");
+        SPDLOG_WARN("load_dpdk_env: cpu.eal_cores not set; defaulting to \"0,1\"");
         eal_cores = "0,1";
     }
 
@@ -223,7 +223,7 @@ load_dpdk_env(const BenchConfig& cfg,
     eal_cfg.extra_args   = {std::string{"--proc-type=auto"},
                             std::string{"--log-level=lib.eal:warning"}};
 
-    spdlog::info(
+    SPDLOG_INFO(
         "load_dpdk_env: EAL+Platform via DpdkBenchEnv::create: "
         "pins={} cpus_csv={} pci={} nb_rx_queues={}",
         pins.size(), eal_cores, dpdk_pci, cfg.dpdk.nb_rx_queues);
@@ -234,7 +234,7 @@ load_dpdk_env(const BenchConfig& cfg,
     pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
 
     if (pcfg.nb_rx_queues > 1) {
-        spdlog::info(
+        SPDLOG_INFO(
             "load_dpdk_env: RSS auto-engaged via nb_rx_queues={}",
             pcfg.nb_rx_queues);
     }
@@ -274,7 +274,7 @@ load_dpdk_env(const BenchConfig& cfg,
         const char* gw_mac_file  = std::getenv("EPH_LAT_AUTOJOIN_GW_MAC_FILE");
         std::string lcores_str   = lcores_s ? lcores_s : eal_cores;
         std::string gw_mac_path  = gw_mac_file ? gw_mac_file : "";
-        spdlog::info(
+        SPDLOG_INFO(
             "load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS={} lcores={} gw_mac_file={}",
             max_procs, lcores_str, gw_mac_path);
         auto env_r = eph::dpdk::test::DpdkBenchEnv::create_via_autojoin(
