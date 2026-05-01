@@ -11,7 +11,7 @@ Codecs are independent of any networking backend — they operate on a templated
 
 | Codec | Kind | Notes |
 |---|---|---|
-| `eph::codec::WsCodec` | `StreamCodec` | RFC 6455 WebSocket + RFC 7692 permessage-deflate. Owns reassembly + ping/close FSM, optional zlib inflater (lazy-init, zero cost when disabled). Auto-responds ping/close via `OutputBuffer`; deflate enable is plumbed through `enable_permessage_deflate()` (the kernel + DPDK backends call it for you when `StreamConfig::ws_permessage_deflate` is true and the server accepts the offer). |
+| `eph::codec::WsCodec` | `StreamCodec` | RFC 6455 WebSocket + RFC 7692 permessage-deflate. Owns reassembly + ping/close FSM, optional zlib inflater (lazy-init, zero cost when disabled). Auto-responds ping/close via `OutputBuffer`; deflate enable is plumbed through `enable_permessage_deflate()` (the kernel + DPDK backends call it for you when `StreamConfig::ws.permessage_deflate` is true — the default — and the server accepts the offer). |
 | `eph::codec::RawStreamCodec` | `StreamCodec` | Passthrough — frames are whole receive buffers. |
 | `eph::codec::LengthPrefixCodec` | `StreamCodec` | 4-byte big-endian length prefix, payloads up to 16 MiB (`kMaxFrameLen`). |
 | `eph::codec::RawDatagramCodec` | `DatagramCodec` | One frame per datagram. Empty datagrams rejected with `CodecBad`. |
@@ -44,6 +44,7 @@ runtime dispatch on the hot path.
 xmake build eph-codec
 xmake build -g tests
 xmake run test_ws_codec
+xmake run test_ws_codec_deflate
 xmake run test_ws_codec_edge
 xmake run test_mold64_codec
 xmake run test_raw_stream_codec
