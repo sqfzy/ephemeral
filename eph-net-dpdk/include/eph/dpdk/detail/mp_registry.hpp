@@ -848,6 +848,14 @@ public:
             if (hdr_->procs[i].claimed.compare_exchange_strong(
                     expected, 1, std::memory_order_acq_rel)) {
                 self_index_ = static_cast<uint8_t>(i);
+                // Clear residual metadata (pid + lcore_mask) from any
+                // previous graceful-release owner before publishing our
+                // own pid. release_() on the prior owner is supposed to
+                // wipe these fields, but we double-clear here as a
+                // defense-in-depth measure: if any code path ever
+                // forgets the clear, this site catches it. Mirrors the
+                // pass-2 clear at the kill-9 reclaim branch below.
+                clear_slot_metadata_(hdr_->procs[i]);
                 hdr_->procs[i].pid = static_cast<int32_t>(::getpid());
                 SPDLOG_INFO(
                     "MpRegistry: try_claim_free_slot claimed self_index={} "
@@ -881,9 +889,11 @@ public:
             uint8_t exp_free = 0;
             if (hdr_->procs[i].claimed.compare_exchange_strong(
                     exp_free, 1, std::memory_order_acq_rel)) {
-                // Reset slot's stale data before publishing own pid.
-                hdr_->procs[i].pid        = static_cast<int32_t>(::getpid());
-                hdr_->procs[i].lcore_mask = 0;
+                // Reset stale data (pid + lcore_mask) before publishing
+                // own pid. Same helper as release_ / pass-1 so future
+                // schema additions can't leave one site behind.
+                clear_slot_metadata_(hdr_->procs[i]);
+                hdr_->procs[i].pid = static_cast<int32_t>(::getpid());
                 self_index_ = static_cast<uint8_t>(i);
                 SPDLOG_WARN(
                     "MpRegistry: try_claim_free_slot reclaimed stale "
@@ -912,6 +922,37 @@ private:
         self_index_   = kMpRegistrySelfIndexUnset;
     }
 
+    /// @brief Zero out the per-claimer ephemeral metadata fields on a
+    /// `ProcSlot` (`pid`, `lcore_mask`). The other ProcSlot fields
+    /// (`tag`, `queue_lo/hi`, `port_lo/hi`) are intentionally preserved
+    /// because they are the primary-owned topology contract written
+    /// once at `init_mp_registry_header` time and shared by every
+    /// claimant of the same `self_index` — clearing them would force
+    /// each new claimant to re-publish identical values for no benefit.
+    ///
+    /// **Happens-before contract**: callers MUST invoke this BEFORE
+    /// the `claimed.store(0, release)` that signals "slot is free", or
+    /// BEFORE the `claimed.compare_exchange_*(_, 1, acq_rel)` that
+    /// signals "slot is now mine". The release/acquire pair on
+    /// `claimed` is what publishes these plain-store writes to other
+    /// processes; if the order is inverted, a peer doing
+    /// `claimed.load(acquire)` could observe `claimed=0` (or its own
+    /// CAS-1 winning) and then read stale `pid`/`lcore_mask` from the
+    /// previous owner, defeating the v2 cross-process lcore conflict
+    /// scan and the kill-9 stale-slot reclaim probe.
+    ///
+    /// Discovered via /pax --review LENS "production / MP mental model
+    /// / silent misuse closure" on 2026-05-01: the previous code
+    /// missed the metadata clear in two of three release/claim sites
+    /// (graceful `release_` + `try_claim_free_slot` pass-1), so a
+    /// benign release+reclaim cycle would let the previous owner's
+    /// lcore_mask survive and trip attach_secondary's conflict scan
+    /// against a non-existent peer.
+    static void clear_slot_metadata_(ProcSlot& s) noexcept {
+        s.pid        = 0;
+        s.lcore_mask = 0;
+    }
+
     void release_() noexcept {
         if (hdr_ == nullptr) return;
         // Always release the slot first so a peer that's spinning on
@@ -919,6 +960,11 @@ private:
         // Read-only handles (self_index_ == sentinel) own no slot —
         // skip the release to avoid touching out-of-bounds procs[].
         if (self_index_ != kMpRegistrySelfIndexUnset) {
+            // Clear ephemeral metadata BEFORE the release-store on
+            // `claimed`, so any peer that subsequently sees `claimed=0`
+            // via acquire-load also sees a pristine slot — no ghost
+            // pid/lcore_mask leaking into the next claim cycle.
+            clear_slot_metadata_(hdr_->procs[self_index_]);
             hdr_->procs[self_index_].claimed.store(0,
                                                     std::memory_order_release);
         }
