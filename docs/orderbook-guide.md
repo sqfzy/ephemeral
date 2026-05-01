@@ -142,16 +142,16 @@ Feed parsed exchange data directly into a book:
 
 eph::book::ArrayBook<5> book;
 
-void on_message(const uint8_t* data, uint16_t len, uint8_t) {
-    auto json = eph::json::parse(data, len);
+stream->on_message = [&book](std::span<const uint8_t> frame) {
+    auto json = eph::json::parse(frame.data(), frame.size());
     if (!json) return;
 
     auto ticker = eph::json::binance::BookTicker::from(*json);
     if (!ticker) return;
 
     // Parse prices and update book
-    auto bid = eph::core::parse_number(ticker->bid_price);
-    auto ask = eph::core::parse_number(ticker->ask_price);
+    auto bid     = eph::core::parse_number(ticker->bid_price);
+    auto ask     = eph::core::parse_number(ticker->ask_price);
     auto bid_qty = eph::core::parse_number(ticker->bid_qty);
     auto ask_qty = eph::core::parse_number(ticker->ask_qty);
 
@@ -162,7 +162,7 @@ void on_message(const uint8_t* data, uint16_t len, uint8_t) {
     auto wmid = eph::book::weighted_mid(book);
     auto imb  = eph::book::order_imbalance(book);
     // ... trading logic ...
-}
+};
 ```
 
 ## Snapshot Recovery (Binance REST)
