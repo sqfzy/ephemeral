@@ -175,20 +175,10 @@ target("test_dpdk_rss_fanout")
 -- coordinated by tests/integration/dpdk_mp_e2e.sh. Each skips cleanly
 -- when the env vars set by the orchestrator are absent, so `xmake run -g
 -- tests` does not block on NIC-B availability.
-target("dpdk_mp_primary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_primary.cpp")
-    add_deps("eph-net-dpdk")
-    apply_dpdk_pmd_linkgroups()
-
-target("dpdk_mp_secondary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_secondary.cpp")
-    add_deps("eph-net-dpdk")
-    apply_dpdk_pmd_linkgroups()
-
 -- v3 secondary integration (zero-consensus attach surface). Pairs with
--- the same dpdk_mp_primary as v2; only the secondary differs.
+-- dpdk_mp_topology_primary (registry-creating) — the legacy
+-- dpdk_mp_primary/secondary pair (rx_queue_range only, no registry)
+-- was removed in v3 stage 5 along with the non-registry MP path.
 target("dpdk_mp_v3_secondary")
     add_rules("eph-test")
     add_files("tests/integration/dpdk_mp_v3_secondary.cpp")
