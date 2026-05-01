@@ -39,6 +39,56 @@ frame lengths into the historical `uint16_t` callback signature.
   (`include/eph/net/reconnect_policy.hpp`) — exponential backoff with
   ±jitter. Owned by `KernelTcpStream` and `DpdkTcpStream`.
 
+### Shared sub-configs and post-create snapshot
+
+The two `StreamConfig`s (kernel + DPDK) embed these by value so a single
+field cluster works against both backends:
+
+- `WsConfig` (`include/eph/net/ws_config.hpp`) — `path` / `host` /
+  `extra_headers` / `timeout` / `permessage_deflate`. Non-empty `path`
+  triggers an RFC 6455 client handshake transparently inside
+  `TcpStream::create()`. `extra_headers` views must outlive the
+  `create()` call.
+- `KeepaliveConfig` (`include/eph/net/keepalive_config.hpp`) —
+  `interval` / `probes`. Default disabled. Kernel lowers to
+  `setsockopt(SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`;
+  DPDK lowers to `cfg.dpdk.tcp_low_level.keepalive_*` for the PMD's
+  `TcpSession::tick_keepalive`.
+- `StreamSnapshot` (`include/eph/net/stream_snapshot.hpp`) — read
+  counterpart of `StreamConfig`. Returned by `Stream::snapshot()` /
+  `Datagram::snapshot()` on every backend (kernel + DPDK, TCP + UDP).
+  Sub-struct names mirror `StreamConfig` (`Tls` / `Ws` / `Keepalive` /
+  `Dpdk`) so reading and writing share a vocabulary.
+
+### HTTP client (`include/eph/net/http_client.hpp`)
+
+`HttpClient<S>` is a backend-agnostic, single-request-at-a-time HTTP/1.1
+client templated on any `eph::net::Stream`. Builds requests via
+`build_http_request`, incrementally parses replies via
+`parse_http_response` (so `Transfer-Encoding` / chunked / cookies /
+redirect / `Expect: 100-continue` are all rejected — see
+`.artifacts/phase-9-scope-decision.md` §D-1). Used by the JWT signing
+adapters and exchange REST examples.
+
+### Signed-request helper (`include/eph/net/signed_request.hpp`)
+
+Venue-traits-driven HMAC `sign_into_headers(...)` helper — wraps
+`HmacSha256Key` + `hmac_sha256_sign` with the per-venue conventions
+(what gets signed, hex vs base64 tag rendering, header names) for
+Binance / OKX / Bybit / Coinbase. Plug a venue trait into your
+adapter; the helper writes the auth headers without per-venue glue
+code in user space.
+
+### Reconnect orchestrator (`include/eph/net/reconnect_orchestrator.hpp`)
+
+`ReconnectOrchestrator<S>` composes `ReconnectPolicy` with
+user-supplied callbacks (factory / on_disconnect / on_reconnect /
+attach / detach) into the canonical multi-venue reconnect loop —
+`disconnect_detected → backoff → factory → attach → resubscribe →
+run`. Exposes 4 metrics (attempts / successes / failures /
+last_backoff_ms). Backend-agnostic; works with both `KernelTcpStream`
+and `DpdkTcpStream`.
+
 ### HTTP/1.1 parser subset (`include/eph/net/http.hpp`)
 
 Incremental, zero-heap HTTP/1.1 parser for exchange REST and WebSocket
