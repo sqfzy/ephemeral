@@ -170,6 +170,49 @@ TEST(AutojoinGwMacGuard, MaxProcsBelowTwo_RejectedFirst) {
         << "max_procs guard should fire first; got: " << r.error();
 }
 
+TEST(AutojoinLcoresGuard, EmptyLcores_RejectedUpFront) {
+    // Symmetric closure of the gw_mac empty-path guard: a missing
+    // lcores CSV must be rejected up-front rather than silently
+    // collapsing to mask=0 (which defeats MpRegistry v2's
+    // cross-peer overlap detection). This guard fires AFTER the
+    // gw_mac empty-path guard, so we pass a non-empty placeholder
+    // path here.
+    auto r = DpdkBenchEnv::create_via_autojoin(
+        /*pci_bdf=*/"0000:00:00.0",
+        /*max_procs=*/2,
+        /*lcores=*/"",
+        /*mock_ip=*/"127.0.0.1",
+        /*client_ip=*/"127.0.0.1",
+        /*gateway_ip=*/"127.0.0.1",
+        /*gw_mac_share_path=*/"/tmp/nonexistent_placeholder");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("EPH_LAT_AUTOJOIN_LCORES"),
+              std::string::npos)
+        << "error must name the env var; got: " << r.error();
+    EXPECT_NE(r.error().find("empty"), std::string::npos)
+        << "error must explain *why*; got: " << r.error();
+}
+
+TEST(AutojoinLcoresGuard, ZeroMaskAfterParse_RejectedUpFront) {
+    // CSV that parses but resolves to mask=0 (only whitespace and
+    // commas — `parse_lcores_csv_to_mask("  ,  ")` legitimately
+    // returns 0 by skipping all separators) must also be rejected.
+    // Without this, the v2 conflict gate sees a zero-claim peer
+    // and treats it as "no overlap with anyone", which is exactly
+    // the silent-failure mode v2 was added to close.
+    auto r = DpdkBenchEnv::create_via_autojoin(
+        /*pci_bdf=*/"0000:00:00.0",
+        /*max_procs=*/2,
+        /*lcores=*/"  ,  ",
+        /*mock_ip=*/"127.0.0.1",
+        /*client_ip=*/"127.0.0.1",
+        /*gateway_ip=*/"127.0.0.1",
+        /*gw_mac_share_path=*/"/tmp/nonexistent_placeholder");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("mask=0"), std::string::npos)
+        << "error must name the offending mask; got: " << r.error();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // FILE-PROTOCOL TESTS — atomic publish + stale unlink + all-zero parse
 // (simulate the protocol locally with the same POSIX primitives)

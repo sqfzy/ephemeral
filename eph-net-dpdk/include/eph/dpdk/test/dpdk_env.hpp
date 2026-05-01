@@ -370,6 +370,26 @@ struct DpdkBenchEnv {
                 "shared between primary and secondary peers)");
         }
 
+        // Reject an empty lcores string up-front. parse_lcores_csv_to_mask
+        // accepts "" → mask=0 as a deliberate back-compat for legacy callers
+        // that haven't migrated to v2 tracking, but the autojoin path
+        // ALWAYS wants v2 conflict detection: a zero mask means "I claim
+        // no lcores", which silently disables the cross-peer overlap
+        // gate. This pairs with the gw_mac_share_path empty-guard above —
+        // both are MP-mental-model silent-misuse closures.
+        if (lcores.empty()) {
+            SPDLOG_ERROR(
+                "DpdkBenchEnv::create_via_autojoin: lcores is empty — "
+                "autojoin requires a non-empty CSV (e.g. \"0,1\" or "
+                "\"0-3\") so MpRegistry v2 can detect cross-peer lcore "
+                "overlap; orchestrator must set EPH_LAT_AUTOJOIN_LCORES "
+                "or pass a non-empty value");
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: lcores is empty "
+                "(set EPH_LAT_AUTOJOIN_LCORES to a non-empty CSV so "
+                "MpRegistry v2 conflict detection has a non-zero mask)");
+        }
+
         // Parse lcore CSV into bitmask for cross-process conflict
         // detection (MpRegistry v2). Delegated to the standalone
         // helper above so the parser is unit-testable without EAL,
@@ -381,6 +401,20 @@ struct DpdkBenchEnv {
                 "DpdkBenchEnv::create_via_autojoin: " + mask_r.error());
         }
         const uint64_t self_lcore_mask = *mask_r;
+        // Defensive: the empty-guard above should already preclude
+        // mask==0, but `parse_lcores_csv_to_mask("  ,  ")` (whitespace
+        // and commas only) also evaluates to 0 — close that path here
+        // rather than let it propagate as a silent no-claim.
+        if (self_lcore_mask == 0) {
+            SPDLOG_ERROR(
+                "DpdkBenchEnv::create_via_autojoin: lcores='{}' parsed "
+                "to mask=0 — MpRegistry v2 cannot detect overlap with "
+                "an empty claim; CSV must contain at least one lcore",
+                lcores);
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: lcores='" + lcores
+                + "' parsed to mask=0 (CSV resolved to no lcore IDs)");
+        }
 
         // ── 1. Platform::join_dynamic ──────────────────────────────
         eph::dpdk::JoinDynamicConfig jd{};
