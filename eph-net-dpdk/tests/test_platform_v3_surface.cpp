@@ -195,3 +195,79 @@ TEST(PlatformAttach, EmptyFilePrefixRejectedPreEal) {
     EXPECT_NE(r.error().find("non-empty"), std::string::npos)
         << "actual error: " << r.error();
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Pre-EAL validation in Platform::join_dynamic
+//
+// Pin down the error-context contract added in commit 620f429e — the
+// user-visible error std::string for each pre-EAL fail path must
+// include the offending value, so a programmatic caller can diagnose
+// without log-scraping. These tests cover the three fail paths
+// reachable WITHOUT eal_init (which the function only invokes after
+// argv assembly).
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
+    // cfg.file_prefix empty → join_dynamic derives it via
+    // sanitize_bdf_for_file_prefix(cfg.pci); a malformed BDF makes
+    // sanitize fail. The wrapped error must name the actual cfg.pci
+    // value the caller supplied.
+    JoinDynamicConfig cfg{};
+    cfg.pci = "not_a_bdf";  // valid string_view but not a BDF
+    cfg.pcfg_template.nb_rx_queues = 4;
+    cfg.queues_per_proc            = 1;
+    // file_prefix left empty → triggers sanitize_bdf path
+
+    auto r = Platform::join_dynamic(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("pci='not_a_bdf'"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("file_prefix"), std::string::npos)
+        << "actual error: " << r.error();
+}
+
+TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
+    // cfg.max_procs > kMaxProcs (=64) → the OOR check at platform.hpp
+    // line ~2645. Error must report the offending max_procs, the
+    // kMaxProcs cap, and the inputs the auto-derive would have used
+    // (caller cfg.max_procs / nb_rx_queues / queues_per_proc).
+    JoinDynamicConfig cfg{};
+    cfg.pci                        = "0000:28:00.0";
+    cfg.pcfg_template.nb_rx_queues = 4;
+    cfg.queues_per_proc            = 1;
+    cfg.max_procs                  = 200;  // > kMaxProcs
+
+    auto r = Platform::join_dynamic(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("max_procs=200"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("kMaxProcs"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("nb_rx_queues=4"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("queues_per_proc=1"), std::string::npos)
+        << "actual error: " << r.error();
+}
+
+TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
+    // cfg.pins and cfg.lcores are mutually exclusive — error must
+    // report both sizes so the caller knows which side has stuff.
+    JoinDynamicConfig cfg{};
+    cfg.pci                        = "0000:28:00.0";
+    cfg.pcfg_template.nb_rx_queues = 2;
+    cfg.queues_per_proc            = 1;
+    cfg.max_procs                  = 2;
+    cfg.pins   = std::vector<LcorePin>(3, LcorePin{.lcore_id=0, .cpu_id=0, .role=""});
+    cfg.lcores = {"0", "1"};
+
+    auto r = Platform::join_dynamic(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("cfg.pins"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("cfg.lcores"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("size=3"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("size=2"), std::string::npos)
+        << "actual error: " << r.error();
+}
