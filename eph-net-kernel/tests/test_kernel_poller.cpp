@@ -242,3 +242,61 @@ TEST(KernelPoller, PollTimeoutRespectsDeadline) {
     EXPECT_GE(dt, 30);
     EXPECT_LE(dt, 500);
 }
+
+// ─── add/remove pre-condition rejection paths ────────────────────────────
+//
+// Both `add` and `remove` have nullptr-rejection guards before any
+// epoll_ctl interaction. `add` additionally rejects a Pollable whose
+// `fd() < 0` (already closed) so a zombie object can't accidentally
+// hijack the kernel's negative-fd error semantics. Lock all three.
+
+TEST(KernelPoller, AddNullptrRejected) {
+    auto p = ek::KernelPoller::create().value();
+    auto r = p->add(static_cast<EventfdPollable*>(nullptr));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Detail string must mention nullptr so log greps surface the misuse.
+    EXPECT_NE(std::string_view{r.error().detail}.find("nullptr"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
+    // Empty entries list — guard fired before any state mutation.
+    EXPECT_EQ(p->size(), 0u);
+}
+
+TEST(KernelPoller, RemoveNullptrRejected) {
+    auto p = ek::KernelPoller::create().value();
+    auto r = p->remove(static_cast<EventfdPollable*>(nullptr));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("nullptr"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
+}
+
+/// Minimal pollable that always reports a closed fd. Used to drive the
+/// `KernelPoller::add` "closed fd" rejection path without needing to
+/// race a real socket close.
+struct ClosedFdPollable {
+    using PacketView = int;
+    ek::KernelPoller* attached_{nullptr};
+    [[nodiscard]] int fd() const noexcept { return -1; }
+    std::size_t poll_once_() noexcept { return 0; }
+    void notify_attached_(ek::KernelPoller* p) noexcept { attached_ = p; }
+    void notify_detached_() noexcept { attached_ = nullptr; }
+};
+
+TEST(KernelPoller, AddPollableWithClosedFdRejected) {
+    auto p = ek::KernelPoller::create().value();
+    ClosedFdPollable bad;
+    auto r = p->add(&bad);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Detail must mention "closed fd" so an operator can correlate.
+    EXPECT_NE(std::string_view{r.error().detail}.find("closed fd"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
+    // notify_attached_ must NOT have fired — guard ran before the
+    // hook would be reached.
+    EXPECT_EQ(bad.attached_, nullptr);
+    EXPECT_EQ(p->size(), 0u);
+}
