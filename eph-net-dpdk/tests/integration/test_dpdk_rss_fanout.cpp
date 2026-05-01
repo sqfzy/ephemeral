@@ -144,7 +144,7 @@ public:
 
         std::this_thread::sleep_for(1s);
 
-        ::eph::dpdk::PlatformConfigV3 pcfg{};
+        ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
         pcfg.nb_tx_queues     = 4;

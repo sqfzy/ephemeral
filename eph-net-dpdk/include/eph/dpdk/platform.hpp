@@ -465,11 +465,11 @@ struct LegacyPlatformConfig {
 // in caller-friendly terms, never `MpTopology::uniform(...)` directly.
 //
 // Stage 1 status (this file): the v3 entry points (`Platform::create`,
-// `create_with_eal`) are wrappers that translate `PlatformConfigV3`
+// `create_with_eal`) are wrappers that translate `PlatformConfig`
 // back into the v2 `LegacyPlatformConfig` shape and call the v2 lifecycle.
 // Stage 3 will rewrite the entry points to native v3 implementation.
 //
-// Stage 5 will rename `PlatformConfigV3` -> `LegacyPlatformConfig` after the
+// Stage 5 will rename `PlatformConfig` -> `LegacyPlatformConfig` after the
 // v2 struct + v2 entry points are deleted.
 
 /// @brief Primary-side (or single-process) Platform config — v3 shape.
@@ -479,7 +479,7 @@ struct LegacyPlatformConfig {
 /// but without the secondary-side baggage. `max_procs` defaults to 1
 /// (single-process); set > 1 to open N MP slots in the registry that
 /// secondaries can attach to via `Platform::attach`.
-struct PlatformConfigV3 {
+struct PlatformConfig {
     // ── Identity ────────────────────────────────────────────────────
     /// DPDK port enumeration index.
     uint16_t         port_id      = 0;
@@ -513,12 +513,12 @@ struct PlatformConfigV3 {
     /// Optional cross-process lcore-conflict bitmap published by primary.
     uint64_t self_lcore_mask = 0;
 
-    [[nodiscard]] friend bool operator==(const PlatformConfigV3&,
-                                         const PlatformConfigV3&) = default;
+    [[nodiscard]] friend bool operator==(const PlatformConfig&,
+                                         const PlatformConfig&) = default;
 
     [[nodiscard]] std::string dump() const {
         return std::format(
-            "PlatformConfigV3{{port_id={}, file_prefix='{}', "
+            "PlatformConfig{{port_id={}, file_prefix='{}', "
             "queues={}rx/{}tx, descs={}rx/{}tx, "
             "pool={} cache={} promisc={} link_to={}ms, "
             "rx_cksum={} strict={}, "
@@ -832,7 +832,7 @@ public:
     /// EAL must be initialized before this call (use `create_with_eal`
     /// for the one-shot path).
     [[nodiscard]] static std::expected<Platform, std::string>
-    create(PlatformConfigV3 cfg);
+    create(PlatformConfig cfg);
 
     /// @brief v3: MP secondary attach. Reads NIC physical state from
     /// primary's registry + live NIC; the only required input is
@@ -846,7 +846,7 @@ public:
     /// this factory injects them from `cfg.file_prefix` and
     /// `ProcType::Primary`.
     [[nodiscard]] static std::expected<Platform, std::string>
-    create_with_eal(PlatformConfigV3                        cfg,
+    create_with_eal(PlatformConfig                        cfg,
                     EalConfig                               eal_cfg,
                     std::span<eph::dpdk::LcorePin const>    pins   = {},
                     eph::utils::CpuPinPolicy                policy = {});
@@ -864,7 +864,7 @@ public:
     /// is auto-derived from PCI BDF; primary/secondary role auto-resolved
     /// post `eal_init`; secondary needs no NIC physical knowledge.
     [[nodiscard]] static std::expected<Platform, std::string>
-    join_dynamic(JoinDynamicConfigV3 cfg);
+    join_dynamic(JoinDynamicConfig cfg);
 
     ~Platform();
 
@@ -2868,28 +2868,28 @@ Platform::join_dynamic(LegacyJoinDynamicConfig cfg) {
 // v3 entry-point implementations (Stage 1: thin wrappers over v2)
 // ─────────────────────────────────────────────────────────────────────
 //
-// These reshape `PlatformConfigV3` / `PlatformAttachConfig` /
-// `JoinDynamicConfigV3` into the v2 forms and delegate to the existing
+// These reshape `PlatformConfig` / `PlatformAttachConfig` /
+// `JoinDynamicConfig` into the v2 forms and delegate to the existing
 // lifecycle. Stage 3 will replace the wrapper bodies with native v3
 // implementations that no longer need the v2 path; stage 5 deletes v2.
 //
 // **Stage 1 testable surface**:
-//   * `Platform::create(PlatformConfigV3{max_procs=1})` — single-process
+//   * `Platform::create(PlatformConfig{max_procs=1})` — single-process
 //     happy path: byte-for-byte equivalent to v2 `create_primary`.
 //   * `Platform::attach(PlatformAttachConfig)` — calls into v2
 //     `create_secondary_impl_` after registry attach + slot CAS-claim.
 //   * `Platform::create_with_eal` / `attach_with_eal` v3 — assemble
 //     EalConfig with caller-supplied lcores/pci then delegate to v2.
-//   * `Platform::join_dynamic(JoinDynamicConfigV3)` — translates to v2
+//   * `Platform::join_dynamic(JoinDynamicConfig)` — translates to v2
 //     `LegacyJoinDynamicConfig` (queues_per_proc / max_procs read from
 //     primary_config) and calls v2 path.
 
 namespace detail {
 
-/// Translate v3 PlatformConfigV3 (primary or single-process) to v2
+/// Translate v3 PlatformConfig (primary or single-process) to v2
 /// LegacyPlatformConfig. Synthesizes MpTopology from `max_procs`/
 /// `queues_per_proc` when MP is requested.
-inline LegacyPlatformConfig v3_to_legacy_(const PlatformConfigV3& v3) {
+inline LegacyPlatformConfig v3_to_legacy_(const PlatformConfig& v3) {
     LegacyPlatformConfig v2{};
     v2.port_id                    = v3.port_id;
     v2.nb_rx_queues               = v3.nb_rx_queues;
@@ -2922,7 +2922,7 @@ inline LegacyPlatformConfig v3_to_legacy_(const PlatformConfigV3& v3) {
 } // namespace detail
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create(PlatformConfigV3 cfg) {
+Platform::create(PlatformConfig cfg) {
     return Platform::create_primary(detail::v3_to_legacy_(cfg));
 }
 
@@ -3007,7 +3007,7 @@ Platform::attach(PlatformAttachConfig cfg) {
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_with_eal(PlatformConfigV3                        cfg,
+Platform::create_with_eal(PlatformConfig                        cfg,
                           EalConfig                               eal_cfg,
                           std::span<eph::dpdk::LcorePin const>    pins,
                           eph::utils::CpuPinPolicy                policy) {
@@ -3114,10 +3114,10 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::join_dynamic(JoinDynamicConfigV3 v3cfg) {
+Platform::join_dynamic(JoinDynamicConfig v3cfg) {
     // Translate v3 → v2 LegacyJoinDynamicConfig. queues_per_proc and
     // max_procs flow from primary_config to top-level. v2 uses
-    // sentinel 0 = "auto-derive"; v3 PlatformConfigV3 inherits
+    // sentinel 0 = "auto-derive"; v3 PlatformConfig inherits
     // LegacyPlatformConfig defaults where max_procs=1 = "single-process".
     // For the autojoin context, treat primary_config.max_procs<=1 as
     // "let library auto-derive from nb_rx_queues / queues_per_proc"

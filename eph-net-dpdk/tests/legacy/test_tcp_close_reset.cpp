@@ -41,7 +41,7 @@ namespace {
 class TcpCloseResetTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
-        PlatformConfigV3 pcfg{};
+        PlatformConfig pcfg{};
         pcfg.port_id = 0;
         auto plat = Platform::create(pcfg);
         if (!plat.has_value()) {

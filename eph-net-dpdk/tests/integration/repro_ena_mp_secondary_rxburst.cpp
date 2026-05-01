@@ -182,7 +182,7 @@ void log(const char* role, const char* fmt, ...) {
     // V3 secondary autojoin: zero-consensus — pci + lcores only.
     // primary_config remains default; ignored when this peer
     // resolves to Secondary.
-    eph::dpdk::JoinDynamicConfigV3 jcfg{};
+    eph::dpdk::JoinDynamicConfig jcfg{};
     jcfg.pci    = allowed_dev;
     const char* lc = env_or_null("EPH_REPRO_LCORES");
     jcfg.lcores = {std::string{lc ? lc : "1"}};
@@ -287,7 +287,7 @@ int primary_main(char** argv) {
             env_or_null("EPH_REPRO_BENIGN_HOLD") ? env_or_null("EPH_REPRO_BENIGN_HOLD") : "30");
         // V3 primary autojoin (benign-mode): primary_config carries
         // NIC physical state; queues_per_proc moved into primary_config.
-        eph::dpdk::JoinDynamicConfigV3 jcfg{};
+        eph::dpdk::JoinDynamicConfig jcfg{};
         jcfg.pci                              = allowed_dev;
         jcfg.primary_config.port_id           = 0;
         jcfg.primary_config.nb_rx_queues      = kNbRxQueues;
@@ -328,7 +328,7 @@ int primary_main(char** argv) {
     log("primary", "bringing up Platform via join_dynamic: pci=%s nb_rx_queues=%u",
         allowed_dev.c_str(), kNbRxQueues);
 
-    eph::dpdk::JoinDynamicConfigV3 jcfg{};
+    eph::dpdk::JoinDynamicConfig jcfg{};
     jcfg.pci                              = allowed_dev;
     jcfg.primary_config.port_id           = 0;
     jcfg.primary_config.nb_rx_queues      = kNbRxQueues;

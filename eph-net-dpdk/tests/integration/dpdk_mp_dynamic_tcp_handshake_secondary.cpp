@@ -92,7 +92,7 @@ TEST(DpdkMpDynamicTcpHandshakeSecondary, ConnectsAndEchoes) {
     // Secondary peer needs only `pci` + `lcores`. nb_rx_queues env
     // var is preserved for post-attach assertions only.
     (void)nb_rx_queues;
-    eph::dpdk::JoinDynamicConfigV3 jd{};
+    eph::dpdk::JoinDynamicConfig jd{};
     jd.pci    = pci;
     jd.lcores = {lcores};
 

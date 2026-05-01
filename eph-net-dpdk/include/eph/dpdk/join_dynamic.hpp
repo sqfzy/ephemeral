@@ -176,19 +176,19 @@ struct LegacyJoinDynamicConfig {
 //     primary path; secondary discards every field except for the
 //     library's internal use of file_prefix derived from `pci`).
 //   - `queues_per_proc` / `max_procs` moved INSIDE primary_config (as
-//     `PlatformConfigV3::queues_per_proc` / `max_procs`). Top-level
+//     `PlatformConfig::queues_per_proc` / `max_procs`). Top-level
 //     fields removed — secondary peers no longer specify them.
 //   - `file_prefix` removed entirely (always auto-derived from `pci`
 //     to enforce zero-consensus).
 //
-// Stage 5 will rename `JoinDynamicConfigV3` -> `LegacyJoinDynamicConfig`
+// Stage 5 will rename `JoinDynamicConfig` -> `LegacyJoinDynamicConfig`
 // after the v2 struct + v2 entry points are deleted.
 
 /// @brief Zero-consensus autojoin config (v3).
 ///
 /// Required: `pci`. Everything else has a sensible default.
 /// **Secondary peers only need `pci` (and per-peer EAL args).**
-struct JoinDynamicConfigV3 {
+struct JoinDynamicConfig {
     /// PCI BDF of the NIC to attach. Drives BOTH the EAL `-a` allowlist
     /// AND the auto-derived `file_prefix` (`"eph_" + sanitize(pci)`).
     /// Two peers naming the same BDF naturally agree on hugepage
@@ -203,7 +203,7 @@ struct JoinDynamicConfigV3 {
     /// **Required when this peer resolves to primary**:
     /// `primary_config.nb_rx_queues > 0`. (Secondary peers may leave
     /// at default — discarded anyway.)
-    PlatformConfigV3 primary_config{};
+    PlatformConfig primary_config{};
 
     // ─── EAL options ─────────────────────────────────────────────────────
     // Same shape as v2 — these are per-peer (not consensus-bearing).

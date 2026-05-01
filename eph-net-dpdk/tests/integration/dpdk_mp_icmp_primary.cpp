@@ -89,7 +89,7 @@ TEST(DpdkMpIcmpPrimary, ReceivesForwardedIcmp) {
     eal_cfg.lcores       = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    eph::dpdk::PlatformConfigV3 pcfg{};
+    eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id      = port_id;
     pcfg.nb_rx_queues = nb_rx_queues;
     pcfg.nb_tx_queues = nb_rx_queues;

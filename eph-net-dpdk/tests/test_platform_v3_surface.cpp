@@ -11,8 +11,8 @@
 /// unit-test environment.
 ///
 /// What this file pins down:
-///   - v3 types (`PlatformConfigV3`, `PlatformAttachConfig`,
-///     `JoinDynamicConfigV3`) compile and have expected fields.
+///   - v3 types (`PlatformConfig`, `PlatformAttachConfig`,
+///     `JoinDynamicConfig`) compile and have expected fields.
 ///   - v3 entry-point function pointers have the documented signatures.
 ///   - The internal v3→v2 translator (`detail::v3_to_legacy_`)
 ///     correctly maps fields.
@@ -38,8 +38,8 @@ using namespace eph::dpdk;
 // Type-shape tests
 // ──────────────────────────────────────────────────────────────────────
 
-TEST(PlatformConfigV3, DefaultsAreSingleProcess) {
-    PlatformConfigV3 cfg{};
+TEST(PlatformConfig, DefaultsAreSingleProcess) {
+    PlatformConfig cfg{};
     EXPECT_EQ(cfg.max_procs, 1);
     EXPECT_EQ(cfg.queues_per_proc, 0);    // 0 = auto
     EXPECT_EQ(cfg.port_id, 0);
@@ -48,10 +48,10 @@ TEST(PlatformConfigV3, DefaultsAreSingleProcess) {
     EXPECT_TRUE(cfg.file_prefix.empty());
 }
 
-TEST(PlatformConfigV3, NicPhysicalFieldsMirrorV2Defaults) {
+TEST(PlatformConfig, NicPhysicalFieldsMirrorV2Defaults) {
     // Sanity: v3's NIC physical defaults match v2's so silent semantic
     // shift is impossible in stage 1.
-    PlatformConfigV3 v3{};
+    PlatformConfig v3{};
     LegacyPlatformConfig   v2{};
     EXPECT_EQ(v3.nb_rx_queues,    v2.nb_rx_queues);
     EXPECT_EQ(v3.nb_tx_queues,    v2.nb_tx_queues);
@@ -80,12 +80,12 @@ TEST(PlatformAttachConfig, MinimalSurface) {
     EXPECT_NE(s.find("port_id=1"),          std::string::npos);
 }
 
-TEST(JoinDynamicConfigV3, NoTopLevelConsensusFields) {
+TEST(JoinDynamicConfig, NoTopLevelConsensusFields) {
     // v3 zero-consensus: queues_per_proc / max_procs are NOT top-level
     // (compile-time enforcement: the names don't exist on the struct).
     // We can't test absence directly in C++; instead verify the fields
     // that DO exist match the v3 design.
-    JoinDynamicConfigV3 cfg{};
+    JoinDynamicConfig cfg{};
     EXPECT_TRUE(cfg.pci.empty());
     EXPECT_EQ(cfg.primary_config.max_procs, 1);
     EXPECT_EQ(cfg.primary_config.queues_per_proc, 0);
@@ -98,16 +98,16 @@ TEST(JoinDynamicConfigV3, NoTopLevelConsensusFields) {
 // ──────────────────────────────────────────────────────────────────────
 
 TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
-    using CreateFn = std::expected<Platform, std::string> (*)(PlatformConfigV3);
+    using CreateFn = std::expected<Platform, std::string> (*)(PlatformConfig);
     using AttachFn = std::expected<Platform, std::string> (*)(PlatformAttachConfig);
     using CreateWithEalFn = std::expected<Platform, std::string> (*)(
-        PlatformConfigV3, EalConfig,
+        PlatformConfig, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
     using AttachWithEalFn = std::expected<Platform, std::string> (*)(
         PlatformAttachConfig, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
     using JoinDynV3Fn = std::expected<Platform, std::string> (*)(
-        JoinDynamicConfigV3);
+        JoinDynamicConfig);
 
     [[maybe_unused]] CreateFn        f1 = &Platform::create;
     [[maybe_unused]] AttachFn        f2 = &Platform::attach;
@@ -124,7 +124,7 @@ TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
 // ──────────────────────────────────────────────────────────────────────
 
 TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
-    PlatformConfigV3 v3{};
+    PlatformConfig v3{};
     v3.port_id          = 1;
     v3.file_prefix      = "demo";
     v3.nb_rx_queues     = 4;
@@ -157,7 +157,7 @@ TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
 }
 
 TEST(V3ToV2Primary, MpPrimarySynthesizesTopology) {
-    PlatformConfigV3 v3{};
+    PlatformConfig v3{};
     v3.nb_rx_queues = 4;
     v3.nb_tx_queues = 4;
     v3.max_procs    = 2;
@@ -171,7 +171,7 @@ TEST(V3ToV2Primary, MpPrimarySynthesizesTopology) {
 }
 
 TEST(V3ToV2Primary, SelfLcoreMaskPropagates) {
-    PlatformConfigV3 v3{};
+    PlatformConfig v3{};
     v3.nb_rx_queues     = 2;
     v3.max_procs        = 2;
     v3.self_lcore_mask  = 0b1100ULL;  // lcores 2,3

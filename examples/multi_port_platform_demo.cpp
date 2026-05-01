@@ -186,10 +186,10 @@ int main(int argc, char** argv) {
     // `nb_rx_queues = 1` keeps the demo's focus on the aggregator. To
     // overlap with RSS, set `nb_rx_queues > 1` and `enable_rss = true`
     // per port — the aggregator imposes no policy.
-    std::vector<ed::PlatformConfigV3> port_cfgs;
+    std::vector<ed::PlatformConfig> port_cfgs;
     port_cfgs.reserve(n_ports);
     for (std::size_t i = 0; i < n_ports; ++i) {
-        ed::PlatformConfigV3 pcfg{};
+        ed::PlatformConfig pcfg{};
         pcfg.port_id      = static_cast<uint16_t>(i);
         pcfg.nb_rx_queues = 1;
         pcfg.nb_tx_queues = 1;
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
 
     // ── 3) Atomic N-port bringup with rollback ────────────────────────────
     auto mp_r = ed::MultiPortPlatform::create(
-        std::span<const ed::PlatformConfigV3>(port_cfgs));
+        std::span<const ed::PlatformConfig>(port_cfgs));
     if (!mp_r) {
         spdlog::error("multi_port_platform_demo: MultiPortPlatform::create failed: {}",
                       mp_r.error().detail);

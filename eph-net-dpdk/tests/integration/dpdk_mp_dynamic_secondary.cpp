@@ -55,7 +55,7 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
     // peer resolves to Secondary). nb_rx_queues env var preserved for
     // post-attach assertions only.
     (void)nb_rx_queues;
-    eph::dpdk::JoinDynamicConfigV3 cfg{};
+    eph::dpdk::JoinDynamicConfig cfg{};
     cfg.pci    = pci;
     cfg.lcores = {lcores};
 

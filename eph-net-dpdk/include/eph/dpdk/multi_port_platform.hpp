@@ -115,7 +115,7 @@ public:
     /// aggregator owns every `Platform` until destruction.
     [[nodiscard]] static std::expected<std::unique_ptr<MultiPortPlatform>,
                                         ::eph::core::ErrorInfo>
-    create(std::span<const PlatformConfigV3> configs) noexcept {
+    create(std::span<const PlatformConfig> configs) noexcept {
         [[maybe_unused]] auto log = detail::multi_port_logger();
 
         if (configs.empty()) {

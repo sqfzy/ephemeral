@@ -157,7 +157,7 @@ public:
         //     detected capability (typically RssPartitioned).
         //   * On ENA with older driver (no probe support): Platform::create
         //     hard-fails — env never becomes ready, all tests SKIP.
-        ::eph::dpdk::PlatformConfigV3 pcfg{};
+        ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.port_id          = 0;
         pcfg.nb_rx_queues     = 4;
         pcfg.nb_tx_queues     = 4;

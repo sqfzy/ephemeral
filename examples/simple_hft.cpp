@@ -207,9 +207,9 @@ int main(int argc, char** argv) {
     }
 
     // ── 3) Platform::create_with_eal — single-process, single queue ───────
-    // V3 API: PlatformConfigV3 has no proc_type (always primary in
+    // V3 API: PlatformConfig has no proc_type (always primary in
     // create()) and no file_prefix here (single-process default empty).
-    ed::PlatformConfigV3 pcfg{};
+    ed::PlatformConfig pcfg{};
     pcfg.port_id        = cfg.eal.port_id;
     pcfg.nb_rx_queues   = 1;
     pcfg.nb_tx_queues   = 1;

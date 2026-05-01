@@ -96,12 +96,12 @@ using ::eph::core::Error;
 using ::eph::core::ErrorInfo;
 using ::eph::dpdk::MultiPortPlatform;
 using ::eph::dpdk::Platform;
-using ::eph::dpdk::PlatformConfigV3;
+using ::eph::dpdk::PlatformConfig;
 
 /// Conservative test config: small pool, single queue, link timeout 0
 /// (don't wait — net_null link is virtual). Mirrors
 /// `test_dpdk_platform_mempool.cpp::kBaseCfg`.
-constexpr PlatformConfigV3 kBaseCfg{
+constexpr PlatformConfig kBaseCfg{
     .port_id         = 0,
     .nb_rx_queues    = 1,
     .nb_tx_queues    = 1,
@@ -121,7 +121,7 @@ TEST(MultiPortPlatformValidation, ZeroPortsRejected) {
     // Empty span must be rejected up-front. We build the span with no
     // backing array to assert the "first thing the aggregator checks"
     // contract.
-    std::span<const PlatformConfigV3> empty{};
+    std::span<const PlatformConfig> empty{};
     auto r = MultiPortPlatform::create(empty);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -131,11 +131,11 @@ TEST(MultiPortPlatformValidation, DuplicatePortRejected) {
     // Two configs that both target port 0. The aggregator must reject
     // before any DPDK port bringup — i.e. before consuming a net_null
     // slot.
-    PlatformConfigV3 a = kBaseCfg;
-    PlatformConfigV3 b = kBaseCfg;
+    PlatformConfig a = kBaseCfg;
+    PlatformConfig b = kBaseCfg;
     a.port_id = 0;
     b.port_id = 0;
-    std::array<PlatformConfigV3, 2> configs{a, b};
+    std::array<PlatformConfig, 2> configs{a, b};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -146,12 +146,12 @@ TEST(MultiPortPlatformValidation, InvalidConfigRejected) {
     // 2^n - 1, which `Platform::create`'s structural validation
     // rejects. Distinct port_ids so the duplicate check doesn't shadow
     // the structural rejection.
-    PlatformConfigV3 a = kBaseCfg;
+    PlatformConfig a = kBaseCfg;
     a.port_id = 0;
-    PlatformConfigV3 b = kBaseCfg;
+    PlatformConfig b = kBaseCfg;
     b.port_id = 1;
     b.mbuf_pool_size = 1000;  // not 2^n - 1 → rejected
-    std::array<PlatformConfigV3, 2> configs{a, b};
+    std::array<PlatformConfig, 2> configs{a, b};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -161,10 +161,10 @@ TEST(MultiPortPlatformValidation, ZeroQueuesRejected) {
     // Sanity: `Platform::create` also rejects nb_rx_queues == 0. Belt
     // and braces — confirms structural validation runs end-to-end
     // through the aggregator's per-port `Platform::create` call.
-    PlatformConfigV3 a = kBaseCfg;
+    PlatformConfig a = kBaseCfg;
     a.port_id = 0;
     a.nb_rx_queues = 0;  // invalid
-    std::array<PlatformConfigV3, 1> configs{a};
+    std::array<PlatformConfig, 1> configs{a};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -184,11 +184,11 @@ protected:
     static std::unique_ptr<MultiPortPlatform> agg_;
 
     static void SetUpTestSuite() {
-        PlatformConfigV3 a = kBaseCfg;
+        PlatformConfig a = kBaseCfg;
         a.port_id = 0;  // net_null0
-        PlatformConfigV3 b = kBaseCfg;
+        PlatformConfig b = kBaseCfg;
         b.port_id = 1;  // net_null1
-        std::array<PlatformConfigV3, 2> configs{a, b};
+        std::array<PlatformConfig, 2> configs{a, b};
         auto r = MultiPortPlatform::create(std::span{configs});
         if (r.has_value()) {
             agg_ = std::move(*r);
@@ -272,10 +272,10 @@ TEST_F(MultiPortPlatformLive, IcmpRegistriesNotShared) {
 
 TEST(MultiPortPlatformBackCompat, SinglePortFactoryStillExists) {
     // Compile-time sanity: `Platform::create` must still take a single
-    // `PlatformConfigV3` and return `expected<Platform, ...>`. If a
+    // `PlatformConfig` and return `expected<Platform, ...>`. If a
     // future refactor accidentally retires this overload, this test
     // fails to compile (which is the regression signal we want).
-    using ReturnT = decltype(Platform::create(std::declval<PlatformConfigV3>()));
+    using ReturnT = decltype(Platform::create(std::declval<PlatformConfig>()));
     static_assert(std::is_same_v<ReturnT,
                                  std::expected<Platform, std::string>>,
                   "Platform::create must still be the canonical "

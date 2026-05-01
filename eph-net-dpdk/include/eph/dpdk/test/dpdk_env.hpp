@@ -48,7 +48,7 @@
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
-// JoinDynamicConfigV3 comes in transitively via platform.hpp (post-api-unify
+// JoinDynamicConfig comes in transitively via platform.hpp (post-api-unify
 // reshape — sentinel guard EPH_DPDK_PLATFORM_CONFIG_DEFINED requires
 // platform.hpp first).
 #include "eph/dpdk/tcp.hpp"
@@ -226,7 +226,7 @@ struct DpdkBenchEnv {
     /// move-only struct. The returned env owns Platform and Platform
     /// owns EAL — destruction is fully RAII.
     ///
-    /// @param pcfg        Full PlatformConfigV3 (port_id, nb_rx_queues,
+    /// @param pcfg        Full PlatformConfig (port_id, nb_rx_queues,
     ///                    enable_promiscuous, mbuf_pool_size, etc.).
     /// @param eal_cfg     EAL configuration. Caller-owned strings.
     /// @param pins        Typed lcore→cpu pin spec. Empty span = no
@@ -237,7 +237,7 @@ struct DpdkBenchEnv {
     /// @param client_ip   Local source IP — dotted-quad string.
     /// @param gateway_ip  Default gateway IP for ARP resolve — dotted-quad.
     [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
-    create(eph::dpdk::PlatformConfigV3 pcfg,
+    create(eph::dpdk::PlatformConfig pcfg,
            eph::dpdk::EalConfig eal_cfg,
            std::span<eph::dpdk::LcorePin const> pins,
            eph::utils::CpuPinPolicy pin_policy,
@@ -329,7 +329,7 @@ struct DpdkBenchEnv {
     ///
     /// @param pci_bdf            NIC PCI BDF, e.g. "0000:28:00.0"
     /// @param max_procs          Autojoin slot count; written into
-    ///                            `JoinDynamicConfigV3::primary_config`
+    ///                            `JoinDynamicConfig::primary_config`
     ///                            as `max_procs` and as
     ///                            `nb_rx_queues` / `nb_tx_queues`
     /// @param lcores             EAL lcore CSV for this peer (e.g.
@@ -427,7 +427,7 @@ struct DpdkBenchEnv {
         }
 
         // ── 1. Platform::join_dynamic (v3 zero-consensus shape) ────
-        eph::dpdk::JoinDynamicConfigV3 jd{};
+        eph::dpdk::JoinDynamicConfig jd{};
         jd.pci                                 = pci_bdf;
         jd.primary_config.nb_rx_queues         = static_cast<uint16_t>(max_procs);
         jd.primary_config.nb_tx_queues         = static_cast<uint16_t>(max_procs);

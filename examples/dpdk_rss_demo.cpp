@@ -261,7 +261,7 @@ int main(int argc, char** argv) {
     // Single binary, single peer ⇒ single-process bring-up. Platform
     // owns the EAL session and runs eal_cleanup atomically on
     // destruction; no separate EalGuard needed.
-    ed::PlatformConfigV3 pcfg{};
+    ed::PlatformConfig pcfg{};
     pcfg.port_id          = args.eal.port_id;
     pcfg.nb_rx_queues     = args.nb_rx_queues;
     pcfg.nb_tx_queues     = args.nb_rx_queues;

@@ -208,13 +208,13 @@ AppArgs parse_args(int argc, char** argv) {
 // detect cross-process self_index collisions instead of trusting the
 // operator to keep them disjoint.
 //
-// v3 API: primary uses PlatformConfigV3 with max_procs=2 (library
+// v3 API: primary uses PlatformConfig with max_procs=2 (library
 // synthesizes MpTopology internally). Secondary uses
 // PlatformAttachConfig — only file_prefix + port_id needed; the
 // library reads the registry for everything else.
 
-ed::PlatformConfigV3 make_primary_config(const AppArgs& a) {
-    ed::PlatformConfigV3 cfg{};
+ed::PlatformConfig make_primary_config(const AppArgs& a) {
+    ed::PlatformConfig cfg{};
     cfg.port_id      = a.eal.port_id;
     cfg.nb_rx_queues = a.nb_rx_queues;
     cfg.nb_tx_queues = a.nb_rx_queues;
@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
     }
 
     // ── 1) EAL + Platform via v3 split factories ─────────────────────────
-    // V3 zero-consensus: primary uses create_with_eal(PlatformConfigV3),
+    // V3 zero-consensus: primary uses create_with_eal(PlatformConfig),
     // secondary uses attach_with_eal(PlatformAttachConfig). Their inputs
     // are intentionally asymmetric — primary owns the NIC physical
     // configuration, secondary owns nothing but "where is primary".

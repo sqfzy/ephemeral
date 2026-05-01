@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
     // queue, THEN clear `MulticastConfig::rss_active_multi_queue` to
     // acknowledge the explicit pin. The receiver cannot reverse-pick a
     // src_port (it doesn't control the sender) so RSS without FD is unsafe.
-    ed::PlatformConfigV3 pcfg{};
+    ed::PlatformConfig pcfg{};
     pcfg.port_id            = args.eal.port_id;
     pcfg.nb_rx_queues       = 1;
     pcfg.nb_tx_queues       = 1;

@@ -163,7 +163,7 @@ enum class StreamMetric : std::size_t {
     /// new code — retaining this one only to keep existing dashboards
     /// and `publish_metrics` emitters working unmodified.
     ///
-    /// Gated by `PlatformConfigV3::enable_rx_checksum_offload` — when
+    /// Gated by `PlatformConfig::enable_rx_checksum_offload` — when
     /// opt-in is off the NIC never marks packets BAD and this counter
     /// stays at 0. When opt-in is on, non-zero means either a genuine
     /// transmission error (optical bit flip, faulty switch) or a

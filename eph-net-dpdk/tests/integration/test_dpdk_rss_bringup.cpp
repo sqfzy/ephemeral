@@ -163,8 +163,8 @@ private:
 /// `nb_rx_queues` to exercise the bring-up matrix; nb_rx_queues > 1
 /// auto-engages RSS/FlowDirector bring-up (the previous `enable_rss`
 /// flag was removed in favour of this derivation).
-::eph::dpdk::PlatformConfigV3 make_pcfg() noexcept {
-    ::eph::dpdk::PlatformConfigV3 p{};
+::eph::dpdk::PlatformConfig make_pcfg() noexcept {
+    ::eph::dpdk::PlatformConfig p{};
     p.port_id         = 0;  // EAL allow-listed only NIC_B → port_id 0
     p.nb_rx_queues    = 1;
     p.nb_tx_queues    = 1;

@@ -130,7 +130,7 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
     };
 
     // ── 2. Platform::join_dynamic (v3) ─────────────────────────────────
-    eph::dpdk::JoinDynamicConfigV3 jd{};
+    eph::dpdk::JoinDynamicConfig jd{};
     jd.pci                            = pci;
     jd.primary_config.nb_rx_queues    = nb_rx_queues;
     // Match TX queues to RX so secondary's RSS-aware tx_queue_id

@@ -97,12 +97,12 @@ static const auto* env_reg =
 namespace {
 
 using ::eph::dpdk::Platform;
-using ::eph::dpdk::PlatformConfigV3;
+using ::eph::dpdk::PlatformConfig;
 
 // Conservative test config: small pool, single queue, link timeout 0
 // (don't wait — net_null link is virtual). Keeping `mbuf_pool_size`
 // modest so each per-lcore pool stays small.
-constexpr PlatformConfigV3 kBaseCfg{
+constexpr PlatformConfig kBaseCfg{
     .port_id         = 0,
     .nb_rx_queues    = 1,
     .nb_tx_queues    = 1,
@@ -120,7 +120,7 @@ constexpr PlatformConfigV3 kBaseCfg{
 // v2 validator currently owns; the validator moves into the v3
 // path in stage 2 of the v2/v3 merge, at which point this helper
 // becomes a direct call.
-inline auto validate_v3(const PlatformConfigV3& cfg) {
+inline auto validate_v3(const PlatformConfig& cfg) {
     return ::eph::dpdk::validate_config(
         ::eph::dpdk::detail::v3_to_legacy_(cfg));
 }
@@ -130,19 +130,19 @@ inline auto validate_v3(const PlatformConfigV3& cfg) {
 // ---------------------------------------------------------------------------
 
 TEST(PlatformMempoolConfig, ValidatorAcceptsZeroPerLcorePools) {
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.per_lcore_pools = 0;
     EXPECT_TRUE(validate_v3(cfg).empty());
 }
 
 TEST(PlatformMempoolConfig, ValidatorAcceptsModeratePerLcorePools) {
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.per_lcore_pools = 4;
     EXPECT_TRUE(validate_v3(cfg).empty());
 }
 
 TEST(PlatformMempoolConfig, ValidatorRejectsExcessPerLcorePools) {
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.per_lcore_pools = 1024;  // > RTE_MAX_LCORE (256)
     auto err = validate_v3(cfg);
     EXPECT_FALSE(err.empty());
@@ -158,7 +158,7 @@ TEST(PlatformMempoolConfig, ValidatorRejectsRssWithSingleTxQueue) {
     // out the symptom — a clean connect() followed by zero TX bytes —
     // as the worst kind of misconfiguration: silent. This validator
     // line surfaces it at create() time.
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.nb_rx_queues = 4;
     cfg.nb_tx_queues = 1;  // intentionally mismatched
     auto err = validate_v3(cfg);
@@ -170,7 +170,7 @@ TEST(PlatformMempoolConfig, ValidatorRejectsRssWithSingleTxQueue) {
 TEST(PlatformMempoolConfig, ValidatorAcceptsMatchedMultiQueue) {
     // The matched case (rx == tx == N > 1) must continue to validate —
     // this is the canonical RSS-aware multi-queue layout.
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.nb_rx_queues = 4;
     cfg.nb_tx_queues = 4;
     EXPECT_TRUE(validate_v3(cfg).empty()) << validate_v3(cfg);
@@ -179,14 +179,14 @@ TEST(PlatformMempoolConfig, ValidatorAcceptsMatchedMultiQueue) {
 TEST(PlatformMempoolConfig, ValidatorAcceptsSingleQueueBoth) {
     // Single-queue bring-up (the test fixture default) must remain valid:
     // the new check is gated on `nb_rx_queues > 1`.
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.nb_rx_queues = 1;
     cfg.nb_tx_queues = 1;
     EXPECT_TRUE(validate_v3(cfg).empty());
 }
 
 TEST(PlatformMempoolConfig, DumpContainsPerLcoreField) {
-    PlatformConfigV3 cfg = kBaseCfg;
+    PlatformConfig cfg = kBaseCfg;
     cfg.per_lcore_pools = 3;
     auto d = cfg.dump();
     EXPECT_NE(d.find("per_lcore_pools"), std::string::npos);
@@ -229,7 +229,7 @@ protected:
     static std::optional<Platform> plat_;
 
     static void SetUpTestSuite() {
-        PlatformConfigV3 cfg = kBaseCfg;
+        PlatformConfig cfg = kBaseCfg;
         cfg.port_id = 1;                    // net_null1
         cfg.per_lcore_pools = kPools;
         auto r = Platform::create(cfg);
@@ -254,7 +254,7 @@ protected:
     static std::optional<Platform> plat_;
 
     static void SetUpTestSuite() {
-        PlatformConfigV3 cfg = kBaseCfg;
+        PlatformConfig cfg = kBaseCfg;
         cfg.port_id = 0;            // net_null0
         cfg.per_lcore_pools = 0;    // default — single shared pool
         auto r = Platform::create(cfg);

@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
     // ── 2) EAL + Platform via the unified create_with_eal factory ────────
     // Single binary, single peer, real-server probe ⇒ Platform owns EAL
     // and runs eal_cleanup atomically on destruction.
-    eph::dpdk::PlatformConfigV3 pcfg{};
+    eph::dpdk::PlatformConfig pcfg{};
     pcfg.port_id        = app_cfg.eal.port_id;
     pcfg.nb_rx_queues   = 1;
     pcfg.nb_tx_queues   = 1;

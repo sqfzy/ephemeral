@@ -63,7 +63,7 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
     // V3 autojoin: primary peer fills `primary_config` (only consulted
     // when this peer resolves to Primary). max_procs default 0 means
     // library auto-derives from nb_rx_queues / queues_per_proc.
-    eph::dpdk::JoinDynamicConfigV3 cfg{};
+    eph::dpdk::JoinDynamicConfig cfg{};
     cfg.pci                            = pci;
     cfg.primary_config.nb_rx_queues    = nb_rx_queues;
     cfg.primary_config.nb_tx_queues    = nb_rx_queues;
