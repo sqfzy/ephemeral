@@ -40,7 +40,7 @@ std::array pins = {
     eph::dpdk::LcorePin{1, 5, "tx-worker"},
 };
 auto eal = eph::dpdk::EalGuard::init_with_pins(cfg, pins, strict_policy());
-if (!eal) { spdlog::error("{}", eal.error()); return 1; }
+if (!eal) { SPDLOG_ERROR("{}", eal.error()); return 1; }
 
 // Anywhere later — pin_thread now sees lcore-0 / lcore-1's cpus.
 eph::utils::pin_thread(6, "trader", strict_policy());

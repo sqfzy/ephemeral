@@ -100,7 +100,7 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
 /// Use the static factory `init()` instead of the constructor.
 ///
 ///   auto eal = EalGuard::init(argc, argv);
-///   if (!eal) { spdlog::error("{}", eal.error()); return 1; }
+///   if (!eal) { SPDLOG_ERROR("{}", eal.error()); return 1; }
 ///   // ... use DPDK APIs ...
 ///   // eal_cleanup() called automatically when `eal` goes out of scope
 class EalGuard {
