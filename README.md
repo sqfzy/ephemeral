@@ -211,7 +211,7 @@ multi-connection patterns and heterogeneous `TcpStream` + `UdpSocket` on one pol
 | Module | Headers | Description |
 |---|---|---|
 | **eph-core** | `error`, `codec`, `error_traits`, `metrics_concept`, `framer_concept`, `length_prefix_framer`, `parse_number`, `packet_view` | `Error` / `ErrorInfo` / `StreamCodec` / `DatagramCodec` / `PacketView` contract plus legacy framer primitives still consumed by the parser modules. |
-| **eph-utils** | `time` (TSC), `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `recorder`, `system_stats`, `ema`, `alignment` | TSC timing, CPU pinning, hugepage allocator, histograms, audit logging, recorders. |
+| **eph-utils** | `time` (TSC), `timestamp`, `cpu`, `hugepage`, `hdr_histogram`, `audit_log`, `console_sink`, `record` / `recorder`, `system_stats`, `ema`, `alignment`, `kill_switch`, `rate_limiter`, `phased_timer`, `shutdown_signal` | TSC timing, CPU pinning, hugepage allocator, histograms, audit logging, recorders, `KillSwitch` compliance primitive, `TokenBucket` rate limiter. |
 | **eph-containers** | `bounded_queue`, `evicting_queue`, `ring_buffer`, `*_bytes` variants | Lock-free SPSC queues and byte-level variants used by the transports. |
 | **eph-codec** | `ws_codec`, `raw_stream_codec`, `length_prefix_codec`, `raw_datagram_codec`, `mold64_codec` | Stateful codecs satisfying `StreamCodec` / `DatagramCodec`. WS auto-responds ping/close; Mold64 emits N ITCH frames per datagram. |
 | **eph-net** | `concepts`, `socket_addr`, `reconnect_policy`, `tcp_state`, `test/fake_stream`, `test/test_poller`, `test/fake_datagram`, `detail/tls_session`, `detail/websocket` | The `Stream` / `Datagram` / `Pollable` / `Poller` concepts, shared value types, test mocks, and the shared TLS / WS wire helpers both backends use. |
