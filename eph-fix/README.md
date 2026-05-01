@@ -7,6 +7,7 @@ Part of the **eph** monorepo. Builds as an `xmake` header-only target with a sin
 ## Features
 
 - **Zero-copy parser** — FIX `tag=value\x01` messages are parsed into a stack-allocated `BasicMessageView<MaxFields>` whose `std::string_view` values point directly into the caller's buffer. No heap allocation on the hot path.
+- **Repeating groups** — `BasicMessageView::get_group(count_tag, delim_tag, out_entries, max_entries)` fills a caller-owned `GroupEntry[]` and returns a `RepeatingGroupView` that iterates each entry as a span of `Field*` — the standard FIX shape for `NoMDEntries` / `NoMDEntryTypes` / `NoOrders` / etc. The buffer is caller-supplied to keep the parser allocation-free. `count()` / `get_nth()` are still available for ad-hoc indexing; the group view is preferred when you need to iterate. Custom (non-standard) tags work transparently — every field is keyed by `uint16_t tag`, so user-defined tags above the FIX 4.4 reserved range parse and round-trip without any registration.
 - **Zero-allocation builder** — `MessageBuilder` writes fields directly into a caller-owned buffer, prepending `8=/9=` header and appending `10=` checksum on `finish()`.
 - **Framer** — `BasicFixFramer` satisfies `eph::net::MessageFramer`, so FIX plugs directly into `eph-net-kernel` / `eph-net-dpdk` `TcpStream`s with one using-alias.
 - **Typed FIX 4.4 session** — Logon/Logout handshake, automatic Heartbeat, TestRequest probing, bidirectional `MsgSeqNum` gap detection, `SequenceReset`/`GapFill`, and optional `ResendRequest`. Thread-safe state via `std::atomic`.
