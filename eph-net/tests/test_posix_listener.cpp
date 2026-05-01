@@ -101,6 +101,20 @@ TEST(PosixListener, udp_bind_invalid_ip_returns_error) {
     EXPECT_NE(result.error().find("invalid bind IP"), std::string::npos);
 }
 
+TEST(PosixListener, udp_bind_empty_ip_returns_error) {
+    // Symmetry with `tcp_bind_listen_empty_ip_returns_error`: empty IP
+    // string must surface "invalid bind IP" from inet_pton's rejection
+    // rather than silently using INADDR_ANY (which the field
+    // sin_addr.s_addr would otherwise zero-init to). The fd must be
+    // closed before the error is returned — otherwise repeated calls
+    // here would leak fds. We can't directly observe the close, but
+    // pinning the rejection ensures the path is exercised.
+    auto result = udp_bind("", 0);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().find("invalid bind IP"), std::string::npos)
+        << "error: " << result.error();
+}
+
 // ---------------------------------------------------------------------------
 // accept_one — success path with a connecting client
 // ---------------------------------------------------------------------------
