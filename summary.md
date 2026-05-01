@@ -139,7 +139,7 @@ Implementations (all in `eph-codec`):
 |---|---|---|
 | `WsCodec` | Stream | RFC 6455; owns reassembly + ping/pong/close FSM. |
 | `RawStreamCodec` | Stream | Passes bytes through untouched. |
-| `LengthPrefixCodec` | Stream | 2-byte big-endian length prefix, ≤65 535-byte payloads. |
+| `LengthPrefixCodec` | Stream | 4-byte big-endian length prefix, payloads up to `kMaxFrameLen` = 16 MiB. |
 | `RawDatagramCodec` | Datagram | One frame per datagram, zero overhead. |
 | `Mold64Codec` | Datagram | NASDAQ MoldUDP64 with gap detection; emits N ITCH frames per packet. |
 
