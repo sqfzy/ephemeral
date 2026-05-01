@@ -249,8 +249,11 @@ caller's responsibility.
    process start
 7. Hugepages reserved: `cat /proc/meminfo | grep HugePages_Free` ≥ what
    the process needs
-8. For DPDK MP: src_port ranges in `EalConfig` are disjoint across
-   processes
+8. For DPDK MP: src_port ranges across the cooperating processes
+   are disjoint. `EalConfig` has no `src_port` field — partitioning
+   is the **caller's** responsibility (eph-net-dpdk does not
+   auto-allocate src_port and has no global view to enforce
+   disjointness). See `eph-net-dpdk/docs/dpdk-multiprocess.md`.
 9. Idempotent setup script (`eph-net-dpdk/scripts/dpdk-setup.sh`) runs
    green on a fresh host
 
