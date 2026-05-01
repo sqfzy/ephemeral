@@ -187,6 +187,14 @@ target("dpdk_mp_secondary")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- v3 secondary integration (zero-consensus attach surface). Pairs with
+-- the same dpdk_mp_primary as v2; only the secondary differs.
+target("dpdk_mp_v3_secondary")
+    add_rules("eph-test")
+    add_files("tests/integration/dpdk_mp_v3_secondary.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- MpTopology variant of the MP e2e (reshape stage 4): exercises the
 -- recommended path where the caller passes only `MpTopology::uniform(
 -- self_index, total_procs, nb_rx_queues)` and the library auto-derives
