@@ -204,6 +204,58 @@ TEST(LengthPrefixCodec, EncodeBufferFull) {
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
 
+TEST(LengthPrefixCodec, EncodeOversizePayloadReturnsCodecOverflow) {
+    // The encode-side mirror of `DecodeOversizeReturnsCodecOverflow`.
+    // Pre-flight rejection of bogusly-large payloads keeps callers from
+    // emitting a header the decoder would refuse — i.e. the symmetric
+    // contract that a frame any valid encoder produces is always
+    // accepted by a valid decoder. We don't actually allocate the
+    // (>16 MiB) backing storage; encode() rejects on payload.size()
+    // before reading any bytes, so a bogus span pointing at nullptr
+    // with len = kMaxFrameLen + 1 exercises the same path safely.
+    uint8_t buf[16]{};
+    LengthPrefixCodec codec;
+    std::span<const uint8_t> oversize{
+        static_cast<const uint8_t*>(nullptr),
+        LengthPrefixCodec::kMaxFrameLen + 1};
+    auto r = codec.encode(buf, sizeof(buf), oversize);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::CodecOverflow);
+}
+
+TEST(LengthPrefixCodec, EncodeEmptyPayloadProducesFourByteZeroHeader) {
+    // Empty payload is a legal frame on the wire (zero-length data
+    // notification). The encoder must produce exactly 4 bytes — the
+    // BE uint32 prefix of zero — and not touch any byte past it. The
+    // matching decode path is covered by `DecodeZeroLengthFrameAllowed`;
+    // this locks the symmetric encode contract.
+    uint8_t buf[16];
+    std::memset(buf, 0xCC, sizeof(buf));  // sentinel
+    LengthPrefixCodec codec;
+    auto r = codec.encode(buf, sizeof(buf), std::span<const uint8_t>{});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 4u);
+    EXPECT_EQ(buf[0], 0);
+    EXPECT_EQ(buf[1], 0);
+    EXPECT_EQ(buf[2], 0);
+    EXPECT_EQ(buf[3], 0);
+    // Sentinel must survive past the 4-byte header.
+    EXPECT_EQ(buf[4], 0xCCu);
+    EXPECT_EQ(buf[15], 0xCCu);
+
+    // Round-trip: decode the just-encoded zero-length frame back.
+    LengthPrefixCodec decoder;
+    SpanPacketView view{buf, *r};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+    auto dr = decoder.decode(view, out);
+    ASSERT_TRUE(dr.has_value());
+    ASSERT_TRUE(dr->has_value());
+    EXPECT_EQ((**dr).size(), 0u);
+    // View fully consumed.
+    EXPECT_EQ(view.length(), 0u);
+}
+
 TEST(LengthPrefixCodec, RoundTrip) {
     LengthPrefixCodec encoder;
     const uint8_t payload[] = {'h', 'e', 'l', 'l', 'o'};
