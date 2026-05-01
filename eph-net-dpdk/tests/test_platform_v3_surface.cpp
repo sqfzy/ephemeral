@@ -204,15 +204,13 @@ TEST(PlatformAttach, EmptyFilePrefixRejectedPreEal) {
 // ──────────────────────────────────────────────────────────────────────
 
 TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
-    // cfg.file_prefix empty → join_dynamic derives it via
-    // sanitize_bdf_for_file_prefix(cfg.pci); a malformed BDF makes
-    // sanitize fail. The wrapped error must name the actual cfg.pci
-    // value the caller supplied.
-    LegacyJoinDynamicConfig cfg{};
+    // file_prefix is always auto-derived from pci in v3 — a malformed
+    // BDF makes `sanitize_bdf_for_file_prefix` fail, and the wrapped
+    // error must name the actual cfg.pci value the caller supplied.
+    JoinDynamicConfig cfg{};
     cfg.pci = "not_a_bdf";  // valid string_view but not a BDF
-    cfg.pcfg_template.nb_rx_queues = 4;
-    cfg.queues_per_proc            = 1;
-    // file_prefix left empty → triggers sanitize_bdf path
+    cfg.primary_config.nb_rx_queues = 4;
+    cfg.primary_config.queues_per_proc = 1;
 
     auto r = Platform::join_dynamic(cfg);
     ASSERT_FALSE(r.has_value());
@@ -223,15 +221,15 @@ TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
 }
 
 TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
-    // cfg.max_procs > kMaxProcs (=64) → the OOR check at platform.hpp
-    // line ~2645. Error must report the offending max_procs, the
-    // kMaxProcs cap, and the inputs the auto-derive would have used
-    // (caller cfg.max_procs / nb_rx_queues / queues_per_proc).
-    LegacyJoinDynamicConfig cfg{};
-    cfg.pci                        = "0000:28:00.0";
-    cfg.pcfg_template.nb_rx_queues = 4;
-    cfg.queues_per_proc            = 1;
-    cfg.max_procs                  = 200;  // > kMaxProcs
+    // primary_config.max_procs > kMaxProcs (=64) → the OOR check fires.
+    // Error must report the offending max_procs, the kMaxProcs cap, and
+    // the inputs the auto-derive would have used (caller cfg.max_procs
+    // / nb_rx_queues / queues_per_proc).
+    JoinDynamicConfig cfg{};
+    cfg.pci = "0000:28:00.0";
+    cfg.primary_config.nb_rx_queues = 4;
+    cfg.primary_config.queues_per_proc = 1;
+    cfg.primary_config.max_procs = 200;  // > kMaxProcs
 
     auto r = Platform::join_dynamic(cfg);
     ASSERT_FALSE(r.has_value());
@@ -248,12 +246,15 @@ TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
 TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
     // cfg.pins and cfg.lcores are mutually exclusive — error must
     // report both sizes so the caller knows which side has stuff.
-    LegacyJoinDynamicConfig cfg{};
-    cfg.pci                        = "0000:28:00.0";
-    cfg.pcfg_template.nb_rx_queues = 2;
-    cfg.queues_per_proc            = 1;
-    cfg.max_procs                  = 2;
-    cfg.pins   = std::vector<LcorePin>(3, LcorePin{.lcore_id=0, .cpu_id=0, .role=""});
+    JoinDynamicConfig cfg{};
+    cfg.pci = "0000:28:00.0";
+    cfg.primary_config.nb_rx_queues = 2;
+    cfg.primary_config.queues_per_proc = 1;
+    cfg.primary_config.max_procs = 2;
+    cfg.primary_config.file_prefix = "demo";  // required by validate_config(PlatformConfig)
+    static const std::vector<LcorePin> kPins(
+        3, LcorePin{.lcore_id=0, .cpu_id=0, .role=""});
+    cfg.pins   = std::span<const LcorePin>{kPins};
     cfg.lcores = {"0", "1"};
 
     auto r = Platform::join_dynamic(cfg);

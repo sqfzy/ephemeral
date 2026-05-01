@@ -757,45 +757,6 @@ public:
     [[nodiscard]] static std::expected<Platform, std::string>
     create(const LegacyPlatformConfig& config);
 
-    /// @brief Autojoin (zero-coordination) MP factory.
-    ///
-    /// One call does **everything**: assembles the EAL argv with
-    /// `--proc-type=auto`, calls `eal_init`, asks DPDK which role
-    /// this process resolved to, and either:
-    ///   * primary  → derives a uniform `MpTopology(self_index=0)`
-    ///                and delegates to `create_primary`, OR
-    ///   * secondary→ attaches the registry read-only,
-    ///                CAS-claims the lowest free `procs[]` slot,
-    ///                synthesizes a `MpTopology` whose `self_index`
-    ///                points at the claimed slot, and delegates to
-    ///                the secondary attach path with the registry
-    ///                preclaim wired through.
-    ///
-    /// Two peers calling `Platform::join_dynamic({.pci=BDF,
-    /// .nb_rx_queues=N})` on the same machine therefore agree on
-    /// roles, file_prefix (auto-derived from the BDF), max_procs
-    /// (auto-derived from `N / queues_per_proc`) and self_index
-    /// (CAS-claimed) **without exchanging any string**.
-    ///
-    /// Failure modes:
-    ///   * `pci` empty / `nb_rx_queues == 0` / `queues_per_proc == 0`
-    ///     → `Error::InvalidConfig`-shaped diagnostic
-    ///   * BDF fails `sanitize_bdf_for_file_prefix` → diagnostic
-    ///   * EAL init fails → propagated
-    ///   * primary path: identical surface to `create_primary`
-    ///   * secondary path: registry not yet visible →
-    ///     `MpRegistry: memzone lookup failed`; all slots taken →
-    ///     `Error::OutOfMemory` (start fewer peers or raise
-    ///     `LegacyJoinDynamicConfig::max_procs`).
-    ///
-    /// EAL must NOT have been initialized prior to this call —
-    /// `eal_init` is invoked internally so an autojoin caller stays
-    /// out of EAL bootstrap entirely. Callers that already manage
-    /// EAL themselves should stay on the declarative path
-    /// (`create_primary` / `create_secondary`).
-    [[nodiscard]] static std::expected<Platform, std::string>
-    join_dynamic(LegacyJoinDynamicConfig cfg);
-
     // ─────────────────────────────────────────────────────────────────
     // v3 entry points (zero-consensus surface)
     // ─────────────────────────────────────────────────────────────────
@@ -2549,281 +2510,8 @@ Platform::secondary_bringup_(LegacyPlatformConfig config,
 // Failure modes are surfaced as `unexpected<std::string>` to match
 // the rest of `Platform::*` for source compatibility.
 
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::join_dynamic(LegacyJoinDynamicConfig cfg) {
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    // ── 1. validate ────────────────────────────────────────────────────────
-    if (cfg.pci.empty())
-        return std::unexpected(std::string{
-            "join_dynamic: pci must be non-empty (provide a PCI BDF "
-            "such as '0000:28:00.0')"});
-    if (cfg.pcfg_template.nb_rx_queues == 0)
-        return std::unexpected(std::string{
-            "join_dynamic: pcfg_template.nb_rx_queues must be > 0"});
-    if (cfg.queues_per_proc == 0)
-        return std::unexpected(std::string{
-            "join_dynamic: queues_per_proc must be > 0"});
-
-    // Mutable: secondary path may overwrite from live NIC (A1).
-    uint16_t nb_rx_queues = cfg.pcfg_template.nb_rx_queues;
-
-    // ── 2. derive file_prefix ─────────────────────────────────────────────
-    std::string derived_prefix;
-    std::string_view file_prefix = cfg.file_prefix;
-    if (file_prefix.empty()) {
-        auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
-        if (!san)
-            return std::unexpected(std::format(
-                "join_dynamic: cannot derive file_prefix from pci='{}': {}",
-                cfg.pci, san.error().detail));
-        derived_prefix = std::string{"eph_"} + *san;
-        file_prefix = derived_prefix;
-        SPDLOG_LOGGER_INFO(log,
-            "join_dynamic: derived file_prefix='{}' from pci='{}'",
-            derived_prefix, cfg.pci);
-    }
-
-    // ── 3. derive max_procs ───────────────────────────────────────────────
-    // `max_procs == 0` is the caller's "auto-derive" sentinel. Track
-    // whether the caller explicitly set it — v3 zero-consensus secondary
-    // peers leave it at 0 (default) and inherit primary's value from
-    // the registry. The "max_procs disagreement" check below only fires
-    // when the caller explicitly disagreed.
-    const bool max_procs_explicit = (cfg.max_procs > 0);
-    uint8_t max_procs = cfg.max_procs;
-    if (max_procs == 0) {
-        const uint16_t auto_max = nb_rx_queues / cfg.queues_per_proc;
-        if (auto_max == 0) {
-            // Secondary peers in v3 zero-consensus leave nb_rx_queues at
-            // default (1) and queues_per_proc at default (1) → auto_max=1.
-            // This is fine; secondary will read the actual value from
-            // primary's registry post-EAL. Don't reject here.
-            max_procs = 1;  // placeholder; replaced from registry on secondary path
-        } else {
-            max_procs = static_cast<uint8_t>(
-                std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
-        }
-    }
-    if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
-        return std::unexpected(std::format(
-            "join_dynamic: max_procs={} out of range [1, kMaxProcs={}] "
-            "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
-            "queues_per_proc={})",
-            max_procs, MpTopology::kMaxProcs,
-            cfg.max_procs, nb_rx_queues, cfg.queues_per_proc));
-
-    // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
-    // Strings inside cfg are caller-owned; we copy them into a local
-    // EalConfig so create_with_eal's argv assembly is decoupled from
-    // cfg's lifetime.
-    EalConfig eal_cfg{};
-    eal_cfg.program_name  = "eph_join_dynamic";
-    // DPDK's default is `--proc-type=primary`, NOT auto. We emit
-    // `--proc-type=auto` explicitly so the second peer joins as
-    // secondary instead of dying on a lockfile collision.
-    eal_cfg.proc_type     = ProcType::Auto;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = file_prefix;
-    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
-    eal_cfg.lcores        = cfg.lcores;
-    eal_cfg.extra_args    = cfg.eal_extras;
-
-    // ── 5. EAL init (we do this directly here, not via create_with_eal,
-    //                because we need to inspect rte_eal_process_type
-    //                BEFORE deciding which LegacyPlatformConfig to build).
-    //                pin_lcores happens in step 7 after role is known
-    //                — secondary path doesn't need to call create_with_eal
-    //                (it goes through create_secondary_impl_ with the
-    //                pre-claimed registry slot, then we manually
-    //                transfer EAL ownership into Impl).
-    if (!cfg.pins.empty() && !cfg.lcores.empty())
-        return std::unexpected(std::format(
-            "join_dynamic: cfg.pins (size={}) and cfg.lcores (size={}) are "
-            "mutually exclusive (pick the typed-pin path or the raw-lcores "
-            "path, not both)",
-            cfg.pins.size(), cfg.lcores.size()));
-
-    std::vector<eph::utils::PinGuard> pin_guards;
-    if (!cfg.pins.empty()) {
-        auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
-        if (!pg) {
-            SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic: pin_lcores rejected: {}", pg.error());
-            return std::unexpected(std::string{
-                "join_dynamic: pin_lcores: "} + pg.error());
-        }
-        pin_guards = std::move(*pg);
-        eal_cfg.extra_args.push_back(build_lcore_argv(cfg.pins));
-    }
-
-    auto argv_owned = build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    argv.reserve(argv_owned.size());
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
-    if (!eal_r) {
-        SPDLOG_LOGGER_ERROR(log,
-            "join_dynamic: eal_init failed: {}", eal_r.error());
-        // pin_guards local-destruct rolls back CPU registry on return.
-        return std::unexpected(std::string{
-            "join_dynamic: eal_init failed: "} + eal_r.error());
-    }
-
-    // ── 6. role detection ─────────────────────────────────────────────────
-    const enum rte_proc_type_t role = rte_eal_process_type();
-    SPDLOG_LOGGER_INFO(log,
-        "join_dynamic: rte_eal_process_type() resolved to {} "
-        "(file_prefix='{}', max_procs={}, nb_rx_queues={})",
-        role == RTE_PROC_PRIMARY   ? "primary"
-        : role == RTE_PROC_SECONDARY ? "secondary"
-                                     : "<invalid>",
-        file_prefix, max_procs, nb_rx_queues);
-
-    // Build the role-specific LegacyPlatformConfig from the user's template.
-    // Autojoin owns three fields: proc_type, mp_topology, file_prefix.
-    LegacyPlatformConfig pcfg = cfg.pcfg_template;
-    pcfg.file_prefix    = file_prefix;
-    // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
-    if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
-
-    auto attach_eal_session = [&pin_guards](
-        std::expected<Platform, std::string>&& r)
-        -> std::expected<Platform, std::string> {
-            if (r && r->impl_) {
-                r->impl_->pin_session_guards = std::move(pin_guards);
-                r->impl_->owns_eal_init      = true;
-            }
-            return std::move(r);
-        };
-
-    auto rollback_eal_on_error = [&pin_guards](
-        std::expected<Platform, std::string>&& r)
-        -> std::expected<Platform, std::string> {
-            if (!r) {
-                // Roll back EAL we init'd; pin_guards roll back via local
-                // destruction at function return.
-                [[maybe_unused]] bool ok = eal_cleanup();
-            }
-            return std::move(r);
-        };
-
-    // ── 7. branch on role ────────────────────────────────────────────────
-    if (role == RTE_PROC_PRIMARY) {
-        pcfg.proc_type   = ProcType::Primary;
-        pcfg.mp_topology = MpTopology::uniform(
-            /*self_index=*/0, max_procs, nb_rx_queues);
-        // Inject this peer's lcore_mask into its own slot so registry
-        // cross-process conflict check fires on overlap. Default 0 =
-        // opt out (back-compat). See LegacyJoinDynamicConfig::self_lcore_mask.
-        if (cfg.self_lcore_mask != 0) {
-            pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
-        }
-        auto plat_r = Platform::primary_bringup_(std::move(pcfg));
-        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
-        return attach_eal_session(std::move(plat_r));
-    }
-
-    if (role == RTE_PROC_SECONDARY) {
-        // 7S. attach read-only and validate the primary's view.
-        auto ro = ::eph::dpdk::detail::MpRegistryHandle::
-            attach_secondary_readonly(file_prefix);
-        if (!ro) {
-            SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: attach_secondary_readonly "
-                "failed (file_prefix='{}'): {}",
-                file_prefix, ro.error().detail);
-            std::expected<Platform, std::string> err{
-                std::unexpected(std::format(
-                    "join_dynamic[secondary]: attach_secondary_readonly "
-                    "failed (file_prefix='{}'): {}",
-                    file_prefix, ro.error().detail))};
-            return rollback_eal_on_error(std::move(err));
-        }
-
-        const uint32_t primary_total = ro->header()->total_procs;
-        if (max_procs_explicit && primary_total != max_procs) {
-            SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: caller explicitly set "
-                "max_procs={} but primary's registry reports total_procs={} "
-                "— explicit caller value disagreed with primary",
-                max_procs, primary_total);
-            std::expected<Platform, std::string> err{std::unexpected(std::format(
-                "join_dynamic[secondary]: caller-supplied max_procs={} "
-                "disagrees with primary's registry value (total_procs={}); "
-                "leave max_procs at default (0) to inherit from primary",
-                max_procs, primary_total))};
-            return rollback_eal_on_error(std::move(err));
-        }
-        // Adopt primary's value (zero-consensus path: caller didn't
-        // supply max_procs and trusts primary's registry).
-        max_procs = static_cast<uint8_t>(primary_total);
-        // Likewise, secondary may not have known nb_rx_queues. The
-        // registry doesn't carry it, but the live NIC does — query it
-        // so MpTopology::uniform below builds the same topology
-        // primary did. (A1: rte_eth_dev_info_get returns
-        // primary-configured queue count from secondary.)
-        const uint16_t port_id_for_query =
-            (cfg.pcfg_template.port_id != 0) ? cfg.pcfg_template.port_id : 0;
-        rte_eth_dev_info dev_info{};
-        if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);
-            rc == 0 && dev_info.nb_rx_queues > 0) {
-            // Override with live NIC value (which secondary trusts as
-            // primary-configured). Uses the same query as
-            // Platform::attach() — see plan A1.
-            nb_rx_queues       = dev_info.nb_rx_queues;
-            pcfg.nb_rx_queues  = dev_info.nb_rx_queues;
-            pcfg.nb_tx_queues  = (dev_info.nb_tx_queues != 0)
-                                     ? dev_info.nb_tx_queues
-                                     : dev_info.nb_rx_queues;
-        }
-
-        // 8S. CAS-claim the lowest free slot.
-        auto idx_r = ro->try_claim_free_slot();
-        if (!idx_r) {
-            SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: try_claim_free_slot failed "
-                "(file_prefix='{}', primary_total_procs={}): {}",
-                file_prefix, primary_total, idx_r.error().detail);
-            std::expected<Platform, std::string> err{
-                std::unexpected(std::format(
-                    "join_dynamic[secondary]: try_claim_free_slot failed "
-                    "(file_prefix='{}', primary_total_procs={}): {}",
-                    file_prefix, primary_total, idx_r.error().detail))};
-            return rollback_eal_on_error(std::move(err));
-        }
-        const uint8_t self_idx = *idx_r;
-
-        pcfg.proc_type   = ProcType::Secondary;
-        pcfg.mp_topology = MpTopology::uniform(
-            self_idx, max_procs, nb_rx_queues);
-        // Same as primary path: opt-in lcore_mask publishing for
-        // cross-process conflict detection.
-        if (cfg.self_lcore_mask != 0) {
-            pcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
-        }
-        ro->disarm_slot();  // hand off slot ownership to next handle
-
-        auto plat_r = Platform::secondary_bringup_(std::move(pcfg),
-                                                   /*registry_preclaimed=*/true);
-        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
-        return attach_eal_session(std::move(plat_r));
-    }
-
-    // RTE_PROC_INVALID or future enum values.
-    SPDLOG_LOGGER_ERROR(log,
-        "join_dynamic: rte_eal_process_type returned invalid role={}",
-        static_cast<int>(role));
-    [[maybe_unused]] bool ok = eal_cleanup();
-    return std::unexpected(std::format(
-        "join_dynamic: rte_eal_process_type returned invalid role={} "
-        "(expected RTE_PROC_PRIMARY={} or RTE_PROC_SECONDARY={}; EAL "
-        "not properly initialized)",
-        static_cast<int>(role),
-        static_cast<int>(RTE_PROC_PRIMARY),
-        static_cast<int>(RTE_PROC_SECONDARY)));
-}
+// (v2 join_dynamic body removed — body now lives at the v3 entry point
+//  below. See `Platform::join_dynamic(JoinDynamicConfig)`.)
 
 // ─────────────────────────────────────────────────────────────────────
 // v3 entry-point implementations (Stage 1: thin wrappers over v2)
@@ -3151,36 +2839,321 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
     return plat;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Autojoin — Platform::join_dynamic(JoinDynamicConfig)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Cold-path orchestrator over EAL init + role detection + registry
+// claim. The hot path is unchanged from the declarative path: by the
+// time a Platform is returned the impl is byte-for-byte identical to
+// one produced by `Platform::create(PlatformConfig)` (primary role)
+// or `Platform::attach(PlatformAttachConfig)` (secondary role).
+//
+// Failure modes are surfaced as `unexpected<std::string>` to match
+// the rest of `Platform::*` for source compatibility.
+//
+// Zero-consensus contract: secondary peers may leave
+// `cfg.primary_config` at default — every field is ignored on the
+// secondary path; the library reads queue count / max_procs from the
+// primary's registry + live NIC (A1). Primary peers populate
+// `cfg.primary_config.nb_rx_queues` and (optionally) `max_procs` /
+// `queues_per_proc` to drive the registry slot count.
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::join_dynamic(JoinDynamicConfig v3cfg) {
-    // Translate v3 → v2 LegacyJoinDynamicConfig. queues_per_proc and
-    // max_procs flow from primary_config to top-level. v2 uses
-    // sentinel 0 = "auto-derive"; v3 PlatformConfig inherits
-    // LegacyPlatformConfig defaults where max_procs=1 = "single-process".
-    // For the autojoin context, treat primary_config.max_procs<=1 as
-    // "let library auto-derive from nb_rx_queues / queues_per_proc"
-    // — secondary peers leave primary_config at default and must
-    // not lock the library into max_procs=1 (which would forbid any
-    // secondary attach).
-    LegacyJoinDynamicConfig v2cfg{};
-    v2cfg.pci             = v3cfg.pci;
-    v2cfg.queues_per_proc = (v3cfg.primary_config.queues_per_proc > 0)
-                                ? v3cfg.primary_config.queues_per_proc
-                                : 1;
-    v2cfg.max_procs       = (v3cfg.primary_config.max_procs > 1)
-                                ? v3cfg.primary_config.max_procs
-                                : 0;  // 0 = v2 auto-derive
-    // file_prefix always auto-derived from pci in v3 (zero-consensus).
-    v2cfg.file_prefix     = {};
-    v2cfg.pcfg_template   = detail::v3_to_legacy_(v3cfg.primary_config);
-    // v3_to_legacy_ set proc_type=Primary; v2 join_dynamic resets it
-    // post-EAL based on rte_eal_process_type, so this is harmless.
-    v2cfg.pins            = v3cfg.pins;
-    v2cfg.pin_policy      = v3cfg.pin_policy;
-    v2cfg.lcores          = std::move(v3cfg.lcores);
-    v2cfg.eal_extras      = std::move(v3cfg.eal_extras);
-    v2cfg.self_lcore_mask = v3cfg.self_lcore_mask;
-    return Platform::join_dynamic(std::move(v2cfg));
+Platform::join_dynamic(JoinDynamicConfig cfg) {
+    [[maybe_unused]] auto log = detail::platform_logger();
+
+    // ── 1. validate ────────────────────────────────────────────────────────
+    if (cfg.pci.empty())
+        return std::unexpected(std::string{
+            "join_dynamic: pci must be non-empty (provide a PCI BDF "
+            "such as '0000:28:00.0')"});
+    if (cfg.primary_config.nb_rx_queues == 0)
+        return std::unexpected(std::string{
+            "join_dynamic: primary_config.nb_rx_queues must be > 0"});
+
+    // queues_per_proc default 0 = "auto" (== 1 effectively for the
+    // max_procs auto-derive below). max_procs default 1 = "single-
+    // process" — for autojoin we treat that as "secondary peer left
+    // it at default; auto-derive from nb_rx_queues" rather than as a
+    // hard 1, so secondary peers don't have to fill in primary's
+    // value.
+    const uint16_t queues_per_proc =
+        cfg.primary_config.queues_per_proc > 0
+            ? cfg.primary_config.queues_per_proc
+            : uint16_t{1};
+    if (queues_per_proc == 0)
+        return std::unexpected(std::string{
+            "join_dynamic: queues_per_proc must be > 0"});
+
+    // Mutable: secondary path may overwrite from live NIC (A1).
+    uint16_t nb_rx_queues = cfg.primary_config.nb_rx_queues;
+
+    // ── 2. derive file_prefix ─────────────────────────────────────────────
+    // v3 zero-consensus: always auto-derive from pci. The escape hatch
+    // (caller-supplied prefix) lived on v2 `LegacyJoinDynamicConfig`;
+    // v3 removed it deliberately.
+    std::string derived_prefix;
+    std::string_view file_prefix;
+    {
+        auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
+        if (!san)
+            return std::unexpected(std::format(
+                "join_dynamic: cannot derive file_prefix from pci='{}': {}",
+                cfg.pci, san.error().detail));
+        derived_prefix = std::string{"eph_"} + *san;
+        file_prefix    = derived_prefix;
+        SPDLOG_LOGGER_INFO(log,
+            "join_dynamic: derived file_prefix='{}' from pci='{}'",
+            derived_prefix, cfg.pci);
+    }
+
+    // ── 3. derive max_procs ───────────────────────────────────────────────
+    // `primary_config.max_procs <= 1` is the autojoin "auto-derive"
+    // sentinel — secondary peers default to 1 and must NOT lock the
+    // library into max_procs=1 (which would forbid any secondary
+    // attach). Track whether the caller explicitly set a value > 1
+    // so the "max_procs disagreement" check below only fires on
+    // explicit caller disagreement.
+    const bool max_procs_explicit = (cfg.primary_config.max_procs > 1);
+    uint8_t max_procs = max_procs_explicit ? cfg.primary_config.max_procs
+                                           : uint8_t{0};
+    if (max_procs == 0) {
+        const uint16_t auto_max = nb_rx_queues / queues_per_proc;
+        if (auto_max == 0) {
+            // Secondary peers in v3 zero-consensus may leave
+            // nb_rx_queues at default (1) and queues_per_proc at
+            // default (1) → auto_max=1. This is fine; secondary
+            // will read the actual value from primary's registry
+            // post-EAL. Don't reject here.
+            max_procs = 1;  // placeholder; replaced from registry on secondary path
+        } else {
+            max_procs = static_cast<uint8_t>(
+                std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
+        }
+    }
+    if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
+        return std::unexpected(std::format(
+            "join_dynamic: max_procs={} out of range [1, kMaxProcs={}] "
+            "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
+            "queues_per_proc={})",
+            max_procs, MpTopology::kMaxProcs,
+            cfg.primary_config.max_procs, nb_rx_queues, queues_per_proc));
+
+    // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
+    // Strings inside cfg are caller-owned; we copy them into a local
+    // EalConfig so the argv assembly below is decoupled from cfg's
+    // lifetime.
+    EalConfig eal_cfg{};
+    eal_cfg.program_name  = "eph_join_dynamic";
+    // DPDK's default is `--proc-type=primary`, NOT auto. We emit
+    // `--proc-type=auto` explicitly so the second peer joins as
+    // secondary instead of dying on a lockfile collision.
+    eal_cfg.proc_type     = ProcType::Auto;
+    eal_cfg.proc_type_set = true;
+    eal_cfg.file_prefix   = file_prefix;
+    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
+    eal_cfg.lcores        = cfg.lcores;
+    eal_cfg.extra_args    = cfg.eal_extras;
+
+    // ── 5. EAL init (we do this directly here, not via create_with_eal,
+    //                because we need to inspect rte_eal_process_type
+    //                BEFORE deciding which LegacyPlatformConfig to build).
+    //                pin_lcores happens in step 7 after role is known
+    //                — secondary path doesn't need to call
+    //                create_with_eal (it goes through `secondary_bringup_`
+    //                with the pre-claimed registry slot, then we
+    //                manually transfer EAL ownership into Impl).
+    if (!cfg.pins.empty() && !cfg.lcores.empty())
+        return std::unexpected(std::format(
+            "join_dynamic: cfg.pins (size={}) and cfg.lcores (size={}) are "
+            "mutually exclusive (pick the typed-pin path or the raw-lcores "
+            "path, not both)",
+            cfg.pins.size(), cfg.lcores.size()));
+
+    std::vector<eph::utils::PinGuard> pin_guards;
+    if (!cfg.pins.empty()) {
+        auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
+        if (!pg) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic: pin_lcores rejected: {}", pg.error());
+            return std::unexpected(std::string{
+                "join_dynamic: pin_lcores: "} + pg.error());
+        }
+        pin_guards = std::move(*pg);
+        eal_cfg.extra_args.push_back(build_lcore_argv(cfg.pins));
+    }
+
+    auto argv_owned = build_eal_argv(eal_cfg);
+    std::vector<char*> argv;
+    argv.reserve(argv_owned.size());
+    for (auto& s : argv_owned) argv.push_back(s.data());
+
+    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
+    if (!eal_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "join_dynamic: eal_init failed: {}", eal_r.error());
+        // pin_guards local-destruct rolls back CPU registry on return.
+        return std::unexpected(std::string{
+            "join_dynamic: eal_init failed: "} + eal_r.error());
+    }
+
+    // ── 6. role detection ─────────────────────────────────────────────────
+    const enum rte_proc_type_t role = rte_eal_process_type();
+    SPDLOG_LOGGER_INFO(log,
+        "join_dynamic: rte_eal_process_type() resolved to {} "
+        "(file_prefix='{}', max_procs={}, nb_rx_queues={})",
+        role == RTE_PROC_PRIMARY   ? "primary"
+        : role == RTE_PROC_SECONDARY ? "secondary"
+                                     : "<invalid>",
+        file_prefix, max_procs, nb_rx_queues);
+
+    // Build the role-specific LegacyPlatformConfig from the user's
+    // primary_config template. Autojoin owns three fields: proc_type,
+    // mp_topology, file_prefix. Other fields (mbuf pool, descriptor
+    // counts, RSS / promiscuous flags, per_lcore_pools) flow through
+    // the v3 PlatformConfig template.
+    LegacyPlatformConfig pcfg = detail::v3_to_legacy_(cfg.primary_config);
+    pcfg.file_prefix    = file_prefix;
+    // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
+    if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
+
+    auto attach_eal_session = [&pin_guards](
+        std::expected<Platform, std::string>&& r)
+        -> std::expected<Platform, std::string> {
+            if (r && r->impl_) {
+                r->impl_->pin_session_guards = std::move(pin_guards);
+                r->impl_->owns_eal_init      = true;
+            }
+            return std::move(r);
+        };
+
+    auto rollback_eal_on_error = [&pin_guards](
+        std::expected<Platform, std::string>&& r)
+        -> std::expected<Platform, std::string> {
+            if (!r) {
+                // Roll back EAL we init'd; pin_guards roll back via local
+                // destruction at function return.
+                [[maybe_unused]] bool ok = eal_cleanup();
+            }
+            return std::move(r);
+        };
+
+    // ── 7. branch on role ────────────────────────────────────────────────
+    if (role == RTE_PROC_PRIMARY) {
+        pcfg.proc_type   = ProcType::Primary;
+        pcfg.mp_topology = MpTopology::uniform(
+            /*self_index=*/0, max_procs, nb_rx_queues);
+        // Inject this peer's lcore_mask into its own slot so registry
+        // cross-process conflict check fires on overlap. Default 0 =
+        // opt out (back-compat). See `JoinDynamicConfig::self_lcore_mask`.
+        if (cfg.self_lcore_mask != 0) {
+            pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
+        }
+        auto plat_r = Platform::primary_bringup_(std::move(pcfg));
+        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
+        return attach_eal_session(std::move(plat_r));
+    }
+
+    if (role == RTE_PROC_SECONDARY) {
+        // 7S. attach read-only and validate the primary's view.
+        auto ro = ::eph::dpdk::detail::MpRegistryHandle::
+            attach_secondary_readonly(file_prefix);
+        if (!ro) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: attach_secondary_readonly "
+                "failed (file_prefix='{}'): {}",
+                file_prefix, ro.error().detail);
+            std::expected<Platform, std::string> err{
+                std::unexpected(std::format(
+                    "join_dynamic[secondary]: attach_secondary_readonly "
+                    "failed (file_prefix='{}'): {}",
+                    file_prefix, ro.error().detail))};
+            return rollback_eal_on_error(std::move(err));
+        }
+
+        const uint32_t primary_total = ro->header()->total_procs;
+        if (max_procs_explicit && primary_total != max_procs) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: caller explicitly set "
+                "max_procs={} but primary's registry reports total_procs={} "
+                "— explicit caller value disagreed with primary",
+                max_procs, primary_total);
+            std::expected<Platform, std::string> err{std::unexpected(std::format(
+                "join_dynamic[secondary]: caller-supplied max_procs={} "
+                "disagrees with primary's registry value (total_procs={}); "
+                "leave max_procs at default to inherit from primary",
+                max_procs, primary_total))};
+            return rollback_eal_on_error(std::move(err));
+        }
+        // Adopt primary's value (zero-consensus path: caller didn't
+        // supply max_procs and trusts primary's registry).
+        max_procs = static_cast<uint8_t>(primary_total);
+        // Likewise, secondary may not have known nb_rx_queues. The
+        // registry doesn't carry it, but the live NIC does — query it
+        // so MpTopology::uniform below builds the same topology
+        // primary did. (A1: rte_eth_dev_info_get returns
+        // primary-configured queue count from secondary.)
+        const uint16_t port_id_for_query =
+            (cfg.primary_config.port_id != 0)
+                ? cfg.primary_config.port_id
+                : uint16_t{0};
+        rte_eth_dev_info dev_info{};
+        if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);
+            rc == 0 && dev_info.nb_rx_queues > 0) {
+            // Override with live NIC value (which secondary trusts as
+            // primary-configured). Uses the same query as
+            // Platform::attach() — see plan A1.
+            nb_rx_queues       = dev_info.nb_rx_queues;
+            pcfg.nb_rx_queues  = dev_info.nb_rx_queues;
+            pcfg.nb_tx_queues  = (dev_info.nb_tx_queues != 0)
+                                     ? dev_info.nb_tx_queues
+                                     : dev_info.nb_rx_queues;
+        }
+
+        // 8S. CAS-claim the lowest free slot.
+        auto idx_r = ro->try_claim_free_slot();
+        if (!idx_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "join_dynamic[secondary]: try_claim_free_slot failed "
+                "(file_prefix='{}', primary_total_procs={}): {}",
+                file_prefix, primary_total, idx_r.error().detail);
+            std::expected<Platform, std::string> err{
+                std::unexpected(std::format(
+                    "join_dynamic[secondary]: try_claim_free_slot failed "
+                    "(file_prefix='{}', primary_total_procs={}): {}",
+                    file_prefix, primary_total, idx_r.error().detail))};
+            return rollback_eal_on_error(std::move(err));
+        }
+        const uint8_t self_idx = *idx_r;
+
+        pcfg.proc_type   = ProcType::Secondary;
+        pcfg.mp_topology = MpTopology::uniform(
+            self_idx, max_procs, nb_rx_queues);
+        // Same as primary path: opt-in lcore_mask publishing for
+        // cross-process conflict detection.
+        if (cfg.self_lcore_mask != 0) {
+            pcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
+        }
+        ro->disarm_slot();  // hand off slot ownership to next handle
+
+        auto plat_r = Platform::secondary_bringup_(std::move(pcfg),
+                                                   /*registry_preclaimed=*/true);
+        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
+        return attach_eal_session(std::move(plat_r));
+    }
+
+    // RTE_PROC_INVALID or future enum values.
+    SPDLOG_LOGGER_ERROR(log,
+        "join_dynamic: rte_eal_process_type returned invalid role={}",
+        static_cast<int>(role));
+    [[maybe_unused]] bool ok = eal_cleanup();
+    return std::unexpected(std::format(
+        "join_dynamic: rte_eal_process_type returned invalid role={} "
+        "(expected RTE_PROC_PRIMARY={} or RTE_PROC_SECONDARY={}; EAL "
+        "not properly initialized)",
+        static_cast<int>(role),
+        static_cast<int>(RTE_PROC_PRIMARY),
+        static_cast<int>(RTE_PROC_SECONDARY)));
 }
 
 // Null guards on all impl_-accessing methods protect against use on a
