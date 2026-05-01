@@ -269,6 +269,23 @@ the preserved internal-primitive tests under `tests/legacy/`.
 | `test_dpdk_reasm_overflow`         | Reassembly capacity exhaustion + RX cksum TD-6 precise-mask cases       |
 | `test_dpdk_fault_tolerance`        | Keepalive exhaustion / link-down / reconnect policy                     |
 | `test_flow_steering`               | RSS + `install_flow_rule` / `FlowRule` RAII + Toeplitz queue predictor  |
+| `test_flow_rule_variant`           | `FlowRule`/`FlowHandle` variant dispatch + move-ctor / move-assign semantics |
+| `test_dpdk_drain`                  | `DpdkTcpStream::drain` input validation + RX session reset metric wiring |
+| `test_dpdk_poller_timeout`         | `DpdkPoller` no-blocking-poll contract + idle deadline behaviour        |
+| `test_dpdk_poller_scale`           | Poller scaling: many streams, ICMP cross-queue dispatch                 |
+| `test_dpdk_udp_multicast_rss`      | UDP multicast under RSS — fail-fast on multi-queue, allow single-queue  |
+| `test_dpdk_multi_port_platform`    | `MultiPortPlatform` aggregator: per-port isolation, ICMP scoping        |
+| `test_dpdk_platform_mempool`       | Platform mempool naming / lookup across primary+secondary processes     |
+| `test_platform_create_with_eal`    | `Platform::create` post-EAL bring-up + RSS configure / probe fallback   |
+| `test_arp_api` / `test_arp_resolve`| `eph::dpdk::arp::resolve` (sync + RSS-safe reply routing)               |
+| `test_dns_async` / `test_dns_rss_aware` | `eph::dpdk::dns::resolve` (async + reverse-pick src_port for RSS) |
+| `test_icmp_directory` / `test_icmp_dispatch` | ICMP target registry + Type 3 Code 4 PMTU dispatch routing    |
+| `test_lcore_pin`                   | `LcorePin` argv builder + `eph::utils` pin registry integration         |
+| `test_mp_topology`                 | `MpTopology` derivation of `rx_queue_range` + per-process src_port      |
+| `test_mp_registry` / `test_mp_ipc` | Multi-process FD-IPC handshake + per-secondary FlowDirector install     |
+| `test_fd_ipc_handlers`             | FD-IPC opcode handlers (try-secondary FlowDir, ICMP register relay)     |
+| `test_eal_config_argv`             | `EalConfig` + `build_eal_argv` deterministic argv assembly              |
+| `test_bdf_sanitize`                | PCI BDF allow-list parsing + DPDK -a flag sanitisation                  |
 
 ### Integration tests (`tests/integration/`)
 
