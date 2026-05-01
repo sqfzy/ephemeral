@@ -27,6 +27,13 @@
 
 set -euo pipefail
 
+# Resolve repo root from this script's location so the default
+# BASELINE path resolves regardless of caller's cwd. The script
+# lives at <repo>/eph-net-dpdk/scripts/<this>; go up two levels.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
 # ── Config ─────────────────────────────────────────────────────────
 BASELINE="${BASELINE:-.artifacts/bench-rx-hot-path-20260423.txt}"
 THRESHOLD="${THRESHOLD:-5}"
