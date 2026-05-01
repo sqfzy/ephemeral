@@ -225,9 +225,11 @@ multi-connection patterns and heterogeneous `TcpStream` + `UdpSocket` on one pol
 ## Benchmarks
 
 Microbenchmarks use Google Benchmark and live per-module under `<module>/benchmarks/`.
-End-to-end latency benchmarks are self-contained in `benchmarks/latency/` — each
-`lat_<scenario>[_dpdk]` binary forks its own kernel mock server and runs the bench
-client, so the kernel-vs-DPDK comparison is inherently fair (see
+End-to-end latency benchmarks live under `benchmarks/latency/`: one
+`lat_<scenario>[_dpdk]` client binary per scenario, all served by the single
+`benchmarks/mockex/mockex` binary (`mockex --scenario <name>` dispatches to the
+matching handler). The mock side is **always kernel** so the kernel-vs-DPDK
+comparison is inherently fair — only the client path differs (see
 [`docs/latency-benchmark-fairness.md`](docs/latency-benchmark-fairness.md)).
 
 ```bash
