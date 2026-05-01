@@ -130,10 +130,14 @@ the periodic `publish_metrics` pattern with a swappable sink.
 ## Conventions across the examples
 
 * **Plain IPv4 literals only.** Examples that take a host-like flag
-  (`--host`, `--dst-ip`) require a dotted-quad — DNS is kept out of the
-  transport layer. The DPDK `binance_latency` example is the exception:
-  it ships a DPDK-native ARP + DNS path and can resolve `--host` itself
-  via `eph::dpdk::dns::resolve`.
+  (`--host`, `--target-ip`) require a dotted-quad — DNS is kept out of
+  the transport layer. **Exception**: `simple_hft_dpdk_rss.cpp`'s
+  `--src-ip` / `--dst-ip` take a packed-uint32 **hex literal** (e.g.
+  `0x0A000010` for 10.0.0.16) because they map directly onto the
+  DPDK low-level `tuple` field; `simple_hft_dpdk.cpp` keeps the same
+  literals hardcoded. The DPDK `binance_latency` example is a second
+  exception going the other way: it ships a DPDK-native ARP + DNS path
+  and can resolve `--host` itself via `eph::dpdk::dns::resolve`.
 * **Reconnect loops live in the caller**, not in `Stream::create`. The
   rationale (FIX Logon seq resync, kill-switch gating, multi-path
   failover) is documented at the top of `session_reconnect.cpp` and
