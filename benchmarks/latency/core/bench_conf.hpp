@@ -131,37 +131,6 @@ struct DpdkRss {
     std::string lcore_per_queue;   ///< CSV; reserved (not yet consumed)
 };
 
-/// One row of the `[parallel].runs[]` array. Each row maps a single
-/// lat scenario to the EAL lcore + CPU + RX queue it should run on
-/// inside `lat_multi_dpdk` (the parallel-bench v2 runner). Multiple
-/// rows with the same `scenario` are allowed (run N copies of the
-/// same scenario on different queues for fan-out load testing).
-struct RunSpec {
-    std::string scenario;       ///< "lat_tcp" / "lat_udp" / ...
-    uint16_t    lcore = 0;      ///< EAL lcore id (passed via LcorePin)
-    int         cpu   = -1;     ///< CPU id this lcore pins to (typed)
-    uint16_t    queue = 0;      ///< RX queue this run owns
-};
-
-/// `[parallel]` section — drives `lat all --dpdk` (multi-scenario
-/// single-process N-lcore runner via `lat_multi_dpdk`). Single-
-/// scenario commands (`lat tcp --dpdk` etc.) ignore this section
-/// entirely.
-///
-/// **Parallel-bench v2 schema (this file)**:
-/// `[parallel].runs = [{scenario=..., lcore=N, cpu=M, queue=Q}, ...]`
-/// with one inline-table per concurrent run.
-///
-/// The dispatcher computes `nb_rx_queues = max(queue) + 1`,
-/// `LcorePin[]` from `(lcore, cpu)` pairs, and exec's
-/// `lat_multi_dpdk` which brings up a single EAL session sharing the
-/// NIC across all runs (`Platform::create_with_eal` + per-queue
-/// `register_poller` + `rte_eal_remote_launch` per worker). RSS routes
-/// each run's reverse traffic to its owned queue via `pin_to_queue`.
-struct ParallelConfig {
-    std::vector<RunSpec> runs;
-};
-
 // ─── Internal helpers ─────────────────────────────────────────────────
 
 namespace detail {
@@ -393,7 +362,6 @@ public:
     Cpu            cpu;
     Measurement    measurement;
     DpdkRss        dpdk;
-    ParallelConfig parallel;
 
     /// Lookup `[scenarios.<name>]`; returns nullptr if that scenario
     /// subtable is absent.
@@ -527,7 +495,7 @@ load_bench_conf(std::string_view path) {
     // ── cpu ───────────────────────────────────────────────────────────
     if (auto* c = raw["cpu"].as_table()) {
         // Same int64→int narrowing concern as the measurement /
-        // dpdk.rss / parallel.runs[] blocks below. CPU id range is
+        // dpdk.rss blocks below. CPU id range is
         // [0, INT_MAX] practically; reject obvious typos (negative
         // or above INT_MAX) up front so pin_thread() failure points
         // back at config rather than a misleading sched_setaffinity
@@ -621,64 +589,6 @@ load_bench_conf(std::string_view path) {
             }
             if (auto v = (*rss)["lcore_per_queue"].value<std::string>())
                 cfg.dpdk.lcore_per_queue = *v;
-        }
-    }
-
-    // ── parallel ─────────────────────────────────────────────────────
-    // Optional. Absent or empty `runs` → `lat all` has nothing to
-    // dispatch (single-scenario commands continue to work).
-    if (auto* p = raw["parallel"].as_table()) {
-        if (auto* arr = (*p)["runs"].as_array()) {
-            for (const auto& el : *arr) {
-                const auto* tbl = el.as_table();
-                if (tbl == nullptr) continue;
-                RunSpec r;
-                if (auto v = (*tbl)["scenario"].value<std::string>())
-                    r.scenario = *v;
-                // Same int64→uint16 narrowing concern as the
-                // measurement / dpdk.rss block above: a typo like
-                // `lcore = 100000` would silently wrap to 34464,
-                // colliding with another lcore. Reject up front.
-                if (auto v = (*tbl)["lcore"].value<int64_t>()) {
-                    if (*v < 0 || *v > std::numeric_limits<uint16_t>::max()) {
-                        return std::unexpected(ConfigErrorInfo{
-                            .code   = ConfigError::InvalidValue,
-                            .key    = "parallel.runs[].lcore",
-                            .detail = std::to_string(*v) +
-                                      " out of range [0, UINT16_MAX]",
-                            .file   = cfg.source_,
-                            .line   = 0});
-                    }
-                    r.lcore = static_cast<uint16_t>(*v);
-                }
-                if (auto v = (*tbl)["cpu"].value<int64_t>()) {
-                    if (*v < 0 || *v > std::numeric_limits<int>::max()) {
-                        return std::unexpected(ConfigErrorInfo{
-                            .code   = ConfigError::InvalidValue,
-                            .key    = "parallel.runs[].cpu",
-                            .detail = std::to_string(*v) +
-                                      " out of range [0, INT_MAX]",
-                            .file   = cfg.source_,
-                            .line   = 0});
-                    }
-                    r.cpu = static_cast<int>(*v);
-                }
-                if (auto v = (*tbl)["queue"].value<int64_t>()) {
-                    if (*v < 0 || *v > std::numeric_limits<uint16_t>::max()) {
-                        return std::unexpected(ConfigErrorInfo{
-                            .code   = ConfigError::InvalidValue,
-                            .key    = "parallel.runs[].queue",
-                            .detail = std::to_string(*v) +
-                                      " out of range [0, UINT16_MAX]",
-                            .file   = cfg.source_,
-                            .line   = 0});
-                    }
-                    r.queue = static_cast<uint16_t>(*v);
-                }
-                if (!r.scenario.empty()) {
-                    cfg.parallel.runs.push_back(std::move(r));
-                }
-            }
         }
     }
 

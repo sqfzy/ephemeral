@@ -143,7 +143,5 @@ int main(int argc, char** argv) {
 #endif
     ctx.poller       = poller.get();
     ctx.queue_id     = rx_queue;
-    ctx.slot_index   = -1;
-
     return bench::scenarios::run_lat_ex_md_udp_loop(ctx);
 }

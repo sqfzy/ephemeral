@@ -105,11 +105,6 @@ SCENARIOS:
   ex_market     exchange bookTicker push (one-way)
   ex_order      exchange N-inflight order RTT
   ex_md_udp     exchange UDP market data push
-  all           multi-scenario parallel runner (--dpdk only).
-                Reads [parallel].runs[] from config.toml. Forks one
-                mockex per unique scenario, then exec's lat_multi_dpdk
-                which brings up a single Platform sharing NIC_B across
-                N EAL worker lcores.
   rss_scaling   N-conn one-way UDP push (RX scaling vs N)
   rss_scaling_ws  N-conn one-way WS+TLS+TCP push (RX scaling vs N)
 
@@ -145,12 +140,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -n "$SCENARIO" ]] || { usage; exit 1; }
-# `all` is the multi-scenario parallel runner — handled below via
-# run_lat_all_dpdk before the single-scenario flow.
-if [[ "$SCENARIO" != "all" ]]; then
-    [[ -n "${SCENARIO_MOCKS[$SCENARIO]:-}" ]] || \
-        die "unknown scenario: $SCENARIO" "Run $0 --help for the list"
-fi
+[[ -n "${SCENARIO_MOCKS[$SCENARIO]:-}" ]] || \
+    die "unknown scenario: $SCENARIO" "Run $0 --help for the list"
 
 # ── Environment sanity ──────────────────────────────────────────────
 [[ -f "$CONFIG_FILE" ]] || die "config not found: $CONFIG_FILE"
@@ -160,9 +151,7 @@ fi
 # scenario keyword to mockex's own --scenario argument (they're
 # equal, but keeping a map makes the wiring explicit for any future
 # back-door scenarios).
-if [[ "$SCENARIO" != "all" ]]; then
-    MOCK_ARG="${SCENARIO_MOCKS[$SCENARIO]}"
-fi
+MOCK_ARG="${SCENARIO_MOCKS[$SCENARIO]}"
 MOCK_DESC=""
 
 # ── Locate the client binary ────────────────────────────────────────
@@ -177,14 +166,8 @@ detect_build_dir() {
 }
 BUILD_DIR=$(detect_build_dir)
 
-if [[ "$SCENARIO" == "all" ]]; then
-    [[ "$DPDK" == true ]] || die "lat all requires --dpdk" \
-        "Single-process N-lcore parallel runner is DPDK-only."
-    BIN_NAME="lat_multi_dpdk"
-else
-    BIN_NAME="lat_${SCENARIO}"
-    $DPDK && BIN_NAME="${BIN_NAME}_dpdk"
-fi
+BIN_NAME="lat_${SCENARIO}"
+$DPDK && BIN_NAME="${BIN_NAME}_dpdk"
 BINARY="$BUILD_DIR/$BIN_NAME"
 [[ -x "$BINARY" ]] || die "binary not found: $BINARY" "Build with: xmake build $BIN_NAME"
 
@@ -518,7 +501,6 @@ fi
 
 # ── Fork the Python mock (always in host ns) + exec the client ──────
 MOCK_PID=""
-declare -a EXTRA_PIDS=()
 cleanup() {
     local rc=$?
     if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
@@ -530,102 +512,9 @@ cleanup() {
         kill -0 "$MOCK_PID" 2>/dev/null && kill -KILL "$MOCK_PID" 2>/dev/null || true
         wait "$MOCK_PID" 2>/dev/null || true
     fi
-    # `lat all --dpdk` may have spawned multiple mockex processes.
-    # Mirror MOCK_PID's TERM → 500ms grace → KILL escalation so a single
-    # mock that ignores SIGTERM (e.g. blocked on a stuck rte_eth_rx_burst
-    # loop, or in an EAL teardown that does not yield) does not hang the
-    # outer trap forever. Without the KILL fallback a `wait` on such a
-    # PID hangs cleanup indefinitely; we'd never reach `exit $rc`.
-    for pid in "${EXTRA_PIDS[@]}"; do
-        kill -0 "$pid" 2>/dev/null || continue
-        kill -TERM "$pid" 2>/dev/null || true
-    done
-    for pid in "${EXTRA_PIDS[@]}"; do
-        for _ in 1 2 3 4 5; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.1
-        done
-        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
-        wait "$pid" 2>/dev/null || true
-    done
     exit $rc
 }
 trap cleanup EXIT INT TERM
-
-# ── `lat all --dpdk` — multi-scenario parallel runner ──────────────
-# Reads [parallel].runs[] from config.toml (inline-table-array TOML
-# syntax), pre-forks one mockex per UNIQUE scenario, then exec's
-# lat_multi_dpdk which brings up a single Platform sharing NIC_B
-# across all the runs (one EAL worker lcore per row).
-run_lat_all_dpdk() {
-    local cfg="$1"
-    local build_dir="$2"
-
-    local lat_multi_bin="$build_dir/lat_multi_dpdk"
-    [[ -x "$lat_multi_bin" ]] || die "lat_multi_dpdk not found: $lat_multi_bin" \
-        "Build with: xmake build lat_multi_dpdk"
-
-    local mockex_bin="$build_dir/mockex"
-    [[ -x "$mockex_bin" ]] || die "mockex not found: $mockex_bin"
-
-    # Extract unique scenario names from [parallel].runs[]. Inline-table
-    # array form: `runs = [{scenario = "lat_tcp", ...}, ...]`. We grep
-    # for `scenario = "name"` lines bounded by the [parallel] section;
-    # tolerates both inline-table and `[[parallel.runs]]` syntax.
-    local raw
-    raw=$(awk '
-        /^[[:space:]]*\[parallel\]/ { in_p=1; next }
-        /^\[/ && !/parallel/ { in_p=0; next }
-        in_p {
-            while (match($0, /scenario[[:space:]]*=[[:space:]]*"([^"]+)"/, a)) {
-                print a[1]
-                $0 = substr($0, RSTART + RLENGTH)
-            }
-        }
-    ' "$cfg")
-    [[ -n "$raw" ]] || die "[parallel].runs is empty in $cfg" \
-        "Add at least one row: { scenario = \"lat_tcp\", lcore = 1, cpu = 4, queue = 0 }"
-
-    declare -A seen_mocks=()
-    local sc
-    while IFS= read -r sc; do
-        [[ -z "$sc" ]] && continue
-        local sc_short="${sc#lat_}"
-        if [[ -n "${seen_mocks[$sc_short]:-}" ]]; then
-            continue
-        fi
-        seen_mocks[$sc_short]=1
-        # Per-PID file path: previously /tmp/lat_all_mockex_${sc_short}.log was
-        # a fixed (root-writable) name that
-        #   (a) two parallel `lat all` runs would clobber each other's logs,
-        #   (b) sat under TOCTOU symlink-attack reach: a pre-placed
-        #       `/tmp/lat_all_mockex_tcp.log -> /etc/passwd` would have the
-        #       root-running mockex truncate-and-write the symlink target.
-        # `mktemp` with a deterministic prefix solves both: each PID gets a
-        # unique path, and mktemp atomically refuses to follow symlinks.
-        local mock_log
-        mock_log=$(mktemp "/tmp/lat_all_mockex_${sc_short}_XXXXXX.log") || \
-            die "mktemp failed for /tmp/lat_all_mockex_${sc_short}" \
-                "  /tmp not writable? Check 'df -h /tmp' and 'ls -ld /tmp'."
-        log_step "fork mockex --scenario $sc_short → $mock_log"
-        "$mockex_bin" --scenario "$sc_short" --config "$cfg" \
-            > "$mock_log" 2>&1 &
-        EXTRA_PIDS+=($!)
-    done <<< "$raw"
-    sleep 1.0  # wait for all mocks to bind their listen ports
-
-    log_step "exec lat_multi_dpdk --config $(basename "$cfg")"
-    set +e
-    "$lat_multi_bin" --config "$cfg"
-    local rc=$?
-    set -e
-    return "$rc"
-}
-
-if [[ "$SCENARIO" == "all" ]]; then
-    run_lat_all_dpdk "$CONFIG_FILE" "$BUILD_DIR"
-    exit $?
-fi
 
 # Phase 4: detect real-server mode from the section's `endpoint` key.
 # `mock` (default) / absent → fork the local mockex child.

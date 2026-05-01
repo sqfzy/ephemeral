@@ -141,8 +141,6 @@ int main(int argc, char** argv) {
 #endif
     ctx.poller       = poller.get();
     ctx.queue_id     = rx_queue;
-    ctx.slot_index   = -1;
-
     return use_tls
         ? bench::scenarios::run_lat_ex_order_loop<true>(ctx)
         : bench::scenarios::run_lat_ex_order_loop<false>(ctx);

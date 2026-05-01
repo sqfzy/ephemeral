@@ -166,10 +166,11 @@ struct DpdkBenchEnv {
     /// Autojoin variant of `create()`: brings up Platform via
     /// `Platform::join_dynamic` instead of `create_with_eal`.
     /// Use this when running multiple bench-client processes on the
-    /// same NIC simultaneously (e.g. `lat all --dpdk` with
-    /// `[parallel].max_procs > 1`). The first peer auto-resolves to
-    /// primary, subsequent peers to secondaries; each owns a disjoint
-    /// `[qlo, qhi)` RX queue range and src_port window.
+    /// same NIC simultaneously (e.g. each `lat_<sc>_dpdk` binary as
+    /// its own MP process, sharing the NIC via RSS-partitioned
+    /// queues). The first peer auto-resolves to primary, subsequent
+    /// peers to secondaries; each owns a disjoint `[qlo, qhi)` RX
+    /// queue range and src_port window.
     ///
     /// Single-process callers should keep using `create()` — its
     /// path is byte-equivalent to legacy and unaffected by this

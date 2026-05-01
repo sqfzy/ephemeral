@@ -1,25 +1,11 @@
 /// @file scenarios/lat_tcp_loop.hpp
 /// Reusable inner-loop function for the `lat_tcp` scenario. Extracted
-/// from `lat_tcp.cpp:182-393`'s `run<EnableTls>()` lambda so two callers
-/// can drive it:
-///
-///   1. `lat_tcp.cpp` main() — single-binary command (`lat tcp --dpdk`)
-///      Constructs a single-Platform `DpdkBenchEnv` (or kernel SocketAddr),
-///      builds a BenchCtx with `slot_index = -1` (= no `_slot` suffix on
-///      Recorder names → byte-equal with pre-reshape JSON output), and
-///      calls `run_lat_tcp_loop<EnableTls>(ctx)`.
-///
-///   2. `lat_multi_dpdk.cpp` (added in Phase 7) — multi-scenario runner
-///      Each EAL worker lcore has its own BenchCtx with `slot_index = i`
-///      from `[parallel].runs[i]`, sharing one Platform via DpdkBenchView.
-///      The function constructs its own Stream pinned to `ctx.queue_id`
-///      via `pin_to_queue` so RSS routes the reverse traffic to a queue
-///      this worker owns.
-///
-/// **Byte-equal invariant**: when `ctx.slot_index < 0` the function
-/// produces identical output (Recorder names, JSON filenames, log lines)
-/// to the pre-reshape `lat_tcp_dpdk` / `lat_tcp` binary. The 30s parity
-/// gate (≤5%) verifies hot-path equivalence.
+/// from `lat_tcp.cpp`'s historical `run<EnableTls>()` lambda so the
+/// measurement loop has its own translation unit (compile-time
+/// dispatch on `EnableTls`; closure surface compact).
+/// Pin via `cfg.dpdk.pin_to_queue = ctx.queue_id` ensures the reply
+/// 5-tuple RSS-hashes back to the queue this process owns — required
+/// for MP-secondary correctness.
 
 #pragma once
 
@@ -132,14 +118,7 @@ inline int run_lat_tcp_loop(::bench::BenchCtx& ctx) noexcept {
     cfg.dpdk.tcp_low_level = view.make_tcp_config(::bench::random_src_port(), port);
     cfg.dpdk.pool          = view.pool;
     cfg.connect_timeout    = std::chrono::milliseconds{3000};
-    // Multi-scenario mode (slot_index >= 0) pins src_port to this run's
-    // queue so RSS routes the inbound reply to the worker's owned queue.
-    // Single-binary mode leaves pin_to_queue unset — equivalent to
-    // pre-reshape behaviour where the post-PR-2.5 RETA-collapse fix
-    // (single-queue Software dispatch) routes traffic to queue 0.
-    if (ctx.slot_index >= 0) {
-        cfg.dpdk.pin_to_queue = ctx.queue_id;
-    }
+    cfg.dpdk.pin_to_queue = ctx.queue_id;
 
     if constexpr (EnableTls) {
         cfg.tls.hostname    = mock_ip_str;
@@ -211,11 +190,9 @@ inline int run_lat_tcp_loop(::bench::BenchCtx& ctx) noexcept {
 #else
         EnableTls ? "kernel_tls" : "kernel";
 #endif
-    // slot_index < 0 → single-binary mode → no _slot suffix → byte-equal
     // JSON filenames with pre-reshape output.
     const std::string suffix =
-        (ctx.slot_index < 0) ? std::string{}
-                              : std::string{"_slot"} + std::to_string(ctx.slot_index);
+        std::string{};
 
     eu::Recorder rec_rtt{std::string{"lat_tcp_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_tcp_"} + backend + "_tx"  + suffix};

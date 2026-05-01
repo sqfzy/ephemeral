@@ -293,14 +293,10 @@ load_dpdk_env(const BenchConfig& cfg,
 
 /// Non-owning view of the DPDK bench environment. Holds a `Platform&`
 /// plus the resolved IPs / MACs / port_id / pool from `DpdkBenchEnv`.
-/// Used by `lat_multi_dpdk` so multiple per-scenario `BenchCtx`
-/// instances can each see the same Platform without trying to copy /
-/// own it. Mirror of `eph::dpdk::test::DpdkBenchEnv`'s helpers
+/// Mirror of `eph::dpdk::test::DpdkBenchEnv`'s helpers
 /// (`make_tcp_config` / `make_udp_config`) so per-scenario
 /// `run_lat_<sc>_loop` functions can produce wire-level configs
-/// identically whether they run from the single-binary path
-/// (DpdkBenchEnv::view()) or from lat_multi_dpdk (one DpdkBenchEnv
-/// owned, N DpdkBenchView referenced).
+/// without depending on the owning DpdkBenchEnv type.
 struct DpdkBenchView {
     eph::dpdk::Platform&  platform;
     uint32_t              src_ip;

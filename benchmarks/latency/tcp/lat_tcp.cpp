@@ -15,10 +15,6 @@
 /// been extracted to `benchmarks/latency/scenarios/lat_tcp_loop.hpp`'s
 /// `run_lat_tcp_loop<EnableTls>(BenchCtx&)`. main() here becomes a thin
 /// wrapper that does Platform / Poller bring-up, builds a BenchCtx with
-/// `slot_index = -1` (single-binary mode → byte-equal pre-reshape JSON
-/// output), and delegates. The same `run_lat_tcp_loop` is called from
-/// `lat_multi_dpdk` (Phase 7) with `slot_index = i` from
-/// `[parallel].runs[i]`.
 ///
 /// The binary does NOT manage mocks or NICs — the `lat` wrapper script forks
 /// `mockex --scenario tcp` and drives the NIC state transition before
@@ -161,7 +157,6 @@ int main(int argc, char** argv) {
 #endif
     ctx.poller       = poller.get();
     ctx.queue_id     = rx_queue;
-    ctx.slot_index   = -1;  // single-binary mode → byte-equal pre-reshape
 
     return use_tls
         ? bench::scenarios::run_lat_tcp_loop<true>(ctx)

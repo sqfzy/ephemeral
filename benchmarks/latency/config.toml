@@ -60,32 +60,6 @@ server_work_ns = 200               # mock spin ns simulating business work
 nb_rx_queues    = 1
 lcore_per_queue = "4,5,6,7"
 
-# ── Parallel runner (optional) ────────────────────────────────────────
-#
-# Drives `lat all --dpdk` (multi-scenario single-process N-lcore
-# runner via lat_multi_dpdk). Single-scenario commands
-# (`lat tcp --dpdk` etc.) ignore this section completely — their
-# behaviour is unchanged.
-#
-# Each entry in `runs` maps one scenario to its EAL lcore + CPU + RX
-# queue. `lat all --dpdk` brings up a single Platform with
-# `nb_rx_queues = max(queue) + 1`, registers a Poller per queue, and
-# launches one EAL worker per row via `rte_eal_remote_launch`.
-#
-# Run the same scenario multiple times on different queues for a
-# fan-out load test (e.g. two lat_tcp rows). Empty / omitted runs[]
-# = `lat all` has nothing to dispatch.
-#
-#[parallel]
-#runs = [
-#  { scenario = "lat_tcp",       lcore = 1, cpu = 4, queue = 0 },
-#  { scenario = "lat_udp",       lcore = 2, cpu = 5, queue = 1 },
-#  { scenario = "lat_ws",        lcore = 3, cpu = 6, queue = 2 },
-#  { scenario = "lat_ex_market", lcore = 4, cpu = 7, queue = 3 },
-#  { scenario = "lat_ex_order",  lcore = 5, cpu = 8, queue = 4 },
-#  { scenario = "lat_ex_md_udp", lcore = 6, cpu = 9, queue = 5 },
-#]
-
 # ── TLS (mock self-signed cert) ───────────────────────────────────────
 #
 # Used when a scenario sets `use_tls = true`. The cert/key are

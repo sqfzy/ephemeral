@@ -72,8 +72,7 @@ inline int run_lat_ex_order_loop(::bench::BenchCtx& ctx) noexcept {
         EnableTls ? "kernel_tls" : "kernel";
 #endif
     const std::string suffix =
-        (ctx.slot_index < 0) ? std::string{}
-                              : std::string{"_slot"} + std::to_string(ctx.slot_index);
+        std::string{};
 
     eu::Recorder rec_rtt{std::string{"lat_ex_order_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_ex_order_"} + backend + "_tx"  + suffix};
@@ -97,9 +96,7 @@ inline int run_lat_ex_order_loop(::bench::BenchCtx& ctx) noexcept {
     cfg.connect_timeout    = std::chrono::milliseconds{3000};
     cfg.ws.path            = ws_path;
     cfg.ws.timeout         = std::chrono::seconds{10};
-    if (ctx.slot_index >= 0) {
-        cfg.dpdk.pin_to_queue = ctx.queue_id;
-    }
+    cfg.dpdk.pin_to_queue = ctx.queue_id;
     if constexpr (EnableTls) {
         cfg.tls.hostname    = mock_ip_str;
         cfg.tls.verify_peer = false;

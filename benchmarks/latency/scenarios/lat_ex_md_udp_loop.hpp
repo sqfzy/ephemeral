@@ -99,9 +99,7 @@ inline int run_lat_ex_md_udp_loop(::bench::BenchCtx& ctx) noexcept {
     const uint16_t local_src_port = ::bench::random_src_port();
     ed::UdpConfig sock_cfg{};
     sock_cfg.legacy = view.make_udp_config(local_src_port, port);
-    if (ctx.slot_index >= 0) {
-        sock_cfg.pin_to_queue = ctx.queue_id;
-    }
+    sock_cfg.pin_to_queue = ctx.queue_id;
 
     auto sock_r = Socket::create_and_attach(std::move(sock_cfg), view.platform);
 #else
@@ -161,8 +159,7 @@ inline int run_lat_ex_md_udp_loop(::bench::BenchCtx& ctx) noexcept {
         "kernel";
 #endif
     const std::string suffix =
-        (ctx.slot_index < 0) ? std::string{}
-                              : std::string{"_slot"} + std::to_string(ctx.slot_index);
+        std::string{};
 
     eu::Recorder rec_rtt{std::string{"lat_ex_md_udp_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_ex_md_udp_"} + backend + "_tx"  + suffix};
