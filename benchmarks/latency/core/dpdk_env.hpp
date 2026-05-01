@@ -250,14 +250,26 @@ load_dpdk_env(const BenchConfig& cfg,
         .warn_irq_overlap            = false,
     };
 
-    // ── EPH_LAT_AUTOJOIN_* envvar diversion (diagnostic only) ────────────
+    // ── EPH_LAT_AUTOJOIN_* envvar diversion (multi-process bench mode) ──
     // When EPH_LAT_AUTOJOIN_MAX_PROCS is set, use create_via_autojoin so
     // lat_*_dpdk binaries can run as either primary or secondary within one
-    // NIC session. Used by diag/ena-mp-root-cause scripts to reproduce the
-    // two-condition ENA MP crash. NOT wired into normal bench operation.
+    // NIC session. Originally diagnostic; now also the production path for
+    // 7-process parallel bench acceptance.
     if (const char* max_procs_s = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
         max_procs_s && *max_procs_s) {
-        const uint32_t max_procs = static_cast<uint32_t>(std::atoi(max_procs_s));
+        // Strict parse: reject non-numeric / out-of-range / 0/1 envvars
+        // up front instead of silently coercing via atoi() (Vuln A from
+        // /pax --review). atoi("bad")=0 and atoi("-1")→cast→4294967295
+        // would have surfaced as opaque "no free slot" or topology
+        // parse errors with no pointer back at the typo.
+        char* end = nullptr;
+        const unsigned long mp_raw = std::strtoul(max_procs_s, &end, 10);
+        if (end == max_procs_s || *end != '\0' || mp_raw < 2 || mp_raw > 64) {
+            return std::unexpected(
+                std::string{"load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS='"}
+                + max_procs_s + "' invalid (expect integer in [2, 64])");
+        }
+        const uint32_t max_procs = static_cast<uint32_t>(mp_raw);
         const char* lcores_s     = std::getenv("EPH_LAT_AUTOJOIN_LCORES");
         const char* gw_mac_file  = std::getenv("EPH_LAT_AUTOJOIN_GW_MAC_FILE");
         std::string lcores_str   = lcores_s ? lcores_s : eal_cores;
