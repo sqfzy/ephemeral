@@ -46,7 +46,7 @@
 ///        exit 0 : SIGSEGV — idle-ring path is now broken; file upstream.
 ///
 /// Background and full isolation log:
-/// `eph-net-dpdk/docs/ena-mp-limitation.md`.
+/// `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`.
 ///
 /// ────────────────────────────────────────────────────────────────────
 /// Confirmed on:
@@ -367,7 +367,7 @@ int primary_main(char** argv) {
             std::fprintf(stdout,
                 "\n=== ENA PMD idle-ring sentinel BROKEN ===\n"
                 "  child PID %d killed by SIG%s on idle rings\n"
-                "  see eph-net-dpdk/docs/ena-mp-limitation.md\n",
+                "  see eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md\n",
                 pid, sig == SIGSEGV ? "SEGV" : "BUS");
             rc = 0;
         } else {

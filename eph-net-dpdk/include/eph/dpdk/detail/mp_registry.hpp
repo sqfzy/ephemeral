@@ -679,7 +679,7 @@ private:
                                                     std::memory_order_release);
         }
         if (owns_memzone_ && mz_ != nullptr) {
-            // MP teardown gate — see ena-mp-limitation.md for rationale.
+            // MP teardown gate — see dpdk-mp-teardown-protocol.md for rationale.
             // Self slot was cleared above, so count_alive_procs() returns
             // peer count; non-zero means freeing would dangle peers' hdr_.
             if (count_alive_procs() != 0) {

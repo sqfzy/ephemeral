@@ -324,7 +324,7 @@ TEST(MpRegistry, AttachSecondary_AlreadyClaimedRequiresActualClaim) {
 // ─────────────────────────────────────────────────────────────────────────────
 // count_alive_procs / is_last_alive_proc — gate API for primary teardown
 // (introduced to fix the DPDK MP teardown-protocol violation in
-//  Platform::Impl::cleanup() — see eph-net-dpdk/docs/ena-mp-limitation.md)
+//  Platform::Impl::cleanup() — see eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md)
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(MpRegistryAlive, InertHandle_CountIsZero) {

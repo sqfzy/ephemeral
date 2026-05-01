@@ -67,7 +67,7 @@ so both gates short-circuit to false).
 Recovered by `scripts/dpdk-teardown.sh` between sessions. **v2
 candidate**: IPC heartbeat + reaper (deferred — see `TODO.md`).
 
-**Follow-up**: `docs/ena-mp-limitation.md` still frames the bug as an
+**Follow-up**: `docs/dpdk-mp-teardown-protocol.md` still frames the bug as an
 ENA PMD limitation. A separate doc plan will rewrite it as
 "DPDK MP teardown protocol guide" — see plan in
 `.claude/plans/lexical-wandering-cerf.md`.
@@ -84,7 +84,7 @@ ENA PMD limitation. A separate doc plan will rewrite it as
 
 ### Documented — AWS ENA PMD multi-process secondary RX under traffic
 
-Added `docs/ena-mp-limitation.md` documenting a precisely scoped ENA
+Added `docs/dpdk-mp-teardown-protocol.md` documenting a precisely scoped ENA
 PMD limitation, plus a minimal regression sentinel
 `tests/integration/repro_ena_mp_secondary_rxburst.cpp` (build via
 `xmake build -g repros`).
@@ -118,7 +118,7 @@ secondary RX starvation under primary load" and "ENA PMD secondary
 rx_burst is fundamentally broken". Both were overclaimed from a
 single confounded observation. The current entry reflects the
 two-condition post-isolation diagnosis — see
-`docs/ena-mp-limitation.md` Isolation log.
+`docs/dpdk-mp-teardown-protocol.md` Isolation log.
 
 ### Added — bench infra: `lat all --dpdk` parallel multi-scenario runner
 

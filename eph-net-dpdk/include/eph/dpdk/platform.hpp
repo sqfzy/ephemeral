@@ -1146,7 +1146,7 @@ struct Platform::Impl {
     /// True iff MP topology is active and at least one peer (other
     /// than self) is still attached. Used as the gate for primary
     /// teardown of shared port / mempool / memzone state. See
-    /// eph-net-dpdk/docs/ena-mp-limitation.md for full rationale.
+    /// eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md for full rationale.
     [[nodiscard]] bool defer_for_peers() const noexcept {
         return mp_registry.has_value() &&
                !mp_registry->is_last_alive_proc();
@@ -1692,7 +1692,7 @@ struct Platform::Impl {
 
         // PRIMARY teardown — DPDK MP teardown gate.
         // Full rationale (why eph defers stop/close/free when peers
-        // are still attached): see eph-net-dpdk/docs/ena-mp-limitation.md.
+        // are still attached): see eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md.
         // Single-process path (`mp_registry` empty) short-circuits to
         // false and falls through to the original stop/close/free below
         // — byte-equal to pre-fix behavior.
@@ -1764,7 +1764,7 @@ inline Platform::~Platform() {
     // MP teardown gate (paired with Impl::cleanup() gate): when peers
     // are still attached, defer rte_eal_cleanup too — it would close
     // active devices and dangle peers' shared io_cq state. See
-    // eph-net-dpdk/docs/ena-mp-limitation.md for full rationale.
+    // eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md for full rationale.
     if (impl_) {
         const bool owns_eal = impl_->owns_eal_init;
         // Snapshot the gate BEFORE impl_.reset(): mp_registry's dtor
