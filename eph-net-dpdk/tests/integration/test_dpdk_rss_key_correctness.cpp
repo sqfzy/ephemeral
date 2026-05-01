@@ -279,7 +279,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
 
     run_in_subprocess([&] {
         // ── 1. EAL + Platform (multi-queue + RSS) ────────────────────
-        eph::dpdk::PlatformConfig pcfg{};
+        eph::dpdk::PlatformConfigV3 pcfg{};
         pcfg.port_id      = 0;
         pcfg.nb_rx_queues = kNbQueues;
         pcfg.nb_tx_queues = kNbQueues;
@@ -506,7 +506,7 @@ TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
     };
 
     run_in_subprocess([&] {
-        eph::dpdk::PlatformConfig pcfg{};
+        eph::dpdk::PlatformConfigV3 pcfg{};
         pcfg.port_id      = 0;
         pcfg.nb_rx_queues = kNbQueues;
         pcfg.nb_tx_queues = kNbQueues;

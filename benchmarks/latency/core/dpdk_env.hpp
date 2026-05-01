@@ -228,7 +228,7 @@ load_dpdk_env(const BenchConfig& cfg,
         "pins={} cpus_csv={} pci={} nb_rx_queues={}",
         pins.size(), eal_cores, dpdk_pci, cfg.dpdk.nb_rx_queues);
 
-    eph::dpdk::PlatformConfig pcfg{};
+    eph::dpdk::PlatformConfigV3 pcfg{};
     pcfg.port_id      = dpdk_port_id;
     pcfg.nb_rx_queues = cfg.dpdk.nb_rx_queues;
     pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);

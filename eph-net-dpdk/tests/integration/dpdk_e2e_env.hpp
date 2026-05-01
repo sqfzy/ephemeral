@@ -137,7 +137,7 @@ public:
 
         // ── 5. EAL + Platform + ARP in the parent ────────────────────
         // Unified factory: the env owns its Platform which owns EAL.
-        ::eph::dpdk::PlatformConfig pcfg{};
+        ::eph::dpdk::PlatformConfigV3 pcfg{};
         pcfg.port_id = 0;
 
         ::eph::dpdk::EalConfig eal_cfg{};

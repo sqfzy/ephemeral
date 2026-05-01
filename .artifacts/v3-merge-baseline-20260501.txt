@@ -1,0 +1,32 @@
+=== Baseline: PlatformConfig v2/v3 merge (方案 B) ===
+Captured: 2026-05-01
+
+=== HEAD ===
+836fd960f04252d8388dc5dc0bb2b149e23499ab
+836fd960 test(codec): cover WsCodec::encode_text wire-byte and round-trip
+
+=== Baseline tests (build + run, all PASS) ===
+test_platform_v3_surface           PASSED 14 tests
+test_dpdk_multi_port_platform      PASSED  9 tests
+test_platform_create_with_eal      PASSED  3 tests
+test_dpdk_platform_mempool         PASSED 14 tests
+test_mp_registry                   PASSED 46 tests
+test_mp_topology                   PASSED 32 tests
+test_mp_ipc                        PASSED 14 tests
+
+=== Symbol reference counts (across all *.cpp + *.hpp) ===
+PlatformConfig (v2, excludes V3):    193
+PlatformConfigV3:                     40
+PlatformAttachConfig (v3 secondary): 31
+Total {PlatformConfig|V3|JoinDynamicConfig|V3} mentions: 271
+Legacy test_dpdk_platform.cpp v2 mentions: 58 (will be deleted in stage 3)
+
+=== Pre-existing baseline anomalies (carried from v3-baseline-20260501.txt) ===
+test_dpdk_multiprocess_config (legacy): source already deleted, only build artifact
+remains. Not a new failure.
+
+=== Goal ===
+Single PlatformConfig (v3 shape) with primary entry Platform::create + secondary
+entry Platform::attach. v2 PlatformConfig + create_primary/create_secondary deleted.
+PlatformConfigV3 renamed to PlatformConfig in stage 4. JoinDynamicConfigV3 →
+JoinDynamicConfig. Documented as BREAKING CHANGE in eph-net-dpdk/CHANGELOG.md.

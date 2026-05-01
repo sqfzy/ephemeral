@@ -48,7 +48,7 @@
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
-// JoinDynamicConfig comes in transitively via platform.hpp (post-api-unify
+// JoinDynamicConfigV3 comes in transitively via platform.hpp (post-api-unify
 // reshape — sentinel guard EPH_DPDK_PLATFORM_CONFIG_DEFINED requires
 // platform.hpp first).
 #include "eph/dpdk/tcp.hpp"
@@ -226,7 +226,7 @@ struct DpdkBenchEnv {
     /// move-only struct. The returned env owns Platform and Platform
     /// owns EAL — destruction is fully RAII.
     ///
-    /// @param pcfg        Full PlatformConfig (port_id, nb_rx_queues,
+    /// @param pcfg        Full PlatformConfigV3 (port_id, nb_rx_queues,
     ///                    enable_promiscuous, mbuf_pool_size, etc.).
     /// @param eal_cfg     EAL configuration. Caller-owned strings.
     /// @param pins        Typed lcore→cpu pin spec. Empty span = no
@@ -237,7 +237,7 @@ struct DpdkBenchEnv {
     /// @param client_ip   Local source IP — dotted-quad string.
     /// @param gateway_ip  Default gateway IP for ARP resolve — dotted-quad.
     [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
-    create(eph::dpdk::PlatformConfig pcfg,
+    create(eph::dpdk::PlatformConfigV3 pcfg,
            eph::dpdk::EalConfig eal_cfg,
            std::span<eph::dpdk::LcorePin const> pins,
            eph::utils::CpuPinPolicy pin_policy,
@@ -328,10 +328,10 @@ struct DpdkBenchEnv {
     /// path the orchestrator coordinates (e.g. derived from BDF).
     ///
     /// @param pci_bdf            NIC PCI BDF, e.g. "0000:28:00.0"
-    /// @param max_procs          Autojoin slot count; used as both
-    ///                            `JoinDynamicConfig::max_procs` and
-    ///                            `pcfg_template.{nb_rx_queues,
-    ///                            nb_tx_queues}`
+    /// @param max_procs          Autojoin slot count; written into
+    ///                            `JoinDynamicConfigV3::primary_config`
+    ///                            as `max_procs` and as
+    ///                            `nb_rx_queues` / `nb_tx_queues`
     /// @param lcores             EAL lcore CSV for this peer (e.g.
     ///                            `"0,1"`). Auto-parsed into a bitmask
     ///                            for the registry's cross-process
@@ -426,14 +426,14 @@ struct DpdkBenchEnv {
                 + "' parsed to mask=0 (CSV resolved to no lcore IDs)");
         }
 
-        // ── 1. Platform::join_dynamic ──────────────────────────────
-        eph::dpdk::JoinDynamicConfig jd{};
-        jd.pci                          = pci_bdf;
-        jd.pcfg_template.nb_rx_queues   = static_cast<uint16_t>(max_procs);
-        jd.pcfg_template.nb_tx_queues   = static_cast<uint16_t>(max_procs);
-        jd.max_procs                    = static_cast<uint16_t>(max_procs);
-        jd.lcores                       = {lcores};
-        jd.self_lcore_mask              = self_lcore_mask;
+        // ── 1. Platform::join_dynamic (v3 zero-consensus shape) ────
+        eph::dpdk::JoinDynamicConfigV3 jd{};
+        jd.pci                                 = pci_bdf;
+        jd.primary_config.nb_rx_queues         = static_cast<uint16_t>(max_procs);
+        jd.primary_config.nb_tx_queues         = static_cast<uint16_t>(max_procs);
+        jd.primary_config.max_procs            = static_cast<uint8_t>(max_procs);
+        jd.lcores                              = {lcores};
+        jd.self_lcore_mask                     = self_lcore_mask;
 
         auto plat = eph::dpdk::Platform::join_dynamic(std::move(jd));
         if (!plat) {
