@@ -42,6 +42,23 @@
 ///   sudo ./simple_hft_dpdk --
 ///        --pci 0000:28:00.0 --lcores '4-7'
 ///        --dst-port 30000
+///
+///   # explicit src_port + non-default DPDK port id:
+///   sudo ./simple_hft_dpdk --
+///        --pci 0000:28:00.0 --pci 0000:28:00.1
+///        --dpdk-port 1 --src-port 33000 --dst-port 30000
+///        --pin 0=4
+///
+/// Additional flags (all optional; see parse loop near line 136):
+///   --src-port <port>    local TCP source port (default 32768).
+///   --dpdk-port <id>     DPDK port enumeration index (default 0;
+///                        only relevant when more than one --pci is
+///                        bound — selects which allowlisted port to
+///                        bring up).
+/// Note: this skeleton intentionally leaves `scfg.dpdk.pool` null
+/// so `create()` fails fast with `InvalidConfig` on a smoke boot;
+/// the demo's purpose is to exercise the error surface, not to
+/// transmit real packets.
 
 #include <atomic>
 #include <chrono>
