@@ -33,16 +33,20 @@ xmake run <target> [args...]    # runs build/<plat>/<arch>/<mode>/<target>
 ```
 
 DPDK-backed examples (`simple_hft_dpdk`, `simple_hft_dpdk_mp`,
-`simple_hft_dpdk_rss`, `multi_port_platform_demo`, `dpdk_multicast_md`,
-`binance_latency`) need a system `libdpdk` (pkg-config) and a NIC
-bound to `vfio-pci`. See `docs/dpdk-setup.md` and
-`eph-net-dpdk/scripts/dpdk-setup.sh`. DPDK binaries must be run
+`simple_hft_dpdk_mp_dynamic`, `simple_hft_dpdk_rss`,
+`multi_port_platform_demo`, `dpdk_multicast_md`,
+`async_dns_multi_resolve`, `binance_latency`) need a system `libdpdk`
+(pkg-config) and a NIC bound to `vfio-pci`. See `docs/dpdk-setup.md`
+and `eph-net-dpdk/scripts/dpdk-setup.sh`. DPDK binaries must be run
 with `sudo`, and EAL args come before a literal `--` separator.
 
-`simple_hft_dpdk_mp` is the only example that uses multi-process — same
-binary in two terminals with `--role primary` then `--role secondary`,
-both passing the same `--file-prefix`. See the file header for the
-launch commands.
+Two examples cover DPDK multi-process. `simple_hft_dpdk_mp` is the
+declarative path: same binary in two terminals with
+`--role primary|secondary`, both passing the same `--file-prefix`.
+`simple_hft_dpdk_mp_dynamic` is the autojoin path: same binary in
+two terminals with no role / file-prefix flag — `Platform::join_dynamic`
+detects who's first via `eal_init` and CAS-claims slot 0/1. See each
+file header for the launch commands.
 
 `simple_hft_dpdk_rss` is the single-process counterpart: one Platform
 with `enable_rss=true` and `nb_rx_queues > 1`, one Poller per queue,
@@ -73,6 +77,7 @@ reverse-pick. Pairs with `eph-net-dpdk/docs/rss-control-plane.md`.
 | `dpdk_multicast_md.cpp`   | DPDK / multicast    | `eph::dpdk::MulticastReceiver` — RFC 1112 multicast MAC filter, `join_group` / `on_packet` / `start` / `stop` shape. Demonstrates `total_rx_packets` / `rx_unmatched_packets` diagnostics. `--rss-fail-test` exercises the RSS multi-queue safety gate (start() refuses with `rss_active_multi_queue=true` because the receiver cannot reverse-pick the sender's 5-tuple). | `eph-net-dpdk`                             |
 | `simple_hft_dpdk.cpp`     | DPDK / skeleton     | Plain-TCP `DpdkTcpStream<C, false>` using the strict `create(cfg)` factory with a hand-built `StreamConfig::dpdk.tcp_low_level`. `scfg.dpdk.pool=nullptr` forces an early `InvalidConfig` — a smoke-boot template, not a runnable probe. | `eph-net-dpdk`, `eph-codec`                |
 | `simple_hft_dpdk_mp.cpp`  | DPDK / multi-process | Single-NIC primary+secondary skeleton. One binary, role picked via `--role primary\|secondary`. Brings up `EalConfig` + `Platform::create_primary` / `create_secondary`, attaches a `DpdkUdpSocket<RawDatagramCodec>` from each process' owned RX queue range, drives `poll()` for 5 s. Demonstrates the create-vs-lookup mempool split + the secondary cleanup branch. See `eph-net-dpdk/docs/dpdk-multiprocess.md` for partitioning rules. | `eph-net-dpdk`, `eph-codec`            |
+| `simple_hft_dpdk_mp_dynamic.cpp` | DPDK / mp autojoin | Same binary twice in two terminals; `Platform::join_dynamic` figures out primary-vs-secondary by who calls `eal_init` first and CAS-claims the lowest free slot. Zero coordination — no `--role`, no shared `--file-prefix` (auto-derived from `--pci`), no `--self-index`. Pairs with the lower-level declarative path in `simple_hft_dpdk_mp.cpp`. | `eph-net-dpdk`, `eph-codec`            |
 | `simple_hft_dpdk_rss.cpp` | DPDK / RSS          | Single-process RSS multi-queue: `Platform::create_primary` with `enable_rss=true` + `nb_rx_queues=N`, prints the three diagnostic getters (`dispatch_mode` / `rss_using_probed_key` / `effective_rx_queue_range`), spawns one `DpdkPoller` per owned queue, then attaches several `DpdkUdpSocket`s via `create_and_attach` with `pin_to_queue` set per-connection — the helper reverse-picks an ephemeral src_port whose Toeplitz hash lands on the requested queue. Pairs with `eph-net-dpdk/docs/rss-control-plane.md`. | `eph-net-dpdk`, `eph-codec`            |
 | `async_dns_multi_resolve.cpp` | DPDK / DNS      | Parallel DNS resolution via `eph::dpdk::dns::AsyncDnsResolver` driven from one `DpdkPoller<>` burst loop. Constructs one resolver per hostname, `start()` + `poller->add()` each, drives `poll()` until all reach a terminal state. Smoke-boot when mempool / gateway-MAC are absent. | `eph-net-dpdk`                             |
 | `binance_latency.cpp`     | DPDK / production   | Full-stack DPDK probe to Binance: `Platform` bring-up, ARP + DPDK-native DNS, `DpdkTcpStream<WsCodec, true>` (TLS 1.3 + WS Upgrade), single-lcore burst loop, reconnect policy, `CLOCK_REALTIME` latency histogram via `eph::utils::Recorder`. | `eph-net-dpdk`, `eph-codec`, `eph-json`    |
