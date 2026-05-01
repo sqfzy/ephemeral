@@ -723,8 +723,8 @@ namespace detail {
 /// implicit; carried here for diagnostic logs and future N:M
 /// extensibility.
 [[nodiscard]] inline std::expected<void, ::eph::core::ErrorInfo>
-fd_destroy_via_ipc(uint8_t  owner_proc,
-                   uint64_t handle_id) noexcept {
+fd_destroy_via_ipc([[maybe_unused]] uint8_t  owner_proc,
+                   uint64_t                  handle_id) noexcept {
     static std::atomic<uint32_t> next_req_id{1};
     FdDestroyMsg req{};
     req.version    = 1;
