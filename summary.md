@@ -92,9 +92,9 @@ hot-path `inc_<M>()` calls; no template signature changes anywhere.
 | **eph-net** | `Stream` / `Datagram` / `Pollable` / `Poller` concepts, `SocketAddr`, `ReconnectPolicy`, `TcpState`, test mocks, shared TLS / WebSocket wire helpers | eph-core, eph-utils, aws-lc |
 | **eph-net-kernel** | `KernelTcpStream<C,Tls>`, `KernelUdpSocket<C>`, `KernelPoller` (epoll). Contiguous `SpanView` `PacketView`. | eph-net |
 | **eph-net-dpdk** | `DpdkTcpStream<C,Tls>`, `DpdkUdpSocket<C>`, `DpdkPoller<>`, `Eal`, internal DPDK primitives (arp, dns, flow_steering, packet templates). `MbufView` `PacketView` with in-place TLS decrypt. | eph-net, dpdk, aws-lc |
-| **eph-fix** | FIX 4.4 parser/builder/session, orders, execution reports, position, risk checks, order manager | eph-core, eph-utils |
-| **eph-itch** | ITCH 5.0 messages/parser, SoupBinTCP, MoldUDP64, OUCH | eph-core, eph-utils |
-| **eph-json** | Zero-copy JSON parser/framer, Binance / OKX / Bybit adapters (REST + WS) | eph-core, eph-utils |
+| **eph-fix** | FIX 4.4 parser/builder/session, orders, execution reports, position, risk checks, order manager | eph-core |
+| **eph-itch** | ITCH 5.0 messages/parser, SoupBinTCP, MoldUDP64, OUCH | eph-core |
+| **eph-json** | Zero-copy JSON parser/framer, Binance / OKX / Bybit adapters (REST + WS) | eph-core |
 | **eph-book** | ArrayBook / MapBook (L2/L3), market signals, Binance / ITCH adapters | eph-core, eph-json, eph-itch |
 
 `eph-net-kernel` and `eph-net-dpdk` are **sibling backends** that never depend on each
