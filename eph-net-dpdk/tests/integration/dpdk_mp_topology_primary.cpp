@@ -58,21 +58,18 @@ TEST(DpdkMpTopologyPrimary, BringUpHoldAndCleanup) {
         << nb_rx_queues << ")";
 
     eph::dpdk::EalConfig eal_cfg{};
-    eal_cfg.program_name  = "dpdk_mp_topology_primary";
-    eal_cfg.proc_type     = eph::dpdk::ProcType::Primary;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = file_prefix;
-    eal_cfg.lcores        = {lcores};
+    eal_cfg.program_name = "dpdk_mp_topology_primary";
+    eal_cfg.lcores       = {lcores};
     if (!allowed_dev.empty()) eal_cfg.allowed_devs = {allowed_dev};
 
-    eph::dpdk::PlatformConfig pcfg{};
+    // V3: PlatformConfigV3 — no proc_type, no mp_topology;
+    // max_procs=2 lets the library synthesize topology internally.
+    eph::dpdk::PlatformConfigV3 pcfg{};
     pcfg.port_id      = port_id;
     pcfg.nb_rx_queues = nb_rx_queues;
     pcfg.nb_tx_queues = nb_rx_queues;
-    pcfg.proc_type    = eph::dpdk::ProcType::Primary;
     pcfg.file_prefix  = file_prefix;
-    pcfg.mp_topology  = eph::dpdk::MpTopology::uniform(
-        /*self_index=*/0, /*total_procs=*/2, nb_rx_queues);
+    pcfg.max_procs    = 2;
 
     auto plat_r = eph::dpdk::Platform::create_with_eal(
         std::move(pcfg), std::move(eal_cfg),
