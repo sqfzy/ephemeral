@@ -357,3 +357,68 @@ TEST(JsonParser, ValidDecimalsStillWork) {
     EXPECT_DOUBLE_EQ(*result->get_double("d"), 100.0);
     EXPECT_DOUBLE_EQ(*result->get_double("e"), 0.25);
 }
+
+// ---------------------------------------------------------------------------
+// Nested-skip boundary cases — the opaque-skip path is an attack surface
+// (depth counter + inner string scan). These cover paths that the existing
+// NestedObjectSkipped / NestedArraySkipped happy cases don't reach.
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, NestedObjectUnterminatedReturnsIncomplete) {
+    // `{"a":{"x":1` — opening brace never balanced; depth-counter loop must
+    // reach end-of-buffer with depth>0 and surface kIncomplete (not crash).
+    auto result = parse_str(R"({"a":{"x":1)");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kIncomplete);
+}
+
+TEST(JsonParser, NestedArrayUnterminatedReturnsIncomplete) {
+    // Same as above but for `[`. Different `close` byte path through
+    // the depth counter.
+    auto result = parse_str(R"({"a":[1,2,3)");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kIncomplete);
+}
+
+TEST(JsonParser, NestedStringUnterminatedReturnsIncomplete) {
+    // Inside a nested object, an unterminated string should not let the
+    // outer brace counter drift — the inner string-skip loop runs to end
+    // and the depth check trips kIncomplete.
+    auto result = parse_str(R"({"a":{"x":"oops)");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kIncomplete);
+}
+
+TEST(JsonParser, DeeplyNestedObjectExceedsLimit) {
+    // kMaxNestingDepth is 64. Build > 64 opening braces to exercise the
+    // depth-cap branch (line 375). Must surface kInvalidFormat — never crash
+    // and never silently truncate.
+    std::string json = R"({"x":)";
+    for (int i = 0; i < 70; ++i) json += '{';
+    for (int i = 0; i < 70; ++i) json += '}';
+    json += '}';
+    auto result = parse(reinterpret_cast<const uint8_t*>(json.data()), json.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
+// ---------------------------------------------------------------------------
+// Format-error boundary cases — paths reached only by a second-or-later field
+// ---------------------------------------------------------------------------
+
+TEST(JsonParser, SecondKeyMissingOpeningQuote) {
+    // After the first field's comma, the next key must be quoted. An
+    // unquoted second key exercises the `*p != '"'` branch on the
+    // post-comma path (distinct from the first-key UnquotedKey case).
+    auto result = parse_str(R"({"a":1,b:2})");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
+TEST(JsonParser, MissingCommaBetweenFieldsRejected) {
+    // Two key-value pairs with no comma between them — the parser expects
+    // either `,` or `}` after a value and must reject this with InvalidFormat.
+    auto result = parse_str(R"({"a":1 "b":2})");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
