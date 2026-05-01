@@ -59,16 +59,21 @@ eph-utils/
 
 ### Aggregation header
 
-`include/eph/utils.hpp` currently pulls in the long-standing core set:
-`alignment`, `audit_log`, `console_sink`, `cpu`, `ema`, `hugepage`,
-`record`, `recorder`, `system_stats`, `time`, `timestamp`. The newer
-additions — `kill_switch.hpp`, `rate_limiter.hpp`, `phased_timer.hpp`,
-`shutdown_signal.hpp`, and `linux/netns.hpp` — are **not** transitively
-pulled in; `#include` them directly when needed. This is intentional:
-`kill_switch` / `rate_limiter` are trading-semantics primitives that
-belong in the consumer's domain layer, `shutdown_signal` installs
-process-wide signal handlers that non-CLI code shouldn't take
-automatically, and `linux/netns.hpp` is POSIX-only.
+`include/eph/utils.hpp` pulls in every header under `include/eph/utils/`
+(`alignment`, `audit_log`, `console_sink`, `cpu`, `ema`,
+`hdr_histogram`, `hugepage`, `kill_switch`, `phased_timer`,
+`rate_limiter`, `record`, `recorder`, `shutdown_signal`,
+`system_stats`, `time`, `timestamp`).
+
+The only public header **not** transitively included is
+`linux/netns.hpp` — it is POSIX/Linux-only and used by test fixtures
+that enter a network namespace; pull it in explicitly when needed.
+
+Note: including `kill_switch` and `rate_limiter` via the umbrella
+adds the type definitions but does not install anything; they are
+inert until the consumer constructs an instance. `shutdown_signal`
+likewise only installs signal handlers when the consumer calls
+`install_shutdown_handlers()` — including the header is safe.
 
 ## Dependencies
 
