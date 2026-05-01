@@ -77,6 +77,7 @@ Protocol on the wire:
 #include <optional>
 #include <span>
 
+#include "eph/codec/detail/span_packet_view.hpp"  // SpanPacketView
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 
@@ -92,9 +93,14 @@ public:
         std::span<const uint8_t>    payload;
     };
 
-    // The codec is templated on PacketView so the same instantiation works
-    // for both kernel (SpanView) and DPDK (MbufView).
-    using PacketViewRef = eph::core::PacketView&;
+    // The StreamCodec concept requires a `PacketViewRef` associated type
+    // pinned to a concrete reference (the concept-checker needs a real
+    // type, not the `eph::core::PacketView` concept itself, which has no
+    // size). Pin it to the canonical `SpanPacketView&` — kernel streams
+    // use this directly. The DPDK backend's `decode()` template parameter
+    // accepts its own `MbufView` at the call site, so the same class also
+    // compiles against the DPDK PacketView without touching this typedef.
+    using PacketViewRef = eph::codec::SpanPacketView&;
 
     template <class PacketView>
     std::expected<std::optional<Frame>, eph::core::ErrorInfo>
@@ -204,27 +210,43 @@ count, for bookkeeping / metrics.
 
 ## Testing a codec without a live socket
 
-Pair `FakeStream` + `TestPoller` to drive the codec from raw bytes:
+`FakeStream` is intentionally codec-less (`using CodecType = void;`) —
+its `on_message` callback fires once per injected rx chunk verbatim,
+with no decoding inside the mock. This keeps the fake dumb: tests that
+want codec behaviour drive `decode()` themselves at the application
+layer. The pattern:
 
 ```cpp
+#include "eph/codec/detail/span_packet_view.hpp"
+#include "eph/core/error.hpp"
+#include "eph/core/output_buffer.hpp"
 #include "eph/net/test/fake_stream.hpp"
 #include "eph/net/test/test_poller.hpp"
 
 TEST(FixedHeaderCodec, RoundTrip) {
-    using Stream = eph::net::test::FakeStreamWithCodec<FixedHeaderCodec>;
-    auto poller = eph::net::test::TestPoller<Stream>::create();
-    auto fake   = Stream::create();
-    poller->add(fake.get());
-
+    // 1) Encode through the codec under test.
+    FixedHeaderCodec codec;
     uint8_t encoded[256];
     FixedHeaderCodec::Frame out{.msg_type = 0x42, .payload = {/*…*/}};
-    auto n = FixedHeaderCodec{}.encode(encoded, sizeof(encoded), out);
+    auto enc = codec.encode(encoded, sizeof(encoded), out);
+    ASSERT_TRUE(enc.has_value());
 
-    fake->inject_rx(std::span{encoded, *n});
-    poller->poll();
-    // assert on_message captured the decoded frame
+    // 2) Decode the encoded bytes back through the same codec.
+    eph::codec::SpanPacketView view{encoded, *enc};
+    uint8_t scratch[64];
+    eph::core::OutputBuffer sink{scratch, sizeof(scratch)};
+    auto dec = codec.decode(view, sink);
+    ASSERT_TRUE(dec.has_value());
+    ASSERT_TRUE(dec->has_value());
+    EXPECT_EQ((*dec)->msg_type, 0x42);
 }
 ```
+
+For the end-to-end shape that wires bytes through `FakeStream` +
+`TestPoller` (so `on_message` fires from inside `poll_once_()` with the
+codec applied around the fake at the application layer), see
+`eph-net/tests/test_fake_stream.cpp` and the `FakeStream::PacketView`
+doc-comment block in `eph-net/include/eph/net/test/fake_stream.hpp`.
 
 ## See also
 
