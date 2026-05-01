@@ -44,17 +44,27 @@
 /// least two* PCI args — a single port is the dominant case and goes
 /// through `Platform::create_primary` directly, no aggregator needed.
 ///
-/// Usage:
+/// Usage (typed pin syntax — recommended):
 ///
 ///   sudo ./multi_port_platform_demo --
 ///        --pci 0000:28:00.0 --pci 0000:28:00.1
 ///        --pin 0=4 --pin 1=5
 ///        --seconds 3
 ///
-/// `--pci <addr>` is repeatable; the K-th occurrence becomes
-/// `port_id = K` in DPDK's port enumeration (allowlist order). The
-/// example builds one `PlatformConfig` per port, with `port_id`
-/// matching the slot index 1:1.
+/// Alternative escape-hatch syntax (for raw EAL `--lcores` specs that
+/// `LcorePin` cannot express, e.g. `(0-3)@(4-7)`):
+///
+///   sudo ./multi_port_platform_demo --
+///        --pci 0000:28:00.0 --pci 0000:28:00.1
+///        --lcores '0@4,1@5'
+///        --seconds 3
+///
+/// `--pin` and `--lcores` are mutually exclusive (the program rejects
+/// the call with a diagnostic if both are given). `--pci <addr>` is
+/// repeatable; the K-th occurrence becomes `port_id = K` in DPDK's
+/// port enumeration (allowlist order). The example builds one
+/// `PlatformConfig` per port, with `port_id` matching the slot index
+/// 1:1.
 
 #include <atomic>
 #include <chrono>
