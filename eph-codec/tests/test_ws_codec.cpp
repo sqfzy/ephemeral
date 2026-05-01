@@ -379,6 +379,33 @@ TEST(WsCodec, EncodeBufferFull) {
     EXPECT_EQ(r.error().code, Error::BufferFull);
 }
 
+// Pins down the wire-level opcode contract for `encode()`. Closes the
+// gap where prior tests round-tripped through decode() but did not
+// observe byte 0 directly — a future refactor that flipped the opcode
+// constant would round-trip cleanly (decode is opcode-agnostic for
+// data frames) and ship a silent regression. This test fails on any
+// such flip.
+TEST(WsCodec, EncodeBinary_FirstByteIsFinPlusBinaryOpcode) {
+    WsCodec encoder;
+    const uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+
+    uint8_t wire[32]{};
+    auto n = encoder.encode(wire, sizeof(wire),
+                             std::span<const uint8_t>{payload, 4});
+    ASSERT_TRUE(n.has_value());
+    ASSERT_GT(*n, 4u);
+
+    // Byte 0: FIN=1 (high bit) + opcode=Binary(0x2) → 0x82.
+    // Both the magic-byte form (catches accidental opcode flips) and
+    // the named-constant form (catches accidental opcode constant
+    // renumbering) — double belt to anchor the contract.
+    EXPECT_EQ(wire[0], 0x82) << "actual byte 0: 0x" << std::hex << int(wire[0]);
+    EXPECT_EQ(wire[0] & 0x0F, eph::net::ws::opcode::kBinary)
+        << "opcode nibble: 0x" << std::hex << int(wire[0] & 0x0F);
+    EXPECT_EQ(wire[0] & 0x80, 0x80)  // FIN bit set
+        << "FIN bit not set; byte 0 = 0x" << std::hex << int(wire[0]);
+}
+
 // ---------------------------------------------------------------------------
 // encode_close — RFC 6455 §5.5.1 / §7.1.1
 // ---------------------------------------------------------------------------
