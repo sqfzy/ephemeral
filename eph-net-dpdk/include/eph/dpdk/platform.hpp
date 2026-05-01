@@ -1674,6 +1674,49 @@ struct Platform::Impl {
             return;
         }
 
+        // ──────────────────────────────────────────────────────────────────
+        // PRIMARY teardown — DPDK MP protocol gate.
+        //
+        // The DPDK port is a *system* resource shared across all attached
+        // processes (its io_cq descriptor rings live in shared hugepage
+        // memory). Per the DPDK contract, primary owns the port's lifecycle
+        // — `rte_eth_dev_stop` tears down ALL queues, including those
+        // exclusively used by secondaries. On ENA / DPDK 24.11 this fires
+        // `ena_com_io_queue_free` which writes `io_cq->cdesc_addr.virt_addr
+        // = NULL` into shared memory, instantly visible to every attached
+        // peer; if any peer is mid-`rte_eth_rx_burst`, it loads the NULL
+        // and SIGSEGVs in `ena_com_get_next_rx_cdesc`.
+        //
+        // Therefore: when MP topology is in use (`mp_registry.has_value()`)
+        // and other peers are still attached, defer global teardown.
+        // The port stays running until the last attached peer's
+        // `~Impl::cleanup()` hits this branch with `is_last_alive_proc()
+        // == true`. If primary exits before all secondaries, no peer
+        // ever calls stop — the port leaks until `dpdk-teardown.sh` (or
+        // a future eph IPC reaper) recycles hugepages on the next session.
+        //
+        // Single-process path (`mp_registry` empty, e.g. examples / unit
+        // tests / dpdk_e2e) is byte-equal to the pre-fix behavior: gate
+        // short-circuits to `false` and falls through to original
+        // stop/close/free below.
+        if (mp_registry.has_value() && !mp_registry->is_last_alive_proc()) {
+            const uint32_t alive = mp_registry->count_alive_procs();
+            SPDLOG_LOGGER_INFO(log,
+                "primary cleanup: {} peers still attached — deferring "
+                "rte_eth_dev_stop/close + mempool_free per DPDK MP "
+                "teardown protocol. port stays running; physical "
+                "teardown happens when the last process exits.",
+                alive - 1);
+            // Local bookkeeping — don't touch shared port / mempool state.
+            // Per-lcore pool view aliases primary-owned objects that are
+            // still in use by attached peers; just zero our local handles.
+            port_started = false;
+            mempool = nullptr;
+            for (auto& slot : per_lcore_pool) slot = nullptr;
+            for (auto& slot : pollers) slot = nullptr;
+            return;
+        }
+
         if (port_started) {
             SPDLOG_LOGGER_DEBUG(log, "Stopping port={}", config.port_id);
             rte_eth_dev_stop(config.port_id);
@@ -1725,14 +1768,37 @@ inline Platform::~Platform() {
     // destruction (C++ standard: dtor body first, then fields), so
     // eal_cleanup would fire while mp_registry still holds memzone
     // pointers — touching them after rte_eal_cleanup is a SEGV.
+    //
+    // **MP teardown protocol gate** (paired with `Impl::cleanup()`'s
+    // gate): `rte_eal_cleanup` internally closes any still-active
+    // devices via `rte_dev_close_all` / equivalent — on ENA this
+    // dispatches into `ena_close` which fires the same
+    // `ena_com_io_queue_free` write-NULL-into-shared-hugepage that
+    // `rte_eth_dev_stop` would have. So when peers are still attached,
+    // we must skip `eal_cleanup` too. Snapshot the "is last" state
+    // before `impl_.reset()` — by the time reset returns, mp_registry
+    // is already destroyed (its dtor cleared self slot), and the
+    // post-reset query would be meaningless.
     if (impl_) {
         const bool owns_eal = impl_->owns_eal_init;
+        const bool defer_eal_for_peers =
+            impl_->mp_registry.has_value() &&
+            !impl_->mp_registry->is_last_alive_proc();
         impl_.reset();   // triggers ~Impl → all DPDK resources gone
         if (owns_eal) {
             [[maybe_unused]] auto log = detail::platform_logger();
-            SPDLOG_LOGGER_DEBUG(log,
-                "~Platform: owns_eal_init=true — running eal_cleanup");
-            [[maybe_unused]] bool ok = ::eph::dpdk::eal_cleanup();
+            if (defer_eal_for_peers) {
+                SPDLOG_LOGGER_INFO(log,
+                    "~Platform: deferring rte_eal_cleanup — peers still "
+                    "attached. eal_cleanup would close all active devices "
+                    "(ENA: write NULL into shared io_cq), faulting peers "
+                    "mid-rx_burst. Per-process hugepage mappings will be "
+                    "released by OS on exit; shared state stays for peers.");
+            } else {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "~Platform: owns_eal_init=true — running eal_cleanup");
+                [[maybe_unused]] bool ok = ::eph::dpdk::eal_cleanup();
+            }
         }
     }
 }
