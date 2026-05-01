@@ -19,12 +19,26 @@ headroom so TLS decrypt can run in place via aws-lc's
 `EVP_AEAD_CTX_open_scatter`.
 
 For single-NIC multi-process deployments (one primary + N secondaries
-sharing the mempool), see `eph::dpdk::Platform::create_primary` /
-`create_secondary` plus `eph::dpdk::EalConfig` / `build_eal_argv` in
-`eph/dpdk/platform.hpp` and `eph/dpdk/eal.hpp`. The `PlatformConfig::
-proc_type` / `file_prefix` / `rx_queue_range` fields default to single-
-process / primary so existing code is byte-for-byte compatible. Full
-contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
+sharing the mempool), use the v3 zero-consensus surface in
+`eph/dpdk/platform.hpp` — secondaries don't restate values primary
+already chose:
+
+| Role | New code | Notes |
+|---|---|---|
+| Single-process or MP primary | `Platform::create(PlatformConfigV3)` | `PlatformConfigV3` has no `proc_type` / `mp_topology` — the MP shape is two numbers (`max_procs`, optional `queues_per_proc`). |
+| MP secondary | `Platform::attach(PlatformAttachConfig)` | The smallest "how to find primary" surface — `file_prefix` is the only required input; `nb_rx_queues` etc. are read live from primary's published registry / NIC. |
+| One-shot EAL+Platform | `Platform::create_with_eal` / `attach_with_eal` | v3 factories inject `--proc-type` / `--file-prefix` internally so callers don't restate them. |
+| Auto primary-or-secondary | `Platform::join_dynamic(JoinDynamicConfigV3{.pci=...})` | Zero-coordination MP: whoever runs `rte_eal_init` first becomes primary; the next peer auto-attaches as secondary. Only `pci` is required. |
+
+The legacy v2 surface (`Platform::create_primary` / `create_secondary` +
+`PlatformConfig::proc_type` / `file_prefix` / `rx_queue_range` + the v2
+`JoinDynamicConfig`) remains functional during the transition — every
+existing caller still compiles. New code should target v3.
+
+`eph::dpdk::EalConfig` + `build_eal_argv` is the typed helper for
+assembling `--proc-type` / `--file-prefix` / `-l` / `-a` argv when you
+drive EAL directly; the v3 factories invoke it under the hood. Full
+operational contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
 
 For **multi-port** deployments inside a single process (separate MD vs
 OE NICs, AWS multi-ENI, redundant feeds), `eph::dpdk::MultiPortPlatform`
@@ -73,8 +87,11 @@ User-facing — call directly from your application:
 - `mp_topology.hpp` — high-level multi-process resource topology;
   auto-derives `rx_queue_range` and per-process src_port segments
   instead of hand-partitioning.
-- `join_dynamic.hpp` — `JoinDynamicConfig` + `Platform::join_dynamic`
-  zero-coordination MP bring-up.
+- `join_dynamic.hpp` — `JoinDynamicConfigV3` + `Platform::join_dynamic`
+  zero-coordination MP bring-up. Caller supplies `pci` only; primary-vs-
+  secondary role is decided post-EAL by `rte_eal_process_type()`. The v2
+  `JoinDynamicConfig` (declarative `proc_type` / explicit `file_prefix` /
+  `mp_topology`) remains for source-compat during transition.
 - `proc_type.hpp` — `ProcType` enum (`Primary` / `Secondary`) shared
   by `platform.hpp` and `eal.hpp`.
 
