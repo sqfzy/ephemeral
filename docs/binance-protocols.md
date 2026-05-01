@@ -243,12 +243,18 @@ Combined usage:
 // EvictingQueue when the consumer thread is slower than the poller.
 using WsStream = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, true>;
 
-eph::containers::EvictingQueueBytes<512> latest_tick{};
+// Template params are <MaxDataSize, Capacity>. 512-byte payloads,
+// 256 slots (the default). Both must fit a real bookTicker JSON
+// frame plus a small headroom.
+eph::containers::EvictingQueueBytes</*MaxDataSize=*/512,
+                                    /*Capacity=*/256> latest_tick{};
 
 auto stream = WsStream::create(cfg).value();
 stream->on_message = [&](std::span<const uint8_t> app_frame) {
-    // Drop older ticks — keep only the newest
-    latest_tick.push(app_frame);
+    // Drop older ticks — keep only the newest. `try_push` is the
+    // single-arg span overload (forwards ts=0 to try_push_wts);
+    // returns false only when the frame exceeds MaxDataSize.
+    (void)latest_tick.try_push(app_frame);
 };
 
 // Server auto-culls during overload → fewer messages on wire
