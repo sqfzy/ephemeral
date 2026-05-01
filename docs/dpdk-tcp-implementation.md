@@ -157,13 +157,14 @@ MSS = ~93 KiB per session.
 
 ### 2.1 Overflow semantics
 
-The overflow branch at `tcp.hpp` `process_rx:1240-1248` is the one
-the Apr-23 stream-layer fix (commit c90a744) hardens: on overflow,
-`process_rx` frees the entire burst via `abort_rx_cleanup` and
-returns `Error::Disconnected`. `DpdkTcpStream::process_burst_`
-observes the error and calls `handle_rx_session_error_`, which
-force-transitions to Closed and bumps `StreamMetric::kRxSessionResets`
-so the application's reconnect policy can take over.
+The overflow branch in `tcp.hpp` `process_rx` (search for
+`reorder_overflows++`) is the one the Apr-23 stream-layer fix (commit
+c90a744) hardens: on overflow, `process_rx` frees the entire burst
+via `abort_rx_cleanup` and returns `Error::Disconnected`.
+`DpdkTcpStream::process_burst_` observes the error and calls
+`handle_rx_session_error_`, which force-transitions to Closed and
+bumps `StreamMetric::kRxSessionResets` so the application's reconnect
+policy can take over.
 
 Behavioral coverage: `test_dpdk_tcp_stream.cpp`
 `DpdkTcpStreamReorderOverflowE2E.RealReorderOverflowDrivesStreamReset`
@@ -179,8 +180,7 @@ touches 1-2 slots on average. A hash-indexed structure would pay
 the hash overhead on every insert + every drain scan; a sorted
 heap adds O(log N) insert cost. For 2-4 concurrent streams, the
 constant factor of linear scan wins. If a workload ever runs >16
-concurrent streams per lcore, revisit this assumption (see review
-note on `tcp.hpp:1765`).
+concurrent streams per lcore, revisit this assumption.
 
 ---
 
