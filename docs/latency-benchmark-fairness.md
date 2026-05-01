@@ -12,9 +12,10 @@ that the numbers are apples-to-apples.
 | `tcp` | `lat_tcp` | `lat_tcp_dpdk` | raw TCP round-trip latency |
 | `udp` | `lat_udp` | `lat_udp_dpdk` | raw UDP round-trip latency |
 | `ws`  | `lat_ws`  | `lat_ws_dpdk`  | plain WebSocket RTT (no TLS) |
-| `ex_market` | `lat_ex_market` | `lat_ex_market_dpdk` | one-leg exchange bookTicker push |
-| `ex_order`  | `lat_ex_order`  | `lat_ex_order_dpdk`  | N-inflight order RTT pipeline |
-| `ex_md_udp` | `lat_ex_md_udp` | `lat_ex_md_udp_dpdk` | exchange UDP market data RTT |
+| `ex_market`    | `lat_ex_market`    | `lat_ex_market_dpdk`    | one-leg exchange bookTicker push |
+| `ex_market_2p` | `lat_ex_market_2p` | `lat_ex_market_2p_dpdk` | 2-phase multi-symbol + burst |
+| `ex_order`     | `lat_ex_order`     | `lat_ex_order_dpdk`     | N-inflight order RTT pipeline |
+| `ex_md_udp`    | `lat_ex_md_udp`    | `lat_ex_md_udp_dpdk`    | exchange UDP market data RTT |
 
 Each binary:
 
@@ -29,9 +30,11 @@ Each binary:
 4. **Writes no files** — everything goes to stdout.
 
 Both client paths share identical config, identical codec (`WsCodec` / `RawStreamCodec`),
-identical histogram infrastructure (`eph::utils::HdrHistogram`), identical TSC
-calibration (`eph::utils::TSC`). The *only* thing that changes between `lat_tcp` and
-`lat_tcp_dpdk` is which namespace's `TcpStream` is instantiated.
+identical histogram infrastructure (`eph::utils::Recorder` /
+HdrHistogram), and read the same shared time base via
+`bench::monotonic_raw_ns()`. The *only* thing that changes between
+`lat_tcp` and `lat_tcp_dpdk` is which namespace's `TcpStream` is
+instantiated.
 
 ## Why forking a kernel mock is the fair choice
 
@@ -53,10 +56,15 @@ cost lives.
 
 ## Clock domains
 
-All four timestamps are `eph::utils::TSC::now()` — a calibrated `rdtsc`-based clock.
-The client and server run on the same box (mock is forked as a child process), so
-TSC is coherent across cores on modern x86 (`invariant_tsc` CPUID bit) and ARM
-(virtual counter). No cross-clock conversion is needed.
+All four timestamps are `bench::monotonic_raw_ns()` — a thin wrapper
+over `clock_gettime(CLOCK_MONOTONIC_RAW)` in
+`benchmarks/latency/core/measurement.hpp`. This is a deliberate
+exception to the canonical TSC rule used elsewhere in the project:
+the bench client and `mockex` are separate processes (often pinned to
+different cores) that need to share a time base on one-way scenarios,
+and `CLOCK_MONOTONIC_RAW` is read identically from both. Samples are
+fed directly into `eph::utils::Recorder::record_ns()` — no
+cycle→nanosecond conversion is needed.
 
 The bench config in `benchmarks/latency/bench.conf` pins the client and server to
 separate isolated cores so they don't fight for the same CPU.
@@ -83,18 +91,23 @@ isn't supported), the script prints a diagnostic and exits cleanly. The actual
 
 ## Verification
 
-`tests/unit/bench/` contains unit tests for the shared bench infrastructure
-(`core/runner.hpp`, `core/tsc_protocol.hpp`, `core/histogram_io.hpp`). Running
-`xmake run -g tests` exercises them on every CI build.
+`tests/unit/bench/` contains unit tests for the shared bench
+infrastructure (`core/measurement.hpp`, `core/timestamp_proto.hpp`,
+`core/bench_conf.hpp`, `core/endpoint.hpp`, `core/json_scan.hpp`,
+`core/dpdk_env.hpp`). Running `xmake run -g tests` exercises them on
+every CI build.
 
-`benchmarks/latency/core/runner.hpp` is the single source of truth for "where in the
-code we take each of the four timestamps." Both kernel and DPDK clients call into the
-same runner template, so the four measurement points are physically the same
-instructions — only the underlying `Stream` / `Datagram` implementation differs.
+The per-scenario loops live in `benchmarks/latency/scenarios/` (one
+`lat_<name>_loop.hpp` each) and are the single source of truth for
+"where in the code we take each of the four timestamps." Both kernel
+and DPDK clients call into the same loop header per scenario, so the
+four measurement points are physically the same instructions — only
+the underlying `Stream` / `Datagram` implementation differs.
 
 ## See also
 
-- `benchmarks/latency/core/tsc_protocol.hpp` — the 4-timestamp payload layout
-- `benchmarks/latency/core/runner.hpp` — the shared bench loop
+- `benchmarks/latency/core/timestamp_proto.hpp` — the 4-timestamp payload layout
+- `benchmarks/latency/core/measurement.hpp` — `monotonic_raw_ns()` and helpers
+- `benchmarks/latency/scenarios/lat_*_loop.hpp` — per-scenario shared bench loop
 - `benchmarks/latency/bench.conf` — NIC / IP / CPU / namespace config
 - `docs/dpdk-setup.md` — how to prepare NIC_B for DPDK binding
