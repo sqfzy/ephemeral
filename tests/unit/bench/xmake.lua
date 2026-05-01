@@ -49,6 +49,14 @@ target("test_timestamp_proto")
     add_includedirs("$(projectdir)/benchmarks/latency")
     add_packages("spdlog")
 
+-- Pure-function coverage for bench::mp_output_suffix (env-var strict
+-- parse + per-process JSON suffix emission). No DPDK / EAL.
+target("test_mp_output_suffix")
+    add_rules("eph-test")
+    add_files("test_mp_output_suffix.cpp")
+    add_includedirs("$(projectdir)/benchmarks/latency")
+    add_packages("spdlog")
+
 -- Pure-function coverage for bench::synthesize_eal_argv.
 -- The source file is guarded by `#ifdef EPH_USE_DPDK` and falls back to
 -- a single SKIP-style test when DPDK is not available. Link the real

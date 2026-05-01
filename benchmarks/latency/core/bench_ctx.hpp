@@ -28,17 +28,28 @@ namespace bench {
 /// This helper appends `_pid<getpid()>` so each process gets a unique
 /// filename (e.g. `lat_tcp_dpdk_rtt_pid12345_<ts>.json`).
 ///
-/// Detection: `EPH_LAT_AUTOJOIN_MAX_PROCS` envvar non-empty. This is
-/// the same envvar that triggers the MP autojoin path in dpdk_env.hpp,
-/// so the suffix is on iff the user opted into multi-process mode.
-/// Single-process bench commands (`lat tcp --dpdk`) leave the suffix
-/// empty, preserving byte-equal output filenames with the legacy path.
+/// Detection: `EPH_LAT_AUTOJOIN_MAX_PROCS` envvar parses as an integer
+/// in `[2, 64]`. This is the same strict-parse contract enforced by
+/// `load_dpdk_env` in `dpdk_env.hpp` (commit `c7989efb`); using the
+/// same predicate here keeps the suffix in lockstep with the autojoin
+/// path. A non-numeric or out-of-range envvar (e.g. `garbage` /
+/// `1` / `99`) yields no suffix — matching what the autojoin path
+/// would produce after rejecting the env value (the bench either
+/// runs single-process or fails fast without writing any output).
 [[nodiscard]] inline std::string mp_output_suffix() noexcept {
-    if (const char* mp = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
-        mp && *mp) {
-        return std::string{"_pid"} + std::to_string(::getpid());
+    const char* mp = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
+    if (!mp || !*mp) return {};
+    char* end = nullptr;
+    const unsigned long mp_raw = std::strtoul(mp, &end, 10);
+    if (end == mp || *end != '\0' || mp_raw < 2 || mp_raw > 64) {
+        // Mirrors load_dpdk_env's strict-parse contract — non-numeric
+        // / out-of-range values are not "MP mode", they're misconfigs.
+        // Returning empty here means a kernel-mode bench run with a
+        // typo'd env var won't silently produce a `_pid<n>` suffix
+        // that the user didn't ask for.
+        return {};
     }
-    return {};
+    return std::string{"_pid"} + std::to_string(::getpid());
 }
 
 
