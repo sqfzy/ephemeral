@@ -275,6 +275,70 @@ primary exit) and the multi-scenario case:
   share one ENA NIC via RSS, queues 0-6. All 7 PASS, ~1 M total
   samples.
 
+## Same-scenario fan-out semantics
+
+Two or more peer processes can run the **same** scenario (e.g.
+two `lat_tcp_dpdk` instances, each owning a different RX queue).
+This is technically supported by the autojoin path — primary and
+each secondary independently parse `EPH_LAT_AUTOJOIN_*` envvars
+and claim disjoint queue/port/lcore ranges via the registry.
+
+What you get when 2 peers run `lat_tcp_dpdk` with `MAX_PROCS=2`:
+
+```
+proc 0 (primary)             proc 1 (secondary)
+queue 0                      queue 1
+lcores 0,1                   lcores 2,3
+src_port [49152..57343)      src_port [57344..65535)
+output: lat_tcp_dpdk_dpdk_rtt_pid<P0>_<ts>.json
+output: lat_tcp_dpdk_dpdk_rtt_pid<P1>_<ts>.json
+```
+
+**Two independent measurement streams**, not a coordinated
+fan-out load test. Each peer independently:
+
+- Picks its own src_port within its assigned port range, RSS-pinned
+  to its own queue via `pin_to_queue = ctx.queue_id`
+- Connects to the same `mockex` instance — mockex's per-connection
+  isolation (each client gets its own thread + scratch buffer)
+  ensures the two streams don't interfere server-side
+- Records its own RTT histogram, writes its own JSON file. The
+  `_pid<N>` suffix introduced in commit `d849d58a` prevents
+  filename collision; without it, the second process to flush
+  silently overwrites the first's measurements
+
+**Use cases:**
+
+1. **Per-queue characterization** — measure latency variance across
+   RSS queues on the same NIC. Useful for diagnosing per-queue
+   PMD anomalies (e.g. queue 1 doing more work due to RX interrupt
+   affinity drift).
+
+2. **Concurrency stress** — verify the system holds up under N
+   concurrent measurement streams (each with own DpdkPoller,
+   separate mempool views via secondary lookup).
+
+**NOT a use case:**
+
+- **Aggregate throughput measurement** — JSON files are
+  independent; no automatic merging. Aggregate throughput is the
+  sum of per-pid throughputs, but tail latency must be reasoned
+  per-pid (not concatenated).
+
+- **Coordinated load generation** — peers don't share a clock or
+  coordinate request issue rate. They each issue requests as fast
+  as their local loop allows. Use a single-process load generator
+  if you need synchronized N-way fan-out.
+
+**Mockex contention warning:**
+
+When N peers share one mockex instance, mockex's internal scheduling
+fairness across N concurrent connections becomes a confounder.
+For benchmarks where mockex CPU is the bottleneck (rare on the
+echo scenarios at sub-100k samples/s, but possible at higher
+rates), launch one mockex per peer with non-overlapping ports —
+distinct config files per peer.
+
 ## See also
 
 * `eph-net-dpdk/docs/dpdk-multiprocess.md` — broader DPDK
