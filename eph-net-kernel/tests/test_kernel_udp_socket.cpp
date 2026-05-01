@@ -263,6 +263,42 @@ TEST(KernelUdpSocket, SnapshotReportsZeroDstUntilConnectTo) {
     EXPECT_NE(snap2.endpoint.dst_ip, 0u);
 }
 
+TEST(KernelUdpSocket, CreateAutoAppliesCfgConnectToWhenPortNonZero) {
+    // `KernelUdpSocket::create` lowers `cfg.connect_to.port != 0` into
+    // an internal `connect_to(...)` call before returning the socket.
+    // This shortcut wires source-address filtering at create time so
+    // callers don't need a two-step create + connect_to dance. The
+    // path was previously uncovered: existing tests only call the
+    // post-create connect_to() member directly. Lock that:
+    //   * happy path: cfg.connect_to.port != 0 → snapshot.endpoint.dst_*
+    //     reflects the configured peer immediately.
+    //   * the `(0.0.0.0:0)` rejection still applies: a malformed
+    //     cfg.connect_to should propagate as factory failure rather
+    //     than silently disassociating the socket.
+    ek::UdpConfig cfg{};
+    cfg.bind       = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    cfg.connect_to = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 12345};
+    auto s = RawUdp::create(cfg).value();
+
+    // Snapshot must show the filter peer immediately — no manual
+    // connect_to call needed.
+    auto snap = s->snapshot();
+    EXPECT_EQ(snap.endpoint.dst_port, 12345u);
+    EXPECT_NE(snap.endpoint.dst_ip, 0u);
+}
+
+TEST(KernelUdpSocket, CreateLeavesUnconnectedWhenCfgConnectToPortIsZero) {
+    // Sentinel: port == 0 (default) skips the auto-connect path. The
+    // socket must come back unconnected — snapshot.endpoint.dst_* zero.
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    // cfg.connect_to default-constructed: port == 0
+    auto s = RawUdp::create(cfg).value();
+    auto snap = s->snapshot();
+    EXPECT_EQ(snap.endpoint.dst_port, 0u);
+    EXPECT_EQ(snap.endpoint.dst_ip, 0u);
+}
+
 TEST(KernelUdpSocket, JoinLeaveMulticastApiSurface) {
     ek::UdpConfig cfg{};
     cfg.bind       = en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0};
