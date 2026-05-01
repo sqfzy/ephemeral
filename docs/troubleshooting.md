@@ -81,10 +81,16 @@ the error from the first poll cycle's writability check.
 socket).
 
 **Diagnosis**:
-- Check `ReconnectPolicy::on_state_change(kDisconnected)` callback timing —
-  is it periodic? See "Connection drops every N minutes" below.
-- DPDK: `TcpSession::Stats::tx_rst_received` / `tx_fin_received` counters
-  distinguish RST vs graceful close.
+- Check the cadence at which `ReconnectPolicy` is consuming attempts —
+  is it periodic? See "Connection drops every N minutes" below. The
+  policy's metrics live on `ReconnectMetric` (counters
+  `kReconnectCount` for successful reconnects, `kReconnectFailures`
+  for factory failures, `kReconnectDurationNs` for cumulative
+  reconnect duration in nanoseconds) wired through
+  `publish_reconnect_metrics`.
+- DPDK: `TcpSession::Stats::resets_received` distinguishes RST events
+  from graceful FIN closes (FIN closes leave `resets_received == 0`
+  and are surfaced through the normal Closed state transition).
 
 ### `Error::Timeout`
 
