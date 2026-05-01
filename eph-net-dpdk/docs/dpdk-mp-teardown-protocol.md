@@ -283,6 +283,42 @@ This is technically supported by the autojoin path — primary and
 each secondary independently parse `EPH_LAT_AUTOJOIN_*` envvars
 and claim disjoint queue/port/lcore ranges via the registry.
 
+### Orchestrator env vars
+
+The autojoin path reads three envvars from the calling process
+(set by the orchestrator script that launches each `lat_*_dpdk`
+peer). They are the **caller's** responsibility — eph-net-dpdk
+does no auto-detection / auto-coordination across processes.
+
+| Env var | Required? | Type | Purpose |
+|---------|-----------|------|---------|
+| `EPH_LAT_AUTOJOIN_MAX_PROCS`  | Required to engage MP path. Unset = single-process bench. | int in `[2, 64]` | Number of peer processes that will share the NIC. Each peer must agree on the same value, else the secondary's `Platform::join_dynamic` rejects with `max_procs disagreement with primary`. Strict-parsed (commit `c7989efb`): non-numeric / `0` / `1` / out-of-range → hard error naming the env var. |
+| `EPH_LAT_AUTOJOIN_LCORES`     | Optional. Falls back to `bench.conf` `eal_cores`. | EAL CSV (`"0,1"` / `"0-3"` / `"0,2,4"`) | This peer's EAL lcores. Lowered to a bitmask via `parse_lcores_csv_to_mask` (commit `e7c5a98a` rejects IDs ≥ 64 hard). Cross-process lcore overlap detection runs in `MpRegistry::attach_secondary` v2 schema (commit `fceb0f78`). |
+| `EPH_LAT_AUTOJOIN_GW_MAC_FILE`| Required when MAX_PROCS ≥ 2. Empty path is hard-rejected. | absolute path | Shared file the primary peer writes the ARP-resolved gateway MAC into, and secondary peers poll for. Primary unlinks-then-rename for atomic publish (commit `df92fc6a`); secondary rejects all-zero MAC. The orchestrator typically derives this from the BDF (`/tmp/eph_gw_mac_<bdf>.txt`). |
+
+**Source-port partitioning** is the orchestrator's responsibility
+too — eph-net-dpdk has no global view to enforce disjointness across
+peers (see CLAUDE.md / `eph-net-dpdk/docs/dpdk-multiprocess.md`).
+The `lat_*_dpdk` binaries default to `MpTopology::uniform()` which
+splits `[32768, 65536)` evenly across `MAX_PROCS` slots; if you
+launch two peers with conflicting MAX_PROCS values they will race
+on src_port.
+
+A minimal 2-peer launch (as the in-tree
+`/tmp/ena_mp_rootcause.sh` does) sets the three env vars
+identically on both peers (their roles resolve at EAL init via
+`rte_eal_process_type()`):
+
+```bash
+export EPH_LAT_AUTOJOIN_MAX_PROCS=2
+export EPH_LAT_AUTOJOIN_LCORES="0,1"     # peer 0
+export EPH_LAT_AUTOJOIN_GW_MAC_FILE=/tmp/eph_gw_mac_0000-28-00.0.txt
+./build/.../lat_tcp_dpdk --config bench.conf &  # primary
+
+export EPH_LAT_AUTOJOIN_LCORES="2,3"     # peer 1 — DIFFERENT lcores
+./build/.../lat_udp_dpdk --config bench.conf &  # secondary
+```
+
 What you get when 2 peers run `lat_tcp_dpdk` with `MAX_PROCS=2`:
 
 ```
