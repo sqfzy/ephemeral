@@ -18,7 +18,10 @@
 ///   - launch order is the only "agreement"
 ///
 /// What this binary does:
-///   1. Parse `--pci` / `--nb-queues` / `--lcores` from argv.
+///   1. Parse `--pci` / `--nb-queues` / `--lcores` /
+///      `--hold-seconds` from argv. The first three describe the
+///      NIC; `--hold-seconds` (default 8) just controls how long
+///      the demo stays up so the peer process can attach.
 ///   2. Call `Platform::join_dynamic` — which assembles the EAL
 ///      argv with `--proc-type=auto`, calls `eal_init`,
 ///      detects the resolved role via `rte_eal_process_type()`,

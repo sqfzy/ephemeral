@@ -268,7 +268,10 @@ treats it as a fast-path no-op.
 
 ## HTTP CONNECT Proxy Errors
 
-Kernel backend only (DPDK rejects with `Error::InvalidConfig`).
+Kernel backend only — `eph::net::dpdk::StreamConfig` has no
+`proxy` field at all (removed post-T3.19), so attempting to set
+`cfg.proxy.*` on the DPDK config is a compile error rather than a
+runtime `InvalidConfig`.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
