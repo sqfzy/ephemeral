@@ -28,6 +28,31 @@
   cover all four reject cases plus a `ttl_secs == 120` boundary
   acceptance.
 
+### Fixed (2026-04-29 .. 2026-04-30) — TLS detail layer hardening
+
+Three defence-in-depth fixes against AEAD edge cases in the shared
+`include/eph/net/detail/tls_*.hpp` layer (consumed by both kernel
+and DPDK backends):
+
+- `TlsDecryptor::decrypt` now rejects `plaintext_len == 0` from
+  `EVP_AEAD_CTX_open` (returns `false` and logs at ERROR). RFC 8446
+  §5.2 mandates the inner content type as the trailing byte, so a
+  zero-byte inner record is a spec violation; previously the
+  `inner_ct` out-parameter was left uninitialised and the Stream
+  dispatch routed on stack garbage. Sister
+  `tls_inplace::open_in_place` already enforced this; the legacy
+  decryptor is now in line.
+- `TlsEncryptor` / `TlsDecryptor` move-constructors now
+  `OPENSSL_cleanse` the source `EVP_AEAD_CTX` after the byte-wise
+  copy. The struct holds expanded AES round keys for aws-lc
+  AES-GCM; without the cleanse the moved-from instance kept a
+  copy of the secret schedule on the stack until natural
+  destruction. Same fix landed in `tls_inplace.hpp` move-ctor for
+  the in-place decrypt path.
+
+These all matter only for malicious / malfunctioning peers or
+compromised aws-lc; well-behaved AEAD output is unchanged.
+
 ### Added (2026-04-29) — `StreamSnapshot` unified post-create state view
 
 - `include/eph/net/stream_snapshot.hpp` — `StreamSnapshot` aggregate
