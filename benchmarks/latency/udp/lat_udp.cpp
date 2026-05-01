@@ -132,6 +132,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto poller = std::move(poller_r.value());
+    constexpr uint16_t rx_queue = 0;  // kernel: no MP queue concept
 #endif
 
     bench::BenchCtx ctx{};
