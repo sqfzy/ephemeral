@@ -17,6 +17,18 @@
 /// and demonstrates how to populate `cfg.proxy` when both flags are
 /// given. With no `--proxy-host` it falls through to a direct connect
 /// so the binary is useful as a plaintext-WS smoke-test too.
+///
+/// Usage:
+///   ws_via_proxy [--target-ip <ip>] [--target-port <port>]
+///                [--proxy-host <host>] [--proxy-port <port>]
+///                [--http-connect]
+///
+///   --target-ip      Origin server IPv4 (default: 127.0.0.1)
+///   --target-port    Origin server port  (default: 9443)
+///   --proxy-host     HTTP CONNECT proxy host (empty = direct connect)
+///   --proxy-port     HTTP CONNECT proxy port (required with --proxy-host)
+///   --http-connect   Forward-compat marker (HTTP CONNECT is the only
+///                    supported scheme today; no-op).
 
 #include <atomic>
 #include <chrono>
