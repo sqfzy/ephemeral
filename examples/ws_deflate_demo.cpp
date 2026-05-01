@@ -47,6 +47,15 @@
 ///                     --sni stream.binance.com
 ///                     --path /ws/btcusdt@bookTicker
 ///                     --duration 8
+///
+///   # A/B comparison: same connection, deflate disabled. Use this
+///   # to measure the compression win (or loss) on your traffic
+///   # — bytes-on-wire counters in publish_metrics() are the
+///   # easiest signal.
+///   ./ws_deflate_demo --host 54.249.151.10 --port 9443
+///                     --sni stream.binance.com
+///                     --path /ws/btcusdt@bookTicker
+///                     --duration 8 --no-deflate
 
 #include <atomic>
 #include <chrono>
