@@ -1280,7 +1280,30 @@ struct Platform::Impl {
     /// rule as fd_install_action.
     std::optional<::eph::dpdk::detail::MpIpcAction> fd_destroy_action;
 
-    LegacyPlatformConfig config;
+    /// @brief Cold-path NIC physical state (v3 shape). Holds every field
+    /// that the bring-up body reads — port_id, queue counts, descriptor
+    /// counts, mbuf pool, RSS / promiscuous flags, file_prefix,
+    /// per_lcore_pools, max_procs / queues_per_proc. The pre-cleanup v2
+    /// shape's role-and-topology fields (`proc_type`, `mp_topology`,
+    /// `rx_queue_range`) are NOT here — they are resolved at create
+    /// time and stored separately in `resolved_proc_type` /
+    /// `resolved_rx_queue_range` (and, transitively, `mp_registry`).
+    PlatformConfig config;
+
+    /// @brief Resolved DPDK process role for THIS Platform instance.
+    /// Captured from the role-specific bring-up entry point at create
+    /// time and read by `Platform::is_secondary()` and `~Impl`'s
+    /// secondary-aware cleanup branch. Default Primary so an
+    /// untouched Impl behaves as the dominant single-process case.
+    ProcType resolved_proc_type = ProcType::Primary;
+
+    /// @brief Resolved RX-queue range `[lo, hi)` this process owns.
+    /// `{0, 0}` is the sentinel meaning "use the full range
+    /// `[0, nb_rx_queues)`". MP bring-up paths populate this from the
+    /// MpTopology slot they synthesize; single-process create() leaves
+    /// it at the sentinel. Read by `Platform::effective_rx_queue_range()`.
+    std::pair<uint16_t, uint16_t> resolved_rx_queue_range{0, 0};
+
     /// Canonical pool — points at the single shared pool when
     /// `per_lcore_pools == 0`, or at `pools_[0]` when
     /// `per_lcore_pools > 0`. Used unchanged by all the existing
@@ -1874,7 +1897,7 @@ struct Platform::Impl {
         // RAII chains in the owning objects; Platform::Impl only zeroes
         // the shared-view pointers here so any lingering accessor returns
         // nullptr instead of a dangling primary-owned handle.
-        if (config.proc_type == ProcType::Secondary) {
+        if (resolved_proc_type == ProcType::Secondary) {
             SPDLOG_LOGGER_DEBUG(log,
                 "secondary cleanup (port={}, file_prefix='{}'): "
                 "stream/poller teardown only, port + mempool untouched "
@@ -2098,7 +2121,7 @@ Platform::create_with_eal(LegacyPlatformConfig                          pcfg,
     SPDLOG_LOGGER_INFO(log,
         "create_with_eal: Platform owns EAL session (pins={}, proc_type={})",
         plat.impl_ ? plat.impl_->pin_session_guards.size() : 0,
-        plat.impl_ ? static_cast<int>(plat.impl_->config.proc_type) : -1);
+        plat.impl_ ? static_cast<int>(plat.impl_->resolved_proc_type) : -1);
     return plat;
 }
 
@@ -2118,8 +2141,31 @@ Platform::create(const LegacyPlatformConfig& config) {
         SPDLOG_LOGGER_WARN(log, "LegacyPlatformConfig advisory: {}", w);
     }
 
-    auto impl    = std::make_unique<Impl>();
-    impl->config = config;
+    auto impl = std::make_unique<Impl>();
+    // Project the v2 config into v3 + resolved fields. The v2-only
+    // identity fields (`proc_type`, `rx_queue_range`) move to dedicated
+    // `Impl::resolved_*` members; `mp_topology` is consumed by the
+    // role-specific entry points BEFORE they call us, so by the time we
+    // land here it is always reset.
+    impl->config.port_id                    = config.port_id;
+    impl->config.file_prefix                = config.file_prefix;
+    impl->config.nb_rx_queues               = config.nb_rx_queues;
+    impl->config.nb_tx_queues               = config.nb_tx_queues;
+    impl->config.nb_rx_desc                 = config.nb_rx_desc;
+    impl->config.nb_tx_desc                 = config.nb_tx_desc;
+    impl->config.mbuf_pool_size             = config.mbuf_pool_size;
+    impl->config.mbuf_cache_size            = config.mbuf_cache_size;
+    impl->config.enable_promiscuous         = config.enable_promiscuous;
+    impl->config.enable_rx_checksum_offload = config.enable_rx_checksum_offload;
+    impl->config.enable_strict_rx_checksum  = config.enable_strict_rx_checksum;
+    impl->config.link_timeout_ms            = config.link_timeout_ms;
+    impl->config.per_lcore_pools            = config.per_lcore_pools;
+    // v3-only fields stay at default (single-process / auto). The v2
+    // dispatcher does not synthesize MP topology — that happens in
+    // create_primary / create_secondary_impl_, and the resolved
+    // proc_type / rx_queue_range below capture the outcome.
+    impl->resolved_proc_type        = config.proc_type;
+    impl->resolved_rx_queue_range   = config.rx_queue_range;
 
     if (auto r = impl->enumerate_ports(); !r) return std::unexpected(r.error());
     if (auto r = impl->create_mempool();  !r) return std::unexpected(r.error());
@@ -2552,8 +2598,24 @@ Platform::create_secondary_impl_(LegacyPlatformConfig config,
             config.port_id));
     }
 
-    auto impl       = std::make_unique<Impl>();
-    impl->config    = config;
+    auto impl = std::make_unique<Impl>();
+    // Same v2-into-v3 projection as Platform::create — see that body
+    // for the per-field rationale.
+    impl->config.port_id                    = config.port_id;
+    impl->config.file_prefix                = config.file_prefix;
+    impl->config.nb_rx_queues               = config.nb_rx_queues;
+    impl->config.nb_tx_queues               = config.nb_tx_queues;
+    impl->config.nb_rx_desc                 = config.nb_rx_desc;
+    impl->config.nb_tx_desc                 = config.nb_tx_desc;
+    impl->config.mbuf_pool_size             = config.mbuf_pool_size;
+    impl->config.mbuf_cache_size            = config.mbuf_cache_size;
+    impl->config.enable_promiscuous         = config.enable_promiscuous;
+    impl->config.enable_rx_checksum_offload = config.enable_rx_checksum_offload;
+    impl->config.enable_strict_rx_checksum  = config.enable_strict_rx_checksum;
+    impl->config.link_timeout_ms            = config.link_timeout_ms;
+    impl->config.per_lcore_pools            = config.per_lcore_pools;
+    impl->resolved_proc_type      = config.proc_type;          // Secondary
+    impl->resolved_rx_queue_range = config.rx_queue_range;     // from MpTopology slot
 
     if (auto r = impl->lookup_mempool_secondary(); !r)
         return std::unexpected(r.error());
@@ -3258,10 +3320,10 @@ inline bool Platform::rss_using_probed_key() const noexcept {
 inline std::pair<uint16_t, uint16_t>
 Platform::effective_rx_queue_range() const noexcept {
     if (!impl_) return {0, 0};
-    const auto& r = impl_->config.rx_queue_range;
+    const auto& r = impl_->resolved_rx_queue_range;
     // Sentinel {0, 0} means "use full range [0, nb_rx_queues)".
-    // Any other value has been validated by validate_config (lo < hi <=
-    // nb_rx_queues).
+    // MP bring-up paths populate this from the MpTopology slot they
+    // synthesize; single-process create() leaves it at the sentinel.
     if (r.first == 0 && r.second == 0)
         return {uint16_t{0}, impl_->config.nb_rx_queues};
     return r;
@@ -3279,7 +3341,7 @@ Platform::self_port_range() const noexcept {
 }
 
 inline bool Platform::is_secondary() const noexcept {
-    return impl_ && impl_->config.proc_type == ProcType::Secondary;
+    return impl_ && impl_->resolved_proc_type == ProcType::Secondary;
 }
 
 inline std::expected<void, ::eph::core::ErrorInfo>
