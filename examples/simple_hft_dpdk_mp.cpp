@@ -89,10 +89,12 @@
 ///
 /// Additional flags (all optional; full list at parse_args):
 ///   --port-id <id>    DPDK port enumeration index (default 0).
-///   --nb-queues <n>   per-process RX/TX queue count (default 1).
-///                     Both peers must agree — `MpTopology::uniform`
-///                     uses it to derive equal sub-ranges per
-///                     self_index.
+///   --nb-queues <n>   per-process RX/TX queue count (default 4 — see
+///                     `AppArgs::nb_rx_queues` below). Both peers must
+///                     agree — `MpTopology::uniform` uses this value to
+///                     derive equal sub-ranges per `self_index`, so a
+///                     mismatch makes one process's range overlap the
+///                     other's.
 ///   --seconds <n>     demo run duration (default 5).
 
 #include <atomic>
