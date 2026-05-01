@@ -593,3 +593,101 @@ TEST(MpRegistryLcore, AfterRelease_SlotReusable) {
         "rglc_reu", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0x3));
     ASSERT_TRUE(s2.has_value()) << s2.error();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ghost-data regression — release/claim cycle must clear lcore_mask + pid
+// (silent failure mode: stale fields from previous owner survive in shared
+// memory across slot reuse, poisoning the cross-process lcore conflict scan)
+//
+// Discovered via /pax --review LENS "production / MP mental model / silent
+// misuse closure" on 2026-05-01: v2 schema added lcore_mask + pid but the
+// release-side and try_claim_free_slot pass-1 paths did not zero them, so
+// a benign graceful-release+reclaim cycle would leave ghost lcore_mask bits
+// in the slot. attach_secondary's conflict scan then mistakenly reads the
+// ghost as a live peer's claim and rejects unrelated peers with
+// `Error::InvalidConfig("lcore_mask overlaps")`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MpRegistryGhost, GracefulRelease_ClearsLcoreMaskAndPid) {
+    // Phase 1: secondary attaches with mask=0xC and a real pid (its own).
+    // Phase 2: secondary's RAII destructor releases the slot.
+    // Assert: post-release, slot 1's lcore_mask AND pid are both zero.
+    // Without the fix this test FAILS at the lcore_mask line because
+    // release_() only stores claimed=0 and leaves the metadata behind.
+    auto p = MpRegistryHandle::create_primary(
+        "rgghost1", make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    {
+        auto s = MpRegistryHandle::attach_secondary(
+            "rgghost1", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0));
+        ASSERT_TRUE(s.has_value()) << s.error();
+        // Sanity: attach actually published the metadata.
+        EXPECT_EQ(p->header()->procs[1].lcore_mask, 0xCu);
+        EXPECT_EQ(p->header()->procs[1].pid,
+                  static_cast<int32_t>(::getpid()));
+        EXPECT_EQ(p->header()->procs[1].claimed.load(
+                      std::memory_order_acquire), 1);
+    } // ~MpRegistryHandle → release_
+
+    // Slot is now free again.
+    EXPECT_EQ(p->header()->procs[1].claimed.load(
+                  std::memory_order_acquire), 0);
+    // Metadata MUST be cleared so the next claimer sees a pristine slot.
+    EXPECT_EQ(p->header()->procs[1].lcore_mask, 0u)
+        << "release_ must clear lcore_mask so the next slot claimant does "
+           "not inherit ghost data that would poison the cross-process "
+           "lcore conflict scan.";
+    EXPECT_EQ(p->header()->procs[1].pid, 0)
+        << "release_ must clear pid so the next slot claimant does not "
+           "inherit a stale owner identifier.";
+}
+
+TEST(MpRegistryGhost, SlotReusedByNextClaimer_NoGhostLcoreMask) {
+    // End-to-end: peer A attaches slot 1 with mask=0xC, releases gracefully.
+    // Peer B then arrives via try_claim_free_slot pass-1 (the common path
+    // for a freshly-released slot — pass-2 only fires when kill(pid,0)
+    // returns ESRCH). Pass-1 used to skip the metadata clear, so the slot
+    // would re-publish A's ghost lcore_mask=0xC under B's pid. A third
+    // peer C attempting to attach with its own mask=0xC (legitimate, since
+    // A is gone) would then be falsely rejected by attach_secondary's
+    // conflict scan against the ghost.
+    auto primary = MpRegistryHandle::create_primary(
+        "rgghost2", MpTopology::uniform(0, 4, 8));
+    ASSERT_TRUE(primary.has_value()) << primary.error();
+
+    // Round 1: peer A claims slot 1 via try_claim_free_slot, publishes 0xC.
+    {
+        auto roA = MpRegistryHandle::attach_secondary_readonly("rgghost2");
+        ASSERT_TRUE(roA.has_value()) << roA.error();
+        auto idxA = roA->try_claim_free_slot();
+        ASSERT_TRUE(idxA.has_value()) << idxA.error();
+        EXPECT_EQ(*idxA, 1u);
+
+        // Manually publish a non-zero lcore_mask the way attach_secondary
+        // would — this simulates a peer that does opt into lcore tracking.
+        // (We can't go through full attach_secondary here because slot 1
+        // is already claimed by roA; the precondition for the bug is that
+        // SOMETHING wrote a non-zero mask before roA released.)
+        auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(
+            primary->header());
+        hdr->procs[1].lcore_mask = 0xCu;
+        EXPECT_EQ(hdr->procs[1].lcore_mask, 0xCu);
+    } // ~roA → release_ → must clear metadata
+
+    // Round 2: peer B claims slot 1 via try_claim_free_slot pass-1.
+    // Pass-1 must clear the residual lcore_mask before publishing pid.
+    auto roB = MpRegistryHandle::attach_secondary_readonly("rgghost2");
+    ASSERT_TRUE(roB.has_value()) << roB.error();
+    auto idxB = roB->try_claim_free_slot();
+    ASSERT_TRUE(idxB.has_value()) << idxB.error();
+    EXPECT_EQ(*idxB, 1u);  // lowest free is still 1 (after round-1 release)
+
+    EXPECT_EQ(primary->header()->procs[1].lcore_mask, 0u)
+        << "try_claim_free_slot pass-1 must clear residual lcore_mask "
+           "from a previous owner so the slot's metadata reflects the "
+           "current claimant only. A non-zero ghost here would falsely "
+           "trip attach_secondary's cross-process conflict scan.";
+    EXPECT_EQ(primary->header()->procs[1].pid,
+              static_cast<int32_t>(::getpid()));
+}
