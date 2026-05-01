@@ -240,6 +240,12 @@ build_mp_registry_name(std::string_view file_prefix) noexcept {
 /// @brief Initialize a fresh registry header in `dst` from `topo` +
 /// `file_prefix`. Caller has already established `dst` points at a
 /// freshly reserved memzone of >= sizeof(MpRegistryHeader) bytes.
+///
+/// Precondition: `topo.valid() == true`. The body iterates
+/// `[0, topo.total_procs)` over the source `topo.procs` array (which
+/// is fixed-size `kMaxProcs`), so a malformed `total_procs > kMaxProcs`
+/// would read OOB. `MpRegistryHandle::create_primary` (the only
+/// caller) gates on `topo.valid()` before calling — do not bypass.
 inline void
 init_mp_registry_header(MpRegistryHeader* dst,
                         std::string_view file_prefix,
