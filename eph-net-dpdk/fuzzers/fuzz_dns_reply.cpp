@@ -5,7 +5,7 @@
 // Quick build (clang ≥ 17, libFuzzer available):
 //   clang++ -fsanitize=fuzzer,address,undefined -std=c++23 \
 //       -Ieph-net-dpdk/include -Ieph-core/include -Ieph-utils/include \
-//       -lspdlog -lssl -lcrypto \
+//       -lspdlog \
 //       eph-net-dpdk/fuzzers/fuzz_dns_reply.cpp -o fuzz_dns_reply
 //
 // Run:

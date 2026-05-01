@@ -16,8 +16,12 @@ Currently shipped:
 ## Requirements
 
 - Clang ≥ 17 with libFuzzer (`-fsanitize=fuzzer` support)
-- aws-lc (or openssl) + spdlog + the same include paths the project
-  uses for release builds
+- spdlog + the same include paths the project uses for release builds
+
+The harnesses themselves do NOT pull in any TLS library: the targeted
+parsers (`dns.hpp`, `arp.hpp`, `packet_parse.hpp`) deliberately route
+around aws-lc / openssl — `dns.hpp` uses `getrandom(2)` for tx-id
+generation precisely to keep the TU clean of `<openssl/rand.h>`.
 
 The project's default toolchain is GCC 14, which has no libFuzzer. The
 fuzzers are therefore **intentionally not wired into the xmake default
@@ -36,7 +40,7 @@ clang++ -fsanitize=fuzzer,address,undefined -std=c++23 -O1 -g \
     -Ieph-net-dpdk/include \
     -Ieph-core/include \
     -Ieph-utils/include \
-    -lspdlog -lssl -lcrypto \
+    -lspdlog \
     eph-net-dpdk/fuzzers/fuzz_dns_reply.cpp \
     -o fuzz_dns_reply
 ```
