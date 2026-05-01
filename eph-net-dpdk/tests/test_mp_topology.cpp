@@ -8,6 +8,7 @@
 /// on the host, since this binary never calls `rte_eal_init`.
 
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -263,6 +264,63 @@ TEST(MpTopologyDump, ContainsTagAndStarMarksSelf) {
     EXPECT_NE(s.find("monitor"), std::string::npos);
     EXPECT_NE(s.find("[1]*"),    std::string::npos);
     EXPECT_NE(s.find("[0] "),    std::string::npos);   // not self → space
+}
+
+// Pins down the defensive truncation added in 5896a952. dump() may be
+// invoked on a hand-mangled topology while reporting *why* valid()
+// failed — at that point total_procs may be a runaway value and the
+// underlying procs[] array is fixed-capacity (kMaxProcs). The cap at
+// the loop bound is what keeps dump() from reading past procs.end().
+//
+// The two factories (uniform / custom) reject total_procs > kMaxProcs
+// up-front, so we mutate the field directly here — exactly the
+// out-of-band misuse pattern the cap exists to guard against.
+TEST(MpTopologyDump, TotalProcsExceedsMax_TruncatesWithWarning) {
+    auto t = MpTopology::uniform(0, /*total_procs=*/2, /*nb_rx_queues=*/4);
+    ASSERT_EQ(t.total_procs, 2u);
+    // Out-of-band runaway value past the array capacity.
+    t.total_procs = MpTopology::kMaxProcs + 5;
+
+    const auto s = t.dump();
+
+    // Warning is emitted with both observed and capped values.
+    EXPECT_NE(s.find("warning"), std::string::npos);
+    EXPECT_NE(s.find("truncating"), std::string::npos);
+    EXPECT_NE(s.find(std::format("total_procs={}",
+                                 MpTopology::kMaxProcs + 5)),
+              std::string::npos);
+    EXPECT_NE(s.find(std::format("kMaxProcs={}",
+                                 MpTopology::kMaxProcs)),
+              std::string::npos);
+
+    // Slot 0 is rendered (the uniform-uniform value still in procs[0]).
+    EXPECT_NE(s.find("[0]"), std::string::npos);
+
+    // No iteration past kMaxProcs — slot 64 must NOT appear in output.
+    // (kMaxProcs is 64; valid indices are [0, 64).)
+    EXPECT_EQ(s.find(std::format("[{}]", MpTopology::kMaxProcs)),
+              std::string::npos);
+    EXPECT_EQ(s.find(std::format("[{}]", MpTopology::kMaxProcs + 1)),
+              std::string::npos);
+}
+
+TEST(MpTopologyDump, TotalProcsAtMax_NoWarning_AllSlotsRendered) {
+    // Exact-cap edge case: total_procs == kMaxProcs is the largest legal
+    // value. dump() must NOT emit the "truncating" warning, and must
+    // render every slot from [0, kMaxProcs).
+    MpTopology t;
+    t.self_index  = 0;
+    t.total_procs = MpTopology::kMaxProcs;
+    // Leave procs[] default-initialised (all zero). dump() doesn't
+    // require valid ranges; it just iterates and prints.
+
+    const auto s = t.dump();
+    EXPECT_EQ(s.find("warning"),    std::string::npos);
+    EXPECT_EQ(s.find("truncating"), std::string::npos);
+    // Both endpoints of the legal range appear.
+    EXPECT_NE(s.find("[0]"), std::string::npos);
+    EXPECT_NE(s.find(std::format("[{}]", MpTopology::kMaxProcs - 1)),
+              std::string::npos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
