@@ -55,6 +55,44 @@ struct LcorePin {
     std::string   role;       ///< Short diagnostic label; empty allowed
 };
 
+/// @brief Parse a `lcore=cpu[:role]` CLI token into a `LcorePin`.
+///
+/// Designed for `--pin lcore=cpu[:role]` repeatable flags in apps and
+/// examples. The format is the inverse of `build_lcore_argv`'s `lcore@cpu`
+/// EAL-internal syntax — `=` separator (vs `@`) keeps the user-facing flag
+/// distinct from raw EAL spec, and `:role` adds a free-form diagnostic
+/// label that flows into the pin registry.
+///
+/// Validates only basic shape (non-empty halves, non-negative ints).
+/// Semantic checks (cpu range, SMT/NUMA conflicts, registry collisions)
+/// happen later in `pin_lcores`. Pure function: no I/O, no registry
+/// side effects.
+///
+/// @param s  token of the form `"<lcore>=<cpu>"` or `"<lcore>=<cpu>:<role>"`
+/// @return parsed LcorePin, or `std::unexpected` with a human-readable
+///         diagnostic suitable for direct logging
+[[nodiscard]] inline std::expected<LcorePin, std::string>
+parse_pin_spec(std::string_view s) {
+    auto eq = s.find('=');
+    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
+        return std::unexpected(std::string{
+            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
+    }
+    auto col = s.find(':', eq + 1);
+    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
+    int  lcore = std::atoi(std::string(s.substr(0, eq)).c_str());
+    int  cpu   = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
+    if (lcore < 0 || cpu < 0) {
+        return std::unexpected(std::string{
+            "--pin: lcore_id and cpu_id must be non-negative, got '"}
+            + std::string{s} + "'");
+    }
+    std::string role = (col == std::string_view::npos)
+                           ? std::string{}
+                           : std::string(s.substr(col + 1));
+    return LcorePin{static_cast<std::uint16_t>(lcore), cpu, std::move(role)};
+}
+
 /// @brief Serialize a LcorePin span into a single EAL `--lcores=...` argv token.
 ///
 /// Output shape (DPDK-recommended modern syntax):

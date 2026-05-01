@@ -88,6 +88,7 @@
 // (eph/dpdk/tcp.hpp is pulled in transitively by eph/net/dpdk/tcp_stream.hpp
 //  — no need to include it directly here.)
 #include "eph/dpdk/arp.hpp"
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
@@ -131,32 +132,6 @@ static int split_at_dash_dash(int argc, char** argv) noexcept {
     return argc;
 }
 
-// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
-// Mirrors `dpdk_mp_demo.cpp::parse_pin_spec`.
-[[nodiscard]] static std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
-        return std::unexpected(std::string{
-            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
-    }
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    auto lcore_str = std::string(s.substr(0, eq));
-    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
-    int  lcore     = std::atoi(lcore_str.c_str());
-    int  cpu       = std::atoi(cpu_str.c_str());
-    if (lcore < 0 || cpu < 0) {
-        return std::unexpected(std::string{
-            "--pin: lcore_id and cpu_id must be non-negative, got '"}
-            + std::string{s} + "'");
-    }
-    std::string role = (col == std::string_view::npos)
-                           ? std::string{}
-                           : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
-
 // Pretty-print an rte_ether_addr (used for logging only).
 [[nodiscard]] static std::string mac_to_string(const rte_ether_addr& m) {
     char buf[18];
@@ -176,7 +151,6 @@ struct AppConfig {
     std::string ws_path = kDefaultPath;
     std::uint16_t port = kDefaultPort;
     std::uint16_t src_port = 0;  // 0 = ask DpdkPoller::pick_src_port
-    std::uint16_t dpdk_port_id = 0;
     int duration_s = 30;
     spdlog::level::level_enum log_level = spdlog::level::info;
 
@@ -192,14 +166,9 @@ struct AppConfig {
     int reconnect_max_ms     = 10000;
     std::uint32_t reconnect_max_attempts = 0;  // 0 = unlimited
 
-    // ── EAL bring-up (lcore_pin.hpp typed path) ─────────────────────────
-    // `pci` -> EalConfig::allowed_devs (`-a` passthrough). Empty = no -a.
-    // `pins` -> EalGuard::init_with_pins (typed lcore→cpu map).
-    // `lcores_raw` -> EalConfig::lcores (raw `-l` escape; mutually exclusive
-    //                 with `pins` per init_with_pins's contract).
-    std::string                   pci;
-    std::vector<ed::LcorePin>     pins;
-    std::string                   lcores_raw;
+    // EAL bring-up — --pci / --pin / --lcores / --dpdk-port (or --port-id
+    // alias) routed through the shared cli helper.
+    ed::cli::EalArgs eal{};
 };
 
 [[nodiscard]] static std::optional<AppConfig>
@@ -215,6 +184,15 @@ parse_app_args(int argc, char** argv) {
     for (int i = 0; i < argc; ++i) {
         const std::string_view a = argv[i];
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first (--pci / --pin / --lcores / --dpdk-port / --port-id).
+        auto consumed = ed::cli::try_consume(cfg.eal, a, next);
+        if (!consumed) {
+            spdlog::error("{}", consumed.error());
+            return std::nullopt;
+        }
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
         auto need = [&](const char* flag) {
             if (!next) {
                 spdlog::error("{} requires an argument", flag);
@@ -255,25 +233,12 @@ parse_app_args(int argc, char** argv) {
             }
         } else if (a == "--src-port" && need("--src-port")) {
             cfg.src_port = static_cast<std::uint16_t>(std::atoi(next));
-        } else if (a == "--dpdk-port" && need("--dpdk-port")) {
-            cfg.dpdk_port_id = static_cast<std::uint16_t>(std::atoi(next));
         } else if (a == "--reconnect-initial-ms" && need("--reconnect-initial-ms")) {
             cfg.reconnect_initial_ms = std::atoi(next);
         } else if (a == "--reconnect-max-ms" && need("--reconnect-max-ms")) {
             cfg.reconnect_max_ms = std::atoi(next);
         } else if (a == "--reconnect-max-attempts" && need("--reconnect-max-attempts")) {
             cfg.reconnect_max_attempts = static_cast<std::uint32_t>(std::atoi(next));
-        } else if (a == "--pci" && need("--pci")) {
-            cfg.pci = next;
-        } else if (a == "--lcores" && need("--lcores")) {
-            cfg.lcores_raw = next;
-        } else if (a == "--pin" && need("--pin")) {
-            auto p = parse_pin_spec(next);
-            if (!p) {
-                spdlog::error("{}", p.error());
-                return std::nullopt;
-            }
-            cfg.pins.push_back(std::move(*p));
         } else {
             spdlog::warn("ignoring unknown app argument: {}", a);
         }
@@ -324,18 +289,12 @@ int main(int argc, char** argv) {
     AppConfig app_cfg = *app_cfg_opt;
     spdlog::set_level(app_cfg.log_level);
 
-    // ── 2) EAL init via lcore_pin.hpp typed path (or raw escape) ─────────
-    // Pre-`--` argv is no longer fed to EAL; everything (PCI, lcore pins)
-    // flows through post-`--` flags so the registry-aware `init_with_pins`
-    // can validate before `rte_eal_init` fires.
-    const bool typed_pins = !app_cfg.pins.empty();
-    const bool raw_lcores = !app_cfg.lcores_raw.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("binance_latency: --pin and --lcores are mutually "
-                      "exclusive (typed vs raw EAL paths); pick one");
+    // ── 2) EAL bring-up — validate exclusivity, require at least one path.
+    if (auto v = ed::cli::validate(app_cfg.eal); !v) {
+        spdlog::error("binance_latency: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (app_cfg.eal.pins.empty() && app_cfg.eal.lcores_raw.empty()) {
         spdlog::error("binance_latency: provide either --pin lcore=cpu[:role] "
                       "(preferred typed path) or --lcores '<raw EAL spec>'");
         return 1;
@@ -357,28 +316,24 @@ int main(int argc, char** argv) {
     // Single binary, single peer, real-server probe ⇒ Platform owns EAL
     // and runs eal_cleanup atomically on destruction.
     eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id        = app_cfg.dpdk_port_id;
+    pcfg.port_id        = app_cfg.eal.port_id;
     pcfg.nb_rx_queues   = 1;
     pcfg.nb_tx_queues   = 1;
     pcfg.mbuf_pool_size = 8191;  // 2^n-1; generous for a single session
     pcfg.proc_type      = ed::ProcType::Primary;
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "binance_latency";
-    if (!app_cfg.pci.empty())   eal_cfg.allowed_devs = {app_cfg.pci};
-    if (raw_lcores)             eal_cfg.lcores       = {app_cfg.lcores_raw};
-
-    if (typed_pins) {
+    if (!app_cfg.eal.pins.empty()) {
         spdlog::info("binance_latency: bring-up via create_with_eal "
-                     "(typed pins, {} pin(s))", app_cfg.pins.size());
+                     "(typed pins, {} pin(s))", app_cfg.eal.pins.size());
     } else {
         spdlog::info("binance_latency: bring-up via create_with_eal "
-                     "(raw lcores='{}')", app_cfg.lcores_raw);
+                     "(raw lcores='{}')", app_cfg.eal.lcores_raw);
     }
 
     auto plat = eph::dpdk::Platform::create_with_eal(
-        std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{app_cfg.pins},
+        std::move(pcfg),
+        ed::cli::to_eal_config(app_cfg.eal, "binance_latency"),
+        std::span<ed::LcorePin const>{app_cfg.eal.pins},
         pin_policy);
     if (!plat) {
         spdlog::error("Platform::create_with_eal failed: {}", plat.error());

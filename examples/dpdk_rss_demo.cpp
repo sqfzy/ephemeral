@@ -115,6 +115,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/codec/raw_datagram_codec.hpp"
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
 #include "eph/dpdk/platform.hpp"
@@ -134,10 +135,8 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppArgs {
-    std::string             pci          = "";   // -a passthrough; empty = all
-    std::vector<ed::LcorePin> pins;
-    std::string             lcores       = "";   // raw `--lcores` escape hatch
-    uint16_t                port_id      = 0;
+    /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
+    ed::cli::EalArgs        eal{};
     uint16_t                nb_rx_queues = 4;
     uint16_t                connections  = 4;    // # of UDP sockets to spawn
     uint32_t                src_ip       = 0x0A000010;  // 10.0.0.16
@@ -155,31 +154,6 @@ struct AppArgs {
     uint16_t                per_lcore_pools = 0;
 };
 
-/// Parse `--pin lcore=cpu[:role]`. Mirrors dpdk_mp_demo.cpp.
-std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
-        return std::unexpected(std::string{
-            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
-    }
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    auto lcore_str = std::string(s.substr(0, eq));
-    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
-    int  lcore     = std::atoi(lcore_str.c_str());
-    int  cpu       = std::atoi(cpu_str.c_str());
-    if (lcore < 0 || cpu < 0) {
-        return std::unexpected(std::string{
-            "--pin: lcore_id and cpu_id must be non-negative, got '"}
-            + std::string{s} + "'");
-    }
-    std::string role = (col == std::string_view::npos)
-                           ? std::string{}
-                           : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
-
 int split_app_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::string_view(argv[i]) == "--") return i;
@@ -192,24 +166,23 @@ AppArgs parse_args(int argc, char** argv) {
     const int sep = split_app_args(argc, argv);
     for (int i = sep + 1; i < argc; ++i) {
         std::string_view a = argv[i];
-        if      (a == "--pci"         && i + 1 < argc) out.pci          = argv[++i];
-        else if (a == "--lcores"      && i + 1 < argc) out.lcores       = argv[++i];
-        else if (a == "--pin"         && i + 1 < argc) {
-            auto p = parse_pin_spec(argv[++i]);
-            if (!p) {
-                spdlog::error("dpdk_rss_demo: {}", p.error());
-                std::exit(1);
-            }
-            out.pins.push_back(std::move(*p));
+        char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first.
+        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        if (!consumed) {
+            spdlog::error("dpdk_rss_demo: {}", consumed.error());
+            std::exit(1);
         }
-        else if (a == "--port-id"     && i + 1 < argc) out.port_id      = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--nb-queues"   && i + 1 < argc) out.nb_rx_queues = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--connections" && i + 1 < argc) out.connections  = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--src-ip"      && i + 1 < argc) out.src_ip       = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 16));
-        else if (a == "--dst-ip"      && i + 1 < argc) out.dst_ip       = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 16));
-        else if (a == "--dst-port"    && i + 1 < argc) out.dst_port     = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--seconds"     && i + 1 < argc) out.run_seconds  = std::chrono::seconds(std::atoi(argv[++i]));
-        else if (a == "--per-lcore-pools" && i + 1 < argc) out.per_lcore_pools = static_cast<uint16_t>(std::atoi(argv[++i]));
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        if      (a == "--nb-queues"       && next) { out.nb_rx_queues = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--connections"     && next) { out.connections  = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--src-ip"          && next) { out.src_ip       = static_cast<uint32_t>(std::strtoul(next, nullptr, 16)); ++i; }
+        else if (a == "--dst-ip"          && next) { out.dst_ip       = static_cast<uint32_t>(std::strtoul(next, nullptr, 16)); ++i; }
+        else if (a == "--dst-port"        && next) { out.dst_port     = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--seconds"         && next) { out.run_seconds  = std::chrono::seconds(std::atoi(next));  ++i; }
+        else if (a == "--per-lcore-pools" && next) { out.per_lcore_pools = static_cast<uint16_t>(std::atoi(next)); ++i; }
     }
     return out;
 }
@@ -262,15 +235,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── Validate --pin / --lcores exclusivity (same shape as mp.cpp) ──────
-    const bool typed_pins = !args.pins.empty();
-    const bool raw_lcores = !args.lcores.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("dpdk_rss_demo: --pin and --lcores are mutually "
-                      "exclusive; pick one");
+    // ── Validate --pin / --lcores exclusivity (require at least one) ─────
+    if (auto v = ed::cli::validate(args.eal); !v) {
+        spdlog::error("dpdk_rss_demo: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (args.eal.pins.empty() && args.eal.lcores_raw.empty()) {
         spdlog::error("dpdk_rss_demo: provide either --pin lcore=cpu[:role] "
                       "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
         return 1;
@@ -280,10 +250,10 @@ int main(int argc, char** argv) {
     // leave lcores idle in eal_thread_loop. Reject early. Raw --lcores
     // bypasses this check (we have no way to count its lcores without
     // re-parsing DPDK's set-of-sets syntax).
-    if (typed_pins && args.pins.size() != args.nb_rx_queues) {
+    if (!args.eal.pins.empty() && args.eal.pins.size() != args.nb_rx_queues) {
         spdlog::error("dpdk_rss_demo: --pin count ({}) must equal "
                       "--nb-queues ({}) — one lcore per RSS queue",
-                      args.pins.size(), args.nb_rx_queues);
+                      args.eal.pins.size(), args.nb_rx_queues);
         return 1;
     }
 
@@ -292,28 +262,24 @@ int main(int argc, char** argv) {
     // owns the EAL session and runs eal_cleanup atomically on
     // destruction; no separate EalGuard needed.
     ed::PlatformConfig pcfg{};
-    pcfg.port_id          = args.port_id;
+    pcfg.port_id          = args.eal.port_id;
     pcfg.nb_rx_queues     = args.nb_rx_queues;
     pcfg.nb_tx_queues     = args.nb_rx_queues;
     pcfg.per_lcore_pools  = args.per_lcore_pools;
     pcfg.proc_type        = ed::ProcType::Primary;
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "dpdk_rss_demo";
-    if (raw_lcores) eal_cfg.lcores = {args.lcores};
-    if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
-
-    if (typed_pins) {
+    if (!args.eal.pins.empty()) {
         spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
-                     "(typed pins, {} pin(s))", args.pins.size());
+                     "(typed pins, {} pin(s))", args.eal.pins.size());
     } else {
         spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
-                     "(raw lcores='{}')", args.lcores);
+                     "(raw lcores='{}')", args.eal.lcores_raw);
     }
 
     auto plat_r = ed::Platform::create_with_eal(
-        std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{args.pins},
+        std::move(pcfg),
+        ed::cli::to_eal_config(args.eal, "dpdk_rss_demo"),
+        std::span<ed::LcorePin const>{args.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
         spdlog::error("dpdk_rss_demo: Platform::create_with_eal failed: {}",

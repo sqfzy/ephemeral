@@ -88,6 +88,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
@@ -113,32 +114,6 @@ static int split_eal(int argc, char** argv) noexcept {
         if (std::string_view(argv[i]) == "--") return i;
     }
     return argc;
-}
-
-// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
-// Mirrors `dpdk_mp_demo.cpp::parse_pin_spec`.
-[[nodiscard]] static std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) noexcept {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
-        return std::unexpected(std::string{
-            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
-    }
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    auto lcore_str = std::string(s.substr(0, eq));
-    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
-    int  lcore     = std::atoi(lcore_str.c_str());
-    int  cpu       = std::atoi(cpu_str.c_str());
-    if (lcore < 0 || cpu < 0) {
-        return std::unexpected(std::string{
-            "--pin: lcore_id and cpu_id must be non-negative, got '"}
-            + std::string{s} + "'");
-    }
-    std::string role = (col == std::string_view::npos)
-                           ? std::string{}
-                           : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
 }
 
 // Parse "aa:bb:cc:dd:ee:ff" — returns false on any malformed input rather
@@ -187,40 +162,38 @@ int main(int argc, char** argv) {
     char** app_argv = argv + (eal_end == argc ? eal_end : eal_end + 1);
 
     std::vector<std::string> hosts;
-    uint16_t dpdk_port_id = 0;
     uint32_t local_ip     = 0x0A000010;        // 10.0.0.16
     uint32_t nameserver   = 0x08080808;        // 8.8.8.8
     rte_ether_addr gw_mac{};                   // zero — must be set via flag
     bool smoke = false;
 
-    std::string                  pci_bdf;
-    std::vector<ed::LcorePin>    pins;
-    std::string                  lcores_raw;
+    ed::cli::EalArgs eal_args{};
 
     for (int i = 0; i < app_argc; ++i) {
         std::string_view a = app_argv[i];
-        if      (a == "--dpdk-port"  && i + 1 < app_argc) dpdk_port_id = static_cast<uint16_t>(std::atoi(app_argv[++i]));
-        else if (a == "--host"       && i + 1 < app_argc) hosts.emplace_back(app_argv[++i]);
-        else if (a == "--local-ip"   && i + 1 < app_argc) {
-            // parse_ipv4 returns 0 on parse failure; only overwrite on success.
-            if (auto ip = eph::dpdk::net::parse_ipv4(app_argv[++i]); ip != 0) local_ip = ip;
+        char const* next = (i + 1 < app_argc) ? app_argv[i + 1] : nullptr;
+
+        // EAL flags first (--pci / --pin / --lcores / --dpdk-port / --port-id).
+        auto consumed = ed::cli::try_consume(eal_args, a, next);
+        if (!consumed) {
+            spdlog::error("async_dns_multi_resolve: {}", consumed.error());
+            return 1;
         }
-        else if (a == "--nameserver" && i + 1 < app_argc) {
-            if (auto ip = eph::dpdk::net::parse_ipv4(app_argv[++i]); ip != 0) nameserver = ip;
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        if      (a == "--host"        && next) { hosts.emplace_back(next); ++i; }
+        else if (a == "--local-ip"    && next) {
+            if (auto ip = eph::dpdk::net::parse_ipv4(next); ip != 0) local_ip = ip;
+            ++i;
         }
-        else if (a == "--gateway-mac"&& i + 1 < app_argc) (void)parse_mac(app_argv[++i], gw_mac);
-        else if (a == "--pci"        && i + 1 < app_argc) pci_bdf      = app_argv[++i];
-        else if (a == "--lcores"     && i + 1 < app_argc) lcores_raw   = app_argv[++i];
-        else if (a == "--pin"        && i + 1 < app_argc) {
-            auto p = parse_pin_spec(app_argv[++i]);
-            if (!p) {
-                spdlog::error("async_dns_multi_resolve: {}", p.error());
-                return 1;
-            }
-            pins.push_back(std::move(*p));
+        else if (a == "--nameserver"  && next) {
+            if (auto ip = eph::dpdk::net::parse_ipv4(next); ip != 0) nameserver = ip;
+            ++i;
         }
-        else if (a == "--smoke")                          smoke = true;
+        else if (a == "--gateway-mac" && next) { (void)parse_mac(next, gw_mac); ++i; }
+        else if (a == "--smoke")               { smoke = true; }
     }
+    const uint16_t dpdk_port_id = eal_args.port_id;
     if (hosts.empty()) {
         hosts = {"stream.binance.com",
                  "ws.okx.com",
@@ -229,35 +202,33 @@ int main(int argc, char** argv) {
     }
 
     // ── 2) EAL init via lcore_pin.hpp typed path (or raw escape) ─────────
-    const bool typed_pins = !pins.empty();
-    const bool raw_lcores = !lcores_raw.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("async_dns_multi_resolve: --pin and --lcores are mutually "
-                      "exclusive (typed vs raw EAL paths); pick one");
+    if (auto v = ed::cli::validate(eal_args); !v) {
+        spdlog::error("async_dns_multi_resolve: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (eal_args.pins.empty() && eal_args.lcores_raw.empty()) {
         spdlog::error("async_dns_multi_resolve: provide either "
                       "--pin lcore=cpu[:role] (preferred typed path) or "
                       "--lcores '<raw EAL spec>'");
         return 1;
     }
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "async_dns_multi_resolve";
-    if (!pci_bdf.empty()) eal_cfg.allowed_devs = {pci_bdf};
-    if (raw_lcores)       eal_cfg.lcores       = {lcores_raw};
+    const bool typed_pins = !eal_args.pins.empty();
+    auto pins_for_init    = eal_args.pins;
+    auto lcores_for_log   = eal_args.lcores_raw;
+    ed::EalConfig eal_cfg = ed::cli::to_eal_config(std::move(eal_args),
+                                                   "async_dns_multi_resolve");
 
     std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
         spdlog::info("async_dns_multi_resolve: EAL init via init_with_pins "
-                     "({} pin(s))", pins.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, pins,
+                     "({} pin(s))", pins_for_init.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, pins_for_init,
                                            eph::utils::CpuPinPolicy{});
     } else {
         spdlog::info("async_dns_multi_resolve: EAL init via raw lcores='{}' "
                      "(legacy path; consider --pin for typed validation)",
-                     lcores_raw);
+                     lcores_for_log);
         auto argv_owned = ed::build_eal_argv(eal_cfg);
         std::vector<char*> argv_ptrs;
         argv_ptrs.reserve(argv_owned.size());

@@ -80,6 +80,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/multi_port_platform.hpp"
@@ -98,28 +99,11 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppArgs {
-    std::vector<std::string>  pci_addrs;     // -a passthrough, repeatable
-    std::vector<ed::LcorePin> pins;
-    std::string               lcores;
+    /// EAL flags. `eal.pci` is the repeatable `--pci` accumulator —
+    /// MultiPortPlatform brings up one Platform per entry, in order.
+    ed::cli::EalArgs          eal{};
     std::chrono::seconds      run_seconds = 3s;
 };
-
-std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size())
-        return std::unexpected(std::string{"--pin: expected 'lcore=cpu[:role]', got '"}
-                               + std::string{s} + "'");
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    int lcore = std::atoi(std::string(s.substr(0, eq)).c_str());
-    int cpu   = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
-    if (lcore < 0 || cpu < 0)
-        return std::unexpected(std::string{"--pin: lcore/cpu must be non-negative: "}
-                               + std::string{s});
-    std::string role = (col == std::string_view::npos) ? "" : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
 
 int split_app_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
@@ -132,14 +116,15 @@ AppArgs parse_args(int argc, char** argv) {
     const int sep = split_app_args(argc, argv);
     for (int i = sep + 1; i < argc; ++i) {
         std::string_view a = argv[i];
-        if      (a == "--pci"     && i + 1 < argc) out.pci_addrs.emplace_back(argv[++i]);
-        else if (a == "--lcores"  && i + 1 < argc) out.lcores = argv[++i];
-        else if (a == "--pin"     && i + 1 < argc) {
-            auto p = parse_pin_spec(argv[++i]);
-            if (!p) { spdlog::error("multi_port_platform_demo: {}", p.error()); std::exit(1); }
-            out.pins.push_back(std::move(*p));
-        }
-        else if (a == "--seconds" && i + 1 < argc) out.run_seconds = std::chrono::seconds(std::atoi(argv[++i]));
+        char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first. --pci accumulates because the helper always pushes
+        // back; this is the multi-NIC entry point.
+        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        if (!consumed) { spdlog::error("multi_port_platform_demo: {}", consumed.error()); std::exit(1); }
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        if (a == "--seconds" && next) { out.run_seconds = std::chrono::seconds(std::atoi(next)); ++i; }
     }
     return out;
 }
@@ -151,20 +136,18 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);
     spdlog::set_level(spdlog::level::info);
 
-    const AppArgs args = parse_args(argc, argv);
-    if (args.pci_addrs.size() < 2) {
+    AppArgs args = parse_args(argc, argv);
+    if (args.eal.pci.size() < 2) {
         spdlog::error("multi_port_platform_demo: need at least 2 --pci entries "
                       "(single-port case goes through Platform::create_primary "
                       "directly — see simple_hft.cpp)");
         return 1;
     }
-    const bool typed_pins = !args.pins.empty();
-    const bool raw_lcores = !args.lcores.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("multi_port_platform_demo: --pin and --lcores are mutually exclusive");
+    if (auto v = ed::cli::validate(args.eal); !v) {
+        spdlog::error("multi_port_platform_demo: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (args.eal.pins.empty() && args.eal.lcores_raw.empty()) {
         spdlog::error("multi_port_platform_demo: provide --pin lcore=cpu[:role] "
                       "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
         return 1;
@@ -174,20 +157,20 @@ int main(int argc, char** argv) {
     // Every --pci entry is forwarded as an EAL allowlist (-a) entry. DPDK
     // enumerates the allowed devs in the order they appear, so the first
     // --pci becomes port_id=0, the second port_id=1, etc.
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "multi_port_platform_demo";
-    if (raw_lcores) eal_cfg.lcores = {args.lcores};
-    eal_cfg.allowed_devs.assign(args.pci_addrs.begin(), args.pci_addrs.end());
+    const std::size_t n_ports = args.eal.pci.size();
+    const bool typed_pins = !args.eal.pins.empty();
+    auto pins_for_init    = args.eal.pins;  // copy — to_eal_config consumes args.eal
+    ed::EalConfig eal_cfg = ed::cli::to_eal_config(std::move(args.eal),
+                                                   "multi_port_platform_demo");
 
     std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
         spdlog::info("multi_port_platform_demo: EAL init via init_with_pins ({} pin(s))",
-                     args.pins.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, args.pins,
+                     pins_for_init.size());
+        eal = ed::EalGuard::init_with_pins(eal_cfg, pins_for_init,
                                            eph::utils::CpuPinPolicy{});
     } else {
-        spdlog::info("multi_port_platform_demo: EAL init via raw lcores='{}'",
-                     args.lcores);
+        spdlog::info("multi_port_platform_demo: EAL init via raw lcores");
         auto argv_owned = ed::build_eal_argv(eal_cfg);
         std::vector<char*> argv_ptrs;
         argv_ptrs.reserve(argv_owned.size());
@@ -204,8 +187,8 @@ int main(int argc, char** argv) {
     // overlap with RSS, set `nb_rx_queues > 1` and `enable_rss = true`
     // per port — the aggregator imposes no policy.
     std::vector<ed::PlatformConfig> port_cfgs;
-    port_cfgs.reserve(args.pci_addrs.size());
-    for (std::size_t i = 0; i < args.pci_addrs.size(); ++i) {
+    port_cfgs.reserve(n_ports);
+    for (std::size_t i = 0; i < n_ports; ++i) {
         ed::PlatformConfig pcfg{};
         pcfg.port_id      = static_cast<uint16_t>(i);
         pcfg.nb_rx_queues = 1;

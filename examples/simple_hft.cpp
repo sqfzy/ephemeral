@@ -56,6 +56,7 @@
 #include "eph/codec/ws_codec.hpp"
 
 #include "eph/dpdk/arp.hpp"
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"
@@ -79,10 +80,7 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppConfig {
-    std::string pci;
-    std::vector<ed::LcorePin> pins;
-    std::string lcores_raw;       // raw `--lcores` escape hatch, exclusive with --pin
-    uint16_t    dpdk_port_id = 0;
+    ed::cli::EalArgs eal{};        // --pci / --pin / --lcores / --port-id / --dpdk-port
 
     std::string  host = "stream.binance.com";
     std::string  ws_path = "/ws/btcusdt@aggTrade";
@@ -101,30 +99,6 @@ int split_at_dash_dash(int argc, char** argv) noexcept {
     return argc;
 }
 
-// `--pin lcore=cpu[:role]` (mirrors the shape used by binance_latency.cpp /
-// dpdk_mp_demo.cpp / dpdk_rss_demo.cpp).
-std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
-        return std::unexpected(std::string{
-            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
-    }
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    int  lcore  = std::atoi(std::string(s.substr(0, eq)).c_str());
-    int  cpu    = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
-    if (lcore < 0 || cpu < 0) {
-        return std::unexpected(std::string{
-            "--pin: lcore_id and cpu_id must be non-negative, got '"}
-            + std::string{s} + "'");
-    }
-    std::string role = (col == std::string_view::npos)
-                           ? std::string{}
-                           : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
-
 std::optional<AppConfig> parse_args(int argc, char** argv) {
     AppConfig cfg{};
     auto parse_ip = [](const char* s, uint32_t& out) -> bool {
@@ -137,6 +111,16 @@ std::optional<AppConfig> parse_args(int argc, char** argv) {
     for (int i = 0; i < argc; ++i) {
         const std::string_view a = argv[i];
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first — try_consume returns 2 if it ate the token + value.
+        auto consumed = ed::cli::try_consume(cfg.eal, a, next);
+        if (!consumed) {
+            spdlog::error("{}", consumed.error());
+            return std::nullopt;
+        }
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        // App-specific flags. need() advances i on success.
         auto need = [&](const char* flag) {
             if (!next) {
                 spdlog::error("{} requires an argument", flag);
@@ -145,15 +129,11 @@ std::optional<AppConfig> parse_args(int argc, char** argv) {
             ++i;
             return true;
         };
-        if (a == "--pci" && need("--pci"))                cfg.pci          = next;
-        else if (a == "--lcores" && need("--lcores"))     cfg.lcores_raw   = next;
-        else if (a == "--dpdk-port" && need("--dpdk-port"))
-            cfg.dpdk_port_id = static_cast<uint16_t>(std::atoi(next));
-        else if (a == "--host" && need("--host"))         cfg.host         = next;
-        else if (a == "--path" && need("--path"))         cfg.ws_path      = next;
+        if      (a == "--host" && need("--host"))         cfg.host    = next;
+        else if (a == "--path" && need("--path"))         cfg.ws_path = next;
         else if (a == "--port" && need("--port"))
             cfg.port = static_cast<uint16_t>(std::atoi(next));
-        else if (a == "--duration" && need("--duration")) cfg.duration_s   = std::atoi(next);
+        else if (a == "--duration" && need("--duration")) cfg.duration_s = std::atoi(next);
         else if (a == "--local-ip" && need("--local-ip")) {
             if (!parse_ip(next, cfg.local_ip)) {
                 spdlog::error("invalid --local-ip: {}", next);
@@ -177,14 +157,6 @@ std::optional<AppConfig> parse_args(int argc, char** argv) {
                 spdlog::error("invalid --nameserver: {}", next);
                 return std::nullopt;
             }
-        }
-        else if (a == "--pin" && need("--pin")) {
-            auto p = parse_pin_spec(next);
-            if (!p) {
-                spdlog::error("{}", p.error());
-                return std::nullopt;
-            }
-            cfg.pins.push_back(std::move(*p));
         }
         else spdlog::warn("ignoring unknown argument: {}", a);
     }
@@ -221,16 +193,14 @@ int main(int argc, char** argv) {
 
     auto cfg_opt = parse_args(argc - app_start, argv + app_start);
     if (!cfg_opt) return 1;
-    const AppConfig cfg = std::move(*cfg_opt);
+    AppConfig cfg = std::move(*cfg_opt);
 
-    // ── 2) --pin / --lcores exclusivity ───────────────────────────────────
-    const bool typed_pins = !cfg.pins.empty();
-    const bool raw_lcores = !cfg.lcores_raw.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("simple_hft: --pin and --lcores are mutually exclusive");
+    // ── 2) --pin / --lcores exclusivity (+ require at least one) ──────────
+    if (auto v = ed::cli::validate(cfg.eal); !v) {
+        spdlog::error("simple_hft: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (cfg.eal.pins.empty() && cfg.eal.lcores_raw.empty()) {
         spdlog::error("simple_hft: provide either --pin lcore=cpu[:role] "
                       "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
         return 1;
@@ -238,20 +208,16 @@ int main(int argc, char** argv) {
 
     // ── 3) Platform::create_with_eal — single-process, single queue ───────
     ed::PlatformConfig pcfg{};
-    pcfg.port_id        = cfg.dpdk_port_id;
+    pcfg.port_id        = cfg.eal.port_id;
     pcfg.nb_rx_queues   = 1;
     pcfg.nb_tx_queues   = 1;
     pcfg.mbuf_pool_size = 8191;
     pcfg.proc_type      = ed::ProcType::Primary;
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "simple_hft";
-    if (!cfg.pci.empty()) eal_cfg.allowed_devs = {cfg.pci};
-    if (raw_lcores)       eal_cfg.lcores       = {cfg.lcores_raw};
-
     auto plat_r = ed::Platform::create_with_eal(
-        std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{cfg.pins},
+        std::move(pcfg),
+        ed::cli::to_eal_config(cfg.eal, "simple_hft"),
+        std::span<ed::LcorePin const>{cfg.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
         spdlog::error("Platform::create_with_eal failed: {}", plat_r.error());

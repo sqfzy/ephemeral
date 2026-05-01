@@ -111,6 +111,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/codec/raw_datagram_codec.hpp"
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/eal.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
 #include "eph/dpdk/mp_topology.hpp" // MpTopology::uniform
@@ -132,46 +133,11 @@ namespace {
 struct AppArgs {
     ed::ProcType            role         = ed::ProcType::Primary;
     std::string             file_prefix  = "eph_mp_demo";
-    std::string             pci          = "";   // -a passthrough; empty = all
-    /// Typed lcore→cpu pin specs (preferred path, populated from --pin).
-    /// Mutually exclusive with `lcores` raw escape hatch.
-    std::vector<ed::LcorePin> pins;
-    /// Raw `--lcores` string, passed verbatim through EalConfig::lcores
-    /// to DPDK. Empty by default — set only when the demo needs DPDK
-    /// syntax `LcorePin` cannot express (set-of-sets etc).
-    std::string             lcores       = "";
-    uint16_t                port_id      = 0;
+    /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
+    ed::cli::EalArgs        eal{};
     uint16_t                nb_rx_queues = 4;    // total queues primary configures
     std::chrono::seconds    run_seconds  = 5s;   // how long to drive poll()
 };
-
-/// Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
-/// `lcore` and `cpu` must be non-negative integers; `role` is free-form
-/// (empty allowed). Whitespace is not stripped — keep the spec compact.
-std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size()) {
-        return std::unexpected(std::string{
-            "--pin: expected 'lcore=cpu[:role]', got '"} + std::string{s} + "'");
-    }
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-
-    auto lcore_str = std::string(s.substr(0, eq));
-    auto cpu_str   = std::string(s.substr(eq + 1, cpu_end - eq - 1));
-    int  lcore     = std::atoi(lcore_str.c_str());
-    int  cpu       = std::atoi(cpu_str.c_str());
-    if (lcore < 0 || cpu < 0) {
-        return std::unexpected(std::string{
-            "--pin: lcore_id and cpu_id must be non-negative, got '"}
-            + std::string{s} + "'");
-    }
-    std::string role = (col == std::string_view::npos)
-                           ? std::string{}
-                           : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
 
 // Split argv at the first "--" — same convention as simple_hft.cpp.
 // Anything before "--" is consumed by the wrapper that selects --role; the
@@ -198,20 +164,19 @@ AppArgs parse_args(int argc, char** argv) {
     // Pass 2: post-`--` is the app-specific config.
     for (int i = sep + 1; i < argc; ++i) {
         std::string_view a = argv[i];
-        if      (a == "--file-prefix" && i + 1 < argc) out.file_prefix  = argv[++i];
-        else if (a == "--pci"         && i + 1 < argc) out.pci          = argv[++i];
-        else if (a == "--lcores"      && i + 1 < argc) out.lcores       = argv[++i];
-        else if (a == "--pin"         && i + 1 < argc) {
-            auto p = parse_pin_spec(argv[++i]);
-            if (!p) {
-                spdlog::error("dpdk_mp_demo: {}", p.error());
-                std::exit(1);
-            }
-            out.pins.push_back(std::move(*p));
+        char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first.
+        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        if (!consumed) {
+            spdlog::error("dpdk_mp_demo: {}", consumed.error());
+            std::exit(1);
         }
-        else if (a == "--port-id"     && i + 1 < argc) out.port_id      = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--nb-queues"   && i + 1 < argc) out.nb_rx_queues = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--seconds"     && i + 1 < argc) out.run_seconds  = std::chrono::seconds(std::atoi(argv[++i]));
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        if      (a == "--file-prefix" && next) { out.file_prefix  = next; ++i; }
+        else if (a == "--nb-queues"   && next) { out.nb_rx_queues = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--seconds"     && next) { out.run_seconds  = std::chrono::seconds(std::atoi(next));  ++i; }
     }
     return out;
 }
@@ -244,7 +209,7 @@ AppArgs parse_args(int argc, char** argv) {
 // operator to keep them disjoint.
 ed::PlatformConfig make_platform_config(const AppArgs& a) {
     ed::PlatformConfig cfg{};
-    cfg.port_id      = a.port_id;
+    cfg.port_id      = a.eal.port_id;
     cfg.nb_rx_queues = a.nb_rx_queues;
     cfg.nb_tx_queues = a.nb_rx_queues;
     cfg.proc_type    = a.role;
@@ -270,19 +235,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── Validate --pin / --lcores exclusivity ─────────────────────────────
-    // The two paths are mutually exclusive in one EalGuard call — see
-    // init_with_pins's contract. We surface the choice here so the
-    // diagnostic is application-level (file/flag-aware), not deep in
-    // eph-net-dpdk's expected-error string.
-    const bool typed_pins = !args.pins.empty();
-    const bool raw_lcores = !args.lcores.empty();
-    if (typed_pins && raw_lcores) {
-        spdlog::error("dpdk_mp_demo: --pin and --lcores are mutually "
-                      "exclusive (typed and raw EAL paths); pick one");
+    // ── Validate --pin / --lcores exclusivity (require at least one) ─────
+    if (auto v = ed::cli::validate(args.eal); !v) {
+        spdlog::error("dpdk_mp_demo: {}", v.error());
         return 1;
     }
-    if (!typed_pins && !raw_lcores) {
+    if (args.eal.pins.empty() && args.eal.lcores_raw.empty()) {
         spdlog::error("dpdk_mp_demo: provide either --pin lcore=cpu[:role] "
                       "(preferred typed path) or --lcores '<raw EAL spec>' "
                       "(escape hatch for set-of-sets / coremask syntax)");
@@ -297,31 +255,26 @@ int main(int argc, char** argv) {
     // Platform::create_primary/secondary two-step pattern.
     ed::PlatformConfig pcfg = make_platform_config(args);
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name  = (args.role == ed::ProcType::Primary)
-                                ? "dpdk_mp_demo.primary"
-                                : "dpdk_mp_demo.secondary";
+    ed::EalConfig eal_cfg = ed::cli::to_eal_config(
+        args.eal,
+        (args.role == ed::ProcType::Primary) ? "dpdk_mp_demo.primary"
+                                             : "dpdk_mp_demo.secondary");
     eal_cfg.proc_type     = args.role;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = args.file_prefix;
-    if (raw_lcores) eal_cfg.lcores = {args.lcores};
-    if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
-    if (typed_pins) {
+    const char* role_str = args.role == ed::ProcType::Primary ? "primary" : "secondary";
+    if (!args.eal.pins.empty()) {
         spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
-                     "(typed pins, {} pin(s))",
-                     args.role == ed::ProcType::Primary ? "primary" : "secondary",
-                     args.pins.size());
+                     "(typed pins, {} pin(s))", role_str, args.eal.pins.size());
     } else {
         spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
-                     "(raw lcores='{}')",
-                     args.role == ed::ProcType::Primary ? "primary" : "secondary",
-                     args.lcores);
+                     "(raw lcores='{}')", role_str, args.eal.lcores_raw);
     }
 
     auto plat_r = ed::Platform::create_with_eal(
         std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{args.pins},
+        std::span<ed::LcorePin const>{args.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
         spdlog::error("dpdk_mp_demo: Platform::create_with_eal failed: {}",

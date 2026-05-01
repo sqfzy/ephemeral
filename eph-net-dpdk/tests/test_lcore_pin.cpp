@@ -99,6 +99,92 @@ TEST(LcorePin, IsAggregateConstructible) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// parse_pin_spec — `--pin lcore=cpu[:role]` CLI token parser
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(ParsePinSpec, MinimalLcoreEqualsCpuNoRole) {
+    auto r = parse_pin_spec("0=4");
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+    EXPECT_EQ(r->lcore_id, 0);
+    EXPECT_EQ(r->cpu_id, 4);
+    EXPECT_TRUE(r->role.empty());
+}
+
+TEST(ParsePinSpec, WithRoleSuffix) {
+    auto r = parse_pin_spec("3=17:rx-worker");
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+    EXPECT_EQ(r->lcore_id, 3);
+    EXPECT_EQ(r->cpu_id, 17);
+    EXPECT_EQ(r->role, "rx-worker");
+}
+
+TEST(ParsePinSpec, EmptyRoleAfterColonIsAccepted) {
+    // "lcore=cpu:" — colon present but role string empty. Allowed; the
+    // role field on the resulting LcorePin is empty too.
+    auto r = parse_pin_spec("1=5:");
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+    EXPECT_EQ(r->lcore_id, 1);
+    EXPECT_EQ(r->cpu_id, 5);
+    EXPECT_TRUE(r->role.empty());
+}
+
+TEST(ParsePinSpec, MissingEqualsRejected) {
+    auto r = parse_pin_spec("0:4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("expected 'lcore=cpu[:role]'"), std::string::npos)
+        << r.error();
+}
+
+TEST(ParsePinSpec, EmptyLcoreHalfRejected) {
+    auto r = parse_pin_spec("=4");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(ParsePinSpec, EmptyCpuHalfRejected) {
+    auto r = parse_pin_spec("0=");
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(ParsePinSpec, NegativeCpuRejected) {
+    auto r = parse_pin_spec("0=-4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("non-negative"), std::string::npos) << r.error();
+}
+
+TEST(ParsePinSpec, NegativeLcoreRejected) {
+    auto r = parse_pin_spec("-1=4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("non-negative"), std::string::npos) << r.error();
+}
+
+TEST(ParsePinSpec, MultiDigitValuesParsed) {
+    auto r = parse_pin_spec("128=63:tx-shaper");
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+    EXPECT_EQ(r->lcore_id, 128);
+    EXPECT_EQ(r->cpu_id, 63);
+    EXPECT_EQ(r->role, "tx-shaper");
+}
+
+TEST(ParsePinSpec, RoleWithColonsKeepsTrailingPart) {
+    // Implementation finds the FIRST colon after the '=' and treats
+    // everything past it as the role string verbatim. A second colon
+    // inside the role must therefore be preserved intact.
+    auto r = parse_pin_spec("2=8:role:with:colons");
+    ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
+    EXPECT_EQ(r->role, "role:with:colons");
+}
+
+TEST(ParsePinSpec, ResultFeedsBuildLcoreArgv) {
+    // End-to-end: the parser's output must round-trip through the same
+    // build_lcore_argv used by EalGuard::init_with_pins.
+    auto r = parse_pin_spec("0=4:rx");
+    ASSERT_TRUE(r.has_value());
+    LcorePin pins[] = {*r};
+    EXPECT_EQ(build_lcore_argv(std::span<LcorePin const>{pins}),
+              "--lcores=0@4");
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // pin_lcore (single) / pin_lcores (batch)
 // ──────────────────────────────────────────────────────────────────────
 

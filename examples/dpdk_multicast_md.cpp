@@ -87,6 +87,7 @@
 #include <spdlog/spdlog.h>
 
 #include "eph/dpdk/eal.hpp"
+#include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/multicast.hpp"
 #include "eph/dpdk/platform.hpp"
@@ -101,30 +102,13 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppArgs {
-    std::string               pci;
-    std::vector<ed::LcorePin> pins;
-    std::string               lcores;
-    uint16_t                  port_id    = 0;
+    /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
+    ed::cli::EalArgs          eal{};
     std::string               group_str  = "233.54.12.111";  // Nasdaq TVITCH-like
     uint16_t                  group_port = 26477;
     int                       seconds    = 5;
     bool                      rss_fail_test = false;
 };
-
-std::expected<ed::LcorePin, std::string>
-parse_pin_spec(std::string_view s) {
-    auto eq = s.find('=');
-    if (eq == std::string_view::npos || eq == 0 || eq + 1 == s.size())
-        return std::unexpected(std::string{"--pin: expected 'lcore=cpu[:role]'"});
-    auto col = s.find(':', eq + 1);
-    auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    int lcore = std::atoi(std::string(s.substr(0, eq)).c_str());
-    int cpu   = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
-    if (lcore < 0 || cpu < 0)
-        return std::unexpected("--pin: lcore/cpu must be non-negative");
-    std::string role = (col == std::string_view::npos) ? "" : std::string(s.substr(col + 1));
-    return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
-}
 
 int split_app_args(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
@@ -147,18 +131,17 @@ AppArgs parse_args(int argc, char** argv) {
     const int sep = split_app_args(argc, argv);
     for (int i = sep + 1; i < argc; ++i) {
         std::string_view a = argv[i];
-        if      (a == "--pci"            && i + 1 < argc) out.pci        = argv[++i];
-        else if (a == "--lcores"         && i + 1 < argc) out.lcores     = argv[++i];
-        else if (a == "--pin"            && i + 1 < argc) {
-            auto p = parse_pin_spec(argv[++i]);
-            if (!p) { spdlog::error("dpdk_multicast_md: {}", p.error()); std::exit(1); }
-            out.pins.push_back(std::move(*p));
-        }
-        else if (a == "--port-id"        && i + 1 < argc) out.port_id    = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--group"          && i + 1 < argc) out.group_str  = argv[++i];
-        else if (a == "--group-port"     && i + 1 < argc) out.group_port = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--seconds"        && i + 1 < argc) out.seconds    = std::atoi(argv[++i]);
-        else if (a == "--rss-fail-test")                  out.rss_fail_test = true;
+        char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        // EAL flags first.
+        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        if (!consumed) { spdlog::error("dpdk_multicast_md: {}", consumed.error()); std::exit(1); }
+        if (*consumed > 0) { i += *consumed - 1; continue; }
+
+        if      (a == "--group"       && next) { out.group_str  = next; ++i; }
+        else if (a == "--group-port"  && next) { out.group_port = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--seconds"     && next) { out.seconds    = std::atoi(next); ++i; }
+        else if (a == "--rss-fail-test")       { out.rss_fail_test = true; }
     }
     return out;
 }
@@ -180,13 +163,15 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     const AppArgs args = parse_args(argc, argv);
-    if (args.pci.empty()) {
+    if (args.eal.pci.empty()) {
         spdlog::error("dpdk_multicast_md: --pci <addr> required");
         return 1;
     }
-    const bool typed_pins = !args.pins.empty();
-    const bool raw_lcores = !args.lcores.empty();
-    if (!typed_pins && !raw_lcores) {
+    if (auto v = ed::cli::validate(args.eal); !v) {
+        spdlog::error("dpdk_multicast_md: {}", v.error());
+        return 1;
+    }
+    if (args.eal.pins.empty() && args.eal.lcores_raw.empty()) {
         spdlog::error("dpdk_multicast_md: provide --pin lcore=cpu[:role] or "
                       "--lcores '<raw>'");
         return 1;
@@ -209,20 +194,16 @@ int main(int argc, char** argv) {
     // acknowledge the explicit pin. The receiver cannot reverse-pick a
     // src_port (it doesn't control the sender) so RSS without FD is unsafe.
     ed::PlatformConfig pcfg{};
-    pcfg.port_id            = args.port_id;
+    pcfg.port_id            = args.eal.port_id;
     pcfg.nb_rx_queues       = 1;
     pcfg.nb_tx_queues       = 1;
     pcfg.enable_promiscuous = false;
     pcfg.proc_type          = ed::ProcType::Primary;
 
-    ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "dpdk_multicast_md";
-    if (raw_lcores) eal_cfg.lcores = {args.lcores};
-    eal_cfg.allowed_devs = {args.pci};
-
     auto plat_r = ed::Platform::create_with_eal(
-        std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{args.pins},
+        std::move(pcfg),
+        ed::cli::to_eal_config(args.eal, "dpdk_multicast_md"),
+        std::span<ed::LcorePin const>{args.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
         spdlog::error("dpdk_multicast_md: Platform::create_with_eal failed: {}",
