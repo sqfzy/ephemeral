@@ -455,6 +455,36 @@ TEST(RiskLimits, ValidateRejectsNegativeRateLimit) {
     EXPECT_FALSE(limits.validate().empty());
 }
 
+// Cover the three field-validation branches that were not exercised
+// individually — each branch carries a distinct error message that callers
+// surface to operators.  Pinning the exact message text catches accidental
+// reordering of the validate() chain.
+TEST(RiskLimits, ValidateRejectsNegativePositionQty) {
+    RiskLimits limits{.max_position_qty = -1.0};
+    EXPECT_EQ(limits.validate(), "max_position_qty must be >= 0 (0 disables)");
+}
+
+TEST(RiskLimits, ValidateRejectsNegativePositionNotional) {
+    RiskLimits limits{.max_position_notional = -1.0};
+    EXPECT_EQ(limits.validate(),
+              "max_position_notional must be >= 0 (0 disables)");
+}
+
+TEST(RiskLimits, ValidateRejectsNegativeTotalExposure) {
+    RiskLimits limits{.max_total_exposure = -1.0};
+    EXPECT_EQ(limits.validate(),
+              "max_total_exposure must be >= 0 (0 disables)");
+}
+
+// validate() is short-circuit — only the first violated field's message is
+// returned. Mixing two negatives must surface only the earlier one.
+// Encodes the documented evaluation order; if someone reorders the chain
+// without updating callers, the test will flag it.
+TEST(RiskLimits, ValidateReportsFirstViolationOnly) {
+    RiskLimits limits{.max_order_qty = -1.0, .max_position_notional = -2.0};
+    EXPECT_EQ(limits.validate(), "max_order_qty must be >= 0 (0 disables)");
+}
+
 TEST(RiskLimits, DumpContainsFieldNames) {
     RiskLimits limits{.max_order_qty = 100.0};
     auto d = limits.dump();
