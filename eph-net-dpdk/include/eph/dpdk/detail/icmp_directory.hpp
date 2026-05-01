@@ -479,6 +479,23 @@ public:
                e.generation.load(std::memory_order_acquire) == expected_gen;
     }
 
+    /// @brief Caller asserts another peer still holds a reference to
+    /// this directory's shared memzone (via `attach_secondary_lookup`),
+    /// so the destructor must NOT call `rte_memzone_free` (which would
+    /// dangle the peer's `hdr_` pointer). Set during MP teardown by
+    /// `Platform::Impl::~Impl()` when `mp_registry->is_last_alive_proc()`
+    /// is false. Idempotent.
+    ///
+    /// **Owns_memzone semantics**: this clears the `owns_memzone_` flag
+    /// in-place. The handle still carries `hdr_` and `mz_` pointers (so
+    /// other accessors keep working), but the destructor's
+    /// `rte_memzone_free` branch is skipped. The OS releases the
+    /// per-process hugepage mapping on exit; the shared backing stays
+    /// for peers, recycled by `dpdk-teardown.sh` on next session.
+    void disable_memzone_free() noexcept {
+        owns_memzone_ = false;
+    }
+
 private:
     void reset_() noexcept {
         hdr_          = nullptr;

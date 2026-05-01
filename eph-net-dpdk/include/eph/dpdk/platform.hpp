@@ -1187,6 +1187,24 @@ struct Platform::Impl {
         }
         remote_flow_rules.destroy_all();
 
+        // MP teardown protocol gate (paired with the gate in
+        // cleanup() / ~Platform()): if peers are still attached, the
+        // upcoming field destructor for `icmp_directory` must NOT
+        // call `rte_memzone_free` — peers attached via
+        // `attach_secondary_lookup` and hold pointers to its hdr_,
+        // which would dangle. mp_registry handles this internally
+        // via its release_() (it scans its own slot table after
+        // releasing self), but icmp_directory has no peer-aware
+        // structure of its own and depends on this signal.
+        //
+        // Query mp_registry HERE (before its field destructor fires)
+        // so we capture "self still claimed + at least one other
+        // claimed" → defer icmp_directory free.
+        if (mp_registry.has_value() && icmp_directory.has_value() &&
+            !mp_registry->is_last_alive_proc()) {
+            icmp_directory->disable_memzone_free();
+        }
+
         // EAL ownership: `~Impl` must NOT call `eal_cleanup` — field
         // destruction in reverse declaration order continues AFTER
         // this body, and `mp_registry` / `icmp_directory` destructors

@@ -679,16 +679,45 @@ private:
                                                     std::memory_order_release);
         }
         if (owns_memzone_ && mz_ != nullptr) {
-            const int rc = rte_memzone_free(mz_);
-            if (rc != 0) {
-                SPDLOG_ERROR(
-                    "MpRegistry: rte_memzone_free failed (rc={}) — "
-                    "hugepage segment will leak until process exit",
-                    rc);
+            // MP teardown protocol gate (paired with the gate in
+            // Platform::Impl::cleanup() and ~Platform()): if any other
+            // peer still holds a claimed slot, they're holding a pointer
+            // to this memzone's header (set up via rte_memzone_lookup at
+            // attach_secondary). Freeing the memzone would dangle their
+            // hdr_ pointer — any subsequent count_alive_procs() / self()
+            // call would SIGSEGV. So leave the memzone alive; the OS
+            // releases per-process hugepage mappings on exit, and
+            // dpdk-teardown.sh recycles the shared backing on next
+            // session bring-up.
+            //
+            // We've already cleared self's slot above, so the scan
+            // below counts ONLY other peers (not self).
+            bool any_other_alive = false;
+            const uint32_t total = hdr_->total_procs;
+            for (uint32_t i = 0; i < total; ++i) {
+                if (hdr_->procs[i].claimed.load(
+                        std::memory_order_acquire) != 0) {
+                    any_other_alive = true;
+                    break;
+                }
+            }
+            if (any_other_alive) {
+                SPDLOG_INFO(
+                    "MpRegistry: primary release_ — peers still attached, "
+                    "deferring rte_memzone_free to keep their hdr_ "
+                    "pointers valid. memzone leaks until next session.");
             } else {
-                SPDLOG_DEBUG(
-                    "MpRegistry: primary freed memzone (self_index={})",
-                    self_index_);
+                const int rc = rte_memzone_free(mz_);
+                if (rc != 0) {
+                    SPDLOG_ERROR(
+                        "MpRegistry: rte_memzone_free failed (rc={}) — "
+                        "hugepage segment will leak until process exit",
+                        rc);
+                } else {
+                    SPDLOG_DEBUG(
+                        "MpRegistry: primary freed memzone (self_index={})",
+                        self_index_);
+                }
             }
         }
         reset_();
