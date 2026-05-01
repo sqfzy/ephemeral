@@ -407,6 +407,81 @@ TEST(WsCodec, EncodeBinary_FirstByteIsFinPlusBinaryOpcode) {
 }
 
 // ---------------------------------------------------------------------------
+// encode_text — RFC 6455 §5.6 (text frame, opcode 0x1; payload is UTF-8)
+// ---------------------------------------------------------------------------
+//
+// Same triple-anchor pattern as the binary contract above.
+
+TEST(WsCodec, EncodeText_FirstByteIsFinPlusTextOpcode) {
+    WsCodec encoder;
+    // ASCII subset of UTF-8 — valid text payload. The codec does not
+    // validate UTF-8 (per RFC 6455 §5.6 that is the caller's
+    // responsibility), so the test deliberately uses a payload that
+    // the contract requires to be UTF-8 to avoid coupling the test
+    // to a non-validation invariant we don't claim.
+    const char        json[] = R"({"e":"agg","s":"BTCUSDT"})";
+    const std::size_t len    = sizeof(json) - 1;
+
+    uint8_t wire[64]{};
+    auto n = encoder.encode_text(wire, sizeof(wire),
+                                  std::span<const uint8_t>{
+                                      reinterpret_cast<const uint8_t*>(json),
+                                      len});
+    ASSERT_TRUE(n.has_value());
+    ASSERT_GT(*n, len);
+
+    // Byte 0: FIN=1 + opcode=Text(0x1) → 0x81.
+    EXPECT_EQ(wire[0], 0x81) << "actual byte 0: 0x" << std::hex << int(wire[0]);
+    EXPECT_EQ(wire[0] & 0x0F, eph::net::ws::opcode::kText)
+        << "opcode nibble: 0x" << std::hex << int(wire[0] & 0x0F);
+    EXPECT_EQ(wire[0] & 0x80, 0x80)
+        << "FIN bit not set; byte 0 = 0x" << std::hex << int(wire[0]);
+}
+
+TEST(WsCodec, EncodeText_RoundTripThroughDecode) {
+    WsCodec encoder;
+    const char        json[] = R"({"op":"subscribe"})";
+    const std::size_t len    = sizeof(json) - 1;
+
+    uint8_t wire[64]{};
+    auto n = encoder.encode_text(wire, sizeof(wire),
+                                  std::span<const uint8_t>{
+                                      reinterpret_cast<const uint8_t*>(json),
+                                      len});
+    ASSERT_TRUE(n.has_value());
+
+    // Feed through a fresh decoder. We don't assert on the decoded
+    // opcode because WsCodec::Frame is an alias for the payload bytes
+    // (opcode is not exposed at the codec output type) — the wire-byte
+    // assertion above already pins the opcode, and this test pins that
+    // a text frame is decoded successfully and its payload survives
+    // intact (the masking round-trip is the part that's specific to
+    // text; close / pong frames don't carry an arbitrary payload).
+    WsCodec decoder;
+    SpanPacketView view{wire, *n};
+    uint8_t out_storage[64]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    auto r = decoder.decode(view, out);
+    ASSERT_TRUE(r.has_value()) << "decode failed: code="
+                               << int(r.error().code);
+    ASSERT_TRUE(r->has_value());
+    auto frame = **r;
+    ASSERT_EQ(frame.size(), len);
+    EXPECT_EQ(std::memcmp(frame.data(), json, len), 0);
+}
+
+TEST(WsCodec, EncodeText_BufferFull) {
+    WsCodec encoder;
+    const uint8_t payload[8] = {};
+    uint8_t       wire[4]{};  // header alone won't fit
+    auto r = encoder.encode_text(wire, sizeof(wire),
+                                  std::span<const uint8_t>{payload, 8});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::BufferFull);
+}
+
+// ---------------------------------------------------------------------------
 // encode_close — RFC 6455 §5.5.1 / §7.1.1
 // ---------------------------------------------------------------------------
 
