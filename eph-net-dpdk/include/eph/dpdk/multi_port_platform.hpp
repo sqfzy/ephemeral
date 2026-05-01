@@ -6,8 +6,8 @@
 /// Strictly additive over `eph::dpdk::Platform`. Owns N independent
 /// `Platform` instances (one per physical NIC port) and exposes them
 /// by index. The aggregator does NOT change any single-port semantics
-/// — `Platform::create_primary` / `create_secondary` remain the
-/// canonical entry points for the dominant 1:1 deployment.
+/// — `Platform::create` / `attach` remain the canonical entry points
+/// for the dominant 1:1 deployment.
 ///
 /// Why a thin wrapper, not a generalized `Platform` with N port_ids:
 ///   - `Platform` owns one mempool / one port_id / one ICMP registry /
@@ -74,11 +74,12 @@ inline spdlog::logger* multi_port_logger() {
 
 /// @brief Owns N independent `Platform` instances, one per NIC port.
 ///
-/// Construction validates the input span (non-empty, distinct port_ids,
-/// each `PlatformConfig` passes `validate_config`) and then delegates
-/// each port's bringup to `Platform::create_primary` (the dominant
-/// deployment role; secondary attach has its own factory and is
-/// orthogonal to "I have N physical NICs in one process").
+/// Construction validates the input span (non-empty, distinct port_ids)
+/// and then delegates each port's bringup to `Platform::create` (the
+/// dominant primary / single-process role; secondary attach has its
+/// own factory `Platform::attach` and is orthogonal to "I have N
+/// physical NICs in one process"). Per-config structural validation
+/// happens inside `Platform::create`.
 ///
 /// Per-port access is by index `[0, num_ports())`. The index is the
 /// position in the input span — it is NOT necessarily equal to the DPDK
@@ -100,19 +101,21 @@ public:
     /// Validation, in order:
     ///   1. `configs.empty()` → InvalidConfig ("at least one port required").
     ///   2. For each `cfg`, `validate_config(cfg)` must pass; the first
-    ///      failure stops construction and returns InvalidConfig.
+    ///      failure stops construction and returns InvalidConfig — the
+    ///      check runs before any DPDK port bringup so a structurally
+    ///      invalid trailing config does not consume an earlier port.
     ///   3. All `cfg.port_id` values must be distinct; the first
     ///      duplicate stops construction.
-    ///   4. Each port is brought up via `Platform::create_primary`.
-    ///      A failure at step K propagates immediately; ports `[0, K)`
-    ///      are destroyed by the local vector's destructor.
+    ///   4. Each port is brought up via `Platform::create`. A failure
+    ///      at step K propagates immediately; ports `[0, K)` are
+    ///      destroyed by the local vector's destructor.
     ///
     /// On success, returns a `unique_ptr<MultiPortPlatform>` with
     /// `num_ports() == configs.size()`. The pointer is movable and the
     /// aggregator owns every `Platform` until destruction.
     [[nodiscard]] static std::expected<std::unique_ptr<MultiPortPlatform>,
                                         ::eph::core::ErrorInfo>
-    create(std::span<const PlatformConfig> configs) noexcept {
+    create(std::span<const PlatformConfigV3> configs) noexcept {
         [[maybe_unused]] auto log = detail::multi_port_logger();
 
         if (configs.empty()) {
@@ -127,8 +130,12 @@ public:
         // Pre-pass 1: validate every config structurally before
         // touching any DPDK state. Cheap and surfaces the user error
         // at the call site rather than after spending I/O on port 0.
+        // Delegates to the v2 `validate_config` via the canonical
+        // v3→v2 translation that `Platform::create` itself uses, so
+        // the rejected set matches the runtime path one-for-one.
         for (std::size_t i = 0; i < configs.size(); ++i) {
-            auto err = validate_config(configs[i]);
+            auto err = validate_config(
+                ::eph::dpdk::detail::v3_to_v2_primary(configs[i]));
             if (!err.empty()) {
                 SPDLOG_LOGGER_ERROR(log,
                     "MultiPortPlatform::create: configs[{}] invalid: {}",
@@ -167,16 +174,16 @@ public:
         std::vector<Platform> ports;
         ports.reserve(configs.size());
         for (std::size_t i = 0; i < configs.size(); ++i) {
-            auto r = Platform::create_primary(configs[i]);
+            auto r = Platform::create(configs[i]);
             if (!r) {
                 SPDLOG_LOGGER_ERROR(log,
-                    "MultiPortPlatform::create: Platform::create_primary "
+                    "MultiPortPlatform::create: Platform::create "
                     "failed for configs[{}] (port_id={}): {} — rolling "
                     "back any already-constructed ports",
                     i, configs[i].port_id, r.error());
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::InvalidConfig,
-                    "MultiPortPlatform::create: Platform::create_primary "
+                    "MultiPortPlatform::create: Platform::create "
                     "failed for one of the configs (see ERROR log for "
                     "index and underlying message)"});
             }

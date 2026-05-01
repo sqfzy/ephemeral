@@ -8,14 +8,14 @@
 ///   * DuplicatePortRejected      — two configs with the same `port_id`
 ///     fail validation with `Error::InvalidConfig`, before any DPDK
 ///     port bringup happens.
-///   * InvalidConfigRejected      — one config has an `rx_queue_range`
-///     that fails `validate_config`; the aggregator surfaces
-///     `Error::InvalidConfig`.
+///   * InvalidConfigRejected      — one config has a non-2^n-1
+///     `mbuf_pool_size`; the aggregator surfaces `Error::InvalidConfig`
+///     via `Platform::create`'s structural validation.
 ///   * ZeroPortsRejected          — empty span fails with
 ///     `Error::InvalidConfig`.
 ///   * SinglePortBackCompat       — regression: callers with one NIC
-///     do not need the aggregator; `Platform::create_primary` directly
-///     still works byte-for-byte. Confirms the additive contract.
+///     do not need the aggregator; `Platform::create` directly still
+///     works byte-for-byte. Confirms the additive contract.
 ///   * FindByPortIdRoundtrip      — `find_index_by_port_id` returns the
 ///     correct slot index for each owned port and `npos` for an
 ///     unknown port id.
@@ -94,16 +94,14 @@ namespace {
 
 using ::eph::core::Error;
 using ::eph::core::ErrorInfo;
-using ::eph::dpdk::config_ok;
 using ::eph::dpdk::MultiPortPlatform;
 using ::eph::dpdk::Platform;
-using ::eph::dpdk::PlatformConfig;
-using ::eph::dpdk::validate_config;
+using ::eph::dpdk::PlatformConfigV3;
 
 /// Conservative test config: small pool, single queue, link timeout 0
 /// (don't wait — net_null link is virtual). Mirrors
 /// `test_dpdk_platform_mempool.cpp::kBaseCfg`.
-constexpr PlatformConfig kBaseCfg{
+constexpr PlatformConfigV3 kBaseCfg{
     .port_id         = 0,
     .nb_rx_queues    = 1,
     .nb_tx_queues    = 1,
@@ -113,7 +111,6 @@ constexpr PlatformConfig kBaseCfg{
     .mbuf_cache_size = 32,
     .link_timeout_ms = 0,
 };
-static_assert(config_ok(kBaseCfg), "base test config must be valid");
 
 // ---------------------------------------------------------------------------
 // Validation-only tests — never bring up a real Platform, so they can run
@@ -124,7 +121,7 @@ TEST(MultiPortPlatformValidation, ZeroPortsRejected) {
     // Empty span must be rejected up-front. We build the span with no
     // backing array to assert the "first thing the aggregator checks"
     // contract.
-    std::span<const PlatformConfig> empty{};
+    std::span<const PlatformConfigV3> empty{};
     auto r = MultiPortPlatform::create(empty);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -134,42 +131,40 @@ TEST(MultiPortPlatformValidation, DuplicatePortRejected) {
     // Two configs that both target port 0. The aggregator must reject
     // before any DPDK port bringup — i.e. before consuming a net_null
     // slot.
-    PlatformConfig a = kBaseCfg;
-    PlatformConfig b = kBaseCfg;
+    PlatformConfigV3 a = kBaseCfg;
+    PlatformConfigV3 b = kBaseCfg;
     a.port_id = 0;
     b.port_id = 0;
-    std::array<PlatformConfig, 2> configs{a, b};
+    std::array<PlatformConfigV3, 2> configs{a, b};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
 }
 
 TEST(MultiPortPlatformValidation, InvalidConfigRejected) {
-    // Two configs but the second has an rx_queue_range that fails
-    // validate_config (lo == hi for non-{0,0} sentinel). The aggregator
-    // must surface the structural failure as InvalidConfig before any
-    // port bringup. We use distinct port_ids so the duplicate check
-    // doesn't shadow the validate_config rejection.
-    PlatformConfig a = kBaseCfg;
+    // Two configs but the second has an mbuf_pool_size that is not
+    // 2^n - 1, which `Platform::create`'s structural validation
+    // rejects. Distinct port_ids so the duplicate check doesn't shadow
+    // the structural rejection.
+    PlatformConfigV3 a = kBaseCfg;
     a.port_id = 0;
-    PlatformConfig b = kBaseCfg;
+    PlatformConfigV3 b = kBaseCfg;
     b.port_id = 1;
-    // Half-set range: lo == hi != 0 — caught by validate_config.
-    b.rx_queue_range = {1, 1};
-    std::array<PlatformConfig, 2> configs{a, b};
+    b.mbuf_pool_size = 1000;  // not 2^n - 1 → rejected
+    std::array<PlatformConfigV3, 2> configs{a, b};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
 }
 
 TEST(MultiPortPlatformValidation, ZeroQueuesRejected) {
-    // Sanity: validate_config also rejects nb_rx_queues == 0. Belt
-    // and braces — confirms the aggregator's structural check covers
-    // every field validate_config polices, not just rx_queue_range.
-    PlatformConfig a = kBaseCfg;
+    // Sanity: `Platform::create` also rejects nb_rx_queues == 0. Belt
+    // and braces — confirms structural validation runs end-to-end
+    // through the aggregator's per-port `Platform::create` call.
+    PlatformConfigV3 a = kBaseCfg;
     a.port_id = 0;
     a.nb_rx_queues = 0;  // invalid
-    std::array<PlatformConfig, 1> configs{a};
+    std::array<PlatformConfigV3, 1> configs{a};
     auto r = MultiPortPlatform::create(std::span{configs});
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, Error::InvalidConfig);
@@ -189,11 +184,11 @@ protected:
     static std::unique_ptr<MultiPortPlatform> agg_;
 
     static void SetUpTestSuite() {
-        PlatformConfig a = kBaseCfg;
+        PlatformConfigV3 a = kBaseCfg;
         a.port_id = 0;  // net_null0
-        PlatformConfig b = kBaseCfg;
+        PlatformConfigV3 b = kBaseCfg;
         b.port_id = 1;  // net_null1
-        std::array<PlatformConfig, 2> configs{a, b};
+        std::array<PlatformConfigV3, 2> configs{a, b};
         auto r = MultiPortPlatform::create(std::span{configs});
         if (r.has_value()) {
             agg_ = std::move(*r);
@@ -270,28 +265,28 @@ TEST_F(MultiPortPlatformLive, IcmpRegistriesNotShared) {
 // Back-compat sanity: callers with a single NIC do NOT need the
 // aggregator. We do not bring up another live `Platform` here (both
 // net_null vdevs are already consumed by `MultiPortPlatformLive`); we
-// only verify the API shape — i.e. that `Platform::create_primary` is
-// still the canonical single-port factory and the aggregator is
-// strictly additive.
+// only verify the API shape — i.e. that `Platform::create` is still
+// the canonical single-port factory and the aggregator is strictly
+// additive.
 // ---------------------------------------------------------------------------
 
 TEST(MultiPortPlatformBackCompat, SinglePortFactoryStillExists) {
-    // Compile-time sanity: `Platform::create_primary` must still take
-    // a single `PlatformConfig` and return `expected<Platform, ...>`.
-    // If a future refactor accidentally retires this overload, this
-    // test fails to compile (which is the regression signal we want).
-    using ReturnT = decltype(Platform::create_primary(std::declval<PlatformConfig>()));
+    // Compile-time sanity: `Platform::create` must still take a single
+    // `PlatformConfigV3` and return `expected<Platform, ...>`. If a
+    // future refactor accidentally retires this overload, this test
+    // fails to compile (which is the regression signal we want).
+    using ReturnT = decltype(Platform::create(std::declval<PlatformConfigV3>()));
     static_assert(std::is_same_v<ReturnT,
                                  std::expected<Platform, std::string>>,
-                  "Platform::create_primary must still be the canonical "
+                  "Platform::create must still be the canonical "
                   "single-port factory; MultiPortPlatform is strictly additive");
     // Runtime validation: the aggregator does not interpose on the
-    // single-port path. We don't need to run create_primary here —
-    // the existing `test_dpdk_platform_mempool.cpp` already exercises
-    // it on net_null0 and net_null1 in the SAME binary, but a fresh
-    // single-port bringup in THIS binary would fail because both
-    // net_null ports are owned by `MultiPortPlatformLive`. The static
-    // assert above is the load-bearing check.
+    // single-port path. We don't need to run create here — the existing
+    // `test_dpdk_platform_mempool.cpp` already exercises it on net_null0
+    // and net_null1 in the SAME binary, but a fresh single-port bringup
+    // in THIS binary would fail because both net_null ports are owned
+    // by `MultiPortPlatformLive`. The static assert above is the
+    // load-bearing check.
     SUCCEED();
 }
 
