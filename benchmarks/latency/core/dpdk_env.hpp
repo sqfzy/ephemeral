@@ -272,8 +272,19 @@ load_dpdk_env(const BenchConfig& cfg,
         const uint32_t max_procs = static_cast<uint32_t>(mp_raw);
         const char* lcores_s     = std::getenv("EPH_LAT_AUTOJOIN_LCORES");
         const char* gw_mac_file  = std::getenv("EPH_LAT_AUTOJOIN_GW_MAC_FILE");
-        std::string lcores_str   = lcores_s ? lcores_s : eal_cores;
-        std::string gw_mac_path  = gw_mac_file ? gw_mac_file : "";
+        // Treat empty env-var values the same as unset — without this, an
+        // orchestrator that does `export EPH_LAT_AUTOJOIN_LCORES="$VAR"`
+        // with `$VAR` accidentally empty would bypass the bench.conf
+        // fallback and surface as a hard error from create_via_autojoin's
+        // empty-lcores guard. The hard error is correct downstream
+        // (mask=0 silently disables MpRegistry v2), but at the bench
+        // boundary an unset/empty env-var should fall back to eal_cores
+        // (the bench.conf value) so the user-facing contract matches the
+        // doc claim "Optional. Falls back to bench.conf eal_cores".
+        std::string lcores_str   =
+            (lcores_s && *lcores_s) ? lcores_s : eal_cores;
+        std::string gw_mac_path  =
+            (gw_mac_file && *gw_mac_file) ? gw_mac_file : "";
         SPDLOG_INFO(
             "load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS={} lcores={} gw_mac_file={}",
             max_procs, lcores_str, gw_mac_path);
