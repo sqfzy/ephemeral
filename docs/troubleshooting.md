@@ -435,10 +435,15 @@ enumerate. The exceptions (lazy-created via
 `spdlog::register_logger` on first use; visible via `spdlog::get(name)`):
 
 - `net.http_client` — HTTP request/response logging
-  (`eph-net/include/eph/net/http_client.hpp`)
+  (`eph-net/include/eph/net/http_client.hpp`).
 - `utils.tsc` / `utils.cpu` / `utils.hugepage` / `utils.audit_log` /
   `utils.system_stats` / `utils.ema` / `utils.console_sink` —
-  per-utility named loggers in `eph-utils/include/eph/utils/`
+  per-utility named loggers in `eph-utils/include/eph/utils/`.
+- `codec.ws` — WebSocket codec (in `eph-codec`).
+- Parser-module loggers: `fix.parser` / `fix.builder` / `fix.framer` /
+  `fix.session` / `fix.orders` / `fix.ordmgr` / `fix.execrpt` /
+  `fix.position`; `itch.parser` / `itch.ouch` / `itch.soupbintcp`;
+  `json.binance` / `json.okx` / `json.bybit`.
 
 Filter via standard spdlog APIs (e.g. `spdlog::get("net.http_client")
 ->set_level(spdlog::level::debug)`) — but remember it only narrows

@@ -52,7 +52,7 @@ eph-utils/
 │       ├── timestamp.hpp          -- wall-clock helpers, ISO 8601 format
 │       └── linux/
 │           └── netns.hpp          -- enter_netns() for test fixtures
-├── tests/                         -- GoogleTest unit tests (20 files)
+├── tests/                         -- GoogleTest unit tests (22 files)
 ├── benchmarks/                    -- Google Benchmark microbenchmarks (9)
 └── xmake.lua                      -- build description
 ```
