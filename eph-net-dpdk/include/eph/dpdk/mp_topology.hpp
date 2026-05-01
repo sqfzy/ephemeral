@@ -48,6 +48,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace eph::dpdk {
 
@@ -85,6 +86,19 @@ struct ProcSpec {
     [[nodiscard]] friend constexpr bool
     operator==(const ProcSpec&, const ProcSpec&) noexcept = default;
 };
+
+// Lock the ProcSpec layout. The struct is the user-facing input to
+// `MpTopology::custom()` and `Platform::create_*`'s `mp_topology` field;
+// it is not stored in shared hugepage memory itself (the registry layer
+// uses the lower-level `ProcSlot` for that), but the contract that
+// callers build a `ProcSpec` array on the stack and copy it into a
+// `MpTopology` requires trivially-copyable semantics. If a future
+// addition (e.g. a `std::string` or `std::vector` field) loses this
+// property, every existing caller's stack-array pattern silently
+// becomes a dangling-iterator hazard — catch it at compile time.
+static_assert(std::is_trivially_copyable_v<ProcSpec>,
+              "ProcSpec must remain trivially copyable so callers can "
+              "build temporary stack arrays and copy them into MpTopology");
 
 /// @brief Multi-process resource topology — the full picture of who
 ///        owns which RX queues and src_port segments on a shared NIC.
