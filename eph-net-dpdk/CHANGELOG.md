@@ -72,6 +72,70 @@ Acceptance for the round 1-3 batch: 37/37 `test_mp_registry` PASS
 `test_dpdk_lcore_csv_parser` PASS, `test_dpdk_platform_mempool`
 builds clean (header-include sanity).
 
+### Fixed — MP mental-model closure follow-ups (round 6 audit)
+
+A continuation of the same `/pax --review` LENS ("production /
+MP mental model / silent misuse closure") on round 6 surfaced
+four interlocking silent-failure modes in
+`DpdkBenchEnv::create_via_autojoin`'s gw_mac shared-file
+publication / consumption protocol — the cross-peer handoff
+that lets a secondary autojoin process learn the gateway MAC
+the primary resolved via ARP. All four fixes land in a single
+commit (`df92fc6a`) with 7 dedicated regression tests in
+`tests/test_dpdk_autojoin_gw_mac.cpp`.
+
+* **Stale-file race** (commit `df92fc6a`):
+  * Orchestrators typically derive `EPH_LAT_AUTOJOIN_GW_MAC_FILE`
+    from the BDF, which is stable across runs. A previous bench
+    session leaving a gw_mac file at the same path caused the
+    secondary's `std::ifstream` poll-and-read loop to break out
+    on the first iteration with the *previous* run's MAC bytes,
+    long before the current primary's ARP resolved. Symptom:
+    secondary uses stale GW MAC, kernel mock side blackholes
+    frames as wrong-dst-MAC, bench reports "no echo replies"
+    with no GW pointer.
+  * Fix: primary `::unlink(gw_mac_share_path)` BEFORE
+    `arp::resolve` fires, treating ENOENT (the expected
+    first-run case) as benign and surfacing other errnos with
+    the path in the diagnostic.
+* **Non-atomic publish** (commit `df92fc6a`):
+  * `std::ofstream`'s per-character writes are not atomic — a
+    secondary that opened the file mid-write could read e.g.
+    only 4 bytes of a 6-byte MAC and either fail `sscanf` or
+    (worse) match a 6-token line that had been half-overwritten
+    with stale-plus-fresh hex digits.
+  * Fix: write to `<path>.tmp.<pid>`, then `::rename(2)` to the
+    final path. POSIX guarantees `rename` is atomic on the same
+    filesystem, so the secondary sees either no file (still
+    polling) or the fully-published one — never a partial.
+* **Missing empty-path guard** (commit `df92fc6a`):
+  * If `EPH_LAT_AUTOJOIN_GW_MAC_FILE` was unset, the orchestrator
+    passed `""` through. Primary's `std::ofstream("")` failed
+    with a useless empty-path diagnostic; secondary's
+    `std::ifstream("")` polled `""` for 3 s and timed out the
+    same way. Both paths reached `create_via_autojoin` without
+    any sanity check.
+  * Fix: precondition guard at the top of `create_via_autojoin`
+    (after the `max_procs >= 2` check, before
+    `parse_lcores_csv_to_mask`). The error message names
+    `EPH_LAT_AUTOJOIN_GW_MAC_FILE` so an orchestrator misconfig
+    is self-diagnosing.
+* **All-zero MAC accepted** (commit `df92fc6a`):
+  * Secondary's parse path accepted any 6-token hex line,
+    including `00:00:00:00:00:00` — never a valid gateway,
+    indicates primary wrote before ARP completed or file was
+    truncated / corrupt / attacker-injected.
+  * Fix: explicit all-zero check on the secondary side; surfaces
+    as a descriptive error rather than silently using the bad
+    MAC and blackholing every frame.
+
+Acceptance for the round 6 batch: 7/7
+`test_dpdk_autojoin_gw_mac` PASS (covering empty-path guard /
+max_procs precondition order / atomic-publish visibility /
+stale-unlink-then-publish / first-run ENOENT benign /
+all-zero detection / malformed-line parse failure); 37/37
+`test_mp_registry` still PASS.
+
 ### Fixed — MP mental-model "user error → silent run" closure (5 fixes + 1 doc)
 
 Driven by a `/pax --review` audit (`.artifacts/review-mp-mental-model-20260501.md`)
