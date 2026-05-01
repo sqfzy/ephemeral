@@ -23,6 +23,7 @@
 
 #ifdef EPH_USE_DPDK
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -36,6 +37,8 @@
 #include <vector>
 
 #include <arpa/inet.h>
+#include <unistd.h>     // ::unlink / ::getpid for atomic gw_mac publish
+#include <cstdio>       // ::rename for atomic gw_mac publish
 #include <rte_ethdev.h>
 
 #include <spdlog/spdlog.h>
@@ -347,6 +350,26 @@ struct DpdkBenchEnv {
                 "(use create() for single-process)");
         }
 
+        // Empty gw_mac_share_path is a silent-failure mode: primary's
+        // std::ofstream("") fails with a useless "" diagnostic, secondary
+        // polls "" for 3 s and times out the same way. Reject up front
+        // and name the env var so an orchestrator misconfig is
+        // self-diagnosing.
+        //
+        // Discovered via /pax --review LENS "production / MP mental model
+        // / silent misuse closure" round 6 on 2026-05-01.
+        if (gw_mac_share_path.empty()) {
+            SPDLOG_ERROR(
+                "DpdkBenchEnv::create_via_autojoin: gw_mac_share_path is "
+                "empty — orchestrator must set EPH_LAT_AUTOJOIN_GW_MAC_FILE "
+                "(or pass a non-empty path) so primary peer can publish the "
+                "ARP-resolved gateway MAC for secondaries to consume");
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: gw_mac_share_path is "
+                "empty (set EPH_LAT_AUTOJOIN_GW_MAC_FILE to a writable path "
+                "shared between primary and secondary peers)");
+        }
+
         // Parse lcore CSV into bitmask for cross-process conflict
         // detection (MpRegistry v2). Delegated to the standalone
         // helper above so the parser is unit-testable without EAL,
@@ -408,8 +431,57 @@ struct DpdkBenchEnv {
                      src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
 
         // ── 4. ARP (primary) or shared-file read (secondary) ───────
+        //
+        // Cross-peer gw_mac handoff via shared file. The publish/consume
+        // protocol must tolerate three failure modes that previously
+        // silent-failed (round 6 audit, 2026-05-01):
+        //
+        //   (1) STALE FILE: a previous bench session left a gw_mac file at
+        //       the same path (orchestrator typically derives the path
+        //       from the BDF, which is stable across runs). Without unlink
+        //       on the primary side, the secondary's poll-and-read loop
+        //       breaks out on the *first* iteration with the *previous*
+        //       run's MAC bytes — long before the current primary's ARP
+        //       resolves. Symptom: secondary uses stale GW MAC, kernel
+        //       mock side blackholes frames as wrong-dst-MAC, bench
+        //       reports "no echo replies" with no GW pointer.
+        //
+        //   (2) PARTIAL READ: ofstream's per-character writes are not
+        //       atomic; a secondary that opens the file mid-write can
+        //       read e.g. only 4 bytes of a 6-byte MAC and either fail
+        //       sscanf or (worse) match a 6-token line that's been
+        //       half-overwritten. Mitigation: write-tmp + rename(2) so
+        //       the secondary either sees the old file (unlinked above
+        //       in the same call) or the fully-populated new file —
+        //       never a partial.
+        //
+        //   (3) ALL-ZERO MAC: 00:00:00:00:00:00 is never a valid gateway
+        //       and indicates either a bug (file written before ARP
+        //       completed) or attacker-injected content. Reject on the
+        //       secondary's parse path.
         rte_ether_addr gw_mac{};
         if (!is_secondary) {
+            // (1) Unlink any stale file from a previous run BEFORE ARP
+            // resolves. ENOENT (no previous file) is the expected
+            // first-run case; any other errno is a real I/O failure
+            // we surface so the user sees the path we couldn't clean.
+            if (::unlink(gw_mac_share_path.c_str()) != 0 && errno != ENOENT) {
+                const int saved_errno = errno;
+                SPDLOG_ERROR(
+                    "DpdkBenchEnv::create_via_autojoin: failed to unlink "
+                    "stale gw_mac file '{}' (errno={} {})",
+                    gw_mac_share_path, saved_errno, std::strerror(saved_errno));
+                return std::unexpected(
+                    "primary failed to unlink stale gw_mac at " +
+                    gw_mac_share_path + " (errno=" +
+                    std::to_string(saved_errno) + " " +
+                    std::strerror(saved_errno) + ")");
+            }
+            SPDLOG_INFO(
+                "DpdkBenchEnv::create_via_autojoin: cleared any stale "
+                "gw_mac file at '{}' before ARP resolve",
+                gw_mac_share_path);
+
             auto gw_r = eph::dpdk::arp::resolve(
                 port_id, pool, src_mac, *src_ip, *gw_ip,
                 std::chrono::seconds{3});
@@ -418,19 +490,57 @@ struct DpdkBenchEnv {
                     "ARP resolve gateway: " + gw_r.error());
             }
             gw_mac = *gw_r;
-            // Publish to shared file for secondaries.
-            std::ofstream f(gw_mac_share_path);
-            if (!f.is_open()) {
-                return std::unexpected(
-                    "cannot write gw_mac share file: " + gw_mac_share_path);
+            // (2) Atomic publish: write to <path>.tmp.<pid>, then
+            // ::rename to the final path. POSIX guarantees rename(2) is
+            // atomic on the same filesystem, so any concurrent
+            // secondary reader sees either no file (still polling) or
+            // the fully-published one — never a partial write.
+            const std::string tmp_path =
+                gw_mac_share_path + ".tmp." + std::to_string(::getpid());
+            {
+                std::ofstream f(tmp_path);
+                if (!f.is_open()) {
+                    SPDLOG_ERROR(
+                        "DpdkBenchEnv::create_via_autojoin: cannot open "
+                        "tmp publish file '{}' for write", tmp_path);
+                    return std::unexpected(
+                        "cannot write gw_mac tmp file: " + tmp_path);
+                }
+                char buf[32];
+                std::snprintf(buf, sizeof(buf),
+                              "%02x:%02x:%02x:%02x:%02x:%02x\n",
+                              gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
+                              gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
+                              gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
+                f << buf;
+                if (!f.good()) {
+                    SPDLOG_ERROR(
+                        "DpdkBenchEnv::create_via_autojoin: write to tmp "
+                        "publish file '{}' failed (stream bad)", tmp_path);
+                    (void)::unlink(tmp_path.c_str());
+                    return std::unexpected(
+                        "gw_mac tmp file write failed: " + tmp_path);
+                }
+                // f closes on scope exit — content flushed before rename.
             }
-            char buf[32];
-            std::snprintf(buf, sizeof(buf),
-                          "%02x:%02x:%02x:%02x:%02x:%02x\n",
-                          gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
-                          gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
-                          gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
-            f << buf;
+            if (::rename(tmp_path.c_str(), gw_mac_share_path.c_str()) != 0) {
+                const int saved_errno = errno;
+                SPDLOG_ERROR(
+                    "DpdkBenchEnv::create_via_autojoin: rename '{}' → "
+                    "'{}' failed (errno={} {})",
+                    tmp_path, gw_mac_share_path,
+                    saved_errno, std::strerror(saved_errno));
+                (void)::unlink(tmp_path.c_str());
+                return std::unexpected(
+                    "gw_mac atomic rename failed: " + tmp_path + " → " +
+                    gw_mac_share_path + " (errno=" +
+                    std::to_string(saved_errno) + " " +
+                    std::strerror(saved_errno) + ")");
+            }
+            SPDLOG_DEBUG(
+                "DpdkBenchEnv::create_via_autojoin: atomically published "
+                "gw_mac to '{}' via tmp '{}'",
+                gw_mac_share_path, tmp_path);
         } else {
             // Poll up to 3s for the primary to publish.
             const auto deadline = std::chrono::steady_clock::now() +
@@ -457,6 +567,24 @@ struct DpdkBenchEnv {
             }
             for (int i = 0; i < 6; ++i) {
                 gw_mac.addr_bytes[i] = static_cast<uint8_t>(b[i]);
+            }
+            // (3) All-zero MAC is never a valid gateway. Reject so a
+            // primary that wrote before ARP completed (or attacker
+            // injection / file truncation) doesn't silently corrupt
+            // the secondary's TX path.
+            const bool all_zero = (gw_mac.addr_bytes[0] | gw_mac.addr_bytes[1] |
+                                   gw_mac.addr_bytes[2] | gw_mac.addr_bytes[3] |
+                                   gw_mac.addr_bytes[4] | gw_mac.addr_bytes[5]) == 0;
+            if (all_zero) {
+                SPDLOG_ERROR(
+                    "DpdkBenchEnv::create_via_autojoin: secondary read "
+                    "all-zero gw_mac from '{}' — primary wrote before ARP "
+                    "completed, file truncated, or attacker injection",
+                    gw_mac_share_path);
+                return std::unexpected(
+                    "secondary read all-zero gw_mac at " + gw_mac_share_path +
+                    " (00:00:00:00:00:00 is never a valid gateway — primary "
+                    "wrote before ARP completed or file is corrupt)");
             }
         }
         spdlog::info("dpdk_env: [{}] gateway MAC "
