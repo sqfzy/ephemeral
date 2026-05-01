@@ -115,7 +115,7 @@ std::array tags{eph::core::MetricTag{"venue", "binance"},
                 eph::core::MetricTag{"symbol", "BTCUSDT"}};
 
 // Periodic publisher (every 100 ms — 1 s):
-eph::net::publish_metrics            (*stream, sink, tags);  // 24 stream rows
+eph::net::publish_metrics            (*stream, sink, tags);  // 25 stream rows
 eph::net::publish_ws_deflate_ratio   (*stream, sink, tags);  // 1 derived gauge
 eph::net::publish_reconnect_metrics  ( orch  , sink, tags);  // 5 orchestrator rows
 
