@@ -94,9 +94,27 @@ xmake run test_kernel_poller
 xmake run test_kernel_udp_socket
 ```
 
-Per-file targets are auto-globbed from `tests/test_*.cpp`. Cross-module
-integration tests (`test_kernel_udp`, `test_transport_e2e`, …) live under
-`../tests/integration/`.
+Per-file targets are auto-globbed from `tests/test_*.cpp`. The full
+13-test inventory under `tests/`:
+
+| Test                                  | What it covers                                                      |
+|---------------------------------------|---------------------------------------------------------------------|
+| `test_byte_socket`                    | Raw POSIX socket wrapper — connect/send/recv error paths.           |
+| `test_kernel_drain`                   | Send-buffer drain semantics under EAGAIN / partial write.           |
+| `test_kernel_integration`             | End-to-end echo via real localhost TCP.                             |
+| `test_kernel_poller`                  | `KernelPoller` add/remove, fd-set membership, `poll(timeout)`.      |
+| `test_kernel_proxy_integration`       | HTTP CONNECT proxy via `StreamConfig::proxy` against a fake proxy.  |
+| `test_kernel_tcp_stream`              | `KernelTcpStream` full lifecycle, codec dispatch, error mapping.    |
+| `test_kernel_tcp_stream_behavioral`   | Behaviour matrix: TLS / WS / proxy combinations.                    |
+| `test_kernel_tls_state`               | aws-lc handshake state machine + cert verify failure modes.         |
+| `test_kernel_udp_socket`              | `KernelUdpSocket` send/recv, multicast join/leave.                  |
+| `test_kernel_ws_upgrade`              | RFC 6455 client handshake — `Sec-WebSocket-Accept` validation.      |
+| `test_reassembly_buffer`              | Bounded reassembly buffer overflow + replay.                        |
+| `test_reconnect_orch_integration`     | `ReconnectOrchestrator` factory + tick + drop-then-reconnect path.  |
+| `test_stream_config_validation`       | `StreamConfig::validate()` enforces every documented invariant.     |
+
+Cross-module integration tests (`test_kernel_udp`, `test_transport_e2e`, …)
+live under `../tests/integration/`.
 
 ## Threading model
 
