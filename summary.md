@@ -306,8 +306,8 @@ epoll_wait -> fd readable -> KernelTcpStream::poll_once_()
 ### DPDK RX
 
 ```
-rte_eth_rx_burst -> FlowSteeringTable::lookup(5-tuple) -> process_burst_()
-        -> DpdkTcpSession::process_packet() -> rebuild RX byte stream in mbuf chain
+rte_eth_rx_burst -> DpdkPoller::lookup_by_5tuple_(mbuf) -> process_burst_fn thunk
+        -> DpdkTcpStream::process_burst_() -> TcpSession::process_rx() in-place
         -> [TLS decrypt in-place into the same mbuf payload via aws-lc]
         -> Codec::decode(MbufView, OutputBuffer)
         -> on_message
