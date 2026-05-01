@@ -263,10 +263,10 @@ struct DpdkBenchEnv {
             return std::unexpected("rte_eth_macaddr_get failed: " +
                                    std::to_string(rc));
         }
-        spdlog::info("dpdk_env: local MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     src_mac.addr_bytes[0], src_mac.addr_bytes[1],
-                     src_mac.addr_bytes[2], src_mac.addr_bytes[3],
-                     src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
+        SPDLOG_INFO("dpdk_env: local MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    src_mac.addr_bytes[0], src_mac.addr_bytes[1],
+                    src_mac.addr_bytes[2], src_mac.addr_bytes[3],
+                    src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
 
         // ── 4. ARP resolve gateway MAC ─────────────────────────────
         auto gw_mac_result = eph::dpdk::arp::resolve(
@@ -276,10 +276,10 @@ struct DpdkBenchEnv {
         if (!gw_mac_result) {
             return std::unexpected("ARP resolve gateway: " + gw_mac_result.error());
         }
-        spdlog::info("dpdk_env: gateway MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     gw_mac_result->addr_bytes[0], gw_mac_result->addr_bytes[1],
-                     gw_mac_result->addr_bytes[2], gw_mac_result->addr_bytes[3],
-                     gw_mac_result->addr_bytes[4], gw_mac_result->addr_bytes[5]);
+        SPDLOG_INFO("dpdk_env: gateway MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    gw_mac_result->addr_bytes[0], gw_mac_result->addr_bytes[1],
+                    gw_mac_result->addr_bytes[2], gw_mac_result->addr_bytes[3],
+                    gw_mac_result->addr_bytes[4], gw_mac_result->addr_bytes[5]);
 
         return DpdkBenchEnv{
             std::move(*plat),
@@ -423,12 +423,12 @@ struct DpdkBenchEnv {
             return std::unexpected(
                 "rte_eth_macaddr_get failed: " + std::to_string(rc));
         }
-        spdlog::info("dpdk_env: [{}] local MAC "
-                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     is_secondary ? "secondary" : "primary",
-                     src_mac.addr_bytes[0], src_mac.addr_bytes[1],
-                     src_mac.addr_bytes[2], src_mac.addr_bytes[3],
-                     src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
+        SPDLOG_INFO("dpdk_env: [{}] local MAC "
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    is_secondary ? "secondary" : "primary",
+                    src_mac.addr_bytes[0], src_mac.addr_bytes[1],
+                    src_mac.addr_bytes[2], src_mac.addr_bytes[3],
+                    src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
 
         // ── 4. ARP (primary) or shared-file read (secondary) ───────
         //
@@ -587,12 +587,12 @@ struct DpdkBenchEnv {
                     "wrote before ARP completed or file is corrupt)");
             }
         }
-        spdlog::info("dpdk_env: [{}] gateway MAC "
-                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                     is_secondary ? "secondary" : "primary",
-                     gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
-                     gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
-                     gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
+        SPDLOG_INFO("dpdk_env: [{}] gateway MAC "
+                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                    is_secondary ? "secondary" : "primary",
+                    gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
+                    gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
+                    gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
 
         return DpdkBenchEnv{
             std::move(*plat),
