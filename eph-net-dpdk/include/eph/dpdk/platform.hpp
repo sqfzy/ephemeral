@@ -796,53 +796,6 @@ public:
     [[nodiscard]] static std::expected<Platform, std::string>
     join_dynamic(LegacyJoinDynamicConfig cfg);
 
-    /// @brief One-shot factory: EAL init + Platform construction in
-    /// a single call. The returned Platform **owns the EAL session**:
-    /// `~Platform` releases DPDK resources, then runs `eal_cleanup`
-    /// internally (and releases the typed-pin `PinGuard`s).
-    ///
-    /// This is the recommended single-call surface for almost every
-    /// example / benchmark / single-process app:
-    ///
-    /// ```cpp
-    /// auto plat = Platform::create_with_eal(pcfg, eal_cfg, pins, policy);
-    /// // ... use platform ...
-    /// // ~Platform fires at scope end: DPDK cleanup → pin release → eal_cleanup
-    /// ```
-    ///
-    /// @param pcfg     LegacyPlatformConfig — full configuration; honour
-    ///                 `proc_type` so the same one-shot factory is
-    ///                 usable for declarative MP primary / secondary.
-    /// @param eal_cfg  EalConfig — EAL argv assembly. Caller owns the
-    ///                 strings inside; this function may emplace
-    ///                 additional argv tokens (`--lcores=...` from
-    ///                 typed pins) into a local copy.
-    /// @param pins     Typed lcore→cpu pin spec. Empty = no typed-pin
-    ///                 path (raw `cfg.lcores` is consulted instead).
-    ///                 When non-empty, `eal_cfg.lcores` MUST be empty
-    ///                 (mutex same as `EalGuard::init_with_pins`).
-    /// @param policy   Strictness for the typed-pin validator.
-    ///                 Defaults to a relaxed `CpuPinPolicy{}` (matches
-    ///                 every in-repo `pin_thread` caller's default).
-    ///
-    /// Failure modes:
-    ///   * `pins.empty() == false && !eal_cfg.lcores.empty()` →
-    ///     `unexpected("create_with_eal: pins/lcores mutex")`.
-    ///   * `pin_lcores` rejects a pin → unexpected, no EAL touched.
-    ///   * `eal_init` fails → pin guards rolled back, unexpected.
-    ///   * `Platform::create` fails → eal_cleanup runs + pin guards
-    ///     rolled back, unexpected.
-    ///
-    /// EAL must **NOT** have been initialized before this call.
-    /// Callers that share an already-initialized EAL across multiple
-    /// Platform instances should use `Platform::create(pcfg)`
-    /// directly (which never touches EAL lifetime).
-    [[nodiscard]] static std::expected<Platform, std::string>
-    create_with_eal(LegacyPlatformConfig                          pcfg,
-                    EalConfig                               eal_cfg,
-                    std::span<eph::dpdk::LcorePin const>    pins   = {},
-                    eph::utils::CpuPinPolicy                policy = {});
-
     // ─────────────────────────────────────────────────────────────────
     // v3 entry points (zero-consensus surface)
     // ─────────────────────────────────────────────────────────────────
@@ -2024,98 +1977,6 @@ inline Platform& Platform::operator=(Platform&&) noexcept = default;
 // On success, pin_guards transfer into Impl and owns_eal_init is set.
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_with_eal(LegacyPlatformConfig                          pcfg,
-                          EalConfig                               eal_cfg,
-                          std::span<eph::dpdk::LcorePin const>    pins,
-                          eph::utils::CpuPinPolicy                policy) {
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    // ── 1. Mutex: typed-pin path vs raw lcores ──────────────────────────
-    if (!pins.empty() && !eal_cfg.lcores.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: typed pins ({}) and raw lcores ({} entries) "
-            "are mutually exclusive — pick one",
-            pins.size(), eal_cfg.lcores.size());
-        return std::unexpected(std::string{
-            "create_with_eal: typed pins and raw eal_cfg.lcores are "
-            "mutually exclusive (the typed path internally emits "
-            "--lcores=<...>; supplying both duplicates the token)"});
-    }
-
-    // ── 2. Pre-EAL pin registration ────────────────────────────────────
-    std::vector<eph::utils::PinGuard> pin_guards;
-    if (!pins.empty()) {
-        auto pg = pin_lcores(pins, policy);
-        if (!pg) {
-            SPDLOG_LOGGER_ERROR(log,
-                "create_with_eal: pin_lcores rejected: {}", pg.error());
-            return std::unexpected(std::string{
-                "create_with_eal: pin_lcores: "} + pg.error());
-        }
-        pin_guards = std::move(*pg);
-        eal_cfg.extra_args.push_back(build_lcore_argv(pins));
-        SPDLOG_LOGGER_INFO(log,
-            "create_with_eal: typed-pin path engaged ({} pins registered)",
-            pins.size());
-    }
-
-    // ── 3. Build EAL argv + call eal_init ──────────────────────────────
-    auto argv_owned = build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    argv.reserve(argv_owned.size());
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
-    if (!eal_r) {
-        SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: eal_init failed: {}", eal_r.error());
-        // pin_guards local destruction rolls back CPU registry on return.
-        return std::unexpected(std::string{
-            "create_with_eal: eal_init failed: "} + eal_r.error());
-    }
-
-    // ── 4. Delegate to declarative Platform factory by proc_type ──────
-    // create_primary / create_secondary handle MP-topology registry
-    // bring-up which plain create() does not. Single-process bring-up
-    // (default proc_type=Primary, no mp_topology) goes through
-    // create_primary which is byte-for-byte equivalent to create()
-    // when mp_topology is unset.
-    std::expected<Platform, std::string> plat_r = std::unexpected(std::string{});
-    if (pcfg.proc_type == ProcType::Secondary) {
-        plat_r = Platform::secondary_bringup_(std::move(pcfg),
-                                              /*registry_preclaimed=*/false);
-    } else {
-        // Primary or Auto (Auto is autojoin's pre-EAL default; by the
-        // time we land here the EAL is up and `rte_eal_process_type`
-        // resolved the role — autojoin overrides proc_type to
-        // Primary/Secondary before delegating, so Auto here is a bug).
-        plat_r = Platform::primary_bringup_(std::move(pcfg));
-    }
-    if (!plat_r) {
-        SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: declarative factory failed: {} — "
-            "rolling back eal_init and pin guards",
-            plat_r.error());
-        // Roll back EAL we just init'd. pin_guards roll back via local destruction.
-        [[maybe_unused]] bool ok = eal_cleanup();
-        return std::unexpected(std::string{
-            "create_with_eal: "} + plat_r.error());
-    }
-
-    // ── 5. Transfer EAL ownership into Platform::Impl ──────────────────
-    Platform plat = std::move(*plat_r);
-    if (plat.impl_) {
-        plat.impl_->pin_session_guards = std::move(pin_guards);
-        plat.impl_->owns_eal_init      = true;
-    }
-    SPDLOG_LOGGER_INFO(log,
-        "create_with_eal: Platform owns EAL session (pins={}, proc_type={})",
-        plat.impl_ ? plat.impl_->pin_session_guards.size() : 0,
-        plat.impl_ ? static_cast<int>(plat.impl_->resolved_proc_type) : -1);
-    return plat;
-}
-
-[[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(const LegacyPlatformConfig& config) {
     [[maybe_unused]] auto log = detail::platform_logger();
 
@@ -3118,12 +2979,82 @@ Platform::create_with_eal(PlatformConfig                        cfg,
                           EalConfig                               eal_cfg,
                           std::span<eph::dpdk::LcorePin const>    pins,
                           eph::utils::CpuPinPolicy                policy) {
-    // Inject identity fields into EalConfig — caller does not set these.
+    [[maybe_unused]] auto log = detail::platform_logger();
+
+    // Inject identity fields into EalConfig — v3 contract: caller does
+    // not set these. Always Primary; v3 has a separate `attach_with_eal`
+    // entry for the secondary path.
     eal_cfg.proc_type     = ProcType::Primary;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = cfg.file_prefix;
-    return Platform::create_with_eal(detail::v3_to_legacy_(cfg),
-                                     std::move(eal_cfg), pins, policy);
+
+    // ── 1. Mutex: typed-pin path vs raw lcores ──────────────────────────
+    if (!pins.empty() && !eal_cfg.lcores.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "create_with_eal: typed pins ({}) and raw lcores ({} entries) "
+            "are mutually exclusive — pick one",
+            pins.size(), eal_cfg.lcores.size());
+        return std::unexpected(std::string{
+            "create_with_eal: typed pins and raw eal_cfg.lcores are "
+            "mutually exclusive (the typed path internally emits "
+            "--lcores=<...>; supplying both duplicates the token)"});
+    }
+
+    // ── 2. Pre-EAL pin registration ────────────────────────────────────
+    std::vector<eph::utils::PinGuard> pin_guards;
+    if (!pins.empty()) {
+        auto pg = pin_lcores(pins, policy);
+        if (!pg) {
+            SPDLOG_LOGGER_ERROR(log,
+                "create_with_eal: pin_lcores rejected: {}", pg.error());
+            return std::unexpected(std::string{
+                "create_with_eal: pin_lcores: "} + pg.error());
+        }
+        pin_guards = std::move(*pg);
+        eal_cfg.extra_args.push_back(build_lcore_argv(pins));
+        SPDLOG_LOGGER_INFO(log,
+            "create_with_eal: typed-pin path engaged ({} pins registered)",
+            pins.size());
+    }
+
+    // ── 3. Build EAL argv + call eal_init ──────────────────────────────
+    auto argv_owned = build_eal_argv(eal_cfg);
+    std::vector<char*> argv;
+    argv.reserve(argv_owned.size());
+    for (auto& s : argv_owned) argv.push_back(s.data());
+
+    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
+    if (!eal_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "create_with_eal: eal_init failed: {}", eal_r.error());
+        // pin_guards local destruction rolls back CPU registry on return.
+        return std::unexpected(std::string{
+            "create_with_eal: eal_init failed: "} + eal_r.error());
+    }
+
+    // ── 4. Primary bring-up via the shared helper ──────────────────────
+    auto plat_r = Platform::primary_bringup_(detail::v3_to_legacy_(cfg));
+    if (!plat_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "create_with_eal: primary_bringup_ failed: {} — "
+            "rolling back eal_init and pin guards",
+            plat_r.error());
+        // Roll back EAL we just init'd. pin_guards roll back via local destruction.
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::string{
+            "create_with_eal: "} + plat_r.error());
+    }
+
+    // ── 5. Transfer EAL ownership into Platform::Impl ──────────────────
+    Platform plat = std::move(*plat_r);
+    if (plat.impl_) {
+        plat.impl_->pin_session_guards = std::move(pin_guards);
+        plat.impl_->owns_eal_init      = true;
+    }
+    SPDLOG_LOGGER_INFO(log,
+        "create_with_eal: Platform owns EAL session (pins={})",
+        plat.impl_ ? plat.impl_->pin_session_guards.size() : 0);
+    return plat;
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
