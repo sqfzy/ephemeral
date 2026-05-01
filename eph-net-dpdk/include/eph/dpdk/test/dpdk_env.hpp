@@ -95,6 +95,16 @@ namespace eph::dpdk::test {
 [[nodiscard]] inline std::expected<uint64_t, std::string>
 parse_lcores_csv_to_mask(std::string_view lcores) noexcept {
     constexpr unsigned long kMaxLcoreId = 63;
+    // Schema-cap link: `kMaxLcoreId` must equal
+    // `MpTopology::kMaxProcs - 1`. Both are independent constants that
+    // happen to share the same numeric value (64-1 vs 63), but the
+    // contract is "the registry's lcore_mask uint64_t can track lcore
+    // IDs in [0, kMaxLcoreId]". If a future bump moves kMaxProcs above
+    // 64, this parser must drop its 0..63 cap and switch to a wider
+    // bitmask type — catch the inconsistency at compile time.
+    static_assert(kMaxLcoreId == eph::dpdk::MpTopology::kMaxProcs - 1,
+                  "parse_lcores_csv_to_mask schema-cap drift: "
+                  "kMaxLcoreId must equal MpTopology::kMaxProcs - 1");
     uint64_t mask = 0;
     // Use a heap-free copy when the buffer is short — for the
     // EAL-CSV case this is always tens of bytes max. We scan in
