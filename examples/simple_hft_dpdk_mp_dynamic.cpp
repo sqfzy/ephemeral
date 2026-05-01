@@ -53,6 +53,16 @@
 ///   sudo ./simple_hft_dpdk_mp_dynamic --pci 0000:28:00.0 \
 ///                                     --nb-queues 4       \
 ///                                     --lcores '2,3'
+///
+///   # Optional: keep the demo up longer so a third peer can attach,
+///   # or just to inspect state — default --hold-seconds is 8.
+///   sudo ./simple_hft_dpdk_mp_dynamic --pci 0000:28:00.0 \
+///                                     --nb-queues 4       \
+///                                     --lcores '0,1'      \
+///                                     --hold-seconds 60
+///
+///   # Print built-in usage and exit:
+///   ./simple_hft_dpdk_mp_dynamic --help
 
 #include <chrono>
 #include <cstdint>
