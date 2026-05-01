@@ -529,7 +529,10 @@ public:
             "leave_group({}:{}): not found among {} active group(s)",
             net::format_ipv4(group.group_ip).data(), group.group_port,
             group_count_);
-        return std::unexpected("Group not found");
+        return std::unexpected(std::format(
+            "leave_group: group {}:{} not found among {} active group(s)",
+            net::format_ipv4(group.group_ip).data(), group.group_port,
+            group_count_));
     }
 
     // ─────────────────────────────────────────────────────────────────────
