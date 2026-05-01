@@ -1910,7 +1910,13 @@ public:
     ///        input-guard behaviour (desync latch, attach preconditions)
     ///        that short-circuits before touching the session. Guarded by
     ///        `EPH_DPDK_TCP_STREAM_TEST_HOOKS`.
-    static std::unique_ptr<DpdkTcpStream>
+    ///
+    /// `[[nodiscard]]` because the returned stream owns the test fixture's
+    /// lifetime (poller pin, TLS state); discarding it immediately tears
+    /// the session down and the rest of the test silently no-ops on the
+    /// destroyed object via dangling reference. Surface the typo at
+    /// compile time.
+    [[nodiscard]] static std::unique_ptr<DpdkTcpStream>
     make_default_for_test_() {
         StreamConfig cfg{};
         // Minimally fill the legacy TcpConfig so the session constructor
