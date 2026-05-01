@@ -88,7 +88,7 @@ public:
         if (!cfg_r) {
             skip_reason_ = "load_bench_conf failed: " +
                            bench::format_error(cfg_r.error());
-            spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
+            SPDLOG_ERROR("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
         cfg_.emplace(std::move(*cfg_r));
@@ -102,10 +102,10 @@ public:
             skip_reason_ =
                 "could not determine NIC_B PCI BDF. Set EPH_TEST_NIC_B_PCI=<bdf> "
                 "or add nic_b_pci=<bdf> under [networking] in config.toml";
-            spdlog::warn("DpdkE2ETestEnv: {}", skip_reason_);
+            SPDLOG_WARN("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
-        spdlog::info("DpdkE2ETestEnv: NIC_B={} PCI={}",
+        SPDLOG_INFO("DpdkE2ETestEnv: NIC_B={} PCI={}",
                      cfg_->networking.nic_b, nic_b_pci_);
 
         // ── 3. Verify NIC_B is on vfio-pci ────────────────────────────
@@ -114,7 +114,7 @@ public:
                 "NIC_B (PCI ") + nic_b_pci_ + ") is not bound to vfio-pci. "
                 "Run `sudo benchmarks/latency/lat tcp --dpdk` once first to "
                 "transition NIC_B, then re-run this test binary.";
-            spdlog::warn("DpdkE2ETestEnv: {}", skip_reason_);
+            SPDLOG_WARN("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
 
@@ -122,7 +122,7 @@ public:
         pid_t pid = ::fork();
         if (pid < 0) {
             skip_reason_ = std::string("fork failed: ") + ::strerror(errno);
-            spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
+            SPDLOG_ERROR("DpdkE2ETestEnv: {}", skip_reason_);
             return;
         }
         if (pid == 0) {
@@ -130,7 +130,7 @@ public:
             ::_exit(run_mock_dispatcher(cfg_->networking.server_ip));
         }
         mock_pid_ = pid;
-        spdlog::info("DpdkE2ETestEnv: forked mock dispatcher pid={}", pid);
+        SPDLOG_INFO("DpdkE2ETestEnv: forked mock dispatcher pid={}", pid);
 
         // Give the child a moment to bind() all listening sockets.
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -155,7 +155,7 @@ public:
             cfg_->networking.gateway_ip);
         if (!env_r) {
             skip_reason_ = "DpdkBenchEnv::create failed: " + env_r.error();
-            spdlog::error("DpdkE2ETestEnv: {}", skip_reason_);
+            SPDLOG_ERROR("DpdkE2ETestEnv: {}", skip_reason_);
             stop_mock_();
             return;
         }
@@ -172,7 +172,7 @@ public:
         warmup_connect_();
 
         ready_ = true;
-        spdlog::info("DpdkE2ETestEnv: ready");
+        SPDLOG_INFO("DpdkE2ETestEnv: ready");
     }
 
     /// Source port reserved exclusively for the cold-start warmup
@@ -285,7 +285,7 @@ private:
             ::kill(mock_pid_, SIGTERM);
             int wstatus = 0;
             ::waitpid(mock_pid_, &wstatus, 0);
-            spdlog::info("DpdkE2ETestEnv: mock dispatcher reaped (status={})", wstatus);
+            SPDLOG_INFO("DpdkE2ETestEnv: mock dispatcher reaped (status={})", wstatus);
             mock_pid_ = -1;
         }
     }

@@ -95,7 +95,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     // the happy path.
     (void)::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
 
-    spdlog::info("dispatcher: starting mocks on {}", server_ip);
+    SPDLOG_INFO("dispatcher: starting mocks on {}", server_ip);
 
     std::vector<std::thread> threads;
     threads.reserve(7);
@@ -123,7 +123,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
                         g_dispatcher_running);
     });
 
-    spdlog::info("dispatcher: {} mock threads running, awaiting SIGTERM",
+    SPDLOG_INFO("dispatcher: {} mock threads running, awaiting SIGTERM",
                  threads.size());
 
     // Block until signal handler flips g_dispatcher_running.
@@ -139,7 +139,7 @@ inline int run_mock_dispatcher(const std::string& server_ip) noexcept {
     // just _exit() the entire child process.  Process death tears all
     // threads down deterministically — std::thread::detach() prevents
     // their destructors from std::terminate()ing.
-    spdlog::info("dispatcher: shutdown signaled, _exit(0)");
+    SPDLOG_INFO("dispatcher: shutdown signaled, _exit(0)");
     for (auto& t : threads) t.detach();
     ::_exit(0);
 }
