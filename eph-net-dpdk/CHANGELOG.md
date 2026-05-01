@@ -2,6 +2,86 @@
 
 ## [Unreleased]
 
+### Fixed — DPDK MP `~Platform()` no longer breaks secondary I/O
+
+The bug previously documented as "AWS ENA PMD multi-process secondary RX
+limitation" (see entry below) was **misdiagnosed**. The 100% confirmed
+mechanical root cause (commit `aa625b4d`) is an **eph DPDK MP teardown
+protocol violation**, not an ENA PMD limitation:
+
+* Primary's `~Platform()` unconditionally called `rte_eth_dev_stop`
+  (via `Impl::cleanup`) and `rte_eal_cleanup`, which on ENA dispatched
+  into `ena_com_io_queue_free` writing `io_cq->cdesc_addr.virt_addr =
+  NULL` into shared hugepage memory. Secondary processes
+  mid-`rte_eth_rx_burst` loaded that NULL and SIGSEGV'd in
+  `ena_com_get_next_rx_cdesc`.
+* Per the DPDK contract, port lifecycle is system-shared and primary
+  destruction ≠ all peers detached. ENA's behavior (primary stop tears
+  down all queues) is **correct**; eph's destructor was the violator.
+
+**Fix** (commits `0b3a4aaa` + `b4074d62` + `ef1bec67` + `3b66ee35`):
+
+1. `MpRegistryHandle` exposes new public `count_alive_procs() const`
+   and `is_last_alive_proc() const` (lock-free `acquire`-load scan
+   over `procs[].claimed`).
+2. `Platform::Impl::cleanup()` (primary path) gates `rte_eth_dev_stop`
+   / `rte_eth_dev_close` / `rte_mempool_free` on
+   `mp_registry->is_last_alive_proc()`. If peers are still attached,
+   skip global teardown and just zero local handles.
+3. `Platform::~Platform()` gates `rte_eal_cleanup` on the same
+   predicate (snapshot taken BEFORE `impl_.reset()` because
+   mp_registry's dtor clears self slot).
+4. `MpRegistryHandle::release_()` and (via the new
+   `IcmpDirectoryHandle::disable_memzone_free()`)
+   `IcmpDirectoryHandle::release_()` defer their `rte_memzone_free` so
+   peers' `hdr_` pointers don't dangle.
+5. `lat_*_dpdk` benchmarks all switched from hardcoded
+   `register_poller(0, ...)` to
+   `env.platform.effective_rx_queue_range().first` so they bind to
+   the queue actually owned by their MP slot.
+
+**Behavior change (not API breaking)**: in MP mode, primary's
+`~Platform()` does NOT physically stop / close / free shared port
+state. The port stays running until the **last** attached process
+exits. Single-process behavior is byte-equal (`mp_registry` is empty
+so both gates short-circuit to false).
+
+**Acceptance**:
+* `/tmp/ena_mp_rootcause.sh`: previously SIGSEGV; now NO CRASH on 3
+  back-to-back stress runs (47 k samples/s × 15 s ≈ 700 k each).
+* `/tmp/ena_mp_rootcause_primary_early.sh`: primary exits at 5 s,
+  secondary completes 30 s with ~1.4 M samples (semantic change
+  validated — port survives primary exit).
+* `/tmp/ena_mp_7proc_parallel.sh`: 7 lat_*_dpdk binaries running as 7
+  MP processes (queues 0-6) all PASS, total ~1.06 M samples in 10 s.
+  This realizes the user's original "竞争式多进程跑全套 dpdk bench"
+  goal that was previously thought infeasible on ENA.
+* 193 cases regression PASS across `test_mp_registry` (24, includes 5
+  new `MpRegistryAlive` cases), `test_dpdk_e2e` (14), `test_dpdk_platform`
+  (71), `test_dpdk_platform_mempool` (11), `test_dpdk_multiprocess_config`
+  (27), `test_mp_topology` (20), `test_mp_ipc` (12),
+  `test_dpdk_multi_port_platform` (9), `test_dpdk_drain` (5).
+
+**v1 trade-off (gate-only refcount)**: if all peers exit abnormally
+(`kill -9` / OOM) without releasing slots, the port is never stopped.
+Recovered by `scripts/dpdk-teardown.sh` between sessions. **v2
+candidate**: IPC heartbeat + reaper (deferred — see `TODO.md`).
+
+**Follow-up**: `docs/ena-mp-limitation.md` still frames the bug as an
+ENA PMD limitation. A separate doc plan will rewrite it as
+"DPDK MP teardown protocol guide" — see plan in
+`.claude/plans/lexical-wandering-cerf.md`.
+
+### Superseded — AWS ENA PMD multi-process secondary RX under traffic
+
+> **The "ENA PMD limitation" framing in the entry below has been
+> superseded by the fix above.** What was thought to be an ENA PMD
+> limitation is in fact an eph `~Platform()` protocol bug; ENA's
+> behavior is correct per the DPDK contract. The reproducer
+> (`/tmp/ena_mp_rootcause.sh`) and `repro_ena_mp_secondary_rxburst`
+> sentinel are kept as regression probes — both should now report no
+> crash on the patched code.
+
 ### Documented — AWS ENA PMD multi-process secondary RX under traffic
 
 Added `docs/ena-mp-limitation.md` documenting a precisely scoped ENA
