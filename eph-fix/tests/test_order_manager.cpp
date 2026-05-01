@@ -564,3 +564,105 @@ TEST(OrderManager, NegativeLastPxRejected)
     EXPECT_NEAR(order->filled_qty, 0.0, kEps);
     EXPECT_NEAR(order->leaves_qty, 100.0, kEps);
 }
+
+// ===========================================================================
+// submit() guards
+// ===========================================================================
+
+TEST(OrderManager, SubmitEmptyClOrdIdRejected)
+{
+    OrderManager mgr;
+    EXPECT_FALSE(mgr.submit("", "AAPL", '1', 100.0, 150.0))
+        << "empty cl_ord_id is unidentifiable — must be rejected before insert";
+    // No order should have been registered — get on any cl_ord_id (including
+    // empty) must return nullptr.
+    EXPECT_EQ(mgr.get(""), nullptr);
+    EXPECT_EQ(mgr.active_count(), 0u);
+}
+
+// ===========================================================================
+// on_cancel_reject (FIX MsgType=9) — entirely uncovered until now.
+// Drives the OrderCancelReject lifecycle path that prevents orders from
+// being stuck in PendingCancel forever when the exchange refuses the cancel.
+// ===========================================================================
+
+TEST(OrderManager, CancelRejectUnknownClOrdIdReturnsFalse)
+{
+    OrderManager mgr;
+    EXPECT_FALSE(mgr.on_cancel_reject("NEVER_EXISTED"));
+}
+
+TEST(OrderManager, CancelRejectEmptyClOrdIdReturnsFalse)
+{
+    OrderManager mgr;
+    EXPECT_FALSE(mgr.on_cancel_reject(""));
+}
+
+TEST(OrderManager, CancelRejectFromPendingCancelRevertsToNewWhenUnfilled)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORD_CR1", "AAPL", '1', 100.0, 150.0));
+    ASSERT_TRUE(mgr.mark_pending_cancel("ORD_CR1"));
+    ASSERT_EQ(mgr.get("ORD_CR1")->state, OrderState::PendingCancel);
+
+    // Exchange rejects the cancel — must revert (not stay stuck in PendingCancel)
+    EXPECT_TRUE(mgr.on_cancel_reject("ORD_CR1", /*cxl_rej_reason=*/0));
+
+    auto* order = mgr.get("ORD_CR1");
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(order->state, OrderState::New)
+        << "unfilled order's PendingCancel must revert to New, not PartiallyFilled";
+}
+
+TEST(OrderManager, CancelRejectFromPendingCancelRevertsToPartialWhenSomeFill)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORD_CR2", "MSFT", '1', 100.0, 200.0));
+
+    // Drive a partial fill first.
+    auto body = make_exec_report_body('1', '1',
+        "ORD_CR2", "EXCH", "EXEC", "MSFT", '1',
+        "200.00", "30", "200.00", "30", "70");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+    ASSERT_TRUE(mgr.on_execution_report(report));
+    ASSERT_NEAR(mgr.get("ORD_CR2")->filled_qty, 30.0, kEps);
+
+    // Now PendingCancel + cancel-reject ⇒ revert to PartiallyFilled.
+    ASSERT_TRUE(mgr.mark_pending_cancel("ORD_CR2"));
+    EXPECT_TRUE(mgr.on_cancel_reject("ORD_CR2"));
+    EXPECT_EQ(mgr.get("ORD_CR2")->state, OrderState::PartiallyFilled);
+}
+
+TEST(OrderManager, CancelRejectOnNonPendingCancelStateDoesNotMutate)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORD_CR3", "AAPL", '1', 50.0, 150.0));
+    // Order is in PendingNew, not PendingCancel.
+    auto state_before = mgr.get("ORD_CR3")->state;
+
+    EXPECT_TRUE(mgr.on_cancel_reject("ORD_CR3", 1));
+
+    // State must be unchanged — informational only.
+    EXPECT_EQ(mgr.get("ORD_CR3")->state, state_before);
+}
+
+TEST(OrderManager, CancelRejectOnTerminalOrderDoesNotMutate)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORD_CR4", "AAPL", '2', 10.0, 100.0));
+    auto body = make_exec_report_body('8', '8',  // ExecType=Rejected
+        "ORD_CR4", "EXCH", "EXEC", "AAPL", '2',
+        "0", "0", "0", "0", "0");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+    ASSERT_TRUE(mgr.on_execution_report(report));
+    ASSERT_EQ(mgr.get("ORD_CR4")->state, OrderState::Rejected);
+
+    // on_cancel_reject for a terminal order returns true (found) but
+    // must not mutate state.
+    EXPECT_TRUE(mgr.on_cancel_reject("ORD_CR4"));
+    EXPECT_EQ(mgr.get("ORD_CR4")->state, OrderState::Rejected);
+}
