@@ -120,17 +120,19 @@ streams against it.
 ```cpp
 namespace ed = eph::dpdk;
 
-// 1. NIC bring-up (once per process) — handles RSS / mempools / queues
+// 1. NIC bring-up (once per process) — handles RSS / mempools / queues.
+//    Per-stream IPs/MACs live on the StreamConfig::dpdk.tcp_low_level
+//    sub-struct (4-tuple + MAC), not on PlatformConfig — Platform owns
+//    the port, not any L3 identity.
 ed::PlatformConfig pcfg{
-    .port_id        = 0,
-    .nb_rx_queues   = 4,
-    .nb_tx_queues   = 4,
-    .enable_rss     = true,
-    .local_ip       = ed::Ipv4{10, 0, 0, 2},
-    .gateway_ip     = ed::Ipv4{10, 0, 0, 1},
-    .netmask        = ed::Ipv4{255, 255, 255, 0},
-    // mempool sizing: nb_mbufs >= 2 * (nb_rx_queues * rx_desc + nb_tx_queues * tx_desc)
-    .nb_mbufs       = 16384,
+    .port_id          = 0,
+    .nb_rx_queues     = 4,
+    .nb_tx_queues     = 4,
+    // Mempool sizing: pool size must be 2^k - 1 (eg. 4095, 8191, 16383).
+    // validate() enforces is_power_of_two_minus_one(mbuf_pool_size).
+    .mbuf_pool_size   = 16383,
+    .mbuf_cache_size  = 256,
+    .enable_rss       = true,
 };
 auto plat = ed::Platform::create(pcfg).value();  // Hard-fails on RSS
                                                   // bring-up failure (no
@@ -208,7 +210,7 @@ one call.
 | TCP_NODELAY                   | `StreamConfig::tcp_nodelay`          | `true` always         |
 | Reassembly buffer (kernel)    | `StreamConfig::reasm_capacity`       | 64KB low-lat, 256KB throughput |
 | UDP recv buffer (kernel)      | `UdpConfig::rcv_buf`                 | 16 MB for multicast bursts |
-| Mempool size (DPDK)           | `PlatformConfig::nb_mbufs`           | ≥ 2 × (rx_q × 1024 + tx_q × 1024) |
+| Mempool size (DPDK)           | `PlatformConfig::mbuf_pool_size`     | 2^k - 1 (e.g. 4095, 16383, 65535); ≥ 2 × (rx_q × rx_desc + tx_q × tx_desc) |
 | RSS queues (DPDK)             | `PlatformConfig::nb_rx_queues`       | 1 for single-symbol; 4–8 for fan-out |
 | TCP MSS (DPDK)                | `StreamConfig::dpdk.tcp_low_level.mss` | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
 | epoll burst (kernel)          | `PollerConfig::max_events_per_wait`  | 64 (default)          |
