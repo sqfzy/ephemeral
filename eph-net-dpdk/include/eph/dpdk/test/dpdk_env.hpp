@@ -54,6 +54,129 @@
 
 namespace eph::dpdk::test {
 
+/// @brief Parse an EAL-style lcore CSV ("0,1,2", "0-3", "0-1,4-5",
+/// or empty) into a 64-bit `lcore_mask` suitable for MpRegistry's
+/// v2 cross-process conflict scan.
+///
+/// The 64-bit cap is a hard schema limit: `ProcSlot::lcore_mask` is
+/// `uint64_t`, so lcore IDs >= 64 cannot be represented. This parser
+/// rejects any input that names an lcore outside `[0, 63]` with
+/// `std::unexpected` rather than silently dropping the bit — the
+/// silent-drop variant lets misuse slip past the conflict gate (two
+/// peers both pinning lcore 70 would get mask=0 each, no overlap,
+/// no rejection — exactly the silent-failure mode the v2 schema
+/// was added to close).
+///
+/// Input forms accepted:
+///   - empty string         → mask=0 (back-compat opt-out for callers
+///                            that haven't migrated to v2 tracking)
+///   - "0,1,2"              → mask=0x7
+///   - "0-3"                → mask=0xF
+///   - "0-1,4-5"            → mask=0x33
+///   - " 0 , 1 "            → mask=0x3 (whitespace tolerated)
+///
+/// Input forms rejected with std::unexpected (descriptive message):
+///   - "abc"                → malformed integer
+///   - "5-3"                → reversed range
+///   - "-3"                 → negative integer (strtoul wraps to a
+///                            huge unsigned, caught by >=64 check)
+///   - "64"                 → lcore ID exceeds schema cap
+///   - "60-65"              → range upper bound exceeds schema cap
+///
+/// Discovered via /pax --review LENS "production / MP mental model
+/// / silent misuse closure" round 3 on 2026-05-01: the previous
+/// inlined parser used `for (i = lo; i <= hi && i < 64; ++i)` which
+/// silently truncated any bit at or above index 64, defeating the
+/// v2 conflict gate on >64-core hosts. The hard-error policy here
+/// is the symmetric closure of that gap.
+[[nodiscard]] inline std::expected<uint64_t, std::string>
+parse_lcores_csv_to_mask(std::string_view lcores) noexcept {
+    constexpr unsigned long kMaxLcoreId = 63;
+    uint64_t mask = 0;
+    // Use a heap-free copy when the buffer is short — for the
+    // EAL-CSV case this is always tens of bytes max. We scan in
+    // place over `lcores.data()` with a manual index since strtoul
+    // wants a NUL-terminated buffer; copy into a fixed-size local.
+    // Bench callers pass strings up to ~64 chars; cap at 256.
+    if (lcores.size() > 256) {
+        return std::unexpected(
+            "parse_lcores_csv_to_mask: input too long (> 256 bytes)");
+    }
+    char buf[260];
+    std::memcpy(buf, lcores.data(), lcores.size());
+    buf[lcores.size()] = '\0';
+    const char* p = buf;
+    while (*p) {
+        while (*p == ' ' || *p == ',') ++p;
+        if (!*p) break;
+        char* end = nullptr;
+        // Reject a leading '-' explicitly so strtoul doesn't wrap a
+        // negative input into a huge unsigned that then evades the
+        // >=64 check below by satisfying `i < 64` being false (loop
+        // skipped, mask=0, no error). The end-pointer check that
+        // follows would NOT catch this because strtoul DID consume
+        // the digits; only the wrap-around damage is silent.
+        if (*p == '-' || *p == '+') {
+            return std::unexpected(
+                std::string{"parse_lcores_csv_to_mask: signed integer "
+                            "rejected at '"} + p + "' (lcore IDs must "
+                            "be non-negative)");
+        }
+        unsigned long lo = std::strtoul(p, &end, 10);
+        if (end == p) {
+            return std::unexpected(
+                std::string{"parse_lcores_csv_to_mask: malformed "
+                            "integer near '"} + p + "'");
+        }
+        if (lo > kMaxLcoreId) {
+            return std::unexpected(
+                std::string{"parse_lcores_csv_to_mask: lcore "} +
+                std::to_string(lo) +
+                " exceeds MpRegistry schema cap of " +
+                std::to_string(kMaxLcoreId) +
+                " (ProcSlot::lcore_mask is uint64_t — IDs >= 64 "
+                "cannot be tracked)");
+        }
+        unsigned long hi = lo;
+        p = end;
+        if (*p == '-') {
+            ++p;
+            // Same signed-integer guard for the upper bound.
+            if (*p == '-' || *p == '+') {
+                return std::unexpected(
+                    std::string{"parse_lcores_csv_to_mask: signed "
+                                "integer rejected at '"} + p + "' "
+                                "(range upper bound must be "
+                                "non-negative)");
+            }
+            hi = std::strtoul(p, &end, 10);
+            if (end == p) {
+                return std::unexpected(
+                    std::string{"parse_lcores_csv_to_mask: malformed "
+                                "range upper bound near '"} + p + "'");
+            }
+            if (hi < lo) {
+                return std::unexpected(
+                    std::string{"parse_lcores_csv_to_mask: reversed "
+                                "range "} + std::to_string(lo) + "-" +
+                    std::to_string(hi));
+            }
+            if (hi > kMaxLcoreId) {
+                return std::unexpected(
+                    std::string{"parse_lcores_csv_to_mask: range upper "
+                                "bound "} + std::to_string(hi) +
+                    " exceeds MpRegistry schema cap of " +
+                    std::to_string(kMaxLcoreId));
+            }
+            p = end;
+        }
+        for (unsigned long i = lo; i <= hi; ++i) {
+            mask |= (uint64_t{1} << i);
+        }
+    }
+    return mask;
+}
+
 /// Move-only bundle of all DPDK resources needed to drive a real-NIC
 /// scenario: Platform (which owns EAL — see `Platform::create_with_eal`),
 /// resolved src/dst/gw IPs (host byte order), local MAC, gateway MAC
@@ -225,41 +348,16 @@ struct DpdkBenchEnv {
         }
 
         // Parse lcore CSV into bitmask for cross-process conflict
-        // detection (MpRegistry v2). Supports "0,1,2", "0-3",
-        // "0-1,4-5". Bit N set ↔ this peer claims lcore N.
-        // Cap at 64 (MpTopology::kMaxProcs); lcore IDs >= 64 are
-        // silently dropped (matches the schema cap — most NICs
-        // run far fewer worker lcores than 64 per peer).
-        uint64_t self_lcore_mask = 0;
-        {
-            const char* p = lcores.c_str();
-            while (*p) {
-                while (*p == ' ' || *p == ',') ++p;
-                if (!*p) break;
-                char* end = nullptr;
-                unsigned long lo = std::strtoul(p, &end, 10);
-                if (end == p) {
-                    return std::unexpected(
-                        std::string{"DpdkBenchEnv::create_via_autojoin: "
-                                    "malformed lcores CSV near '"} + p + "'");
-                }
-                unsigned long hi = lo;
-                p = end;
-                if (*p == '-') {
-                    ++p;
-                    hi = std::strtoul(p, &end, 10);
-                    if (end == p || hi < lo) {
-                        return std::unexpected(
-                            std::string{"DpdkBenchEnv::create_via_autojoin: "
-                                        "malformed lcore range near '"} + p + "'");
-                    }
-                    p = end;
-                }
-                for (unsigned long i = lo; i <= hi && i < 64; ++i) {
-                    self_lcore_mask |= (uint64_t{1} << i);
-                }
-            }
+        // detection (MpRegistry v2). Delegated to the standalone
+        // helper above so the parser is unit-testable without EAL,
+        // and so the schema-cap guard (lcore IDs >= 64 hard-error
+        // rather than silent drop) lives in one place.
+        auto mask_r = parse_lcores_csv_to_mask(lcores);
+        if (!mask_r) {
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: " + mask_r.error());
         }
+        const uint64_t self_lcore_mask = *mask_r;
 
         // ── 1. Platform::join_dynamic ──────────────────────────────
         eph::dpdk::JoinDynamicConfig jd{};
