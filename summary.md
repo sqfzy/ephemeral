@@ -74,10 +74,21 @@ Both backends share a two-layer pull-model metrics path (details in
   `eph::utils::ConsoleSink`, or user-defined `PrometheusSink` / `OtelSink` / …).
   Applications choose the publish cadence (typical: 100 ms - 1 s).
 
-Six built-in counters: `kBytesSent` / `kBytesRecv` / `kFramesDecoded` /
-`kReasmOverflows` (TCP only) / `kCodecErrors` / `kTlsCrossRecordFrames` (DPDK
-TLS only). Adding a new counter is one enum entry + one name-table entry + N
-hot-path `inc_<M>()` calls; no template signature changes anywhere.
+25 built-in counters in `eph::net::StreamMetric` (see
+`eph-net/include/eph/net/stream_metrics.hpp`) span: shared TCP/UDP
+(`kBytesSent` / `kBytesRecv` / `kFramesDecoded` / `kReasmOverflows` /
+`kCodecErrors`); DPDK-TLS (`kTlsCrossRecordFrames` / `kTlsSendDesyncs` /
+`kTlsResumeCount` / `kTlsHandshakeCount`); DPDK-TCP session
+(`kTcpResetsReceived` / `kTcpOutOfOrderSegments` /
+`kTcpReorderBufferHits` / `kTcpReorderBufferOverflows` /
+`kTcpKeepaliveProbesSent` / `kTcpMssNegotiationApplied` /
+`kIcmpFragNeededReceived` / `kTcpDupSegments`); DPDK RX pipeline
+(`kRxSessionResets` / `kRxBadChecksum` / `kRxIpChecksumBad` /
+`kRxL4ChecksumBad` / `kPacketsDropped` / `kFragmentRejected`); and
+WS deflate (`kWsDeflateBytesIn` / `kWsDeflateBytesOut`). Per-backend
+N/A entries stay at 0. Adding a new counter is one enum entry + one
+name-table entry + N hot-path `inc_<M>()` calls; no template
+signature changes anywhere.
 
 ---
 
