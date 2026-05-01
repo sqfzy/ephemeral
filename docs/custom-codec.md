@@ -59,7 +59,7 @@ The codec can carry per-connection state between calls.
 |---|---|---|---|
 | `eph::codec::WsCodec` | stream | RFC 6455 | Auto-responds ping/close, reassembles fragments |
 | `eph::codec::RawStreamCodec` | stream | passthrough | Zero overhead, frames are whole buffers |
-| `eph::codec::LengthPrefixCodec` | stream | 2-byte BE length prefix | Max payload 65 535 bytes |
+| `eph::codec::LengthPrefixCodec` | stream | 4-byte BE length prefix | Max payload `kMaxFrameLen` = 16 MiB |
 | `eph::codec::RawDatagramCodec` | datagram | one frame per packet | Zero overhead |
 | `eph::codec::Mold64Codec` | datagram | NASDAQ MoldUDP64 | Sequence + gap detection, emits N ITCH frames per packet |
 
