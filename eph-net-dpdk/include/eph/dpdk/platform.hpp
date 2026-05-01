@@ -2613,7 +2613,9 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     if (file_prefix.empty()) {
         auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
         if (!san)
-            return std::unexpected(std::string{san.error().detail});
+            return std::unexpected(std::format(
+                "join_dynamic: cannot derive file_prefix from pci='{}': {}",
+                cfg.pci, san.error().detail));
         derived_prefix = std::string{"eph_"} + *san;
         file_prefix = derived_prefix;
         SPDLOG_LOGGER_INFO(log,
@@ -2643,8 +2645,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         }
     }
     if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
-        return std::unexpected(std::string{
-            "join_dynamic: max_procs out of range [1, kMaxProcs=64]"});
+        return std::unexpected(std::format(
+            "join_dynamic: max_procs={} out of range [1, kMaxProcs={}] "
+            "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
+            "queues_per_proc={})",
+            max_procs, MpTopology::kMaxProcs,
+            cfg.max_procs, nb_rx_queues, cfg.queues_per_proc));
 
     // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
     // Strings inside cfg are caller-owned; we copy them into a local
@@ -2671,9 +2677,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     //                pre-claimed registry slot, then we manually
     //                transfer EAL ownership into Impl).
     if (!cfg.pins.empty() && !cfg.lcores.empty())
-        return std::unexpected(std::string{
-            "join_dynamic: cfg.pins and cfg.lcores are mutually "
-            "exclusive (pick the typed-pin path or the raw-lcores path)"});
+        return std::unexpected(std::format(
+            "join_dynamic: cfg.pins (size={}) and cfg.lcores (size={}) are "
+            "mutually exclusive (pick the typed-pin path or the raw-lcores "
+            "path, not both)",
+            cfg.pins.size(), cfg.lcores.size()));
 
     std::vector<eph::utils::PinGuard> pin_guards;
     if (!cfg.pins.empty()) {
@@ -2763,9 +2771,13 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         if (!ro) {
             SPDLOG_LOGGER_ERROR(log,
                 "join_dynamic[secondary]: attach_secondary_readonly "
-                "failed: {}", ro.error().detail);
+                "failed (file_prefix='{}'): {}",
+                file_prefix, ro.error().detail);
             std::expected<Platform, std::string> err{
-                std::unexpected(std::string{ro.error().detail})};
+                std::unexpected(std::format(
+                    "join_dynamic[secondary]: attach_secondary_readonly "
+                    "failed (file_prefix='{}'): {}",
+                    file_prefix, ro.error().detail))};
             return rollback_eal_on_error(std::move(err));
         }
 
@@ -2776,9 +2788,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
                 "max_procs={} but primary's registry reports total_procs={} "
                 "— explicit caller value disagreed with primary",
                 max_procs, primary_total);
-            std::expected<Platform, std::string> err{std::unexpected(std::string{
-                "join_dynamic[secondary]: caller-supplied max_procs "
-                "disagrees with primary's registry value"})};
+            std::expected<Platform, std::string> err{std::unexpected(std::format(
+                "join_dynamic[secondary]: caller-supplied max_procs={} "
+                "disagrees with primary's registry value (total_procs={}); "
+                "leave max_procs at default (0) to inherit from primary",
+                max_procs, primary_total))};
             return rollback_eal_on_error(std::move(err));
         }
         // Adopt primary's value (zero-consensus path: caller didn't
@@ -2808,10 +2822,14 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         auto idx_r = ro->try_claim_free_slot();
         if (!idx_r) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: try_claim_free_slot failed: {}",
-                idx_r.error().detail);
+                "join_dynamic[secondary]: try_claim_free_slot failed "
+                "(file_prefix='{}', primary_total_procs={}): {}",
+                file_prefix, primary_total, idx_r.error().detail);
             std::expected<Platform, std::string> err{
-                std::unexpected(std::string{idx_r.error().detail})};
+                std::unexpected(std::format(
+                    "join_dynamic[secondary]: try_claim_free_slot failed "
+                    "(file_prefix='{}', primary_total_procs={}): {}",
+                    file_prefix, primary_total, idx_r.error().detail))};
             return rollback_eal_on_error(std::move(err));
         }
         const uint8_t self_idx = *idx_r;
@@ -2837,9 +2855,13 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         "join_dynamic: rte_eal_process_type returned invalid role={}",
         static_cast<int>(role));
     [[maybe_unused]] bool ok = eal_cleanup();
-    return std::unexpected(std::string{
-        "join_dynamic: rte_eal_process_type returned an invalid role "
-        "(EAL not properly initialized)"});
+    return std::unexpected(std::format(
+        "join_dynamic: rte_eal_process_type returned invalid role={} "
+        "(expected RTE_PROC_PRIMARY={} or RTE_PROC_SECONDARY={}; EAL "
+        "not properly initialized)",
+        static_cast<int>(role),
+        static_cast<int>(RTE_PROC_PRIMARY),
+        static_cast<int>(RTE_PROC_SECONDARY)));
 }
 
 // ─────────────────────────────────────────────────────────────────────
