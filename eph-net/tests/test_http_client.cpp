@@ -563,3 +563,90 @@ TEST_F(ClientFixture, TooLargeBodyRejected) {
     ASSERT_FALSE(rsp.has_value());
     EXPECT_EQ(rsp.error().code, eph::core::Error::CodecOverflow);
 }
+
+// =============================================================================
+// Pre-condition rejections — InvalidConfig / Disconnected before any I/O.
+//
+// These guards short-circuit `request()` before reading the wire so they
+// can be exercised without a real server. The existing fixture-driven
+// happy-path tests don't hit them; lock them so a refactor that tries to
+// "simplify" by removing a guard surfaces immediately. Each test sets up
+// just enough fixture state to reach the specific guard.
+// =============================================================================
+
+TEST_F(ClientFixture, RequestEmptyMethodRejected) {
+    setup_with_handler([](std::string_view) -> std::string { return ""; });
+
+    Client::Request req{
+        .method  = "",  // ← empty
+        .path    = "/",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{rsp.error().detail}.find("method and path"),
+              std::string_view::npos)
+        << "detail: " << rsp.error().detail;
+}
+
+TEST_F(ClientFixture, RequestEmptyPathRejected) {
+    setup_with_handler([](std::string_view) -> std::string { return ""; });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "",  // ← empty
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST_F(ClientFixture, RequestNonPositiveTimeoutRejected) {
+    setup_with_handler([](std::string_view) -> std::string { return ""; });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    // Zero
+    auto rsp_zero = client->request(req, poll_fn(),
+                                    std::chrono::milliseconds{0});
+    ASSERT_FALSE(rsp_zero.has_value());
+    EXPECT_EQ(rsp_zero.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{rsp_zero.error().detail}.find("timeout must be > 0"),
+              std::string_view::npos)
+        << "detail: " << rsp_zero.error().detail;
+
+    // Negative — explicitly representable in chrono::milliseconds as a
+    // signed type; the guard must catch it.
+    auto rsp_neg = client->request(req, poll_fn(),
+                                   std::chrono::milliseconds{-1});
+    ASSERT_FALSE(rsp_neg.has_value());
+    EXPECT_EQ(rsp_neg.error().code, eph::core::Error::InvalidConfig);
+}
+
+TEST_F(ClientFixture, RequestNullPollFnRejected) {
+    setup_with_handler([](std::string_view) -> std::string { return ""; });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, /*poll_fn=*/{},
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{rsp.error().detail}.find("poll_fn is null"),
+              std::string_view::npos)
+        << "detail: " << rsp.error().detail;
+}
