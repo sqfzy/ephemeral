@@ -696,18 +696,26 @@ public:
         // peer slots' lcore_masks at 0 because it doesn't know peers'
         // lcore plans. The pre-CAS conflict scan (above) already
         // verified no overlap with currently-claimed peers.
-        // Use a release fence so subsequent peers' acquire-loads in
-        // their own conflict scan / liveness probe see these writes.
-        // (lcore_mask + pid are plain types, not atomic — but
-        // single-writer-per-slot semantics make this safe; the
-        // claimed.store(release) at slot release time provides
-        // happens-before for any reader that ACQUIRE-loads claimed
-        // first, then reads these fields.)
+        //
+        // Memory-ordering contract (round-2 fix, 2026-05-01):
+        // The CAS above (acq_rel) makes claimed=1 visible to readers,
+        // but its release-side only orders writes BEFORE it. The plain
+        // stores below happen AFTER the CAS, so a peer's acquire-load
+        // of claimed=1 does NOT synchronize-with these stores — on
+        // weakly-ordered cores (AArch64 / POWER) the reader could see
+        // claimed=1 paired with stale lcore_mask=0, silently bypassing
+        // the v2 cross-process conflict gate. The redundant
+        // `claimed.store(1, release)` AFTER the writes is a no-op
+        // value-wise (slot is already 1) but provides the release-store
+        // partner for future readers' acquire-loads on `claimed`.
         hdr->procs[topo.self_index].pid = static_cast<int32_t>(::getpid());
         if (wanted.lcore_mask != 0) {
             hdr->procs[topo.self_index].lcore_mask = wanted.lcore_mask;
         }
-        std::atomic_thread_fence(std::memory_order_release);
+        // Re-publish claimed=1 with release semantics so readers'
+        // acquire-load(claimed)==1 happens-after the metadata writes.
+        hdr->procs[topo.self_index].claimed.store(
+            1, std::memory_order_release);
 
         SPDLOG_INFO(
             "MpRegistry: secondary attached to '{}' (self_index={} "
@@ -857,6 +865,15 @@ public:
                 // pass-2 clear at the kill-9 reclaim branch below.
                 clear_slot_metadata_(hdr_->procs[i]);
                 hdr_->procs[i].pid = static_cast<int32_t>(::getpid());
+                // Round-2 fix: re-publish claimed=1 with release
+                // semantics so a peer's acquire-load on `claimed`
+                // happens-after the plain stores above. Without this
+                // re-store, the CAS's release-side only orders writes
+                // BEFORE itself; the metadata writes happen AFTER the
+                // CAS and would not synchronize with future readers
+                // on weakly-ordered cores.
+                hdr_->procs[i].claimed.store(
+                    1, std::memory_order_release);
                 SPDLOG_INFO(
                     "MpRegistry: try_claim_free_slot claimed self_index={} "
                     "(of total_procs={}, pid={})",
@@ -895,6 +912,13 @@ public:
                 clear_slot_metadata_(hdr_->procs[i]);
                 hdr_->procs[i].pid = static_cast<int32_t>(::getpid());
                 self_index_ = static_cast<uint8_t>(i);
+                // Round-2 fix: re-publish claimed=1 with release
+                // semantics — same rationale as pass-1 above (the
+                // CAS's release-side only orders prior writes; the
+                // metadata stores above need their own release to
+                // synchronize with future readers' acquire-loads).
+                hdr_->procs[i].claimed.store(
+                    1, std::memory_order_release);
                 SPDLOG_WARN(
                     "MpRegistry: try_claim_free_slot reclaimed stale "
                     "self_index={} (previous owner pid={} dead — kill -9 "
@@ -930,24 +954,42 @@ private:
     /// claimant of the same `self_index` — clearing them would force
     /// each new claimant to re-publish identical values for no benefit.
     ///
-    /// **Happens-before contract**: callers MUST invoke this BEFORE
-    /// the `claimed.store(0, release)` that signals "slot is free", or
-    /// BEFORE the `claimed.compare_exchange_*(_, 1, acq_rel)` that
-    /// signals "slot is now mine". The release/acquire pair on
-    /// `claimed` is what publishes these plain-store writes to other
-    /// processes; if the order is inverted, a peer doing
-    /// `claimed.load(acquire)` could observe `claimed=0` (or its own
-    /// CAS-1 winning) and then read stale `pid`/`lcore_mask` from the
-    /// previous owner, defeating the v2 cross-process lcore conflict
-    /// scan and the kill-9 stale-slot reclaim probe.
+    /// **Happens-before contract** (two distinct sides):
+    ///
+    /// *Release side* (slot becomes free): callers MUST invoke this
+    /// BEFORE the `claimed.store(0, release)` that signals "slot is
+    /// free". A reader that subsequently sees `claimed=0` via
+    /// acquire-load is guaranteed to see the cleared metadata —
+    /// pristine slot semantics.
+    ///
+    /// *Claim side* (slot becomes occupied): the `claimed.compare_
+    /// exchange_*(_, 1, acq_rel)` makes `claimed=1` visible, but its
+    /// release-side only orders writes BEFORE itself. Plain stores of
+    /// `pid`/`lcore_mask` that happen AFTER the CAS need their own
+    /// release-store partner to synchronize with future readers —
+    /// otherwise a peer doing `claimed.load(acquire)==1` followed by
+    /// a plain read of `lcore_mask` could see stale data on weakly-
+    /// ordered cores (AArch64 / POWER). Each claim site therefore
+    /// follows: CAS(0→1, acq_rel) → clear_slot_metadata_(...) →
+    /// pid/lcore_mask plain stores → claimed.store(1, release). The
+    /// final store is a no-op value-wise (slot is already 1) but
+    /// provides the release-store partner for future acquire-loads.
     ///
     /// Discovered via /pax --review LENS "production / MP mental model
-    /// / silent misuse closure" on 2026-05-01: the previous code
-    /// missed the metadata clear in two of three release/claim sites
-    /// (graceful `release_` + `try_claim_free_slot` pass-1), so a
-    /// benign release+reclaim cycle would let the previous owner's
-    /// lcore_mask survive and trip attach_secondary's conflict scan
-    /// against a non-existent peer.
+    /// / silent misuse closure" on 2026-05-01:
+    ///   * Round 1 fix (release side): the previous code missed the
+    ///     metadata clear in two of three release/claim sites
+    ///     (graceful `release_` + `try_claim_free_slot` pass-1), so a
+    ///     benign release+reclaim cycle would let the previous owner's
+    ///     lcore_mask survive and trip attach_secondary's conflict
+    ///     scan against a non-existent peer.
+    ///   * Round 2 fix (claim side): plain stores of pid/lcore_mask
+    ///     after the CAS-claim were not happens-before any reader's
+    ///     acquire-load on `claimed`; the redundant
+    ///     claimed.store(1, release) closes the synchronization gap.
+    ///     The previous orphan `std::atomic_thread_fence(release)` in
+    ///     attach_secondary was a no-op (no subsequent atomic store
+    ///     to pair with) and has been removed.
     static void clear_slot_metadata_(ProcSlot& s) noexcept {
         s.pid        = 0;
         s.lcore_mask = 0;
