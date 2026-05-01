@@ -126,7 +126,7 @@ TEST(DpdkMpDynamicTcpHandshakeSecondary, ConnectsAndEchoes) {
         ASSERT_TRUE(parse_mac(line, gw_mac))
             << "could not parse gw_mac from '" << line << "'";
     }
-    spdlog::info("secondary: queue range [{},{}), using gw_mac from primary",
+    SPDLOG_INFO("secondary: queue range [{},{}), using gw_mac from primary",
                  qlo, qhi);
 
     // ── 4. Poller on secondary's owned queue ──────────────────────────
@@ -177,7 +177,7 @@ TEST(DpdkMpDynamicTcpHandshakeSecondary, ConnectsAndEchoes) {
         << "secondary did not receive echo within 5s — this IS the "
            "RSS-blind connect bug; check tcp_stream.hpp::create_and_attach";
 
-    spdlog::info("secondary: handshake + echo OK ({} bytes)", rx_bytes);
+    SPDLOG_INFO("secondary: handshake + echo OK ({} bytes)", rx_bytes);
 
     stream.reset();
 }

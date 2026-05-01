@@ -156,7 +156,7 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
     // ── 3. Local MAC + IPs ─────────────────────────────────────────────
     rte_ether_addr src_mac{};
     ASSERT_EQ(rte_eth_macaddr_get(port_id, &src_mac), 0);
-    spdlog::info("primary: local MAC {}", mac_to_hex(src_mac));
+    SPDLOG_INFO("primary: local MAC {}", mac_to_hex(src_mac));
 
     const uint32_t src_ip = parse_ip_host_order(bcfg.networking.client_ip);
     const uint32_t dst_ip = parse_ip_host_order(bcfg.networking.server_ip);
@@ -174,7 +174,7 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
         FAIL() << "arp::resolve: " << gw_mac_r.error();
     }
     rte_ether_addr gw_mac = *gw_mac_r;
-    spdlog::info("primary: gateway MAC {}", mac_to_hex(gw_mac));
+    SPDLOG_INFO("primary: gateway MAC {}", mac_to_hex(gw_mac));
 
     // Publish gw_mac for secondary (it can't ARP-resolve from queue 1).
     {
@@ -250,7 +250,7 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
         << "primary did not receive echo within 5s — RSS-blind connect "
            "regression?";
 
-    spdlog::info("primary: handshake + echo OK ({} bytes)", rx_bytes);
+    SPDLOG_INFO("primary: handshake + echo OK ({} bytes)", rx_bytes);
 
     // ── 9. Hold so secondary can finish its own connect ────────────────
     std::this_thread::sleep_for(std::chrono::seconds(hold_seconds));

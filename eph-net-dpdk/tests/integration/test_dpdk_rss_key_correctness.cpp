@@ -137,7 +137,7 @@ public:
         }
         pci_bdf_ = pci;
         ready_ = true;
-        spdlog::info("RssKeyEnv: ready (NIC_B PCI={})", pci_bdf_);
+        SPDLOG_INFO("RssKeyEnv: ready (NIC_B PCI={})", pci_bdf_);
     }
 
     void TearDown() override {
@@ -293,7 +293,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         auto plat_r = eph::dpdk::Platform::create(pcfg);
         if (!plat_r) {
             // ENA refused both update and probe → not the path under test.
-            spdlog::warn("Platform::create failed (probe also rejected?): {}",
+            SPDLOG_WARN("Platform::create failed (probe also rejected?): {}",
                          plat_r.error());
             GTEST_SKIP() << "Platform multi-queue + RSS cannot bring up: "
                          << plat_r.error();
@@ -312,7 +312,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
                             "targets the probe path (typically ENA).";
             return;
         }
-        spdlog::info("RssKeyCorrectness: probe path active "
+        SPDLOG_INFO("RssKeyCorrectness: probe path active "
                      "(dispatch_mode={}, nb_rx_queues={})",
                      eph::net::dpdk::rx_dispatch_mode_name(plat.dispatch_mode()),
                      kNbQueues);
@@ -323,7 +323,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         auto& state = *state_r;
         ASSERT_GT(state.key_len, 0u)
             << "probed key_len=0 — Platform::create should have rejected this";
-        spdlog::info("RssKeyCorrectness: probed key_len={} reta_size={}",
+        SPDLOG_INFO("RssKeyCorrectness: probed key_len={} reta_size={}",
                      state.key_len, state.reta_size);
 
         // ── 3. ARP gateway, parse IPs, fetch local MAC ──────────────
@@ -415,14 +415,14 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         }
 
         // ── 6. Compare and report ────────────────────────────────────
-        spdlog::info("RssKeyCorrectness results "
+        SPDLOG_INFO("RssKeyCorrectness results "
                      "({} of {} replies received within {}s):",
                      replies_received, kProbeCount, kDeadline.count());
-        spdlog::info("  src_port | predicted_q | observed_q | "
+        SPDLOG_INFO("  src_port | predicted_q | observed_q | "
                      "predicted_hash | observed_hash | rss_flag");
         int hash_matches = 0, queue_matches = 0;
         for (const auto& p : probes) {
-            spdlog::info("    {:5} | {:^11} | {:^10} | "
+            SPDLOG_INFO("    {:5} | {:^11} | {:^10} | "
                          "    {:#010x} |     {:#010x} | {}",
                          p.src_port,
                          p.predicted_queue,
@@ -464,7 +464,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
         // the EXPECT_EQ above would already have failed loudly.
         for (const auto& p : probes) {
             if (p.received && !p.rss_hash_flag_set) {
-                spdlog::warn("src_port={} mbuf had RSS hash valid flag clear "
+                SPDLOG_WARN("src_port={} mbuf had RSS hash valid flag clear "
                              "(observed_hash={:#010x}) — driver may not be "
                              "populating mbuf->hash.rss; verdict "
                              "uses possibly-zero hash.",
@@ -617,11 +617,11 @@ TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
             }
         }
 
-        spdlog::info("FindSrcPortForQueue → echo-reply queue mapping:");
-        spdlog::info("  target_q | found_sp | observed_q");
+        SPDLOG_INFO("FindSrcPortForQueue → echo-reply queue mapping:");
+        SPDLOG_INFO("  target_q | found_sp | observed_q");
         int correct = 0;
         for (const auto& p : pins) {
-            spdlog::info("    {:^8} | {:^8} | {:^10}",
+            SPDLOG_INFO("    {:^8} | {:^8} | {:^10}",
                          p.target_queue, p.found_src_port,
                          p.received ? std::to_string(p.observed_queue) : "—");
             if (p.received && p.observed_queue == p.target_queue) ++correct;
