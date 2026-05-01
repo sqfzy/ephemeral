@@ -49,32 +49,35 @@ one via `xmake build lat_tcp`.
 
 ## Configuration
 
-Every parameter lives in [`bench.conf`](./bench.conf). Both the C++ client and
-the Python mock read this single file. Layout:
+Every parameter lives in [`config.toml`](./config.toml). Both the C++ client
+and the C++ mockex binary read this single file. Layout:
 
-```ini
-# Lowercase globals (shared between all scenarios + mocks)
-mock_nic       = ens34
-mock_ip        = 10.0.0.1
-client_nic     = ens35
-client_ip      = 10.0.0.2
+```toml
+# Machine-level layout (shared between all scenarios + mockex)
+[networking]
+nic_a      = "ens34"
+nic_b      = "ens35"
+server_ip  = "172.31.47.238"
+client_ip  = "172.31.38.174"
+
+[measurement]
 warmup_samples = 1000
 
-# Per-scenario INI section
-[lat_tcp]
+# Per-scenario subtable
+[scenarios.lat_tcp]
 port             = 20000
 payload_size     = 256
-duration_seconds = 10
+duration_seconds = 300
 ```
 
-Every scenario binary reads `[lat_<scenario>]` plus the globals. Override the
-config file path per-run with `BENCH_CONFIG=/path/to/other.conf`, or edit
-`bench.conf` in place.
+Every scenario binary reads `[scenarios.lat_<name>]` plus the globals.
+Override the config file path per-run with `BENCH_CONFIG=/path/to/other.toml`
+or `--config /path/to/other.toml`, or edit `config.toml` in place.
 
 To change TCP payload size to 1024 bytes:
 
-```ini
-[lat_tcp]
+```toml
+[scenarios.lat_tcp]
 payload_size = 1024
 ```
 
@@ -82,7 +85,7 @@ payload_size = 1024
 
 The mock is the C++23 binary `benchmarks/mockex/mockex`, header-only
 per-scenario handlers plus a single `src/main.cpp`. Every scenario reads
-`[lat_<name>]` from `bench.conf` (same parser as the client) and exposes
+`[scenarios.lat_<name>]` from `config.toml` (same parser as the client) and exposes
 itself through `mockex --scenario <name>`. See
 `benchmarks/mockex/README.md` for the full design — the short version:
 
@@ -97,7 +100,7 @@ itself through `mockex --scenario <name>`. See
 - **Shared clock** — both mock and client read `bench::monotonic_raw_ns()`
   (CLOCK_MONOTONIC_RAW). Same epoch, same toolchain, no cross-language jitter.
 - **Shared config parser** — `bench::ScenarioConfig` reads the same
-  `bench.conf` the client reads.
+  `config.toml` the client reads.
 
 Rate is now governed by the MMPP-2 parameters in each scenario's
 `mockex_params` INI — see `benchmarks/mockex/README.md` for the refit
@@ -133,7 +136,7 @@ hosts.
 ```bash
 ./build/linux/arm64/release/mockex \
     --scenario tcp \
-    --config benchmarks/latency/bench.conf
+    --config benchmarks/latency/config.toml
 ```
 
 The mock logs progress to stderr via spdlog and can be killed with
@@ -153,11 +156,11 @@ The mock logs progress to stderr via spdlog and can be killed with
 
 ```
 benchmarks/latency/
-├── bench.conf           single source of tuning knobs
+├── config.toml          single source of tuning knobs
 ├── lat                  dispatcher script (NIC state + exec binary)
 ├── xmake.lua            auto-globs lat_*.cpp into kernel + _dpdk targets
 ├── core/
-│   ├── config.hpp       BenchConfig + ScenarioConfig INI parser
+│   ├── config.hpp       BenchConfig + ScenarioConfig TOML parser
 │   ├── measurement.hpp  monotonic_raw_ns, signal handler, print_report
 │   └── json_scan.hpp    minimal JSON field scanner (no eph-json dep)
 ├── (see ../mockex/ for the mock binary and its fixtures/tools)

@@ -115,7 +115,7 @@ SCENARIOS:
 
 OPTIONS:
   --dpdk              use the DPDK client variant (NIC_B → vfio-pci)
-  --config <path>     override bench.conf path (default: $DEFAULT_CONFIG)
+  --config <path>     override config.toml path (default: $DEFAULT_CONFIG)
   -h, --help          show this help
 
 Kernel mode runs the client inside network namespace \`bench_ns\` so that
