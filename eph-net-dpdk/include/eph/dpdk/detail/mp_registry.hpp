@@ -820,6 +820,31 @@ public:
                 "one this attach_secondary_readonly was called with"});
         }
 
+        // total_procs sanity. Storage is uint32_t but the design contract
+        // is `[1, MpTopology::kMaxProcs]` (the fixed-size `procs[]` array
+        // bound). Past magic+version checks the header is "ours" — but a
+        // future-schema primary that bumped layout fields BEFORE bumping
+        // version, or a corrupted hugepage segment, could let an extreme
+        // value slip through. Without this guard the value silently
+        // truncates to uint8_t in `Platform::attach` /
+        // `join_dynamic[secondary]` and surfaces as an opaque
+        // "MpTopology::valid() failed" three layers up.
+        if (hdr->total_procs == 0
+                || hdr->total_procs > MpTopology::kMaxProcs) {
+            SPDLOG_ERROR(
+                "MpRegistry: header total_procs={} is out of contract "
+                "range [1, kMaxProcs={}] on '{}' — registry corruption "
+                "or undeclared schema skew (magic+version matched but "
+                "the fixed-size procs[] array cannot represent this "
+                "value); read-only attach refused",
+                hdr->total_procs, MpTopology::kMaxProcs, name);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "MpRegistry: header total_procs out of contract range "
+                "[1, kMaxProcs] (registry corruption or undeclared "
+                "schema skew despite magic+version match)"});
+        }
+
         SPDLOG_INFO(
             "MpRegistry: attached read-only to '{}' "
             "(magic=0x{:08x} ver={} total_procs={})",

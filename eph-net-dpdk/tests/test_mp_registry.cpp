@@ -160,6 +160,59 @@ TEST(MpRegistrySchema, V2RegistryRejectedByV3SecondaryAttach) {
     hdr->version = kMpRegistryVersion;
 }
 
+TEST(MpRegistrySchema, TotalProcsExceedsKMaxProcs_ReadOnlyAttachRejected) {
+    // Defensive guard: hdr->total_procs storage is uint32_t but the
+    // contract is `[1, MpTopology::kMaxProcs]` (the fixed-size procs[]
+    // array bound). A registry that passes magic+version but reports
+    // total_procs > kMaxProcs (corruption, schema skew where layout
+    // changed before version bumped, or a hand-mangled hugepage segment)
+    // would otherwise silently truncate to uint8_t at the upper-layer
+    // cast in `Platform::attach` / `join_dynamic[secondary]` and surface
+    // as an opaque "MpTopology::valid() failed" three layers up. Pin
+    // the guard down so a future refactor can't quietly remove it.
+    auto p = MpRegistryHandle::create_primary("rgtpoom", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    ASSERT_NE(hdr, nullptr);
+    const uint32_t saved_total = hdr->total_procs;
+
+    // Out-of-band: claim there are more procs than the procs[] array can hold.
+    hdr->total_procs = static_cast<uint32_t>(MpTopology::kMaxProcs) + 7u;
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgtpoom");
+    ASSERT_FALSE(ro.has_value());
+    EXPECT_EQ(ro.error().code, Error::InvalidConfig);
+    EXPECT_NE(std::strstr(ro.error().detail, "total_procs"), nullptr)
+        << "actual: " << ro.error().detail;
+    EXPECT_NE(std::strstr(ro.error().detail, "kMaxProcs"), nullptr)
+        << "actual: " << ro.error().detail;
+
+    // Restore so destructor cleanup doesn't trip on a malformed header.
+    hdr->total_procs = saved_total;
+}
+
+TEST(MpRegistrySchema, TotalProcsZero_ReadOnlyAttachRejected) {
+    // Symmetric edge: total_procs=0 is also out of contract (registry
+    // claims to be live but has no slots). Same cast hazard, same guard.
+    auto p = MpRegistryHandle::create_primary("rgtpzero", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    ASSERT_NE(hdr, nullptr);
+    const uint32_t saved_total = hdr->total_procs;
+
+    hdr->total_procs = 0;
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgtpzero");
+    ASSERT_FALSE(ro.has_value());
+    EXPECT_EQ(ro.error().code, Error::InvalidConfig);
+    EXPECT_NE(std::strstr(ro.error().detail, "total_procs"), nullptr)
+        << "actual: " << ro.error().detail;
+
+    hdr->total_procs = saved_total;
+}
+
 TEST(MpRegistry, AttachSecondary_LookupMatchesPrimary) {
     auto p = MpRegistryHandle::create_primary("rgsec", make_topo(0));
     ASSERT_TRUE(p.has_value()) << p.error();
