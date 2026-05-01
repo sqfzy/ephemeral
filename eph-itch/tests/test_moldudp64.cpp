@@ -346,3 +346,63 @@ TEST(MoldUDP64, integration_multiple_itch_messages) {
     EXPECT_EQ(event_codes[0], 'O');
     EXPECT_EQ(event_codes[1], 'C');
 }
+
+// ---------------------------------------------------------------------------
+// Defensive boundary cases — guards added in moldudp64.hpp lines 153 / 162
+// were previously only exercised by happy paths, never by their own
+// rejection branch. Both surface as "delivered == 0" without a callback fire.
+// ---------------------------------------------------------------------------
+
+TEST(MoldUDP64, sequence_number_overflow_drops_packet) {
+    // hdr.sequence_number > UINT64_MAX - message_count → reject.
+    // count=5 with seq = UINT64_MAX - 3 would wrap on i=4.
+    std::vector<uint8_t> pkt;
+    build_header(pkt, "OVRFLW", UINT64_MAX - 3, 5);
+    // Append 5 zero-length messages so the buffer would otherwise be valid.
+    for (int i = 0; i < 5; ++i) append_message(pkt, nullptr, 0);
+
+    bool fired = false;
+    size_t delivered = eph::itch::parse_moldudp64(
+        pkt.data(), pkt.size(),
+        [&](const uint8_t*, uint16_t, uint64_t) { fired = true; });
+
+    EXPECT_EQ(delivered, 0u);
+    EXPECT_FALSE(fired) << "callback must not fire on near-overflow";
+}
+
+TEST(MoldUDP64, early_reject_buffer_too_small_for_count) {
+    // Header advertises 100 messages but the buffer carries only the header
+    // (20B). The early-reject branch (len < kHeaderLen + 2*count) fires
+    // before any per-message processing, so delivered == 0.
+    std::vector<uint8_t> pkt;
+    build_header(pkt, "EARLY", 1, 100);
+    // No messages appended — buffer stays at 20 bytes.
+
+    bool fired = false;
+    size_t delivered = eph::itch::parse_moldudp64(
+        pkt.data(), pkt.size(),
+        [&](const uint8_t*, uint16_t, uint64_t) { fired = true; });
+
+    EXPECT_EQ(delivered, 0u);
+    EXPECT_FALSE(fired) << "early-reject must skip the loop entirely";
+}
+
+TEST(MoldUDP64, sequence_number_at_overflow_boundary_succeeds) {
+    // The guard rejects seq > UINT64_MAX - count. The maximum accepted seq is
+    // therefore UINT64_MAX - count exactly, with last delivered seq + (count-1)
+    // = UINT64_MAX - 1. (The guard is one slot more conservative than strict
+    // overflow — pinning that as a documented contract here.)
+    constexpr uint16_t count = 3;
+    std::vector<uint8_t> pkt;
+    build_header(pkt, "BOUND", UINT64_MAX - count, count);
+    for (uint16_t i = 0; i < count; ++i) append_message(pkt, nullptr, 0);
+
+    std::vector<uint64_t> seqs;
+    size_t delivered = eph::itch::parse_moldudp64(
+        pkt.data(), pkt.size(),
+        [&](const uint8_t*, uint16_t, uint64_t s) { seqs.push_back(s); });
+
+    EXPECT_EQ(delivered, count);
+    ASSERT_EQ(seqs.size(), count);
+    EXPECT_EQ(seqs.back(), UINT64_MAX - 1);
+}
