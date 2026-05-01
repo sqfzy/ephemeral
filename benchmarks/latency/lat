@@ -186,18 +186,28 @@ BINARY="$BUILD_DIR/$BIN_NAME"
 conf_get() {
     local key="$1" default="${2:-}"
     local val
+    # NOTE: do NOT use `split($0, a, "=")` here. awk split() splits on
+    # EVERY occurrence of the separator, so a value like
+    # `endpoint = "wss://host/path?streams=btc"` would be silently
+    # truncated to `wss://host/path?streams` (a[2] only captures up to
+    # the second `=`). Use index()+substr() to split on the FIRST `=`
+    # only, preserving any `=` inside the value. This affects the
+    # `endpoint` key (typical exchange WS URLs carry `?key=val&...`)
+    # and any future config that allows `=` inside values.
     val=$(awk -v k="$key" '
         /^[[:space:]]*#/ { next }
         /^[[:space:]]*$/ { next }
         {
             sub(/#.*$/, "")
-            split($0, a, "=")
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
-            if (a[1] == k || toupper(a[1]) == k) {
-                v = a[2]
-                gsub(/^"|"$/, "", v)
-                print v; exit
+            idx = index($0, "=")
+            if (idx == 0) next
+            akey = substr($0, 1, idx - 1)
+            aval = substr($0, idx + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", akey)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", aval)
+            if (akey == k || toupper(akey) == k) {
+                gsub(/^"|"$/, "", aval)
+                print aval; exit
             }
         }
     ' "$CONFIG_FILE")
@@ -209,19 +219,26 @@ conf_get() {
 conf_get_section() {
     local section="$1" key="$2" default="${3:-}"
     local val
+    # See conf_get() above for why we use index()+substr() instead of
+    # split($0, a, "="). This function is the [section]-scoped variant
+    # used for `endpoint = "wss://...?streams=btc"` detection — the
+    # exact case where split-on-every-= silently truncates URLs with
+    # query strings.
     val=$(awk -v sec1="[$section]" -v sec2="[scenarios.$section]" -v k="$key" '
         $0 == sec1 || $0 == sec2 { in_sec = 1; next }
         /^\[/                    { in_sec = 0; next }
         /^[[:space:]]*#/         { next }
         in_sec {
             sub(/#.*$/, "")
-            split($0, a, "=")
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[1])
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", a[2])
-            if (a[1] == k) {
-                v = a[2]
-                gsub(/^"|"$/, "", v)
-                print v; exit
+            idx = index($0, "=")
+            if (idx == 0) next
+            akey = substr($0, 1, idx - 1)
+            aval = substr($0, idx + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", akey)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", aval)
+            if (akey == k) {
+                gsub(/^"|"$/, "", aval)
+                print aval; exit
             }
         }
     ' "$CONFIG_FILE")
