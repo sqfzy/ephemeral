@@ -427,20 +427,29 @@ select_dns_src_port_with_state(
 parse_dns_response(const uint8_t* dns_data, size_t dns_len,
                    uint16_t tx_id) noexcept {
     if (dns_len < kDnsHeaderLen) {
-        return std::unexpected("DNS response too short");
+        return std::unexpected(std::format(
+            "DNS response too short: dns_len={} bytes < kDnsHeaderLen={} bytes",
+            dns_len, kDnsHeaderLen));
     }
 
     auto* hdr = reinterpret_cast<const DnsHeader*>(dns_data);
 
     // Verify transaction ID
     if (hdr->id != tx_id) {
-        return std::unexpected("DNS response: transaction ID mismatch");
+        return std::unexpected(std::format(
+            "DNS response: transaction ID mismatch (got=0x{:04x}, "
+            "expected=0x{:04x}) — possible delayed reply from prior query "
+            "or spoofed packet",
+            hdr->id, tx_id));
     }
 
     // Check QR bit (must be response)
     uint16_t flags = net::ntoh16(hdr->flags);
     if (!(flags & kDnsFlagQr)) {
-        return std::unexpected("DNS response: QR bit not set");
+        return std::unexpected(std::format(
+            "DNS response: QR bit not set (flags=0x{:04x}) — peer sent a "
+            "query packet on the response port",
+            flags));
     }
 
     // Check RCODE
@@ -450,9 +459,15 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     }
 
     uint16_t qd_count = net::ntoh16(hdr->qd_count);
-    if (qd_count > 16) return std::unexpected("DNS response: unreasonable question count");  // Reject malformed/malicious packet
+    if (qd_count > 16) return std::unexpected(std::format(
+        "DNS response: unreasonable question count qd_count={} (cap=16); "
+        "rejecting as malformed/malicious",
+        qd_count));
     uint16_t an_count = net::ntoh16(hdr->an_count);
-    if (an_count > 64) return std::unexpected("DNS response: unreasonable answer count");  // Prevent CPU exhaustion from spoofed responses
+    if (an_count > 64) return std::unexpected(std::format(
+        "DNS response: unreasonable answer count an_count={} (cap=64); "
+        "rejecting to prevent CPU exhaustion from spoofed responses",
+        an_count));
 
     if (an_count == 0) {
         return std::unexpected("DNS response: no answer records");
