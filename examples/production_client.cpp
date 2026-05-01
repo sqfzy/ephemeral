@@ -10,6 +10,16 @@
 ///
 /// No exchange-specific logic — the file is deliberately a template
 /// that a strategy can drop into.
+///
+/// Usage:
+///   production_client [--host <ipv4>] [--port <port>] [--tls | --no-tls]
+///
+///   --host    Remote IPv4 literal (default: 127.0.0.1). Hostnames not
+///             accepted — production deployments resolve once at startup
+///             via the async DNS path (see async_dns_multi_resolve.cpp).
+///   --port    Remote port (default: 9443).
+///   --tls     Enable TLS (aws-lc backend).
+///   --no-tls  Disable TLS (default; flip when pointing at a real peer).
 
 #include <atomic>
 #include <chrono>
