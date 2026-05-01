@@ -17,9 +17,9 @@
 /// init), MpTopology (synthesized from claimed slot), and `file_prefix`
 /// (auto-derived from BDF).
 ///
-/// Compared to the **declarative** path (`Platform::create` /
-/// `Platform::attach` + a hand-written EalConfig), autojoin trades
-/// per-peer slot precision for *no protocol* between peers:
+/// Autojoin is the **only** multi-process entry point — the
+/// cooperative path (`Platform::attach` + a shared file_prefix /
+/// hand-written EalConfig) was removed. autojoin's contract:
 ///   - file_prefix is auto-derived from the BDF (so two peers naming
 ///     the same NIC name the same hugepage segment without sharing
 ///     a string)
@@ -27,10 +27,9 @@
 ///     primary_config.queues_per_proc`
 ///   - self_index is auto-claimed at attach time (CAS-strong against
 ///     the registry's `procs[].claimed` flags)
-///
-/// The declarative path is preserved for the cases that need it:
-/// deliberate asymmetric assignment, tagged process roles, or callers
-/// that already wrote out their topology.
+/// The result is *no protocol* between peers — both run the same
+/// binary with the same args; whoever wins the EAL race becomes
+/// primary.
 ///
 /// Hot path: NONE. `Platform::join_dynamic` is the cold setup factory;
 /// once the Platform is up, the runtime path is byte-for-byte

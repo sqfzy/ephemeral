@@ -97,14 +97,14 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///       + pid (pid_t) — owner PID; attach-time liveness probe
 ///       via kill(pid, 0) detects stale slots from kill-9'd peers
 ///       and CAS-preempts them. Same v2 schema, no further bump.
-///   v3: API reshape — secondary attach surface shrunk to "how to
-///       find primary" (`PlatformAttachConfig{file_prefix, port_id}`).
-///       Wire layout unchanged; bump signals API generation. v3
-///       processes hard-reject v2 hugepages and vice-versa: a primary
-///       running v2 + secondary launched at v3 is an environment
-///       mismatch that should fail loudly, not silently misbehave.
-///       Recovery: stop all secondaries → upgrade primary (it
-///       recreates the registry) → upgrade secondaries.
+///   v3: API reshape — cooperative-MP entry points removed; multi-
+///       process is reached only via `Platform::join_dynamic`. Wire
+///       layout unchanged; bump signals API generation. v3 processes
+///       hard-reject v2 hugepages and vice-versa: a primary running
+///       v2 + secondary launched at v3 is an environment mismatch
+///       that should fail loudly, not silently misbehave. Recovery:
+///       stop all secondaries → upgrade primary (it recreates the
+///       registry) → upgrade secondaries.
 inline constexpr uint32_t kMpRegistryVersion = 3;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
@@ -826,8 +826,8 @@ public:
         // future-schema primary that bumped layout fields BEFORE bumping
         // version, or a corrupted hugepage segment, could let an extreme
         // value slip through. Without this guard the value silently
-        // truncates to uint8_t in `Platform::attach` /
-        // `join_dynamic[secondary]` and surfaces as an opaque
+        // truncates to uint8_t in `join_dynamic[secondary]` and
+        // surfaces as an opaque
         // "MpTopology::valid() failed" three layers up.
         if (hdr->total_procs == 0
                 || hdr->total_procs > MpTopology::kMaxProcs) {

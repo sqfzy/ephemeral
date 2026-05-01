@@ -1021,13 +1021,13 @@ private:
     [[nodiscard]] static std::expected<Platform, std::string>
     primary_bringup_(detail::BringupConfig config);
 
-    /// @brief Internal secondary bring-up. `registry_preclaimed=false`
-    /// (caller-driven `Platform::attach` flow): perform a fresh
-    /// CAS-claim of `*config.mp_topology->self_index` against the
-    /// primary's registry. `registry_preclaimed=true` (autojoin or v3
-    /// `attach()`): the caller already CAS-claimed the slot via
-    /// `try_claim_free_slot`, so `attach_secondary` skips the
-    /// double-CAS.
+    /// @brief Internal secondary bring-up. After the cooperative-MP
+    /// removal the only entry path is `Platform::join_dynamic`'s
+    /// secondary branch, which always pre-claims a slot via
+    /// `try_claim_free_slot` before dispatch — so `registry_preclaimed`
+    /// is always `true` in production. The flag is retained as a
+    /// hidden seam for unit tests that want to drive a fresh CAS-claim
+    /// path against a synthetic registry.
     [[nodiscard]] static std::expected<Platform, std::string>
     secondary_bringup_(detail::BringupConfig config, bool registry_preclaimed);
 };
@@ -2837,8 +2837,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);
             rc == 0 && dev_info.nb_rx_queues > 0) {
             // Override with live NIC value (which secondary trusts as
-            // primary-configured). Uses the same query as
-            // Platform::attach() — see plan A1.
+            // primary-configured). See plan A1.
             nb_rx_queues       = dev_info.nb_rx_queues;
             pcfg.nb_rx_queues  = dev_info.nb_rx_queues;
             pcfg.nb_tx_queues  = (dev_info.nb_tx_queues != 0)

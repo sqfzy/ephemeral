@@ -763,9 +763,9 @@ static_assert(std::is_trivially_copyable_v<IcmpDispatchMsg>);
 inline constexpr std::string_view kIcmpDispatchActionName = "eph_icmp_dispatch";
 
 /// @brief Process-level pointer to the active IcmpDirectory. Set by
-/// `Platform::create / Platform::attach` when mp_topology is in
-/// effect; cleared on Platform destruction. Loaded by the static
-/// dispatch thunk and by `tcp_stream`'s closure.
+/// `Platform::join_dynamic`'s primary / secondary bring-up paths when
+/// mp_topology is in effect; cleared on Platform destruction. Loaded
+/// by the static dispatch thunk and by `tcp_stream`'s closure.
 inline std::atomic<IcmpDirectoryHandle*> g_active_icmp_directory{nullptr};
 
 /// @brief Process-level pointer to the active IcmpRegistry. Same
