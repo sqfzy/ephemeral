@@ -2475,11 +2475,21 @@ inline BringupConfig bringup_from_v3_(const PlatformConfig& v3) {
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(PlatformConfig cfg) {
+    // Single-process only. The cooperative MP path (declarative primary
+    // with secondaries calling Platform::attach) was deleted — autojoin
+    // via Platform::join_dynamic is the only supported MP entry point.
+    if (cfg.max_procs > 1) {
+        return std::unexpected(std::format(
+            "Platform::create: cfg.max_procs={} but cooperative MP "
+            "(declarative primary + Platform::attach secondaries) was "
+            "removed. Use Platform::join_dynamic(JoinDynamicConfig) for "
+            "multi-process — peers race on EAL init and the registry "
+            "auto-resolves primary/secondary roles. Set max_procs=1 (the "
+            "default) for single-process",
+            cfg.max_procs));
+    }
     // Project the public PlatformConfig into the internal BringupConfig
-    // (synthesizing MpTopology when `cfg.max_procs > 1`), then delegate
-    // to the shared primary bring-up helper. The helper owns the
-    // registry / ICMP-directory reservations and the per-port DPDK
-    // bring-up.
+    // and delegate to the shared primary bring-up helper.
     return Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
 }
 
@@ -2570,9 +2580,21 @@ Platform::create_with_eal(PlatformConfig                        cfg,
                           eph::utils::CpuPinPolicy                policy) {
     [[maybe_unused]] auto log = detail::platform_logger();
 
+    // Single-process only — same contract as Platform::create. The
+    // cooperative MP path was removed; use Platform::join_dynamic for MP.
+    if (cfg.max_procs > 1) {
+        return std::unexpected(std::format(
+            "Platform::create_with_eal: cfg.max_procs={} but cooperative MP "
+            "(declarative primary + Platform::attach_with_eal secondaries) "
+            "was removed. Use Platform::join_dynamic(JoinDynamicConfig) "
+            "for multi-process. Set max_procs=1 (the default) for "
+            "single-process",
+            cfg.max_procs));
+    }
+
     // Inject identity fields into EalConfig — v3 contract: caller does
-    // not set these. Always Primary; v3 has a separate `attach_with_eal`
-    // entry for the secondary path.
+    // not set these. Always Primary; cooperative-secondary attach was
+    // removed.
     eal_cfg.proc_type     = ProcType::Primary;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = cfg.file_prefix;
