@@ -86,6 +86,14 @@
 /// See `eph-net-dpdk/scripts/dpdk-setup.sh`. Both processes must use the
 /// SAME `--file-prefix` so the secondary's `rte_mempool_lookup` can find
 /// the primary's shared mempool.
+///
+/// Additional flags (all optional; full list at parse_args):
+///   --port-id <id>    DPDK port enumeration index (default 0).
+///   --nb-queues <n>   per-process RX/TX queue count (default 1).
+///                     Both peers must agree — `MpTopology::uniform`
+///                     uses it to derive equal sub-ranges per
+///                     self_index.
+///   --seconds <n>     demo run duration (default 5).
 
 #include <atomic>
 #include <chrono>
