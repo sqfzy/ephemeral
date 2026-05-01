@@ -191,7 +191,7 @@ if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
 | HTTP status (in `detail`) | Meaning | Fix |
 |---------------------------|---------|-----|
 | `400` | Malformed request | Check `cfg.ws.path`, `cfg.ws.extra_headers` |
-| `401` / `403` | Auth required / forbidden | Add auth token to `ws_extra_headers` |
+| `401` / `403` | Auth required / forbidden | Add auth token to `cfg.ws.extra_headers` |
 | `404` | Wrong path | Fix `cfg.ws.path` |
 | `426` | Upgrade required (rare) | Server expects different protocol; check vendor docs |
 | `429` | Rate limited | Backoff via `ReconnectPolicy`, reduce conn frequency |
@@ -307,10 +307,12 @@ not WARN.
 **Symptom**: Reconnect callback fires periodically with `Error::Disconnected`.
 
 **Diagnosis**:
-1. DPDK: check `TcpSession::Stats::idle_timeout_fired` — if non-zero, peer
-   keepalive interval is too long. Tune `cfg.keepalive.interval` /
-   `cfg.keepalive.probes` on the user-facing `eph::net::dpdk::StreamConfig`
-   (lowered into `dpdk.tcp_low_level.keepalive_*` at factory time).
+1. DPDK: check `TcpSession::Stats::keepalive_probes_sent` and
+   `keepalive_send_failures` — if probes are firing, the peer is not
+   answering them, indicating the connection is half-open. Tune
+   `cfg.keepalive.interval` / `cfg.keepalive.probes` on the user-facing
+   `eph::net::dpdk::StreamConfig` (lowered into
+   `dpdk.tcp_low_level.keepalive_*` at factory time).
 2. Kernel: tune `cfg.keepalive.interval` / `cfg.keepalive.probes` on
    `eph::net::kernel::StreamConfig` (wires `setsockopt(SO_KEEPALIVE / TCP_
    KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`), or rely on application-layer
@@ -427,12 +429,20 @@ Use the macros (`SPDLOG_TRACE` / `DEBUG` / `INFO` / `WARN` / `ERROR`) so
 suppressed levels compile out entirely. Runtime `spdlog::set_level()` only
 filters within the compile-time band.
 
-Key loggers (registered lazily via `eph::utils::get_logger("name")`):
+Most modules log through the spdlog default logger via the
+`SPDLOG_*` macros — there is no per-module named-logger registry to
+enumerate. The exceptions (lazy-created via
+`spdlog::register_logger` on first use; visible via `spdlog::get(name)`):
 
-- `net.kernel.tcp` / `net.kernel.udp` — kernel stream lifecycle
-- `net.dpdk.tcp` / `net.dpdk.udp` / `net.dpdk.platform` — DPDK lifecycle
-- `net.ws` — WebSocket frame encode / decode
-- `net.tls` — TLS handshake, AEAD seq, alerts
+- `net.http_client` — HTTP request/response logging
+  (`eph-net/include/eph/net/http_client.hpp`)
+- `utils.tsc` / `utils.cpu` / `utils.hugepage` / `utils.audit_log` /
+  `utils.system_stats` / `utils.ema` / `utils.console_sink` —
+  per-utility named loggers in `eph-utils/include/eph/utils/`
+
+Filter via standard spdlog APIs (e.g. `spdlog::get("net.http_client")
+->set_level(spdlog::level::debug)`) — but remember it only narrows
+within the compile-time `SPDLOG_ACTIVE_LEVEL` band.
 - `net.http` — HTTP/1.1 parse (upgrade requests, CONNECT proxy)
 - `fix.parser` / `fix.builder` — FIX validation
 - `itch.parser` — ITCH parse errors
