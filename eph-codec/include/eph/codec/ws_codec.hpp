@@ -527,10 +527,15 @@ public:
         return std::optional<Frame>{reassembled};
     }
 
-    /// @brief Encode a binary application frame.
+    /// @brief Encode a binary application frame (RFC 6455 §5.2 opcode 0x2).
     ///
     /// Wraps `ws::encode_frame` with opcode=kBinary and FIN=1. Returns the
     /// number of bytes written, or `BufferFull` if `cap` is insufficient.
+    ///
+    /// @see encode_text() for text frames (RFC 6455 §5.6) — peers that
+    /// expect JSON-as-text (e.g. Binance / Coinbase market streams) treat
+    /// binary and text as semantically distinct frame types and may reject
+    /// one in favour of the other; pick the one your peer expects.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     encode(uint8_t* buf, std::size_t cap, Frame payload) noexcept {
         namespace ws = eph::net::ws;
@@ -550,6 +555,44 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad,
                 "WsCodec::encode: ws::encode_frame rejected payload"});
+        }
+        return n;
+    }
+
+    /// @brief Encode a text application frame (RFC 6455 §5.6 opcode 0x1).
+    ///
+    /// Wraps `ws::encode_frame` with opcode=kText and FIN=1. Same shape as
+    /// `encode()` — only the wire-level opcode byte differs (0x81 vs 0x82).
+    /// Returns the number of bytes written, or `BufferFull` if `cap` is
+    /// insufficient.
+    ///
+    /// **UTF-8 contract (caller responsibility)**: per RFC 6455 §5.6, the
+    /// payload of a text frame MUST be valid UTF-8. This method does NOT
+    /// validate; passing non-UTF-8 produces a frame the peer is required
+    /// to fail the connection on (RFC 6455 §8.1). If you need codec-level
+    /// validation, do it in the caller before invoking — adding it here
+    /// would cost a scan over every frame on the hot path.
+    ///
+    /// @see encode() for binary frames.
+    [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
+    encode_text(uint8_t* buf, std::size_t cap, Frame payload) noexcept {
+        namespace ws = eph::net::ws;
+        const std::size_t needed = ws::total_frame_size(payload.size());
+        if (needed == SIZE_MAX || needed > cap) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                "WsCodec::encode_text: buffer too small (need {}, have {})",
+                needed, cap);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::BufferFull,
+                "WsCodec::encode_text: destination buffer too small"});
+        }
+        const std::size_t n = ws::encode_frame(
+            buf, ws::opcode::kText,
+            payload.data(), payload.size(), /*fin=*/true);
+        if (n == 0) [[unlikely]] {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::CodecBad,
+                "WsCodec::encode_text: ws::encode_frame rejected payload"});
         }
         return n;
     }
