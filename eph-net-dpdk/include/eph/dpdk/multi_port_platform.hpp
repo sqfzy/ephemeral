@@ -130,12 +130,10 @@ public:
         // Pre-pass 1: validate every config structurally before
         // touching any DPDK state. Cheap and surfaces the user error
         // at the call site rather than after spending I/O on port 0.
-        // Delegates to the v2 `validate_config` via the canonical
-        // v3→v2 translation that `Platform::create` itself uses, so
-        // the rejected set matches the runtime path one-for-one.
+        // Calls the v3 `validate_config` directly — same rejection set
+        // as `Platform::create` runs internally.
         for (std::size_t i = 0; i < configs.size(); ++i) {
-            auto err = validate_config(
-                ::eph::dpdk::detail::v3_to_legacy_(configs[i]));
+            auto err = validate_config(configs[i]);
             if (!err.empty()) {
                 SPDLOG_LOGGER_ERROR(log,
                     "MultiPortPlatform::create: configs[{}] invalid: {}",

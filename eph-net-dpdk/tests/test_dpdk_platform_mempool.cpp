@@ -113,16 +113,11 @@ constexpr PlatformConfig kBaseCfg{
     .link_timeout_ms = 0,
 };
 
-// Local helper: route a v3 PlatformConfig through the canonical
-// v3→v2 translation, then run the v2 structural validator against
-// the result. Tests in this file pin down validator semantics
-// (per_lcore_pools bound, RSS rx/tx queue mismatch, etc.) that the
-// v2 validator currently owns; the validator moves into the v3
-// path in stage 2 of the v2/v3 merge, at which point this helper
-// becomes a direct call.
+// Local helper: thin wrapper over the v3 `validate_config(PlatformConfig)`
+// free function. Kept so the test bodies stay terse; the wrapper used to
+// route through a v3→v2 translator before the v2/v3 merge cleanup.
 inline auto validate_v3(const PlatformConfig& cfg) {
-    return ::eph::dpdk::validate_config(
-        ::eph::dpdk::detail::v3_to_legacy_(cfg));
+    return ::eph::dpdk::validate_config(cfg);
 }
 
 // ---------------------------------------------------------------------------

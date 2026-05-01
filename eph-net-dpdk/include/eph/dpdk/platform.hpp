@@ -614,6 +614,66 @@ namespace eph::dpdk {
     return validate_config(cfg).empty();
 }
 
+/// @brief v3 PlatformConfig structural validator. Mirrors the v2 validator's
+/// rejection set for fields that exist on both shapes (queue counts,
+/// descriptors, mbuf pool, per_lcore_pools, link_timeout) and adds
+/// v3-specific checks for `max_procs` / `queues_per_proc`. The v2-only
+/// fields (`proc_type`, `mp_topology`, `rx_queue_range`) do not exist on
+/// v3 and so are not validated here — primary's MP topology is
+/// synthesized from `max_procs` / `queues_per_proc` at bring-up time and
+/// must satisfy the same `MpTopology::valid()` invariant.
+///
+/// constexpr-evaluable: use in `static_assert(config_ok(cfg))` for
+/// compile-time configs, or call at runtime for dynamic configs.
+[[nodiscard]] constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
+    if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
+    if (cfg.nb_tx_queues  == 0) return "nb_tx_queues must be > 0";
+    // Same RSS-aware multi-queue rejection as the v2 path. See the v2
+    // validator above for the full rationale.
+    if (cfg.nb_rx_queues > 1 && cfg.nb_tx_queues == 1)
+        return "nb_tx_queues must be >= nb_rx_queues when nb_rx_queues > 1 "
+               "(RSS-aware connect pins tx_queue_id = rx_queue_id)";
+    if (cfg.nb_rx_desc    == 0) return "nb_rx_desc must be > 0";
+    if (cfg.nb_tx_desc    == 0) return "nb_tx_desc must be > 0";
+    if (cfg.link_timeout_ms < 0) return "link_timeout_ms must be >= 0";
+    if (!detail::is_power_of_two_minus_one(cfg.mbuf_pool_size))
+        return "mbuf_pool_size must be 2^n - 1 (e.g. 1023, 4095, 8191)";
+    if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
+        return "mbuf_cache_size must be less than mbuf_pool_size";
+    if (cfg.per_lcore_pools > 256)
+        return "per_lcore_pools must be <= RTE_MAX_LCORE (256)";
+    // v3-specific: max_procs / queues_per_proc combination check. The
+    // synthesized MpTopology must satisfy queue_hi <= nb_rx_queues for
+    // every slot. With queues_per_proc == 0 (auto), bring-up uses
+    // floor(nb_rx_queues / max_procs) so the check reduces to
+    // max_procs <= nb_rx_queues. With queues_per_proc > 0, every slot
+    // owns exactly that many queues, so the check is
+    // max_procs * queues_per_proc <= nb_rx_queues.
+    if (cfg.max_procs == 0)
+        return "max_procs must be >= 1 (1 = single-process; >= 2 = MP primary)";
+    if (cfg.max_procs > 1) {
+        if (cfg.file_prefix.empty())
+            return "max_procs > 1 requires a non-empty file_prefix "
+                   "(used as the registry memzone name eph_mp/<file_prefix>)";
+        const uint16_t qpp = cfg.queues_per_proc == 0
+                                 ? static_cast<uint16_t>(cfg.nb_rx_queues / cfg.max_procs)
+                                 : cfg.queues_per_proc;
+        if (qpp == 0)
+            return "queues_per_proc resolves to 0 (nb_rx_queues < max_procs); "
+                   "raise nb_rx_queues or lower max_procs";
+        if (static_cast<uint32_t>(qpp) * cfg.max_procs > cfg.nb_rx_queues)
+            return "queues_per_proc * max_procs must not exceed nb_rx_queues";
+    }
+    return {};
+}
+
+/// For use in static_assert with constexpr configs:
+///   constexpr PlatformConfig cfg{...};
+///   static_assert(config_ok(cfg), "bad platform config");
+[[nodiscard]] constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
+    return validate_config(cfg).empty();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform
 // ─────────────────────────────────────────────────────────────────────────────

@@ -14,12 +14,8 @@
 ///   - v3 types (`PlatformConfig`, `PlatformAttachConfig`,
 ///     `JoinDynamicConfig`) compile and have expected fields.
 ///   - v3 entry-point function pointers have the documented signatures.
-///   - The internal v3→v2 translator (`detail::v3_to_legacy_`)
-///     correctly maps fields.
-///
-/// Stage 3 will add behavior-level tests when v3 is no longer a wrapper
-/// over v2 (and the A1 assumption — secondary's `rte_eth_dev_info_get`
-/// returning primary-configured nb_rx_queues — gets a dedicated check).
+///   - The v3 `validate_config(PlatformConfig)` rejection set
+///     (max_procs / file_prefix / queues-per-proc invariants).
 
 #include <span>
 #include <string>
@@ -120,13 +116,19 @@ TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Translation logic (detail::v3_to_legacy_)
+// v3 PlatformConfig structural validator
 // ──────────────────────────────────────────────────────────────────────
+//
+// `validate_config(PlatformConfig)` is the v3 free function consumed by
+// `Platform::create` (cold path) and `MultiPortPlatform::create`'s
+// pre-pass. The rejection set tests below pin down behavior the
+// per-config validator owns; per-port validation rules already shared
+// with v2 (per_lcore_pools, RSS rx/tx queue rule) are exercised under
+// `test_dpdk_platform_mempool.cpp::PlatformMempoolConfig`.
 
-TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
+TEST(PlatformConfigValidator, SingleProcessHappyPathAccepts) {
     PlatformConfig v3{};
     v3.port_id          = 1;
-    v3.file_prefix      = "demo";
     v3.nb_rx_queues     = 4;
     v3.nb_tx_queues     = 4;
     v3.nb_rx_desc       = 1024;
@@ -136,49 +138,43 @@ TEST(V3ToV2Primary, SingleProcessIdentityMapping) {
     v3.enable_promiscuous = true;
     v3.link_timeout_ms  = 5000;
     v3.per_lcore_pools  = 2;
-    // max_procs stays at default 1 → single-process
-
-    auto v2 = detail::v3_to_legacy_(v3);
-    EXPECT_EQ(v2.port_id,          v3.port_id);
-    EXPECT_EQ(v2.file_prefix,      v3.file_prefix);
-    EXPECT_EQ(v2.nb_rx_queues,     v3.nb_rx_queues);
-    EXPECT_EQ(v2.nb_tx_queues,     v3.nb_tx_queues);
-    EXPECT_EQ(v2.nb_rx_desc,       v3.nb_rx_desc);
-    EXPECT_EQ(v2.nb_tx_desc,       v3.nb_tx_desc);
-    EXPECT_EQ(v2.mbuf_pool_size,   v3.mbuf_pool_size);
-    EXPECT_EQ(v2.mbuf_cache_size,  v3.mbuf_cache_size);
-    EXPECT_EQ(v2.link_timeout_ms,  v3.link_timeout_ms);
-    EXPECT_EQ(v2.per_lcore_pools,  v3.per_lcore_pools);
-    EXPECT_TRUE(v2.enable_promiscuous);
-    EXPECT_EQ(v2.proc_type,        ProcType::Primary);
-
-    // Single-process: no MpTopology synthesized.
-    EXPECT_FALSE(v2.mp_topology.has_value());
+    // max_procs stays at default 1 → single-process; file_prefix may stay empty.
+    EXPECT_TRUE(validate_config(v3).empty()) << validate_config(v3);
+    EXPECT_TRUE(config_ok(v3));
 }
 
-TEST(V3ToV2Primary, MpPrimarySynthesizesTopology) {
+TEST(PlatformConfigValidator, MpPrimaryRejectsMissingFilePrefix) {
+    // max_procs > 1 mandates file_prefix (used as registry memzone name).
     PlatformConfig v3{};
     v3.nb_rx_queues = 4;
     v3.nb_tx_queues = 4;
     v3.max_procs    = 2;
-    v3.file_prefix  = "mp_demo";
-
-    auto v2 = detail::v3_to_legacy_(v3);
-    ASSERT_TRUE(v2.mp_topology.has_value());
-    EXPECT_EQ(v2.mp_topology->self_index, 0);
-    EXPECT_EQ(v2.mp_topology->total_procs, 2);
-    EXPECT_EQ(v2.proc_type, ProcType::Primary);
+    // file_prefix intentionally left empty
+    auto err = validate_config(v3);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("file_prefix"), std::string_view::npos)
+        << "actual error: " << err;
 }
 
-TEST(V3ToV2Primary, SelfLcoreMaskPropagates) {
+TEST(PlatformConfigValidator, MaxProcsExceedingNbRxQueuesRejected) {
+    // max_procs > nb_rx_queues → queues_per_proc auto-derives to 0,
+    // which the validator rejects up front.
     PlatformConfig v3{};
-    v3.nb_rx_queues     = 2;
-    v3.max_procs        = 2;
-    v3.self_lcore_mask  = 0b1100ULL;  // lcores 2,3
+    v3.nb_rx_queues = 2;
+    v3.nb_tx_queues = 2;
+    v3.max_procs    = 4;
+    v3.file_prefix  = "demo";
+    auto err = validate_config(v3);
+    EXPECT_FALSE(err.empty());
+}
 
-    auto v2 = detail::v3_to_legacy_(v3);
-    ASSERT_TRUE(v2.mp_topology.has_value());
-    EXPECT_EQ(v2.mp_topology->procs[0].lcore_mask, 0b1100ULL);
+TEST(PlatformConfigValidator, ZeroMaxProcsRejected) {
+    PlatformConfig v3{};
+    v3.max_procs = 0;
+    auto err = validate_config(v3);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("max_procs"), std::string_view::npos)
+        << "actual error: " << err;
 }
 
 // ──────────────────────────────────────────────────────────────────────
