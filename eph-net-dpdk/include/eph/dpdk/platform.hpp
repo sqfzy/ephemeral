@@ -757,15 +757,6 @@ public:
     [[nodiscard]] static std::expected<Platform, std::string>
     create(const LegacyPlatformConfig& config);
 
-    /// Primary-role factory (single-NIC multi-process aware).
-    ///
-    /// Equivalent to `create()` with `config.proc_type` forced to
-    /// `ProcType::Primary`. Behaviourally identical to the current
-    /// single-process setup; the explicit name is for call-site clarity
-    /// in code that also uses `create_secondary`.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    create_primary(LegacyPlatformConfig config);
-
     /// Secondary-role factory (attach to a running primary's port +
     /// mempool via shared hugepage).
     ///
@@ -1199,6 +1190,20 @@ private:
     struct Impl;
     explicit Platform(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
+
+    /// @brief Internal primary bring-up. Used to be the public
+    /// `create_primary` factory; now a private helper consumed by the
+    /// v3 `create(PlatformConfig)` entry point and (transitionally)
+    /// by the v2 `create_with_eal(LegacyPlatformConfig, ...)` and v2
+    /// `join_dynamic(LegacyJoinDynamicConfig)` autojoin paths until
+    /// those v2 entries are removed in subsequent cleanup commits.
+    /// Reads the optional `mp_topology` from the legacy config to
+    /// reserve the cross-process registry, derive `rx_queue_range`
+    /// from `self()`, reserve the ICMP directory, then delegates to
+    /// the v2 `create(LegacyPlatformConfig)` dispatcher for the
+    /// per-port DPDK bring-up.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    primary_bringup_(LegacyPlatformConfig config);
 
     /// @brief Internal secondary attach. Identical to the public
     /// `create_secondary` body, but with a flag that propagates into
@@ -2099,7 +2104,7 @@ Platform::create_with_eal(LegacyPlatformConfig                          pcfg,
         // time we land here the EAL is up and `rte_eal_process_type`
         // resolved the role — autojoin overrides proc_type to
         // Primary/Secondary before delegating, so Auto here is a bug).
-        plat_r = Platform::create_primary(std::move(pcfg));
+        plat_r = Platform::primary_bringup_(std::move(pcfg));
     }
     if (!plat_r) {
         SPDLOG_LOGGER_ERROR(log,
@@ -2333,7 +2338,7 @@ Platform::create(const LegacyPlatformConfig& config) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_primary(LegacyPlatformConfig config) {
+Platform::primary_bringup_(LegacyPlatformConfig config) {
     [[maybe_unused]] auto log = detail::platform_logger();
     // Force-set the role so mis-assembled configs can't accidentally
     // travel into create() with Secondary marked but primary semantics
@@ -2881,7 +2886,7 @@ Platform::join_dynamic(LegacyJoinDynamicConfig cfg) {
         if (cfg.self_lcore_mask != 0) {
             pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
         }
-        auto plat_r = Platform::create_primary(std::move(pcfg));
+        auto plat_r = Platform::primary_bringup_(std::move(pcfg));
         if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
         return attach_eal_session(std::move(plat_r));
     }
@@ -3045,7 +3050,14 @@ inline LegacyPlatformConfig v3_to_legacy_(const PlatformConfig& v3) {
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(PlatformConfig cfg) {
-    return Platform::create_primary(detail::v3_to_legacy_(cfg));
+    // v3 entry: synthesize the v2 LegacyPlatformConfig (with optional
+    // mp_topology if `cfg.max_procs > 1`) via the canonical translator,
+    // then delegate to the shared primary bring-up helper. The helper
+    // owns the registry / ICMP-directory reservations and the per-port
+    // DPDK bring-up; commits in this cleanup series will inline its
+    // body here once `LegacyPlatformConfig` is the only remaining
+    // consumer.
+    return Platform::primary_bringup_(detail::v3_to_legacy_(cfg));
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
