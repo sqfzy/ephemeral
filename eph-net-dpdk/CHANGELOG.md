@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+### Fixed — MP mental-model closure follow-ups (round 1-3 audit)
+
+A second `/pax --review` pass through the same LENS ("production /
+MP mental model / silent misuse closure") on the recently-landed
+v2 schema surfaced three tier-1 gaps that the first pass missed.
+All three are landed in independent commits with their own
+regression tests (no new schema bump, no public API change).
+
+* **Round 1 — slot release/claim metadata clear**
+  (test `7262e6db`, fix `5dd9fbb1`):
+  * The v2 schema added `pid` and `lcore_mask` to `ProcSlot` but
+    only wired writes on the attach/claim side. Graceful
+    `release_()` and `try_claim_free_slot` pass-1 left the
+    previous owner's metadata in shared hugepage memory.
+  * Concrete failure: peer A claims slot 1 with `lcore_mask=0xC`,
+    exits gracefully → slot retains 0xC ghost. Peer B claims via
+    `try_claim_free_slot` pass-1 (writes its own pid but not
+    lcore_mask) → slot now has B's pid + A's stale 0xC.
+    A third peer C declaring `lcore_mask=0xC` (legitimate, since
+    A is gone) is then falsely rejected by `attach_secondary`'s
+    conflict scan against the ghost.
+  * Fix: introduce `MpRegistryHandle::clear_slot_metadata_()`
+    helper that zeros the ephemeral metadata (pid + lcore_mask)
+    while preserving the primary-owned topology fields (tag,
+    queue_lo/hi, port_lo/hi). Called at all three release/claim
+    transition points so future schema additions don't
+    reintroduce the gap.
+* **Round 2 — claim-side metadata publication memory ordering**
+  (test `20e9d8f5` + correction `8ea291ae`, fix `e49f94c0`):
+  * The v2 schema published `pid`/`lcore_mask` as plain stores
+    AFTER the CAS-claim. The CAS itself uses `acq_rel`, but its
+    release-side only orders writes BEFORE the CAS — plain stores
+    AFTER the CAS were not synchronized with future readers'
+    acquire-loads on `claimed`. On weakly-ordered cores
+    (AArch64 / POWER), a peer's conflict scan could observe
+    `claimed=1` paired with stale (zero or pre-existing)
+    `lcore_mask`, silently bypassing the v2 cross-process
+    conflict gate.
+  * Fix: at all four claim sites, follow the metadata writes with
+    a redundant `claimed.store(1, std::memory_order_release)`. The
+    slot is already claimed=1 so this is a no-op value-wise but
+    provides the release-store partner for future acquire-loads.
+    The orphan `std::atomic_thread_fence(release)` (which had no
+    subsequent atomic store to pair with) was removed.
+  * The accompanying race regression test was initially over-strict
+    (counted any transient `claimed=1+mask=0` as a bug); corrected
+    in `8ea291ae` to allow the benign two-stage publication
+    (`try_claim_free_slot` + `attach_secondary(already_claimed=
+    true)`) where `mask=0` is a legitimate intermediate state.
+* **Round 3 — lcore CSV parser strict bounds**
+  (fix `e7c5a98a`):
+  * `DpdkBenchEnv::create_via_autojoin`'s inline parser silently
+    truncated lcore IDs >= 64 (the schema cap from `ProcSlot::
+    lcore_mask` being `uint64_t`) via a loop guard `i < 64`.
+    User input "60-70" produced mask=0xF000000000000000 with
+    bits for lcores 64-70 silently dropped — defeating the v2
+    conflict gate on >64-core hosts. `strtoul` also wrapped
+    negative inputs into huge unsigneds that the loop's <64 cap
+    silently absorbed, leaving mask=0 with no error surfaced.
+  * Fix: extract parser to `eph::dpdk::test::parse_lcores_csv_to_
+    mask` so it's unit-testable without EAL; reject IDs > 63 with
+    a clear schema-cap error; reject signed-integer prefixes
+    (`-` / `+`) explicitly. 21 unit tests cover happy path
+    + every boundary + every malformed-input class.
+
+Acceptance for the round 1-3 batch: 37/37 `test_mp_registry` PASS
+(35 prior + 1 ghost-data + 1 concurrent-publish), 21/21
+`test_dpdk_lcore_csv_parser` PASS, `test_dpdk_platform_mempool`
+builds clean (header-include sanity).
+
 ### Fixed — MP mental-model "user error → silent run" closure (5 fixes + 1 doc)
 
 Driven by a `/pax --review` audit (`.artifacts/review-mp-mental-model-20260501.md`)
