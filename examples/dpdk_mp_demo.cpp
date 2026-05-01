@@ -207,17 +207,26 @@ AppArgs parse_args(int argc, char** argv) {
 // but the recommended path below is shorter and lets the library
 // detect cross-process self_index collisions instead of trusting the
 // operator to keep them disjoint.
-ed::PlatformConfig make_platform_config(const AppArgs& a) {
-    ed::PlatformConfig cfg{};
+//
+// v3 API: primary uses PlatformConfigV3 with max_procs=2 (library
+// synthesizes MpTopology internally). Secondary uses
+// PlatformAttachConfig — only file_prefix + port_id needed; the
+// library reads the registry for everything else.
+
+ed::PlatformConfigV3 make_primary_config(const AppArgs& a) {
+    ed::PlatformConfigV3 cfg{};
     cfg.port_id      = a.eal.port_id;
     cfg.nb_rx_queues = a.nb_rx_queues;
     cfg.nb_tx_queues = a.nb_rx_queues;
-    cfg.proc_type    = a.role;
     cfg.file_prefix  = a.file_prefix;
+    cfg.max_procs    = 2;  // 2 process slots — primary + 1 secondary
+    return cfg;
+}
 
-    const uint8_t self_index = (a.role == ed::ProcType::Primary) ? 0 : 1;
-    cfg.mp_topology = ed::MpTopology::uniform(
-        self_index, /*total_procs=*/2, a.nb_rx_queues);
+ed::PlatformAttachConfig make_secondary_config(const AppArgs& a) {
+    ed::PlatformAttachConfig cfg{};
+    cfg.file_prefix = a.file_prefix;
+    cfg.port_id     = a.eal.port_id;
     return cfg;
 }
 
@@ -247,37 +256,43 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
-    // create_with_eal dispatches by pcfg.proc_type to create_primary
-    // (mp_topology auto-derive + registry reserve) or create_secondary
-    // (registry attach), and the returned Platform owns the EAL session.
-    // Single one-liner replaces the EalGuard::init_with_pins +
-    // Platform::create_primary/secondary two-step pattern.
-    ed::PlatformConfig pcfg = make_platform_config(args);
-
+    // ── 1) EAL + Platform via v3 split factories ─────────────────────────
+    // V3 zero-consensus: primary uses create_with_eal(PlatformConfigV3),
+    // secondary uses attach_with_eal(PlatformAttachConfig). Their inputs
+    // are intentionally asymmetric — primary owns the NIC physical
+    // configuration, secondary owns nothing but "where is primary".
+    // EAL config: caller no longer sets proc_type / file_prefix —
+    // those are injected by the v3 factories from the per-role config.
+    const char* role_str =
+        args.role == ed::ProcType::Primary ? "primary" : "secondary";
     ed::EalConfig eal_cfg = ed::cli::to_eal_config(
         args.eal,
-        (args.role == ed::ProcType::Primary) ? "dpdk_mp_demo.primary"
-                                             : "dpdk_mp_demo.secondary");
-    eal_cfg.proc_type     = args.role;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = args.file_prefix;
+        args.role == ed::ProcType::Primary ? "dpdk_mp_demo.primary"
+                                           : "dpdk_mp_demo.secondary");
 
-    const char* role_str = args.role == ed::ProcType::Primary ? "primary" : "secondary";
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
-                     "(typed pins, {} pin(s))", role_str, args.eal.pins.size());
+        spdlog::info("dpdk_mp_demo[{}]: bring-up (typed pins, {} pin(s))",
+                     role_str, args.eal.pins.size());
     } else {
-        spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
-                     "(raw lcores='{}')", role_str, args.eal.lcores_raw);
+        spdlog::info("dpdk_mp_demo[{}]: bring-up (raw lcores='{}')",
+                     role_str, args.eal.lcores_raw);
     }
 
-    auto plat_r = ed::Platform::create_with_eal(
-        std::move(pcfg), std::move(eal_cfg),
-        std::span<ed::LcorePin const>{args.eal.pins},
-        eph::utils::CpuPinPolicy{});
+    std::expected<ed::Platform, std::string> plat_r =
+        std::unexpected(std::string{});
+    if (args.role == ed::ProcType::Primary) {
+        plat_r = ed::Platform::create_with_eal(
+            make_primary_config(args), std::move(eal_cfg),
+            std::span<ed::LcorePin const>{args.eal.pins},
+            eph::utils::CpuPinPolicy{});
+    } else {
+        plat_r = ed::Platform::attach_with_eal(
+            make_secondary_config(args), std::move(eal_cfg),
+            std::span<ed::LcorePin const>{args.eal.pins},
+            eph::utils::CpuPinPolicy{});
+    }
     if (!plat_r) {
-        spdlog::error("dpdk_mp_demo: Platform::create_with_eal failed: {}",
+        spdlog::error("dpdk_mp_demo: Platform bring-up failed: {}",
                       plat_r.error());
         return 2;
     }
