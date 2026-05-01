@@ -212,6 +212,57 @@ TEST(KernelUdpSocket, ConnectToSucceedsOnOpenSocket) {
     EXPECT_TRUE(cr.has_value());
 }
 
+TEST(KernelUdpSocket, ConnectToRejectsZeroAddrZeroPort) {
+    // POSIX semantics on (0.0.0.0:0) effectively *disassociate* the
+    // connected peer on most kernels, silently undoing an earlier
+    // connect_to. The implementation guards against that misuse and
+    // forces the caller to use a real peer (a future explicit
+    // `disconnect()` API can carry the disassociate intent without
+    // overloading connect_to). Lock the rejection path: code +
+    // detail string both surfaced.
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto s = RawUdp::create(cfg).value();
+
+    auto cr = s->connect_to(en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::InvalidConfig);
+    // Detail must mention the disassociate semantic so log greps surface
+    // the misuse with enough context to fix it.
+    EXPECT_NE(std::string_view{cr.error().detail}.find("disassociate"),
+              std::string_view::npos)
+        << "detail: " << cr.error().detail;
+
+    // Sanity: a real peer immediately after the rejection still works
+    // (the internal `connected_` flag must NOT have flipped on the
+    // failed call).
+    auto cr2 = s->connect_to(en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 9999});
+    EXPECT_TRUE(cr2.has_value());
+}
+
+TEST(KernelUdpSocket, SnapshotReportsZeroDstUntilConnectTo) {
+    // snapshot()'s dst_ip/dst_port stays zero on an unconnected socket
+    // (per the doc comment: "unconnected UDP has no fixed destination —
+    // send_to carries dst per call"). After connect_to, dst_* echoes the
+    // connected peer. This is the only post-create runtime state UDP
+    // exposes to the cross-backend snapshot, so the discipline matters.
+    ek::UdpConfig cfg{};
+    cfg.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0};
+    auto s = RawUdp::create(cfg).value();
+
+    auto snap = s->snapshot();
+    EXPECT_EQ(snap.endpoint.dst_ip, 0u);
+    EXPECT_EQ(snap.endpoint.dst_port, 0u);
+    EXPECT_FALSE(snap.tcp.enabled);    // UDP — TCP block stays inert
+    EXPECT_FALSE(snap.tls.enabled);
+
+    auto cr = s->connect_to(en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 9999});
+    ASSERT_TRUE(cr.has_value());
+    auto snap2 = s->snapshot();
+    EXPECT_EQ(snap2.endpoint.dst_port, 9999u);
+    EXPECT_NE(snap2.endpoint.dst_ip, 0u);
+}
+
 TEST(KernelUdpSocket, JoinLeaveMulticastApiSurface) {
     ek::UdpConfig cfg{};
     cfg.bind       = en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0};
