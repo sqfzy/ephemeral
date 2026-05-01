@@ -28,7 +28,7 @@ std::vector<std::unique_ptr<WsStream>> streams;
 
 for (auto& symbol : symbols) {
     auto s = WsStream::create({
-        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
         .tls    = { .hostname = "fstream.binance.com" },
         .ws     = { .path = std::format("/ws/{}@bookTicker", symbol) },
     }).value();
@@ -58,7 +58,8 @@ order management, persistence), use an `eph-containers` SPSC queue. The poller t
 becomes a pure I/O and codec thread; the consumer thread does the heavy lifting.
 
 ```cpp
-#include "eph/containers/bounded_queue_bytes.hpp"
+#include "eph/containers/bounded_queue.hpp"
+#include "eph/utils/cpu.hpp"   // eph::utils::pin_thread
 
 struct TickMsg {
     uint16_t symbol_id;
@@ -69,11 +70,14 @@ eph::containers::BoundedQueue<TickMsg, 4096> tick_queue;
 
 for (size_t i = 0; i < symbols.size(); ++i) {
     auto s = WsStream::create(make_cfg(symbols[i])).value();
-    s->on_message = [i](const uint8_t* d, uint16_t n) {
+    // OnMessage = std::function<void(std::span<const uint8_t>)> — single
+    // span argument, not (ptr, len). See KernelTcpStream::OnMessage in
+    // eph-net-kernel/include/eph/net/kernel/tcp_stream.hpp.
+    s->on_message = [i](std::span<const uint8_t> frame) {
         tick_queue.try_produce([&](TickMsg& m) {
             m.symbol_id = static_cast<uint16_t>(i);
-            m.len       = std::min<uint16_t>(n, 512);
-            std::memcpy(m.data, d, m.len);
+            m.len       = static_cast<uint16_t>(std::min<size_t>(frame.size(), 512));
+            std::memcpy(m.data, frame.data(), m.len);
         });
     };
     poller->add(s.get()).value();
@@ -82,12 +86,12 @@ for (size_t i = 0; i < symbols.size(); ++i) {
 
 // Poller thread
 std::thread io_thread([&] {
-    pin_to_cpu(2);
+    (void)eph::utils::pin_thread(2, "poll");
     while (running) poller->poll(100ms);
 });
 
 // Application thread
-pin_to_cpu(3);
+(void)eph::utils::pin_thread(3, "app");
 while (running) {
     tick_queue.try_consume([](const TickMsg& m) {
         process_update(m.symbol_id, m.data, m.len);
@@ -135,8 +139,12 @@ whether the codec is `WsCodec`, `RawStreamCodec`, or `Mold64Codec`. Mix them fre
 #include "eph/codec/ws_codec.hpp"
 #include "eph/codec/mold64_codec.hpp"
 
+// `PollerConfig` exposes only `port_id`, `rx_queue_id`, and
+// `max_connections`. Lcore affinity is the caller's responsibility —
+// `DpdkPoller` does not spawn its own thread. See
+// eph-net-dpdk/include/eph/net/dpdk/config.hpp.
 auto poller = eph::net::dpdk::DpdkPoller<>::create({
-    .port_id = 0, .queue_id = 0, .lcore = 4,
+    .port_id = 0, .rx_queue_id = 0,
 }).value();
 
 // Order channel: TLS WebSocket over DPDK TCP
@@ -163,11 +171,15 @@ directly.
 | Role | Where | Typical core |
 |---|---|---|
 | OS / housekeeping | any | 0 |
-| Poller thread(s) | `std::thread` or `DpdkPoller::create({.lcore=…})` | isolated cores (e.g. 2–3) |
+| Poller thread(s) | `std::thread` for kernel; an EAL lcore (`rte_eal_remote_launch` / `EalGuard::init_with_pins`) for DPDK | isolated cores (e.g. 2–3) |
 | Application logic | `std::thread` consuming from queue | isolated cores (e.g. 4–5) |
 
-Use `isolcpus=2-5` at boot and `eph::utils::cpu::pin_to_cpu()` at runtime. See
-`examples/perf_tuning_basics.cpp` for a worked example.
+Use `isolcpus=2-5` at boot and `eph::utils::pin_thread(cpu, name, policy)`
+(in `eph-utils/include/eph/utils/cpu.hpp`) at runtime — the helper
+validates against the process-wide pin registry so a second pin onto an
+already-claimed cpu is detected loudly. For the DPDK lcore-pin path see
+`eph-net-dpdk/docs/lcore-pin-integration.md` and the `--pin lcore=cpu`
+flag in `examples/simple_hft_dpdk.cpp` / `simple_hft_dpdk_rss.cpp`.
 
 ## Backpressure
 
@@ -177,11 +189,18 @@ Use `isolcpus=2-5` at boot and `eph::utils::cpu::pin_to_cpu()` at runtime. See
 | `EvictingQueue::try_produce` | Overwrites oldest — never drops producer | Latest-tick market data |
 | Direct `on_message` work | Blocks the poller — backpressure propagates to TCP via the kernel/DPDK send window | Simple apps with tight latency budgets and fast handlers |
 
-Instrument drop counters with an `eph::utils::MetricsSink` (e.g. `ConsoleSink` in
-development) so you notice when a consumer starts falling behind.
+Instrument drop counters with an `eph::core::MetricsSink` (the duck-typed
+sink concept defined in `eph-core/include/eph/core/metrics_concept.hpp`)
+— `eph::utils::ConsoleSink` is the development-friendly impl, and any
+user type with `push_counter` / `push_gauge` / `push_histogram` /
+`flush` satisfies it. See `examples/observability_demo.cpp` and
+`docs/observability-guide.md` for the full pattern.
 
 ## See also
 
 - `docs/poller-guide.md` — single-connection and basic multi-connection patterns
 - `docs/architecture.md` — why the Poller is heterogeneous by design
-- `examples/perf_tuning_basics.cpp` — TSC calibration + CPU pinning
+- `eph-utils/benchmarks/bench_cpu.cpp` — measured cost of `pin_thread`
+  + the registry's collision-detection fast path
+- `eph-net-dpdk/docs/lcore-pin-integration.md` — the typed lcore→cpu
+  pin path (`LcorePin` / `EalGuard::init_with_pins`) for DPDK builds
