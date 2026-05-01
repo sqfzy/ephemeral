@@ -12,7 +12,7 @@
 ///   * `MultiPortPlatform::create(span<PlatformConfig>)` — atomic N-port
 ///     bringup with rollback. Pre-validates every config (validate_config
 ///     + distinct port_id check) before any DPDK state is touched, then
-///     calls `Platform::create_primary` per port. If port K fails, ports
+///     calls `Platform::create` per port. If port K fails, ports
 ///     `[0, K)` are reaped via the local vector's RAII before the error
 ///     surfaces.
 ///   * `num_ports()` / `port(i)` indexed access — the slot index is the
@@ -42,7 +42,7 @@
 /// Required environment: every PCI address passed via `--pci` must be
 /// bound to vfio-pci with hugepages backing it. This demo needs *at
 /// least two* PCI args — a single port is the dominant case and goes
-/// through `Platform::create_primary` directly, no aggregator needed.
+/// through `Platform::create` directly, no aggregator needed.
 ///
 /// Usage (typed pin syntax — recommended):
 ///
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
     AppArgs args = parse_args(argc, argv);
     if (args.eal.pci.size() < 2) {
         spdlog::error("multi_port_platform_demo: need at least 2 --pci entries "
-                      "(single-port case goes through Platform::create_primary "
+                      "(single-port case goes through Platform::create "
                       "directly — see simple_hft.cpp)");
         return 1;
     }
@@ -186,10 +186,10 @@ int main(int argc, char** argv) {
     // `nb_rx_queues = 1` keeps the demo's focus on the aggregator. To
     // overlap with RSS, set `nb_rx_queues > 1` and `enable_rss = true`
     // per port — the aggregator imposes no policy.
-    std::vector<ed::PlatformConfig> port_cfgs;
+    std::vector<ed::PlatformConfigV3> port_cfgs;
     port_cfgs.reserve(n_ports);
     for (std::size_t i = 0; i < n_ports; ++i) {
-        ed::PlatformConfig pcfg{};
+        ed::PlatformConfigV3 pcfg{};
         pcfg.port_id      = static_cast<uint16_t>(i);
         pcfg.nb_rx_queues = 1;
         pcfg.nb_tx_queues = 1;
@@ -198,7 +198,7 @@ int main(int argc, char** argv) {
 
     // ── 3) Atomic N-port bringup with rollback ────────────────────────────
     auto mp_r = ed::MultiPortPlatform::create(
-        std::span<const ed::PlatformConfig>(port_cfgs));
+        std::span<const ed::PlatformConfigV3>(port_cfgs));
     if (!mp_r) {
         spdlog::error("multi_port_platform_demo: MultiPortPlatform::create failed: {}",
                       mp_r.error().detail);
