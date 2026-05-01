@@ -316,3 +316,65 @@ TEST(SignalsTest, DepthRatioMultiLevel) {
     ASSERT_TRUE(r.has_value());
     EXPECT_NEAR(*r, 1.5, kEps);
 }
+
+// ===========================================================================
+// Defensive guards: paths reachable with custom Book types or pathological
+// inputs that the ArrayBook/MapBook fixtures never produce in normal use
+// (ArrayBook erases on qty=0, so total_qty=0 with non-empty BBO is unreachable
+// through update_*; tests below construct the inputs directly).
+// ===========================================================================
+
+TEST(SignalsTest, VwapAllZeroQtyLevelsReturnsNullopt) {
+    // sum_q == 0 branch in vwap() — span is non-empty but every level
+    // has qty 0. Must surface nullopt rather than divide by zero.
+    const std::vector<PriceLevel> zero_q{
+        {100.0, 0.0}, {101.0, 0.0}, {102.0, 0.0}};
+    auto v = vwap(std::span<const PriceLevel>{zero_q});
+    EXPECT_FALSE(v.has_value());
+}
+
+TEST(SignalsTest, VwapNegativeQtyLevelTreatedAsInvalid) {
+    // sum_q goes <= 0 from a single negative qty cancelling positives.
+    // Documents the contract: signals refuse to compute on inputs where
+    // the denominator would not be strictly positive.
+    const std::vector<PriceLevel> neg{{100.0, 5.0}, {101.0, -5.0}};
+    auto v = vwap(std::span<const PriceLevel>{neg});
+    EXPECT_FALSE(v.has_value());
+}
+
+namespace {
+// Minimal stub book matching the duck-typed signal API. Lets us drive the
+// `total <= 0.0` and `mid <= 0.0` guards in weighted_mid / spread_bps that
+// ArrayBook/MapBook cannot reach via their normal update_* paths.
+struct StubBook {
+    std::optional<PriceLevel> bid_;
+    std::optional<PriceLevel> ask_;
+    double bid_total_ = 0.0;
+    double ask_total_ = 0.0;
+    [[nodiscard]] std::optional<PriceLevel> best_bid() const noexcept { return bid_; }
+    [[nodiscard]] std::optional<PriceLevel> best_ask() const noexcept { return ask_; }
+    [[nodiscard]] double total_bid_qty() const noexcept { return bid_total_; }
+    [[nodiscard]] double total_ask_qty() const noexcept { return ask_total_; }
+};
+} // namespace
+
+TEST(SignalsTest, WeightedMidZeroQtyBothSidesReturnsNullopt) {
+    // total = bid.qty + ask.qty == 0 — the second-stage guard at line 69
+    // of signals.hpp. Unreachable through ArrayBook/MapBook because qty=0
+    // erases the level, so we use a stub.
+    StubBook book;
+    book.bid_ = PriceLevel{100.0, 0.0};
+    book.ask_ = PriceLevel{101.0, 0.0};
+    EXPECT_FALSE(weighted_mid(book).has_value());
+    EXPECT_FALSE(microprice(book).has_value()); // shares the formula
+}
+
+TEST(SignalsTest, SpreadBpsNonPositiveMidReturnsNullopt) {
+    // mid = (bid + ask) / 2 <= 0 — possible only with a zero-or-negative
+    // mid (e.g. derivative books quoted with negative prices). Confirms
+    // the divide-by-mid guard surfaces nullopt rather than producing inf.
+    StubBook book;
+    book.bid_ = PriceLevel{-1.0, 1.0};
+    book.ask_ = PriceLevel{1.0, 1.0}; // mid = 0
+    EXPECT_FALSE(spread_bps(book).has_value());
+}
