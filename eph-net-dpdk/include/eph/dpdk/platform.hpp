@@ -454,6 +454,84 @@ struct PlatformConfig {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────
+// v3 PlatformConfig (primary-only)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Parallel to v2 `PlatformConfig` during the v3 transition. Removes
+// fields that secondary should never set (proc_type, mp_topology,
+// rx_queue_range — see plan reflective-rolling-hellman.md). Adds
+// `max_procs` / `queues_per_proc` so primary expresses MP topology
+// in caller-friendly terms, never `MpTopology::uniform(...)` directly.
+//
+// Stage 1 status (this file): the v3 entry points (`Platform::create`,
+// `create_with_eal`) are wrappers that translate `PlatformConfigV3`
+// back into the v2 `PlatformConfig` shape and call the v2 lifecycle.
+// Stage 3 will rewrite the entry points to native v3 implementation.
+//
+// Stage 5 will rename `PlatformConfigV3` -> `PlatformConfig` after the
+// v2 struct + v2 entry points are deleted.
+
+/// @brief Primary-side (or single-process) Platform config — v3 shape.
+///
+/// Symmetric to v2 `PlatformConfig` for the NIC-physical-state fields
+/// (queue counts, descriptor counts, mempool, RSS, promiscuous, etc.)
+/// but without the secondary-side baggage. `max_procs` defaults to 1
+/// (single-process); set > 1 to open N MP slots in the registry that
+/// secondaries can attach to via `Platform::attach`.
+struct PlatformConfigV3 {
+    // ── Identity ────────────────────────────────────────────────────
+    /// DPDK port enumeration index.
+    uint16_t         port_id      = 0;
+    /// Hugepage namespace (matches EAL `--file-prefix`). Empty value
+    /// is single-process default; non-empty publishes a registry that
+    /// secondaries find via `PlatformAttachConfig::file_prefix`.
+    std::string_view file_prefix  = {};
+
+    // ── NIC physical state (mirror v2) ─────────────────────────────
+    uint16_t nb_rx_queues    = 1;
+    uint16_t nb_tx_queues    = 1;
+    uint16_t nb_rx_desc      = 256;
+    uint16_t nb_tx_desc      = 512;
+    uint32_t mbuf_pool_size  = 4095;
+    uint16_t mbuf_cache_size = 256;
+    bool     enable_promiscuous          = false;
+    bool     enable_rx_checksum_offload  = false;
+    bool     enable_strict_rx_checksum   = false;
+    int      link_timeout_ms             = 2000;
+    uint16_t per_lcore_pools             = 0;
+
+    // ── MP knobs (caller-friendly; replace mp_topology) ────────────
+    /// @brief Total process slots primary opens. 1 = single-process
+    /// (no registry); >= 2 = MP primary, registry has this many slots
+    /// available for secondaries.
+    uint8_t  max_procs       = 1;
+    /// @brief How many RX queues each process slot owns. 0 = auto
+    /// (`nb_rx_queues / max_procs`). Only consulted when `max_procs > 1`.
+    uint16_t queues_per_proc = 0;
+
+    /// Optional cross-process lcore-conflict bitmap published by primary.
+    uint64_t self_lcore_mask = 0;
+
+    [[nodiscard]] friend bool operator==(const PlatformConfigV3&,
+                                         const PlatformConfigV3&) = default;
+
+    [[nodiscard]] std::string dump() const {
+        return std::format(
+            "PlatformConfigV3{{port_id={}, file_prefix='{}', "
+            "queues={}rx/{}tx, descs={}rx/{}tx, "
+            "pool={} cache={} promisc={} link_to={}ms, "
+            "rx_cksum={} strict={}, "
+            "max_procs={} queues_per_proc={} per_lcore_pools={} "
+            "self_lcore_mask=0x{:x}}}",
+            port_id, file_prefix, nb_rx_queues, nb_tx_queues,
+            nb_rx_desc, nb_tx_desc, mbuf_pool_size, mbuf_cache_size,
+            enable_promiscuous, link_timeout_ms,
+            enable_rx_checksum_offload, enable_strict_rx_checksum,
+            max_procs, queues_per_proc, per_lcore_pools, self_lcore_mask);
+    }
+};
+
 } // namespace eph::dpdk
 
 // JoinDynamicConfig embeds a PlatformConfig as a value member, so it
@@ -462,6 +540,7 @@ struct PlatformConfig {
 // join_dynamic.hpp checks at the top.
 #define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
 #include "eph/dpdk/join_dynamic.hpp"
+#include "eph/dpdk/platform_attach.hpp"
 
 namespace eph::dpdk {
 
@@ -737,6 +816,55 @@ public:
                     EalConfig                               eal_cfg,
                     std::span<eph::dpdk::LcorePin const>    pins   = {},
                     eph::utils::CpuPinPolicy                policy = {});
+
+    // ─────────────────────────────────────────────────────────────────
+    // v3 entry points (zero-consensus surface)
+    // ─────────────────────────────────────────────────────────────────
+    //
+    // These are the recommended API for new code; v2 entry points above
+    // remain functional for backwards-compat during the v3 transition
+    // (stage 4 migrates callers, stage 5 deletes v2). See
+    // .claude/plans/reflective-rolling-hellman.md for the migration plan.
+
+    /// @brief v3: single-process or MP primary (zero-consensus primary).
+    /// `cfg.max_procs == 1` (default) is single-process. `cfg.max_procs >= 2`
+    /// opens a registry that secondaries find via `Platform::attach`.
+    /// EAL must be initialized before this call (use `create_with_eal`
+    /// for the one-shot path).
+    [[nodiscard]] static std::expected<Platform, std::string>
+    create(PlatformConfigV3 cfg);
+
+    /// @brief v3: MP secondary attach. Reads NIC physical state from
+    /// primary's registry + live NIC; the only required input is
+    /// `file_prefix` (locates primary's hugepage namespace). EAL must
+    /// be initialized as `--proc-type=secondary` before this call.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    attach(PlatformAttachConfig cfg);
+
+    /// @brief v3: one-shot EAL+Platform for primary path.
+    /// EalConfig caller-side: do NOT set `proc_type` / `file_prefix` —
+    /// this factory injects them from `cfg.file_prefix` and
+    /// `ProcType::Primary`.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    create_with_eal(PlatformConfigV3                        cfg,
+                    EalConfig                               eal_cfg,
+                    std::span<eph::dpdk::LcorePin const>    pins   = {},
+                    eph::utils::CpuPinPolicy                policy = {});
+
+    /// @brief v3: one-shot EAL+Platform for secondary attach.
+    /// Same EalConfig contract as `create_with_eal` — caller does not
+    /// set `proc_type` / `file_prefix`; this factory injects them.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    attach_with_eal(PlatformAttachConfig                    cfg,
+                    EalConfig                               eal_cfg,
+                    std::span<eph::dpdk::LcorePin const>    pins   = {},
+                    eph::utils::CpuPinPolicy                policy = {});
+
+    /// @brief v3: autojoin — `pci` is the only required input. file_prefix
+    /// is auto-derived from PCI BDF; primary/secondary role auto-resolved
+    /// post `eal_init`; secondary needs no NIC physical knowledge.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    join_dynamic(JoinDynamicConfigV3 cfg);
 
     ~Platform();
 
@@ -2681,6 +2809,252 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     return std::unexpected(std::string{
         "join_dynamic: rte_eal_process_type returned an invalid role "
         "(EAL not properly initialized)"});
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// v3 entry-point implementations (Stage 1: thin wrappers over v2)
+// ─────────────────────────────────────────────────────────────────────
+//
+// These reshape `PlatformConfigV3` / `PlatformAttachConfig` /
+// `JoinDynamicConfigV3` into the v2 forms and delegate to the existing
+// lifecycle. Stage 3 will replace the wrapper bodies with native v3
+// implementations that no longer need the v2 path; stage 5 deletes v2.
+//
+// **Stage 1 testable surface**:
+//   * `Platform::create(PlatformConfigV3{max_procs=1})` — single-process
+//     happy path: byte-for-byte equivalent to v2 `create_primary`.
+//   * `Platform::attach(PlatformAttachConfig)` — calls into v2
+//     `create_secondary_impl_` after registry attach + slot CAS-claim.
+//   * `Platform::create_with_eal` / `attach_with_eal` v3 — assemble
+//     EalConfig with caller-supplied lcores/pci then delegate to v2.
+//   * `Platform::join_dynamic(JoinDynamicConfigV3)` — translates to v2
+//     `JoinDynamicConfig` (queues_per_proc / max_procs read from
+//     primary_config) and calls v2 path.
+
+namespace detail {
+
+/// Translate v3 PlatformConfigV3 (primary or single-process) to v2
+/// PlatformConfig. Synthesizes MpTopology from `max_procs`/
+/// `queues_per_proc` when MP is requested.
+inline PlatformConfig v3_to_v2_primary(const PlatformConfigV3& v3) {
+    PlatformConfig v2{};
+    v2.port_id                    = v3.port_id;
+    v2.nb_rx_queues               = v3.nb_rx_queues;
+    v2.nb_tx_queues               = v3.nb_tx_queues;
+    v2.nb_rx_desc                 = v3.nb_rx_desc;
+    v2.nb_tx_desc                 = v3.nb_tx_desc;
+    v2.mbuf_pool_size             = v3.mbuf_pool_size;
+    v2.mbuf_cache_size            = v3.mbuf_cache_size;
+    v2.enable_promiscuous         = v3.enable_promiscuous;
+    v2.enable_rx_checksum_offload = v3.enable_rx_checksum_offload;
+    v2.enable_strict_rx_checksum  = v3.enable_strict_rx_checksum;
+    v2.link_timeout_ms            = v3.link_timeout_ms;
+    v2.per_lcore_pools            = v3.per_lcore_pools;
+    v2.proc_type                  = ProcType::Primary;
+    v2.file_prefix                = v3.file_prefix;
+
+    if (v3.max_procs > 1) {
+        // MP primary — synthesize uniform topology. The library handles
+        // queues_per_proc=0 (auto) by using nb_rx_queues / max_procs
+        // splitting via MpTopology::uniform.
+        v2.mp_topology = MpTopology::uniform(
+            /*self_index=*/0, v3.max_procs, v3.nb_rx_queues);
+        if (v3.self_lcore_mask != 0) {
+            v2.mp_topology->procs[0].lcore_mask = v3.self_lcore_mask;
+        }
+    }
+    return v2;
+}
+
+} // namespace detail
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::create(PlatformConfigV3 cfg) {
+    return Platform::create_primary(detail::v3_to_v2_primary(cfg));
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::attach(PlatformAttachConfig cfg) {
+    [[maybe_unused]] auto log = detail::platform_logger();
+
+    if (cfg.file_prefix.empty()) {
+        return std::unexpected(std::string{
+            "Platform::attach: file_prefix must be non-empty (locates "
+            "primary's hugepage registry — without it secondary cannot "
+            "find primary)"});
+    }
+
+    // Registry attach + slot CAS-claim. Mirrors join_dynamic[secondary].
+    auto ro = ::eph::dpdk::detail::MpRegistryHandle::
+        attach_secondary_readonly(cfg.file_prefix);
+    if (!ro) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::attach: attach_secondary_readonly failed: {}",
+            ro.error().detail);
+        return std::unexpected(std::string{ro.error().detail});
+    }
+
+    auto idx_r = ro->try_claim_free_slot();
+    if (!idx_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::attach: try_claim_free_slot failed: {}",
+            idx_r.error().detail);
+        return std::unexpected(std::string{idx_r.error().detail});
+    }
+    const uint8_t self_idx     = *idx_r;
+    const uint32_t total_procs = ro->header()->total_procs;
+
+    // Query live NIC for nb_rx_queues — A1 assumption (verified
+    // empirically in stage 3). Secondary doesn't get this from caller.
+    rte_eth_dev_info dev_info{};
+    if (int rc = rte_eth_dev_info_get(cfg.port_id, &dev_info); rc != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::attach: rte_eth_dev_info_get(port={}) failed: rc={}",
+            cfg.port_id, rc);
+        return std::unexpected(std::string{
+            "Platform::attach: rte_eth_dev_info_get failed (port may not "
+            "be configured by primary yet, or port_id mismatch)"});
+    }
+    const uint16_t nb_rx_queues = dev_info.nb_rx_queues;
+    if (nb_rx_queues == 0) {
+        return std::unexpected(std::string{
+            "Platform::attach: NIC reports nb_rx_queues=0 — primary may "
+            "not have configured the port yet"});
+    }
+
+    PlatformConfig v2{};
+    v2.port_id      = cfg.port_id;
+    v2.proc_type    = ProcType::Secondary;
+    v2.file_prefix  = cfg.file_prefix;
+    v2.nb_rx_queues = nb_rx_queues;
+    v2.nb_tx_queues = (dev_info.nb_tx_queues != 0)
+                         ? dev_info.nb_tx_queues : nb_rx_queues;
+    v2.mp_topology  = MpTopology::uniform(self_idx,
+                                          static_cast<uint8_t>(total_procs),
+                                          nb_rx_queues);
+    if (cfg.self_lcore_mask != 0) {
+        v2.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
+    }
+    ro->disarm_slot();  // hand off slot ownership to the new Platform
+
+    return Platform::create_secondary_impl_(std::move(v2),
+                                            /*registry_preclaimed=*/true);
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::create_with_eal(PlatformConfigV3                        cfg,
+                          EalConfig                               eal_cfg,
+                          std::span<eph::dpdk::LcorePin const>    pins,
+                          eph::utils::CpuPinPolicy                policy) {
+    // Inject identity fields into EalConfig — caller does not set these.
+    eal_cfg.proc_type     = ProcType::Primary;
+    eal_cfg.proc_type_set = true;
+    eal_cfg.file_prefix   = cfg.file_prefix;
+    return Platform::create_with_eal(detail::v3_to_v2_primary(cfg),
+                                     std::move(eal_cfg), pins, policy);
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::attach_with_eal(PlatformAttachConfig                    cfg,
+                          EalConfig                               eal_cfg,
+                          std::span<eph::dpdk::LcorePin const>    pins,
+                          eph::utils::CpuPinPolicy                policy) {
+    // Inject identity fields into EalConfig.
+    eal_cfg.proc_type     = ProcType::Secondary;
+    eal_cfg.proc_type_set = true;
+    eal_cfg.file_prefix   = cfg.file_prefix;
+
+    // The v2 `create_with_eal` dispatches by `pcfg.proc_type` to either
+    // `create_primary` or `create_secondary`. To reuse it, build a
+    // minimal v2 PlatformConfig with just enough to mark it Secondary;
+    // create_secondary_impl_ then reads from the registry / live NIC.
+    // BUT: the v2 path requires nb_rx_queues > 0 in validate_config,
+    // and the Stage 1 wrapper has no clean way to learn that pre-EAL.
+    // Instead we go via attach() which queries the live NIC after EAL
+    // is up. So: do EAL ourselves first via Platform::create_with_eal
+    // shim, then re-route to attach().
+    //
+    // For Stage 1 we mirror the v2 create_with_eal flow but call
+    // attach() at the dispatch point.
+    //
+    // Implementation strategy: temporarily call v2 create_with_eal with
+    // a placeholder PlatformConfig{Secondary, file_prefix, nb_rx_queues=1}
+    // — but that fails validate_config when secondary's
+    // mp_topology.self.queue_hi > nb_rx_queues=1. So we cannot reuse
+    // v2's create_with_eal for the secondary path. Open-code the EAL
+    // bring-up here, then call attach().
+
+    [[maybe_unused]] auto log = detail::platform_logger();
+
+    // Mutex check (mirrors v2 create_with_eal step 1)
+    if (!pins.empty() && !eal_cfg.lcores.empty()) {
+        return std::unexpected(std::string{
+            "attach_with_eal: typed pins and raw eal_cfg.lcores are "
+            "mutually exclusive"});
+    }
+
+    // Pre-EAL pin registration (mirrors v2 create_with_eal step 2)
+    std::vector<eph::utils::PinGuard> pin_guards;
+    if (!pins.empty()) {
+        auto pg = pin_lcores(pins, policy);
+        if (!pg) {
+            return std::unexpected(std::string{
+                "attach_with_eal: pin_lcores: "} + pg.error());
+        }
+        pin_guards = std::move(*pg);
+        eal_cfg.extra_args.push_back(build_lcore_argv(pins));
+    }
+
+    // Build EAL argv + init
+    auto argv_owned = build_eal_argv(eal_cfg);
+    std::vector<char*> argv;
+    argv.reserve(argv_owned.size());
+    for (auto& s : argv_owned) argv.push_back(s.data());
+
+    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
+    if (!eal_r) {
+        return std::unexpected(std::string{
+            "attach_with_eal: eal_init failed: "} + eal_r.error());
+    }
+
+    // Now EAL is up — call v3 attach()
+    auto plat_r = Platform::attach(cfg);
+    if (!plat_r) {
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::string{
+            "attach_with_eal: "} + plat_r.error());
+    }
+
+    // Transfer EAL ownership into the Platform
+    Platform plat = std::move(*plat_r);
+    if (plat.impl_) {
+        plat.impl_->pin_session_guards = std::move(pin_guards);
+        plat.impl_->owns_eal_init      = true;
+    }
+    return plat;
+}
+
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::join_dynamic(JoinDynamicConfigV3 v3cfg) {
+    // Translate v3 → v2 JoinDynamicConfig. queues_per_proc and
+    // max_procs flow from primary_config to top-level.
+    JoinDynamicConfig v2cfg{};
+    v2cfg.pci             = v3cfg.pci;
+    v2cfg.queues_per_proc = (v3cfg.primary_config.queues_per_proc > 0)
+                                ? v3cfg.primary_config.queues_per_proc
+                                : 1;
+    v2cfg.max_procs       = v3cfg.primary_config.max_procs;
+    // file_prefix always auto-derived from pci in v3 (zero-consensus).
+    v2cfg.file_prefix     = {};
+    v2cfg.pcfg_template   = detail::v3_to_v2_primary(v3cfg.primary_config);
+    // v3_to_v2_primary set proc_type=Primary; v2 join_dynamic resets it
+    // post-EAL based on rte_eal_process_type, so this is harmless.
+    v2cfg.pins            = v3cfg.pins;
+    v2cfg.pin_policy      = v3cfg.pin_policy;
+    v2cfg.lcores          = std::move(v3cfg.lcores);
+    v2cfg.eal_extras      = std::move(v3cfg.eal_extras);
+    v2cfg.self_lcore_mask = v3cfg.self_lcore_mask;
+    return Platform::join_dynamic(std::move(v2cfg));
 }
 
 // Null guards on all impl_-accessing methods protect against use on a

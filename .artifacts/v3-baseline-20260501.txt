@@ -1,0 +1,77 @@
+=== Baseline: 2026-05-01T11:36:37Z ===
+
+=== HEAD ===
+37fc91ecb10e7b6c5586365fb4f61d0288cc49d6
+37fc91ec chore(dpdk): static_assert kMaxLcoreId schema-cap link in lcore parser
+
+=== MP-related test binaries (xmake target list) ===
+eph-net-dpdk/tests/legacy/test_dpdk_multiprocess_config.cpp
+eph-net-dpdk/tests/test_dpdk_multi_port_platform.cpp
+eph-net-dpdk/tests/test_mp_ipc.cpp
+eph-net-dpdk/tests/test_mp_registry.cpp
+eph-net-dpdk/tests/test_mp_topology.cpp
+eph-net-dpdk/tests/test_platform_create_with_eal.cpp
+
+=== Integration MP binaries ===
+eph-net-dpdk/tests/integration/dpdk_mp_dynamic_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_dynamic_secondary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_dynamic_tcp_handshake_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_dynamic_tcp_handshake_secondary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_fd_fallback_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_fd_fallback_secondary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_icmp_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_icmp_secondary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_secondary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_topology_primary.cpp
+eph-net-dpdk/tests/integration/dpdk_mp_topology_secondary.cpp
+eph-net-dpdk/tests/integration/repro_ena_mp_secondary_rxburst.cpp
+=== Test counts (build + run) ===
+--- test_mp_registry ---
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 0.024s[0m
+[----------] Global test environment tear-down
+[==========] 42 tests from 8 test suites ran. (112 ms total)
+[  PASSED  ] 42 tests.
+--- test_mp_topology ---
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 0.023s[0m
+[----------] Global test environment tear-down
+[==========] 30 tests from 5 test suites ran. (0 ms total)
+[  PASSED  ] 30 tests.
+--- test_mp_ipc ---
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 0.023s[0m
+[----------] Global test environment tear-down
+[==========] 14 tests from 4 test suites ran. (86 ms total)
+[  PASSED  ] 14 tests.
+--- test_dpdk_multi_port_platform ---
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 15.425s[0m
+[----------] Global test environment tear-down
+[==========] 9 tests from 3 test suites ran. (87 ms total)
+[  PASSED  ] 9 tests.
+--- test_platform_create_with_eal ---
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 16.095s[0m
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 3 tests.
+
+=== legacy test_dpdk_multiprocess_config ===
+[0m[38;2;0;255;0;1m[100%]:[0m [38;2;0;255;0;1mbuild ok, spent 15.325s[0m
+
+13 FAILED TESTS
+[0m[1;38;2;255;0;0;1merror: [0mexecv(/home/ec2-user/ephemeral_dev/build/linux/arm64/release/test_dpdk_multiprocess_config ) failed(1), unknown reason[0m
+
+=== Pre-existing baseline anomalies ===
+test_dpdk_multiprocess_config (legacy): 13/27 FAILED — pre-existing, validation-order shifts in create_secondary post-v3.3.
+These tests target v2 surface that v3 will obsolete (deleted in 阶段 4a/5).
+
+=== Public API signatures snapshot ===
+eph-net-dpdk/include/eph/dpdk/join_dynamic.hpp:69:struct JoinDynamicConfig {
+eph-net-dpdk/include/eph/dpdk/eal.hpp:230:struct EalConfig {
+eph-net-dpdk/include/eph/dpdk/mp_topology.hpp:64:struct ProcSpec {
+eph-net-dpdk/include/eph/dpdk/mp_topology.hpp:121:struct MpTopology {
+eph-net-dpdk/include/eph/dpdk/platform.hpp:179:struct PlatformConfig {
+
+=== Registry schema constants ===
+258:    dst->magic        = kMpRegistryMagic;
+259:    dst->version      = kMpRegistryVersion;
+483:            "(magic=0x{:08x} ver={} total_procs={} self_index={} pid={})",
+814:            "(magic=0x{:08x} ver={} total_procs={})",

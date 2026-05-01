@@ -166,4 +166,53 @@ struct JoinDynamicConfig {
     uint64_t self_lcore_mask{0};
 };
 
+// ─────────────────────────────────────────────────────────────────────
+// v3 JoinDynamicConfig (zero-consensus autojoin)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Parallel to v2 `JoinDynamicConfig` during the v3 transition.
+// Differences:
+//   - `pcfg_template` renamed to `primary_config` (only consulted on
+//     primary path; secondary discards every field except for the
+//     library's internal use of file_prefix derived from `pci`).
+//   - `queues_per_proc` / `max_procs` moved INSIDE primary_config (as
+//     `PlatformConfigV3::queues_per_proc` / `max_procs`). Top-level
+//     fields removed — secondary peers no longer specify them.
+//   - `file_prefix` removed entirely (always auto-derived from `pci`
+//     to enforce zero-consensus).
+//
+// Stage 5 will rename `JoinDynamicConfigV3` -> `JoinDynamicConfig`
+// after the v2 struct + v2 entry points are deleted.
+
+/// @brief Zero-consensus autojoin config (v3).
+///
+/// Required: `pci`. Everything else has a sensible default.
+/// **Secondary peers only need `pci` (and per-peer EAL args).**
+struct JoinDynamicConfigV3 {
+    /// PCI BDF of the NIC to attach. Drives BOTH the EAL `-a` allowlist
+    /// AND the auto-derived `file_prefix` (`"eph_" + sanitize(pci)`).
+    /// Two peers naming the same BDF naturally agree on hugepage
+    /// namespace without sharing any string.
+    std::string_view pci;
+
+    /// Primary-side full PlatformConfig — used ONLY when this peer
+    /// resolves to primary (first to call `eal_init`). Secondary peers
+    /// have every field of this struct ignored. The `max_procs` /
+    /// `queues_per_proc` knobs live here, not at the top level, so
+    /// secondary callers can't accidentally specify them.
+    /// **Required when this peer resolves to primary**:
+    /// `primary_config.nb_rx_queues > 0`. (Secondary peers may leave
+    /// at default — discarded anyway.)
+    PlatformConfigV3 primary_config{};
+
+    // ─── EAL options ─────────────────────────────────────────────────────
+    // Same shape as v2 — these are per-peer (not consensus-bearing).
+
+    std::span<eph::dpdk::LcorePin const> pins{};
+    eph::utils::CpuPinPolicy pin_policy{};
+    std::vector<std::string> lcores{};
+    std::vector<std::string> eal_extras{};
+    uint64_t self_lcore_mask{0};
+};
+
 } // namespace eph::dpdk
