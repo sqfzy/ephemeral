@@ -1143,6 +1143,15 @@ struct Platform::Impl {
     /// flag at false).
     bool owns_eal_init{false};
 
+    /// True iff MP topology is active and at least one peer (other
+    /// than self) is still attached. Used as the gate for primary
+    /// teardown of shared port / mempool / memzone state. See
+    /// eph-net-dpdk/docs/ena-mp-limitation.md for full rationale.
+    [[nodiscard]] bool defer_for_peers() const noexcept {
+        return mp_registry.has_value() &&
+               !mp_registry->is_last_alive_proc();
+    }
+
     ~Impl() {
         cleanup();
         // Clear process-level ICMP IPC globals if they still point at
@@ -1187,21 +1196,10 @@ struct Platform::Impl {
         }
         remote_flow_rules.destroy_all();
 
-        // MP teardown protocol gate (paired with the gate in
-        // cleanup() / ~Platform()): if peers are still attached, the
-        // upcoming field destructor for `icmp_directory` must NOT
-        // call `rte_memzone_free` — peers attached via
-        // `attach_secondary_lookup` and hold pointers to its hdr_,
-        // which would dangle. mp_registry handles this internally
-        // via its release_() (it scans its own slot table after
-        // releasing self), but icmp_directory has no peer-aware
-        // structure of its own and depends on this signal.
-        //
-        // Query mp_registry HERE (before its field destructor fires)
-        // so we capture "self still claimed + at least one other
-        // claimed" → defer icmp_directory free.
-        if (mp_registry.has_value() && icmp_directory.has_value() &&
-            !mp_registry->is_last_alive_proc()) {
+        // MP teardown gate — icmp_directory has no peer-aware structure
+        // of its own (mp_registry handles its memzone via release_()).
+        // Must run BEFORE icmp_directory's field destructor fires.
+        if (defer_for_peers() && icmp_directory.has_value()) {
             icmp_directory->disable_memzone_free();
         }
 
@@ -1692,32 +1690,13 @@ struct Platform::Impl {
             return;
         }
 
-        // ──────────────────────────────────────────────────────────────────
-        // PRIMARY teardown — DPDK MP protocol gate.
-        //
-        // The DPDK port is a *system* resource shared across all attached
-        // processes (its io_cq descriptor rings live in shared hugepage
-        // memory). Per the DPDK contract, primary owns the port's lifecycle
-        // — `rte_eth_dev_stop` tears down ALL queues, including those
-        // exclusively used by secondaries. On ENA / DPDK 24.11 this fires
-        // `ena_com_io_queue_free` which writes `io_cq->cdesc_addr.virt_addr
-        // = NULL` into shared memory, instantly visible to every attached
-        // peer; if any peer is mid-`rte_eth_rx_burst`, it loads the NULL
-        // and SIGSEGVs in `ena_com_get_next_rx_cdesc`.
-        //
-        // Therefore: when MP topology is in use (`mp_registry.has_value()`)
-        // and other peers are still attached, defer global teardown.
-        // The port stays running until the last attached peer's
-        // `~Impl::cleanup()` hits this branch with `is_last_alive_proc()
-        // == true`. If primary exits before all secondaries, no peer
-        // ever calls stop — the port leaks until `dpdk-teardown.sh` (or
-        // a future eph IPC reaper) recycles hugepages on the next session.
-        //
-        // Single-process path (`mp_registry` empty, e.g. examples / unit
-        // tests / dpdk_e2e) is byte-equal to the pre-fix behavior: gate
-        // short-circuits to `false` and falls through to original
-        // stop/close/free below.
-        if (mp_registry.has_value() && !mp_registry->is_last_alive_proc()) {
+        // PRIMARY teardown — DPDK MP teardown gate.
+        // Full rationale (why eph defers stop/close/free when peers
+        // are still attached): see eph-net-dpdk/docs/ena-mp-limitation.md.
+        // Single-process path (`mp_registry` empty) short-circuits to
+        // false and falls through to the original stop/close/free below
+        // — byte-equal to pre-fix behavior.
+        if (defer_for_peers()) {
             const uint32_t alive = mp_registry->count_alive_procs();
             SPDLOG_LOGGER_INFO(log,
                 "primary cleanup: {} peers still attached — deferring "
@@ -1777,41 +1756,29 @@ inline Platform::Platform(std::unique_ptr<Impl> impl) noexcept
     : impl_(std::move(impl)) {}
 
 inline Platform::~Platform() {
-    // Explicit teardown order: destroy Impl fully FIRST (which runs
-    // ~Impl's body cleanup() + reverse-order field destructors,
-    // releasing every DPDK resource: mempool / port / mp_registry
-    // memzones / icmp_directory memzone / rte_mp_action handlers),
-    // THEN run eal_cleanup. If we let the implicit destructor handle
-    // this, ~Platform's body would run BEFORE impl_'s field
-    // destruction (C++ standard: dtor body first, then fields), so
-    // eal_cleanup would fire while mp_registry still holds memzone
-    // pointers — touching them after rte_eal_cleanup is a SEGV.
+    // Explicit teardown order: destroy Impl fully FIRST (~Impl body
+    // + reverse-order field destructors release every DPDK resource),
+    // THEN run eal_cleanup. Implicit destructor would invert this and
+    // SEGV in mp_registry's memzone access after rte_eal_cleanup.
     //
-    // **MP teardown protocol gate** (paired with `Impl::cleanup()`'s
-    // gate): `rte_eal_cleanup` internally closes any still-active
-    // devices via `rte_dev_close_all` / equivalent — on ENA this
-    // dispatches into `ena_close` which fires the same
-    // `ena_com_io_queue_free` write-NULL-into-shared-hugepage that
-    // `rte_eth_dev_stop` would have. So when peers are still attached,
-    // we must skip `eal_cleanup` too. Snapshot the "is last" state
-    // before `impl_.reset()` — by the time reset returns, mp_registry
-    // is already destroyed (its dtor cleared self slot), and the
-    // post-reset query would be meaningless.
+    // MP teardown gate (paired with Impl::cleanup() gate): when peers
+    // are still attached, defer rte_eal_cleanup too — it would close
+    // active devices and dangle peers' shared io_cq state. See
+    // eph-net-dpdk/docs/ena-mp-limitation.md for full rationale.
     if (impl_) {
         const bool owns_eal = impl_->owns_eal_init;
-        const bool defer_eal_for_peers =
-            impl_->mp_registry.has_value() &&
-            !impl_->mp_registry->is_last_alive_proc();
+        // Snapshot the gate BEFORE impl_.reset(): mp_registry's dtor
+        // will clear self slot during reset, so the post-reset query
+        // would be meaningless.
+        const bool defer_eal_for_peers = impl_->defer_for_peers();
         impl_.reset();   // triggers ~Impl → all DPDK resources gone
         if (owns_eal) {
             [[maybe_unused]] auto log = detail::platform_logger();
             if (defer_eal_for_peers) {
                 SPDLOG_LOGGER_INFO(log,
                     "~Platform: deferring rte_eal_cleanup — peers still "
-                    "attached. eal_cleanup would close all active devices "
-                    "(ENA: write NULL into shared io_cq), faulting peers "
-                    "mid-rx_burst. Per-process hugepage mappings will be "
-                    "released by OS on exit; shared state stays for peers.");
+                    "attached. OS releases per-process hugepage mappings "
+                    "on exit; shared state stays alive for peers.");
             } else {
                 SPDLOG_LOGGER_DEBUG(log,
                     "~Platform: owns_eal_init=true — running eal_cleanup");

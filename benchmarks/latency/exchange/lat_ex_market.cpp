@@ -280,8 +280,7 @@ int main(int argc, char** argv) {
     auto poller_r = Poller::create(poller_cfg);
 #else
     auto poller_r = ek::KernelPoller::create({});
-    constexpr uint16_t rx_queue = 0;  // kernel: no MP queue concept
-    (void)rx_queue;                    // silence unused-warning when DPDK paths are off
+    const uint16_t rx_queue = 0;  // kernel: no MP queue concept
 #endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_ex_market: Poller::create failed: %s\n",
