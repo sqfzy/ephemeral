@@ -26,8 +26,12 @@ xmake run -g tests          # expect all-pass
 ```
 
 If the build fails on C++23 features, install GCC 14 (Amazon Linux 2023:
-`sudo dnf install gcc14-g++`, then `xmake f --cxx=/usr/bin/g++-14 --ld=/usr/bin/g++-14`).
-Recent Arch / Ubuntu ship a modern-enough compiler by default.
+`sudo dnf install gcc14-g++`, then
+`xmake f --cxx=/usr/bin/gcc14-g++ --ld=/usr/bin/gcc14-g++ --sh=/usr/bin/gcc14-g++`).
+The `--sh` flag is required so the linker driving `.so` outputs also
+goes through the GCC 14 toolchain (otherwise C++23 ABI symbols
+unresolved at link). Recent Arch / Ubuntu ship a modern-enough
+compiler by default.
 
 DPDK builds are optional. The kernel path builds cleanly on any Linux host with GCC
 ≥ 13 / Clang ≥ 17. See `docs/dpdk-setup.md` if you want to bring up the DPDK path.
@@ -131,8 +135,13 @@ one target per file. Drop a new `.cpp` in and it builds automatically.
   flags on the relevant targets.
 - **No virtual dispatch.** Constrain templates with the core concepts; don't add
   abstract base classes.
-- **TSC, not `steady_clock`**, for latency measurement. `eph::utils::TSC::now()` is
-  the canonical timer. The bench framework assumes it.
+- **TSC, not `steady_clock`**, for in-process latency measurement.
+  `eph::utils::TSC` (in `eph-utils/time.hpp`) is the canonical timer.
+  The one documented exception is the end-to-end latency bench
+  (`benchmarks/latency/`), which uses `clock_gettime(CLOCK_MONOTONIC_RAW)`
+  via `bench::monotonic_raw_ns()` so client and `mockex` (separate
+  processes, often pinned to different cores) share a time base on
+  one-way scenarios. See `docs/latency-benchmark-fairness.md`.
 - **Compile-time log filtering.** Use the `SPDLOG_TRACE / DEBUG / INFO / …` macros
   (not the runtime spdlog API), so suppressed levels compile out entirely.
 - **Per-module README/CHANGELOG/summary/ONBOARDING** are regenerated on big refactors
