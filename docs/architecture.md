@@ -61,15 +61,16 @@ backend at link time.
 satisfies these concepts can be attached to a `Poller`.
 
 ```cpp
+// eph-net/include/eph/net/concepts.hpp
 template <class T>
 concept Stream = Pollable<T> && requires(T& t, std::span<const uint8_t> data) {
     typename T::CodecType;
     typename T::OnMessage;
-    { t.send(data) }         -> std::same_as<std::expected<size_t, core::ErrorInfo>>;
-    { t.close_gracefully() } -> std::same_as<std::expected<void,   core::ErrorInfo>>;
-    { t.is_attached() }      -> std::same_as<bool>;
-    { t.state() }            -> std::same_as<TcpState>;
-    { t.on_message }         -> std::convertible_to<typename T::OnMessage>;
+    { t.send(data) }         noexcept -> std::same_as<std::expected<std::size_t, core::ErrorInfo>>;
+    { t.close_gracefully() } noexcept -> std::same_as<std::expected<void,        core::ErrorInfo>>;
+    { t.is_attached() }      noexcept -> std::convertible_to<bool>;
+    { t.state() }            noexcept -> std::same_as<TcpState>;
+    { t.on_message }                  -> std::convertible_to<typename T::OnMessage>;
 };
 ```
 
@@ -121,13 +122,25 @@ concrete types simultaneously, type-erased via P2 function pointers (not virtual
 dispatch).
 
 ```cpp
+// eph-net/include/eph/net/concepts.hpp
 template <class T>
-concept Poller = requires(T& p, Pollable auto* obj) {
-    { p.add(obj) }    -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.remove(obj) } -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.poll() }      -> std::convertible_to<size_t>;
+concept Poller = requires(T& p) {
+    { p.poll() } noexcept -> std::convertible_to<std::size_t>;
+};
+
+template <class T, class Obj>
+concept PollerOf = Poller<T> && Pollable<Obj> && requires(T& p, Obj* obj) {
+    { p.add(obj) }    noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.remove(obj) } noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
 };
 ```
+
+`Poller<T>` is the bare driver concept (just `poll()`); `PollerOf<T,
+Obj>` is the finer-grained refinement that proves a specific Pollable
+type can be registered. Function-parameter sites that don't need to
+introduce a Pollable type stay constrained on `Poller<T>` — the split
+keeps the cheaper concept usable as a parameter constraint without
+naming an `Obj`.
 
 Implementations:
 
