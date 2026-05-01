@@ -75,9 +75,10 @@ adapters and exchange REST examples.
 Venue-traits-driven HMAC `sign_into_headers(...)` helper — wraps
 `HmacSha256Key` + `hmac_sha256_sign` with the per-venue conventions
 (what gets signed, hex vs base64 tag rendering, header names) for
-Binance / OKX / Bybit / Coinbase. Plug a venue trait into your
-adapter; the helper writes the auth headers without per-venue glue
-code in user space.
+Binance / OKX / Bybit. Plug a venue trait into your adapter; the
+helper writes the auth headers without per-venue glue code in user
+space. Coinbase Advanced Trade uses ES256 JWT instead of HMAC and
+lives in `jwt_signed_request.hpp` — see the next section.
 
 ### Reconnect orchestrator (`include/eph/net/reconnect_orchestrator.hpp`)
 
