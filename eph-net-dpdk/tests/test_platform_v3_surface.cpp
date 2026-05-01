@@ -271,3 +271,56 @@ TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
     EXPECT_NE(r.error().find("size=2"), std::string::npos)
         << "actual error: " << r.error();
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Pre-EAL validation in Platform::attach_with_eal
+//
+// Fail-fast contract: attach_with_eal previously deferred the
+// file_prefix check to Platform::attach() AFTER eal_init had run,
+// which wasted hugepage init for an obvious caller error. The check
+// was lifted into attach_with_eal itself so the rejection happens
+// pre-EAL. Plus the pins / eal_cfg.lcores mutex check (round 2,
+// commit c003efca) needs a regression test for its size-context
+// format the same way join_dynamic's does above.
+// ──────────────────────────────────────────────────────────────────────
+
+TEST(AttachWithEalPreEal, EmptyFilePrefixRejectedFailFast) {
+    PlatformAttachConfig cfg{};
+    // file_prefix left empty
+    EalConfig eal_cfg{};
+
+    auto r = Platform::attach_with_eal(cfg, std::move(eal_cfg),
+                                       std::span<const LcorePin>{},
+                                       eph::utils::CpuPinPolicy{});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("file_prefix"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("pre-EAL"), std::string::npos)
+        << "actual error: " << r.error();
+}
+
+TEST(AttachWithEalPreEal, PinsAndLcoresMutexIncludesSizes) {
+    PlatformAttachConfig cfg{};
+    cfg.file_prefix = "test_prefix";  // non-empty so we get past file_prefix check
+
+    EalConfig eal_cfg{};
+    eal_cfg.lcores = {"0", "1", "2"};
+
+    std::vector<LcorePin> pins{
+        LcorePin{.lcore_id=0, .cpu_id=0, .role=""},
+        LcorePin{.lcore_id=1, .cpu_id=1, .role=""},
+    };
+
+    auto r = Platform::attach_with_eal(cfg, std::move(eal_cfg),
+                                       std::span<const LcorePin>{pins},
+                                       eph::utils::CpuPinPolicy{});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("attach_with_eal"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("size=2"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("size=3"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("mutually exclusive"), std::string::npos)
+        << "actual error: " << r.error();
+}

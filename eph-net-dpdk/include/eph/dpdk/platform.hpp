@@ -3051,6 +3051,18 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
 
     [[maybe_unused]] auto log = detail::platform_logger();
 
+    // Pre-EAL fail-fast: file_prefix is the v3 secondary's only required
+    // input. Platform::attach() catches an empty value, but only after
+    // we've already burned eal_init below — wasting hugepage segments
+    // and leaving the caller to dig the cause out of the EAL log. Same
+    // shape as Platform::attach's check, lifted up to avoid the cost.
+    if (cfg.file_prefix.empty()) {
+        return std::unexpected(std::string{
+            "attach_with_eal: file_prefix must be non-empty (locates "
+            "primary's hugepage registry — without it secondary cannot "
+            "find primary; rejected pre-EAL to avoid burning eal_init)"});
+    }
+
     // Mutex check (mirrors v2 create_with_eal step 1)
     if (!pins.empty() && !eal_cfg.lcores.empty()) {
         return std::unexpected(std::format(
