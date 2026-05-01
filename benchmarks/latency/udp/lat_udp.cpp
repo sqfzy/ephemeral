@@ -105,9 +105,12 @@ int main(int argc, char** argv) {
     bench::print_dpdk_config_echo(env);
     bench::DpdkBenchView view = bench::make_view(env);
 
+    // Use the actual queue owned by this process (primary=0, secondary=1, etc.)
+    const uint16_t rx_queue = env.platform.effective_rx_queue_range().first;
+
     eph::net::dpdk::PollerConfig poller_cfg{};
     poller_cfg.port_id     = env.port_id;
-    poller_cfg.rx_queue_id = 0;
+    poller_cfg.rx_queue_id = rx_queue;
     auto poller_r = eph::net::dpdk::DpdkPoller<>::create(poller_cfg);
     if (!poller_r) {
         std::fprintf(stderr, "lat_udp: Poller::create failed: %s\n",
@@ -116,7 +119,7 @@ int main(int argc, char** argv) {
     }
     auto poller = std::move(poller_r.value());
 
-    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+    if (auto rr = env.platform.register_poller(rx_queue, poller.get()); !rr) {
         std::fprintf(stderr, "lat_udp: register_poller failed: %s\n",
                      rr.error().detail);
         return 3;
@@ -129,6 +132,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     auto poller = std::move(poller_r.value());
+    const uint16_t rx_queue = 0;  // kernel: no MP queue concept
 #endif
 
     bench::BenchCtx ctx{};
@@ -138,7 +142,7 @@ int main(int argc, char** argv) {
     ctx.view         = &view;
 #endif
     ctx.poller       = poller.get();
-    ctx.queue_id     = 0;
+    ctx.queue_id     = rx_queue;
     ctx.slot_index   = -1;
 
     return bench::scenarios::run_lat_udp_loop(ctx);

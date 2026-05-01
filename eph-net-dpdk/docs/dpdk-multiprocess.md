@@ -85,12 +85,17 @@ DPDK shared-hugepage multi-process imposes a strict ordering contract:
 | 7 | — | teardown streams / Poller / `~Platform` / `eal_cleanup` |
 | 8 | teardown streams / Poller / `~Platform` / `eal_cleanup` | — |
 
-**Secondary must start after primary and exit before primary.** A
-secondary that starts before the primary sees `rte_mempool_lookup` fail
-with "primary not running or file_prefix mismatch". A secondary that
-outlives the primary will hold pointers into freed hugepage memory — DPDK
-does not detect this and no code in `eph-net-dpdk` can guard it; the
-ordering is operationally enforced.
+**Secondary must start after primary** — `rte_mempool_lookup` fails
+otherwise with "primary not running or file_prefix mismatch".
+
+**Primary may exit before secondaries** (since fix `0b3a4aaa→067dccbc`).
+Primary's `~Platform()` is gated on `MpRegistry::is_last_alive_proc()`:
+when peers are still attached, `rte_eth_dev_stop` / `rte_eth_dev_close`
+/ `rte_mempool_free` / `rte_eal_cleanup` all defer, leaving shared
+state alive for the surviving peers. The port is physically torn down
+by whichever process happens to be the **last** to call `~Platform()`.
+See `dpdk-mp-teardown-protocol.md` for the full protocol and rationale
+behind the gate.
 
 `Platform::create_secondary`'s cleanup is narrowed: it does **not** call
 `rte_eth_dev_stop/close` or `rte_mempool_free` — those would corrupt the
@@ -99,10 +104,6 @@ primary's port state.
 ---
 
 ## Primary restart semantics
-
-The cross-process registry uses the same operational rule that DPDK's
-shared mempool already imposes: **the primary must be the last to
-start and the last to stop**. Concretely:
 
 * `Platform::create_primary` always **resets** the registry on entry —
   it frees any stale memzone left from a previous run, writes a fresh
@@ -118,6 +119,54 @@ start and the last to stop**. Concretely:
 * Within a single primary's lifetime, secondaries may attach / detach
   freely — the registry's `procs[i].claimed` CAS makes "I'm the only
   one with self_index=i" mutually exclusive among live peers.
+* Primary exit ≠ port stop in MP mode (since `0b3a4aaa→067dccbc`):
+  primary's `~Platform()` defers shared-resource teardown when peers
+  are attached. See **MP teardown protocol** below.
+
+## MP teardown protocol (gate semantics)
+
+Primary owns the port's lifecycle, but the port itself is shared
+across every attached process. Calling `rte_eth_dev_stop` while a
+secondary is mid-`rte_eth_rx_burst` writes NULL into shared
+hugepage descriptor state and faults the secondary (e.g. ENA's
+`ena_com_get_next_rx_cdesc` SIGSEGV). Eph defers global teardown
+until the **last** attached process exits.
+
+```
+                  T=0 ──────────── T=15 ──── T=30
+primary           ███████████████| ~Platform()
+                                    defer (1 peer attached)
+                                    skip stop/close/free/cleanup
+                                    return; OS reclaims local maps
+
+secondary 1            ████████████████████| ~Platform()
+                                             is_last_alive: YES
+                                             stop/close/free runs
+                                             eal_cleanup runs
+                                             port physically torn down
+```
+
+Gate sites (`Platform::Impl`):
+
+* `defer_for_peers()` — single-source predicate over
+  `mp_registry->is_last_alive_proc()`.
+* `Impl::cleanup()` — guards `rte_eth_dev_stop` / `rte_eth_dev_close`
+  / `rte_mempool_free`.
+* `~Impl()` body — gates `IcmpDirectoryHandle::disable_memzone_free()`
+  before that handle's field destructor would call `rte_memzone_free`.
+* `MpRegistryHandle::release_()` — its own `rte_memzone_free` is
+  scoped on "any peer still alive after self-clear".
+* `~Platform()` — snapshot the gate **before** `impl_.reset()` so
+  it can guard `rte_eal_cleanup` (which would otherwise close all
+  active devices internally).
+
+**Trade-off**: if a peer exits abnormally (`kill -9`, OOM) without
+running its `~Platform()`, its slot stays claimed and the port is
+never stopped — `scripts/dpdk-teardown.sh` recycles between sessions.
+v2 candidate (IPC heartbeat reaper) is parked in `TODO.md`.
+
+Full root-cause and acceptance evidence:
+`eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`.
 
 ## Advanced usage: declarative topology
 

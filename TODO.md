@@ -78,54 +78,53 @@ Last verified: 2026-04-30 (none completed at this revision).
 
 ## Known limitations (documented, no fix planned)
 
-- **ENA PMD MP secondary `rx_burst` crashes — two conditions required**
-  (parallel-bench v1 bug #7, fully isolated 2026-04-30):
+_None at this time._
 
-  The SIGSEGV inside `ena_com_get_next_rx_cdesc` requires **both**
-  conditions simultaneously:
-  1. Primary doing high-rate `DpdkPoller`-driven I/O (Stream/Socket
-     send+poll loop — as in `lat_tcp_dpdk` + mockex).
-  2. Secondary driving `DpdkPoller::poll()` → `DpdkUdpSocket` receive
-     path (as in `lat_udp_dpdk`).
+---
 
-  Neither condition alone is sufficient (two-direction A/B, 2026-04-30):
-  raw `rte_eth_rx_burst` in the secondary under heavy traffic → no
-  crash; full secondary machinery with an idle primary → no crash
-  (753 k samples, 50 k/s).
+## Resolved (archive)
 
-  ```
-  Thread 1 received signal SIGSEGV
-    #0 ena_com_get_next_rx_cdesc()  librte_net_ena.so.25.0
-    #1 ena_com_rx_pkt()             librte_net_ena.so.25.0
-    #2 eth_ena_recv_pkts()          librte_net_ena.so.25.0
-    #3 rte_eth_rx_burst(port=0, queue=1)
-    #4 DpdkPoller::poll()
-  ```
+- [x] **ENA PMD MP secondary `rx_burst` crashes — root cause was
+  eph DPDK MP teardown protocol violation, not an ENA limitation**
+  (resolved 2026-05-01; fix commits `0b3a4aaa` / `b4074d62` /
+  `ef1bec67` / `3b66ee35` / `067dccbc`; root cause `aa625b4d`)
 
-  **Workaround already shipped**: `lat_multi_dpdk` uses
-  single-process N-lcore design — only primary ever issues I/O
-  burst calls; bypasses the limitation entirely.
+  Originally framed as "ENA PMD MP secondary `rx_burst` is
+  fundamentally broken" — that framing was wrong. ENA's behaviour
+  followed the DPDK contract correctly: when primary called
+  `rte_eth_dev_stop`, ENA tore down all queues including those owned
+  by secondaries (writing NULL into shared hugepage `io_cq` state),
+  which is what the spec allows. The bug was in eph's `~Platform()`
+  unconditionally calling stop / close / `eal_cleanup` on primary
+  exit, regardless of whether secondaries were still attached.
 
-  **Documentation + reproducers**:
-  * Prose with two-condition isolation log:
-    `eph-net-dpdk/docs/ena-mp-limitation.md`
-  * In-repo idle-ring sentinel:
+  **Fix**: gate primary teardown on `MpRegistry::is_last_alive_proc()`.
+  Implementation lives in `Platform::Impl::defer_for_peers()` and is
+  consulted at four sites: `Impl::cleanup()`, `~Impl()` body (for
+  `IcmpDirectoryHandle::disable_memzone_free`), `~Platform()` (for
+  `rte_eal_cleanup`), and `MpRegistryHandle::release_()` (for its
+  own memzone free).
+
+  **Side finding (also resolved by `3b66ee35`)**: the seven `lat_*.cpp`
+  binaries previously hardcoded `register_poller(0, ...)` regardless
+  of which queue the process owned; they now read
+  `env.platform.effective_rx_queue_range().first`. Validated by
+  `/tmp/ena_mp_7proc_parallel.sh` (7 lat_*_dpdk binaries running as
+  7 MP processes on ENA, 7/7 PASS, ~1 M total samples).
+
+  **Reference**:
+  * Protocol guide: `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`
+  * Methodology retro: `.artifacts/retro-20260501-ena-mp-rootcause-discovery.md`
+  * Idle-ring sentinel (still maintained):
     `eph-net-dpdk/tests/integration/repro_ena_mp_secondary_rxburst.cpp`
-    — exits 9 on DPDK 24.11.2 / ENA (expected; idle rings don't crash).
-    If it ever exits 0, that is news worth chasing.
-  * Two-condition A/B reproducer:
-    branch `diag/ena-mp-isolation-2` + `/tmp/ena_mp_isolation.sh`
-    (autojoin) + `/tmp/ena_mp_diag_minsec.sh` (minimal secondary)
-    + `/tmp/ena_mp_diag_benign_primary.sh` (benign primary).
-    Branch is intentionally not merged — re-introduces diagnostic
-    envvar-gated bring-up paths in `dpdk_env.hpp`.
+    — should still exit 9; if it ever exits 0, the gate has regressed.
+  * Acceptance harnesses: `/tmp/ena_mp_rootcause.sh`,
+    `/tmp/ena_mp_rootcause_primary_early.sh`, `/tmp/ena_mp_7proc_parallel.sh`.
 
-  Side finding (parked): v2-reshape `lat_*.cpp` mains hard-code
-  `register_poller(0, ...)` regardless of which queue this process
-  actually owns. If MP is ever revived, they need to read
-  `env.platform.effective_rx_queue_range().first` instead. Not
-  fixed today because we're not running MP on ENA in production —
-  revisit only if MP is re-enabled (e.g. on a non-ENA NIC).
+  **Trade-off (v1)**: the gate is refcount-only — abnormal peer exit
+  (`kill -9`, OOM) leaves a stale claimed slot and primary then
+  defers teardown indefinitely. `scripts/dpdk-teardown.sh` recovers
+  between sessions. v2 candidate (IPC heartbeat reaper) parked.
 
 ---
 

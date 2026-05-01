@@ -296,7 +296,7 @@ target("dpdk_mp_dynamic_tcp_handshake_secondary")
 --   repro_ena_mp_secondary_rxburst — AWS ENA PMD: secondary-process
 --     rte_eth_rx_burst() segfaults inside ena_com_get_next_rx_cdesc.
 --     See file header for backtrace and DPDK / PMD / kernel / instance
---     metadata. Documented in docs/ena-mp-limitation.md.
+--     metadata. Documented in docs/dpdk-mp-teardown-protocol.md.
 target("repro_ena_mp_secondary_rxburst")
     set_kind("binary")
     set_group("repros")

@@ -25,11 +25,14 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <expected>
+#include <fstream>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -42,6 +45,9 @@
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
+// JoinDynamicConfig comes in transitively via platform.hpp (post-api-unify
+// reshape — sentinel guard EPH_DPDK_PLATFORM_CONFIG_DEFINED requires
+// platform.hpp first).
 #include "eph/dpdk/tcp.hpp"
 #include "eph/dpdk/udp.hpp"
 #include "eph/utils/cpu.hpp"
@@ -153,6 +159,173 @@ struct DpdkBenchEnv {
             std::move(*plat),
             *src_ip, *dst_ip, *gw_ip,
             src_mac, *gw_mac_result,
+            port_id, pool
+        };
+    }
+
+    /// Autojoin variant of `create()`: brings up Platform via
+    /// `Platform::join_dynamic` instead of `create_with_eal`.
+    /// Use this when running multiple bench-client processes on the
+    /// same NIC simultaneously (e.g. `lat all --dpdk` with
+    /// `[parallel].max_procs > 1`). The first peer auto-resolves to
+    /// primary, subsequent peers to secondaries; each owns a disjoint
+    /// `[qlo, qhi)` RX queue range and src_port window.
+    ///
+    /// Single-process callers should keep using `create()` — its
+    /// path is byte-equivalent to legacy and unaffected by this
+    /// addition.
+    ///
+    /// **TX queue gotcha** (reshape/rss-aware-connect retro #1):
+    /// `pcfg_template.nb_tx_queues` is set to `max_procs` here so a
+    /// secondary peer's RSS-aware `tx_queue_id` (= its owned
+    /// `target_qid`, possibly > 0) maps to a real TX ring. Default
+    /// `nb_tx_queues = 1` would silently leave secondary's SYN
+    /// stranded.
+    ///
+    /// **ARP under MP**: secondary peers cannot ARP-resolve the
+    /// gateway directly because ARP replies hash to whichever queue
+    /// the NIC's default RSS picks (typically queue 0, owned by
+    /// primary). This factory therefore resolves ARP only on the
+    /// primary peer; secondaries publish/read the gateway MAC via
+    /// `gw_mac_share_path`. Caller is responsible for picking a
+    /// path the orchestrator coordinates (e.g. derived from BDF).
+    ///
+    /// @param pci_bdf            NIC PCI BDF, e.g. "0000:28:00.0"
+    /// @param max_procs          Autojoin slot count; used as both
+    ///                            `JoinDynamicConfig::max_procs` and
+    ///                            `pcfg_template.{nb_rx_queues,
+    ///                            nb_tx_queues}`
+    /// @param lcores             EAL lcore CSV for this peer
+    /// @param mock_ip            Server IP — dotted-quad
+    /// @param client_ip          Local source IP — dotted-quad
+    /// @param gateway_ip         Gateway IP for ARP — dotted-quad
+    /// @param gw_mac_share_path  File path for cross-peer gw_mac
+    ///                            sharing. Primary writes; secondary
+    ///                            polls until it appears (timeout 3s).
+    [[nodiscard]] static std::expected<DpdkBenchEnv, std::string>
+    create_via_autojoin(const std::string& pci_bdf,
+                        uint32_t max_procs,
+                        const std::string& lcores,
+                        const std::string& mock_ip,
+                        const std::string& client_ip,
+                        const std::string& gateway_ip,
+                        const std::string& gw_mac_share_path) {
+        if (max_procs < 2) {
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: max_procs must be >= 2 "
+                "(use create() for single-process)");
+        }
+
+        // ── 1. Platform::join_dynamic ──────────────────────────────
+        eph::dpdk::JoinDynamicConfig jd{};
+        jd.pci                          = pci_bdf;
+        jd.pcfg_template.nb_rx_queues   = static_cast<uint16_t>(max_procs);
+        jd.pcfg_template.nb_tx_queues   = static_cast<uint16_t>(max_procs);
+        jd.max_procs                    = static_cast<uint16_t>(max_procs);
+        jd.lcores                       = {lcores};
+
+        auto plat = eph::dpdk::Platform::join_dynamic(std::move(jd));
+        if (!plat) {
+            return std::unexpected(
+                "DpdkBenchEnv::create_via_autojoin: " + plat.error());
+        }
+
+        const uint16_t port_id   = plat->port_id();
+        rte_mempool* const pool  = plat->mempool();
+        const bool is_secondary  = plat->is_secondary();
+
+        // ── 2. Parse IPs (host byte order) ─────────────────────────
+        auto parse_ip = [](const std::string& s)
+            -> std::expected<uint32_t, std::string> {
+            in_addr addr{};
+            if (inet_pton(AF_INET, s.c_str(), &addr) != 1) {
+                return std::unexpected("invalid IP: " + s);
+            }
+            return ntohl(addr.s_addr);
+        };
+        auto src_ip = parse_ip(client_ip);
+        if (!src_ip) return std::unexpected(src_ip.error());
+        auto dst_ip = parse_ip(mock_ip);
+        if (!dst_ip) return std::unexpected(dst_ip.error());
+        auto gw_ip = parse_ip(gateway_ip);
+        if (!gw_ip) return std::unexpected(gw_ip.error());
+
+        // ── 3. Local MAC ───────────────────────────────────────────
+        rte_ether_addr src_mac{};
+        if (int rc = rte_eth_macaddr_get(port_id, &src_mac); rc != 0) {
+            return std::unexpected(
+                "rte_eth_macaddr_get failed: " + std::to_string(rc));
+        }
+        spdlog::info("dpdk_env: [{}] local MAC "
+                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     is_secondary ? "secondary" : "primary",
+                     src_mac.addr_bytes[0], src_mac.addr_bytes[1],
+                     src_mac.addr_bytes[2], src_mac.addr_bytes[3],
+                     src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
+
+        // ── 4. ARP (primary) or shared-file read (secondary) ───────
+        rte_ether_addr gw_mac{};
+        if (!is_secondary) {
+            auto gw_r = eph::dpdk::arp::resolve(
+                port_id, pool, src_mac, *src_ip, *gw_ip,
+                std::chrono::seconds{3});
+            if (!gw_r) {
+                return std::unexpected(
+                    "ARP resolve gateway: " + gw_r.error());
+            }
+            gw_mac = *gw_r;
+            // Publish to shared file for secondaries.
+            std::ofstream f(gw_mac_share_path);
+            if (!f.is_open()) {
+                return std::unexpected(
+                    "cannot write gw_mac share file: " + gw_mac_share_path);
+            }
+            char buf[32];
+            std::snprintf(buf, sizeof(buf),
+                          "%02x:%02x:%02x:%02x:%02x:%02x\n",
+                          gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
+                          gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
+                          gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
+            f << buf;
+        } else {
+            // Poll up to 3s for the primary to publish.
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds{3};
+            std::string line;
+            while (std::chrono::steady_clock::now() < deadline) {
+                std::ifstream f(gw_mac_share_path);
+                if (f.is_open() && std::getline(f, line) && !line.empty()) {
+                    break;
+                }
+                line.clear();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (line.empty()) {
+                return std::unexpected(
+                    "secondary timed out waiting for gw_mac at " +
+                    gw_mac_share_path);
+            }
+            unsigned int b[6];
+            if (std::sscanf(line.c_str(), "%x:%x:%x:%x:%x:%x",
+                            &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) {
+                return std::unexpected(
+                    "secondary failed to parse gw_mac line: '" + line + "'");
+            }
+            for (int i = 0; i < 6; ++i) {
+                gw_mac.addr_bytes[i] = static_cast<uint8_t>(b[i]);
+            }
+        }
+        spdlog::info("dpdk_env: [{}] gateway MAC "
+                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                     is_secondary ? "secondary" : "primary",
+                     gw_mac.addr_bytes[0], gw_mac.addr_bytes[1],
+                     gw_mac.addr_bytes[2], gw_mac.addr_bytes[3],
+                     gw_mac.addr_bytes[4], gw_mac.addr_bytes[5]);
+
+        return DpdkBenchEnv{
+            std::move(*plat),
+            *src_ip, *dst_ip, *gw_ip,
+            src_mac, gw_mac,
             port_id, pool
         };
     }

@@ -271,12 +271,16 @@ int main(int argc, char** argv) {
     auto env = std::move(*env_r);
     bench::print_dpdk_config_echo(env);
 
+    // Use the actual queue owned by this process (primary=0, secondary=1, etc.)
+    const uint16_t rx_queue = env.platform.effective_rx_queue_range().first;
+
     ed::PollerConfig poller_cfg{};
     poller_cfg.port_id     = env.port_id;
-    poller_cfg.rx_queue_id = 0;
+    poller_cfg.rx_queue_id = rx_queue;
     auto poller_r = Poller::create(poller_cfg);
 #else
     auto poller_r = ek::KernelPoller::create({});
+    const uint16_t rx_queue = 0;  // kernel: no MP queue concept
 #endif
     if (!poller_r) {
         std::fprintf(stderr, "lat_ex_market: Poller::create failed: %s\n",
@@ -294,7 +298,7 @@ int main(int argc, char** argv) {
     cfg.ws.path         = effective_ws_path;
     cfg.ws.timeout      = std::chrono::seconds{10};
 
-    if (auto rr = env.platform.register_poller(0, poller.get()); !rr) {
+    if (auto rr = env.platform.register_poller(rx_queue, poller.get()); !rr) {
         std::fprintf(stderr, "lat_ex_market: register_poller failed: %s\n",
                      rr.error().detail);
         return 3;
