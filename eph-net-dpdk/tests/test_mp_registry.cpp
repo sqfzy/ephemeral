@@ -691,3 +691,123 @@ TEST(MpRegistryGhost, SlotReusedByNextClaimer_NoGhostLcoreMask) {
     EXPECT_EQ(primary->header()->procs[1].pid,
               static_cast<int32_t>(::getpid()));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Concurrent publication ordering — claim writer's metadata stores must be
+// happens-before the reader's acquire-load of `claimed`
+//
+// Discovered via /pax --review LENS "production / MP mental model / silent
+// misuse closure" round 2 on 2026-05-01: v2 schema published lcore_mask + pid
+// as plain stores AFTER the CAS-claim release. Reader's claimed.load(acquire)
+// synchronizes-with the CAS write but NOT with subsequent plain stores, so on
+// weakly-ordered architectures (AArch64/POWER) a concurrent peer's conflict
+// scan could observe `claimed=1` together with stale (zero) lcore_mask,
+// silently bypassing the v2 cross-process lcore-conflict gate.
+//
+// Fix: redundant `claimed.store(1, release)` AFTER metadata writes provides
+// the release-store partner for any reader's acquire-load. The test below
+// stress-runs two threads on the same shared atomic state; passing under
+// many iterations means the writer never publishes claimed=1 before the
+// reader is allowed to see the stale metadata.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MpRegistryConcurrent, AcquireLoadOnClaimedSeesPublishedLcoreMask) {
+    auto p = MpRegistryHandle::create_primary(
+        "rgconc1", MpTopology::uniform(0, 4, 8));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+
+    // Reader-observable counter: how many times did the reader observe
+    // `claimed=1` paired with `lcore_mask=0` (the stale-publication race).
+    // Without the round-2 fix, this can be > 0 on weakly-ordered cores;
+    // with the fix it must stay 0.
+    std::atomic<uint64_t> stale_observations{0};
+    std::atomic<bool>     stop{false};
+    constexpr uint64_t kIterations = 4000;
+
+    constexpr uint64_t kProbeMask = 0xCu;
+
+    // Writer: tight loop of attach (fresh secondary handle) +
+    // RAII-release on slot 1, publishing lcore_mask=0xC each cycle.
+    // Each iteration goes through the post-fix code path:
+    //   CAS(0→1, acq_rel) → clear_slot_metadata_ → pid → lcore_mask
+    //   → claimed.store(1, release)  ← the fix
+    // Reader observes via acquire-load on slot 1's `claimed` flag.
+    std::thread writer([&] {
+        for (uint64_t i = 0; i < kIterations && !stop.load(); ++i) {
+            // Use the readonly + try_claim_free_slot + attach_secondary
+            // (already_claimed=true) sequence so we exercise both
+            // pass-1 (try_claim_free_slot) and the
+            // already_claimed=true publish path in attach_secondary.
+            auto ro = MpRegistryHandle::attach_secondary_readonly("rgconc1");
+            ASSERT_TRUE(ro.has_value()) << ro.error();
+            auto idx = ro->try_claim_free_slot();
+            ASSERT_TRUE(idx.has_value()) << idx.error();
+            const uint8_t claimed_idx = *idx;
+            ro->disarm_slot();
+
+            MpTopology topo = MpTopology::uniform(claimed_idx, 4, 8);
+            topo.procs[claimed_idx].lcore_mask = kProbeMask;
+
+            auto h = MpRegistryHandle::attach_secondary(
+                "rgconc1", topo, /*already_claimed=*/true);
+            ASSERT_TRUE(h.has_value()) << h.error();
+            // h's destructor releases the slot here (clears metadata
+            // BEFORE claimed=0 release-store, per round-1 fix), making
+            // the slot freshly available for the next iteration.
+        }
+        stop.store(true);
+    });
+
+    // Reader: sample slot 1's (claimed, lcore_mask) pair. We must
+    // ALWAYS see one of:
+    //   (claimed=0, *)            — slot is free; lcore_mask read is racey
+    //                                but irrelevant since the gate is
+    //                                claimed=0
+    //   (claimed=1, lcore_mask=kProbeMask)  — fully published
+    //   (claimed=1, lcore_mask=0)           — STALE BUG (round-2 race)
+    // The third pattern is what the fix forbids.
+    //
+    // Reader scans all 4 slots because the writer cycles through them
+    // (try_claim_free_slot picks lowest free index); whichever slot is
+    // currently being claimed/released is the active racing target.
+    std::thread reader([&] {
+        while (!stop.load()) {
+            for (uint32_t i = 0; i < 4; ++i) {
+                const uint8_t cl = hdr->procs[i].claimed.load(
+                    std::memory_order_acquire);
+                if (cl == 1) {
+                    const uint64_t mask = hdr->procs[i].lcore_mask;
+                    // primary at slot 0 has its own pcfg lcore_mask=0
+                    // by default in this test (we used uniform() which
+                    // leaves it 0). Skip slot 0 since both 0 and
+                    // kProbeMask there are valid.
+                    if (i == 0) continue;
+                    if (mask != kProbeMask && mask != 0u) {
+                        // Some other unexpected value — also a bug.
+                        stale_observations.fetch_add(1);
+                    } else if (mask == 0u) {
+                        // claimed=1 + mask=0: stale publication race.
+                        stale_observations.fetch_add(1);
+                    }
+                }
+            }
+        }
+    });
+
+    writer.join();
+    reader.join();
+
+    // With the round-2 fix in place, the reader must never observe a
+    // claimed=1 paired with mask=0 on a non-primary slot — every
+    // claim's metadata is published BEFORE the redundant release-store
+    // that re-publishes claimed=1.
+    EXPECT_EQ(stale_observations.load(), 0u)
+        << "Reader observed claimed=1 paired with lcore_mask=0 on a "
+           "non-primary slot — the writer's plain-store of lcore_mask "
+           "is not happens-before the reader's acquire-load of claimed. "
+           "This is the round-2 memory-order bug: metadata writes after "
+           "the CAS need a redundant release-store on `claimed` to "
+           "synchronize with future readers.";
+}
