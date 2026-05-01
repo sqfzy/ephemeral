@@ -155,6 +155,29 @@ TEST(OuchReplaceOrder, OversizeReplacementTokenReturnsZero) {
     EXPECT_EQ(ReplaceOrder::build(buf.data(), "EXISTING_TOK", "REPLACEMNT_TOKX", 100, 100, 0), 0u);
 }
 
+// Null-buffer guard parity with EnterOrder/CancelOrder — the early return
+// at line 231 was previously only exercised on the other two builders.
+TEST(OuchReplaceOrder, NullBufferReturnsZero) {
+    EXPECT_EQ(ReplaceOrder::build(nullptr, "TOK1", "TOK2", 100, 100, 0), 0u);
+}
+
+// 14-char exact-boundary on both tokens — guards against an off-by-one
+// flipping the comparison in either guard. Both must succeed and the
+// padded fields must contain the exact 14 bytes.
+TEST(OuchReplaceOrder, ExactBoundaryBothTokensAccepted) {
+    std::array<uint8_t, ReplaceOrder::kSize> buf{};
+    const size_t n = ReplaceOrder::build(
+        buf.data(),
+        "EXISTING14CHRS",   // exactly 14
+        "REPLACEMNT_NEW",   // exactly 14
+        100, 100, 0);
+    ASSERT_EQ(n, ReplaceOrder::kSize);
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 1), 14}),
+              "EXISTING14CHRS");
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 15), 14}),
+              "REPLACEMNT_NEW");
+}
+
 // ---------------------------------------------------------------------------
 // CancelOrder builder tests
 // ---------------------------------------------------------------------------
