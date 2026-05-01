@@ -48,25 +48,59 @@ to the caller's queue. DNS reverse-picks a hashed src_port, ARP hardcodes
 queue 0, Multicast fail-fasts unless single-queued or FlowDirector-pinned.
 Full integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
 
-## Internal detail layer
+## Lower-level DPDK primitives (`eph/dpdk/*`)
 
-`eph-net-dpdk` wraps a rich set of low-level DPDK primitives that live under
-`include/eph/dpdk/` (retained include path for historical continuity):
+`eph-net-dpdk` carries a second public namespace `eph::dpdk` (under
+`include/eph/dpdk/`, retained include path for historical continuity)
+that splits into two categories: **user-facing primitives** the high
+level Stream/Datagram backends compose with, and **internal wrappers**
+that only the Stream/Datagram types should call directly.
 
-- `eal.hpp` — raw EAL init (the `Eal` RAII wrapper in `eph::net::dpdk` uses this)
-- `tcp.hpp` — `TcpSession<ReorderSlots=64>` (the TCP state machine `DpdkTcpStream` wraps)
-- `udp.hpp` — UDP sender primitives
-- `arp.hpp`, `dns.hpp` — link-layer resolution helpers
-- `flow_steering.hpp` — moved to `eph/net/dpdk/flow_steering.hpp`; provides
-  RSS / RTE flow rule management and the Toeplitz hash predictor that
-  `DpdkTcpStream::create_and_attach` uses for queue pinning
-- `packet_template.hpp` — pre-computed UDP+IP header templates
-- `multicast.hpp` — multicast group management
-- `net_header.hpp` — Ethernet/IP/TCP header packing
-- `platform.hpp` — EAL platform wrapper
+User-facing — call directly from your application:
 
-User code should only touch the `eph::net::dpdk::*` public surface. The `eph::dpdk::*`
-types are implementation detail and may change without notice.
+- `platform.hpp` — `Platform` (port bring-up, RSS configure / probe,
+  ICMP registry, primary / secondary process roles), `PlatformConfig`,
+  `ProcType` re-export.
+- `eal.hpp` — `Eal` RAII guard, `EalGuard::init_with_pins`, `EalConfig`
+  + `build_eal_argv` typed argv builder.
+- `multi_port_platform.hpp` — `MultiPortPlatform` aggregates N
+  independent `Platform`s (one per NIC port). Strictly additive over
+  single-port semantics.
+- `lcore_pin.hpp` — `LcorePin` declarative spec + pure-function
+  `--lcores` argv builder; integrates with the `eph::utils` pin
+  registry so application threads see the same SMT / NUMA conflict
+  view as EAL lcores.
+- `mp_topology.hpp` — high-level multi-process resource topology;
+  auto-derives `rx_queue_range` and per-process src_port segments
+  instead of hand-partitioning.
+- `join_dynamic.hpp` — `JoinDynamicConfig` + `Platform::join_dynamic`
+  zero-coordination MP bring-up.
+- `proc_type.hpp` — `ProcType` enum (`Primary` / `Secondary`) shared
+  by `platform.hpp` and `eal.hpp`.
+
+Internal wrappers — `eph::net::dpdk::*` Stream/Datagram types compose
+these. User code does not normally need them but they are public
+headers (no `detail/` prefix), so the API is stable:
+
+- `tcp.hpp` — `TcpSession<ReorderSlots=64>` (the TCP state machine
+  `DpdkTcpStream` wraps).
+- `udp.hpp` — UDP sender primitives.
+- `arp.hpp`, `dns.hpp` — link-layer resolution helpers (RSS-safe
+  reply routing, see `docs/rss-control-plane.md`).
+- `multicast.hpp` — multicast group management (`MulticastReceiver`).
+- `packet_core.hpp` — protocol constants, byte-order helpers, Internet
+  / TCP / UDP checksum algorithms, `ConnectionTuple`.
+- `packet_parse.hpp` — zero-copy `parse_ip_header` /
+  `parse_tcp_header` / `parse_udp_header`.
+- `packet_template.hpp` — pre-computed UDP+IP header templates.
+- `net_header.hpp` — Ethernet/IP/TCP header packing.
+
+The `eph/net/dpdk/*` umbrella surface is:
+
+- `config.hpp` — `StreamConfig`, `UdpConfig`, `PollerConfig`. Embeds
+  the shared `WsConfig` / `KeepaliveConfig` from `eph-net`.
+- `tcp_stream.hpp`, `udp_socket.hpp`, `poller.hpp`, `eal.hpp`,
+  `flow_steering.hpp` — listed in the table above.
 
 ## Usage
 
