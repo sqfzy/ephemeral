@@ -303,11 +303,26 @@ struct MpTopology {
 
     /// @brief Multi-line dump for logging — mirrors
     /// `PlatformConfig::dump()` style.
+    ///
+    /// Defensive iteration bound: even though `valid()` rejects
+    /// `total_procs > kMaxProcs`, dump() may be called on an unvalidated
+    /// instance during diagnostic logging of a malformed topology
+    /// (e.g. when reporting why `valid()` failed). Cap the loop bound
+    /// at `kMaxProcs` so we never read past the fixed-size `procs`
+    /// array, even if someone hand-set a runaway `total_procs`.
     [[nodiscard]] std::string dump() const {
         std::string out = std::format(
             "MpTopology: self_index={}, total_procs={} of max {}\n",
             self_index, total_procs, kMaxProcs);
-        for (uint8_t i = 0; i < total_procs; ++i) {
+        const uint8_t safe_total =
+            (total_procs > kMaxProcs) ? kMaxProcs : total_procs;
+        if (safe_total != total_procs) {
+            out += std::format(
+                "  (warning: total_procs={} > kMaxProcs={}; truncating "
+                "dump to first {} entries)\n",
+                total_procs, kMaxProcs, safe_total);
+        }
+        for (uint8_t i = 0; i < safe_total; ++i) {
             const auto& p = procs[i];
             out += std::format(
                 "  [{}]{} tag='{}' queues=[{},{}) ports=[{},{})\n",
