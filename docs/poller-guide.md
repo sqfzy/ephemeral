@@ -24,11 +24,16 @@ supersedes it.
 ## The concept
 
 ```cpp
+// eph-net/include/eph/net/concepts.hpp
 template <class T>
-concept Poller = requires(T& p, Pollable auto* obj) {
-    { p.add(obj) }    -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.remove(obj) } -> std::same_as<std::expected<void, core::ErrorInfo>>;
-    { p.poll() }      -> std::convertible_to<size_t>;
+concept Poller = requires(T& p) {
+    { p.poll() } noexcept -> std::convertible_to<std::size_t>;
+};
+
+template <class T, class Obj>
+concept PollerOf = Poller<T> && Pollable<Obj> && requires(T& p, Obj* obj) {
+    { p.add(obj) }    noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
+    { p.remove(obj) } noexcept -> std::same_as<std::expected<void, core::ErrorInfo>>;
 };
 ```
 
@@ -36,6 +41,11 @@ concept Poller = requires(T& p, Pollable auto* obj) {
 Pollable is anything that has a private `poll_once_()` method the Poller can invoke
 via a friend relationship. In practice the Pollables users deal with are `TcpStream<C>`
 and `UdpSocket<C>`.
+
+`Poller` is the bare driver concept (just `poll()`); `PollerOf<T, Obj>` is the
+finer-grained refinement that proves a specific Pollable type `Obj` can be
+registered. The split is deliberate: function-parameter sites that don't care
+about the registered type stay constrained on the cheaper `Poller<T>` form.
 
 Concrete implementations:
 
@@ -62,7 +72,7 @@ int main() {
     auto poller = en::KernelPoller::create({}).value();
 
     auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
-        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
         .tls    = { .hostname = "echo.websocket.org" },
         .ws     = { .path = "/" },
     }).value();
@@ -154,7 +164,7 @@ auto poller = en::KernelPoller::create({}).value();
 std::vector<std::unique_ptr<en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>>> streams;
 for (auto& symbol : symbols) {
     auto s = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
-        .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
+        .remote = eph::net::SocketAddr{ /* resolved IPv4 */, 443 },
         .tls    = { .hostname = "fstream.binance.com" },
         .ws     = { .path = std::format("/ws/{}@trade", symbol) },
     }).value();
