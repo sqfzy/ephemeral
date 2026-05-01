@@ -140,8 +140,7 @@ inline int run_lat_ex_market_loop(::bench::BenchCtx& ctx) noexcept {
 #else
         EnableTls ? "kernel_tls" : "kernel";
 #endif
-    const std::string suffix =
-        std::string{};
+    const std::string suffix = ::bench::mp_output_suffix();
     eu::Recorder rec{std::string{"lat_ex_market_"} + backend + "_oneway" + suffix};
 
 #if defined(EPH_USE_DPDK)

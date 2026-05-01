@@ -191,8 +191,7 @@ inline int run_lat_tcp_loop(::bench::BenchCtx& ctx) noexcept {
         EnableTls ? "kernel_tls" : "kernel";
 #endif
     // JSON filenames with pre-reshape output.
-    const std::string suffix =
-        std::string{};
+    const std::string suffix = ::bench::mp_output_suffix();
 
     eu::Recorder rec_rtt{std::string{"lat_tcp_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_tcp_"} + backend + "_tx"  + suffix};

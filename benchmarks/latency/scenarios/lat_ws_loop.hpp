@@ -168,8 +168,7 @@ inline int run_lat_ws_loop(::bench::BenchCtx& ctx) noexcept {
 #else
         EnableTls ? "kernel_tls" : "kernel";
 #endif
-    const std::string suffix =
-        std::string{};
+    const std::string suffix = ::bench::mp_output_suffix();
 
     eu::Recorder rec_rtt{std::string{"lat_ws_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_ws_"} + backend + "_tx"  + suffix};

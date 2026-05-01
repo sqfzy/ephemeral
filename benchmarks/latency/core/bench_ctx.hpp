@@ -13,8 +13,34 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <unistd.h>
 
 namespace bench {
+
+/// Return a per-process JSON output suffix when running in MP mode
+/// (autojoin), else empty string.
+///
+/// In MP mode, each peer process produces its own JSON output. Without
+/// a per-process discriminator the files collide on disk — the second
+/// process to flush silently overwrites the first's measurements.
+/// This helper appends `_pid<getpid()>` so each process gets a unique
+/// filename (e.g. `lat_tcp_dpdk_rtt_pid12345_<ts>.json`).
+///
+/// Detection: `EPH_LAT_AUTOJOIN_MAX_PROCS` envvar non-empty. This is
+/// the same envvar that triggers the MP autojoin path in dpdk_env.hpp,
+/// so the suffix is on iff the user opted into multi-process mode.
+/// Single-process bench commands (`lat tcp --dpdk`) leave the suffix
+/// empty, preserving byte-equal output filenames with the legacy path.
+[[nodiscard]] inline std::string mp_output_suffix() noexcept {
+    if (const char* mp = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
+        mp && *mp) {
+        return std::string{"_pid"} + std::to_string(::getpid());
+    }
+    return {};
+}
+
 
 class BenchConfig;
 class Scenario;

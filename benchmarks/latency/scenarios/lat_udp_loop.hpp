@@ -165,9 +165,10 @@ inline int run_lat_udp_loop(::bench::BenchCtx& ctx) noexcept {
 #else
         "kernel";
 #endif
-    eu::Recorder rec_rtt{std::string{"lat_udp_"} + backend + "_rtt"};
-    eu::Recorder rec_tx {std::string{"lat_udp_"} + backend + "_tx"};
-    eu::Recorder rec_rx {std::string{"lat_udp_"} + backend + "_rx"};
+    const std::string suffix = ::bench::mp_output_suffix();
+    eu::Recorder rec_rtt{std::string{"lat_udp_"} + backend + "_rtt" + suffix};
+    eu::Recorder rec_tx {std::string{"lat_udp_"} + backend + "_tx"  + suffix};
+    eu::Recorder rec_rx {std::string{"lat_udp_"} + backend + "_rx"  + suffix};
 
     std::vector<uint8_t> payload(payload_size, 0xCD);
 

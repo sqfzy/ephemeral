@@ -158,8 +158,7 @@ inline int run_lat_ex_md_udp_loop(::bench::BenchCtx& ctx) noexcept {
 #else
         "kernel";
 #endif
-    const std::string suffix =
-        std::string{};
+    const std::string suffix = ::bench::mp_output_suffix();
 
     eu::Recorder rec_rtt{std::string{"lat_ex_md_udp_"} + backend + "_rtt" + suffix};
     eu::Recorder rec_tx {std::string{"lat_ex_md_udp_"} + backend + "_tx"  + suffix};
