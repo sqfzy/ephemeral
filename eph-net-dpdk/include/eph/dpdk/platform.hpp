@@ -757,31 +757,6 @@ public:
     [[nodiscard]] static std::expected<Platform, std::string>
     create(const LegacyPlatformConfig& config);
 
-    /// Secondary-role factory (attach to a running primary's port +
-    /// mempool via shared hugepage).
-    ///
-    /// Forces `config.proc_type = Secondary` and enforces the
-    /// secondary-mode contract:
-    ///   * `validate_config(cfg)` must pass — in particular
-    ///     `rx_queue_range` is either the `{0,0}` full-range sentinel or
-    ///     a non-empty sub-range bounded by `nb_rx_queues`.
-    ///   * `file_prefix` must be non-empty and match the primary's EAL
-    ///     `--file-prefix` (else `rte_mempool_lookup` will fail).
-    ///   * `rte_eth_dev_is_valid_port(port_id)` must hold — i.e. the
-    ///     primary has already started this port under the shared
-    ///     hugepage runtime dir.
-    ///
-    /// Source-port partitioning across MP processes is the **caller's**
-    /// responsibility — `eph-net-dpdk` does not auto-allocate src_port
-    /// and has no global view across processes to enforce disjointness.
-    /// See `docs/dpdk-multiprocess.md` for partitioning guidance.
-    ///
-    /// EAL must already be initialised with `--proc-type=secondary`
-    /// and the same `--file-prefix` the primary used; see
-    /// `eph::dpdk::build_eal_argv` / `docs/dpdk-multiprocess.md`.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    create_secondary(LegacyPlatformConfig config);
-
     /// @brief Autojoin (zero-coordination) MP factory.
     ///
     /// One call does **everything**: assembles the EAL argv with
@@ -1205,14 +1180,23 @@ private:
     [[nodiscard]] static std::expected<Platform, std::string>
     primary_bringup_(LegacyPlatformConfig config);
 
-    /// @brief Internal secondary attach. Identical to the public
-    /// `create_secondary` body, but with a flag that propagates into
-    /// `MpRegistryHandle::attach_secondary(..., already_claimed)` so
-    /// the autojoin (`join_dynamic`) path — which has already CAS-
-    /// claimed the slot via `try_claim_free_slot` — can skip the
-    /// double-CAS without forking the rest of the bring-up.
+    /// @brief Internal secondary bring-up. Used to be the public
+    /// `create_secondary` factory plus its `_impl_` sibling; now a
+    /// private helper consumed by the v3 `attach(PlatformAttachConfig)`
+    /// entry point and (transitionally) by the v2
+    /// `create_with_eal(LegacyPlatformConfig, ...)` and v2
+    /// `join_dynamic(LegacyJoinDynamicConfig)` paths until those v2
+    /// entries are removed in subsequent cleanup commits.
+    ///
+    /// `registry_preclaimed=false` (caller-driven attach): mirrors
+    /// the previous public `create_secondary` semantics — perform a
+    /// fresh CAS-claim of `*config.mp_topology->self_index` against
+    /// the primary's registry. `registry_preclaimed=true` (autojoin
+    /// path or v3 `attach()`): the caller already CAS-claimed the
+    /// slot via `try_claim_free_slot`, so `attach_secondary` skips
+    /// the double-CAS.
     [[nodiscard]] static std::expected<Platform, std::string>
-    create_secondary_impl_(LegacyPlatformConfig config, bool registry_preclaimed);
+    secondary_bringup_(LegacyPlatformConfig config, bool registry_preclaimed);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2098,7 +2082,8 @@ Platform::create_with_eal(LegacyPlatformConfig                          pcfg,
     // when mp_topology is unset.
     std::expected<Platform, std::string> plat_r = std::unexpected(std::string{});
     if (pcfg.proc_type == ProcType::Secondary) {
-        plat_r = Platform::create_secondary(std::move(pcfg));
+        plat_r = Platform::secondary_bringup_(std::move(pcfg),
+                                              /*registry_preclaimed=*/false);
     } else {
         // Primary or Auto (Auto is autojoin's pre-EAL default; by the
         // time we land here the EAL is up and `rte_eal_process_type`
@@ -2470,20 +2455,8 @@ Platform::primary_bringup_(LegacyPlatformConfig config) {
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_secondary(LegacyPlatformConfig config) {
-    // Public surface: caller-driven attach with a fresh CAS-claim
-    // for `*config.mp_topology->self_index`. Autojoin callers
-    // reach the bypass via `Platform::join_dynamic`, which
-    // delegates to
-    // `create_secondary_impl_(..., registry_preclaimed=true)` after
-    // having already CAS-claimed the slot itself.
-    return create_secondary_impl_(std::move(config),
-                                  /*registry_preclaimed=*/false);
-}
-
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_secondary_impl_(LegacyPlatformConfig config,
-                                 bool registry_preclaimed) {
+Platform::secondary_bringup_(LegacyPlatformConfig config,
+                             bool registry_preclaimed) {
     [[maybe_unused]] auto log = detail::platform_logger();
     config.proc_type = ProcType::Secondary;
 
@@ -2971,8 +2944,8 @@ Platform::join_dynamic(LegacyJoinDynamicConfig cfg) {
         }
         ro->disarm_slot();  // hand off slot ownership to next handle
 
-        auto plat_r = Platform::create_secondary_impl_(std::move(pcfg),
-                                                       /*registry_preclaimed=*/true);
+        auto plat_r = Platform::secondary_bringup_(std::move(pcfg),
+                                                   /*registry_preclaimed=*/true);
         if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
         return attach_eal_session(std::move(plat_r));
     }
@@ -3136,8 +3109,8 @@ Platform::attach(PlatformAttachConfig cfg) {
     }
     ro->disarm_slot();  // hand off slot ownership to the new Platform
 
-    return Platform::create_secondary_impl_(std::move(v2),
-                                            /*registry_preclaimed=*/true);
+    return Platform::secondary_bringup_(std::move(v2),
+                                        /*registry_preclaimed=*/true);
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
