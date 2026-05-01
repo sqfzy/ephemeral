@@ -2,7 +2,8 @@ target("eph-utils")
     set_kind("headeronly")
     add_includedirs("include", { public = true })
     add_headerfiles("include/(eph/utils/**.hpp)")
-    add_headerfiles("include/(eph/version.hpp)")
+    -- NOTE: eph/version.hpp was moved to eph-core in c4b01264; the install
+    -- rule lives there now and is reached via the public eph-core dep.
     add_deps("eph-core", { public = true })
     add_packages("spdlog", { public = true })
     add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
