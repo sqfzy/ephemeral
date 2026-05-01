@@ -71,6 +71,21 @@
 ///        --nb-queues 4 --connections 4
 ///        --src-ip 10.0.0.16 --dst-ip 10.0.0.32 --dst-port 30000
 ///
+/// Additional flags (all optional; full list at parse_args, line 173):
+///   --lcores '<spec>'     raw EAL escape hatch, mutually exclusive
+///                         with --pin (e.g. `(0-3)@(4-7)`).
+///   --port-id <id>        DPDK port enumeration index (default 0;
+///                         only relevant when more than one --pci
+///                         is bound).
+///   --seconds <n>         demo run duration (default 5).
+///   --per-lcore-pools <k> NUMA-aware mempool hint. `0` (default)
+///                         keeps the single-pool shape; `k > 0`
+///                         creates k pools and asks `create_and_attach`
+///                         for `pool_lcore_hint = (i % k)` per
+///                         connection so each socket draws from a
+///                         pool local to its lcore (saves 50-100 ns
+///                         per mbuf alloc on multi-socket hosts).
+///
 /// Recommended log level for this demo is `info`: the library's
 /// "create_and_attach: RSS pin → src_port=… hashes to queue=…" log line
 /// is the only place the helper's reverse-pick is surfaced.
