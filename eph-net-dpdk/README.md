@@ -226,7 +226,9 @@ field is the only cross-lcore mutation.
 Lifecycle ordering (registry predeceases Platform → Stream's
 `IcmpTargetHandle` weak_ptr fails gracefully; session lives past
 registry → handle expires cleanly on ~Registry). ASan + TSan
-verified via `test_icmp_registry.cpp`.
+verified via `tests/legacy/test_icmp_registry.cpp` (registry-level
+unit) plus `tests/test_icmp_directory.cpp` and
+`tests/test_icmp_dispatch.cpp` (public-surface dispatch routing).
 
 See [`../docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md)
 for the full TCP state machine, reorder buffer semantics, delayed-ACK,
