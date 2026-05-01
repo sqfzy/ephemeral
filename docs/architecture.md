@@ -117,7 +117,7 @@ Implementations live in `eph-codec`:
 |---|---|---|
 | `WsCodec` | stream | RFC 6455; auto-responds ping/close, reassembles fragments |
 | `RawStreamCodec` | stream | passthrough |
-| `LengthPrefixCodec` | stream | 2-byte BE length prefix |
+| `LengthPrefixCodec` | stream | 4-byte BE length prefix |
 | `RawDatagramCodec` | datagram | one frame per packet |
 | `Mold64Codec` | datagram | MoldUDP64 sequence + gap detection, emits N ITCH frames per packet |
 
