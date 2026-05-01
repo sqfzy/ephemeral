@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Fixed (2026-04-30) — `validate_config` rejects RSS multi-rx with single tx queue
+
+`Platform::validate_config` now rejects `nb_rx_queues > 1 &&
+nb_tx_queues < nb_rx_queues` upfront with `Error::InvalidConfig`.
+The motivation: `DpdkTcpStream::create_and_attach`'s RSS-aware
+connect pins `tx_queue_id = rx_queue_id` so the egress half stays
+affine to the RSS bucket the reply will land on. With `4/1`
+(four RX queues, one TX queue), every stream that picked an RSS
+queue ≥ 1 would silently configure `tx_queue_id >= nb_tx_queues`,
+hit Phase-1-style TX starvation (RX bytes ticking, TX never
+leaves), and surface no config error — clean `connect()` followed
+by zero TX bytes.
+
+The rule is `nb_rx_queues > 1 ⇒ nb_tx_queues >= nb_rx_queues`.
+Single-queue default (`1/1`) and matched multi-queue (`N/N`)
+continue to validate. Three test cases in
+`test_dpdk_platform_mempool.cpp` pin both directions:
+`ValidatorRejectsRssWithSingleTxQueue` (4/1 fails fast),
+`ValidatorAcceptsMatchedMultiQueue` (4/4 still passes),
+`ValidatorAcceptsSingleQueueBoth` (1/1 still passes).
+
+**Behaviour change**: a previously-accepted asymmetric
+configuration that silently broke at runtime now fails at
+`Platform::create` with a clear error. Callers that were
+relying on the silent-acceptance need to either set
+`nb_tx_queues == nb_rx_queues` or stay at single-queue.
+
 ### Fixed — silent-error-log audit (batches 14-20)
 
 Multi-batch sweep through cold-path / control-plane functions where a
