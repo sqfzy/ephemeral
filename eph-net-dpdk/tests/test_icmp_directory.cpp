@@ -136,6 +136,55 @@ TEST(IcmpDirectory, AttachSecondary_NoPrimary_NotFound) {
     EXPECT_EQ(s.error().code, Error::NotFound);
 }
 
+TEST(IcmpDirectorySchema, MaxEntriesDisagrees_AttachSecondaryRejected) {
+    // Defensive guard: hdr->max_entries storage is uint32_t but the
+    // contract is the compile-time constant kIcmpDirectoryMaxEntries
+    // (also the static `entries[]` array bound). Past magic+version,
+    // attach_secondary previously had no range check; multiple
+    // mutators (register_target Pass 1/2, post-CAS rescan, list_targets)
+    // and slot-index guards (release_slot, lookup_owner) use this field
+    // as a bound, so a corrupt bigger value would turn into an out-of-
+    // range read on the fixed-size array. Pin the strict-equality
+    // contract down so a future refactor can't quietly soften it.
+    auto p = IcmpDirectoryHandle::create_primary("idtest_meqcorrupt");
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::IcmpDirectoryHeader*>(p->header());
+    ASSERT_NE(hdr, nullptr);
+    const uint32_t saved = hdr->max_entries;
+    hdr->max_entries = static_cast<uint32_t>(kIcmpDirectoryMaxEntries) + 1024u;
+
+    auto s = IcmpDirectoryHandle::attach_secondary("idtest_meqcorrupt");
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, Error::InvalidConfig);
+    EXPECT_NE(std::strstr(s.error().detail, "max_entries"), nullptr)
+        << "actual: " << s.error().detail;
+    EXPECT_NE(std::strstr(s.error().detail, "kIcmpDirectoryMaxEntries"),
+              nullptr)
+        << "actual: " << s.error().detail;
+
+    // Restore so cleanup doesn't trip on a malformed header.
+    hdr->max_entries = saved;
+}
+
+TEST(IcmpDirectorySchema, MaxEntriesZero_AttachSecondaryRejected) {
+    auto p = IcmpDirectoryHandle::create_primary("idtest_meqzero");
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::IcmpDirectoryHeader*>(p->header());
+    ASSERT_NE(hdr, nullptr);
+    const uint32_t saved = hdr->max_entries;
+    hdr->max_entries = 0;
+
+    auto s = IcmpDirectoryHandle::attach_secondary("idtest_meqzero");
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, Error::InvalidConfig);
+    EXPECT_NE(std::strstr(s.error().detail, "max_entries"), nullptr)
+        << "actual: " << s.error().detail;
+
+    hdr->max_entries = saved;
+}
+
 TEST(IcmpDirectory, RegisterTarget_AllocatesEntry_LookupHits) {
     auto h = IcmpDirectoryHandle::create_primary("idtest_reg");
     ASSERT_TRUE(h.has_value()) << h.error();

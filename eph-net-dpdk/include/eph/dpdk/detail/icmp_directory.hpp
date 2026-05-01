@@ -373,6 +373,33 @@ public:
                 core::Error::InvalidConfig,
                 "IcmpDirectory: header version mismatch (build-tree drift)"});
         }
+        // max_entries sanity. Storage is uint32_t but the contract is the
+        // compile-time constant `kIcmpDirectoryMaxEntries` — the same
+        // value `init_icmp_directory_header` writes at primary-create time
+        // and the static `entries[]` array bound. A corrupt or schema-
+        // skewed (but magic+version-passing) primary could otherwise let
+        // a runaway value through, and several IcmpDirectory methods use
+        // `max_entries` as either a loop bound (register_target Pass 1/2,
+        // post-CAS rescan, list_targets) or a slot-index guard
+        // (release_slot, lookup_owner). Either path turns a bigger-than-
+        // bound value into an out-of-range read on the fixed-size array.
+        // Use strict equality — any drift means "this header isn't ours
+        // and we don't want to silently truncate".
+        if (hdr->max_entries != kIcmpDirectoryMaxEntries) {
+            SPDLOG_ERROR(
+                "IcmpDirectory: header max_entries={} disagrees with the "
+                "compile-time constant kIcmpDirectoryMaxEntries={} on '{}' "
+                "— registry corruption or undeclared schema skew (magic+"
+                "version matched but the entries[] array bound disagrees); "
+                "secondary attach refused before any register_target/"
+                "lookup_owner could read past entries.end()",
+                hdr->max_entries, kIcmpDirectoryMaxEntries, name);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "IcmpDirectory: header max_entries disagrees with "
+                "kIcmpDirectoryMaxEntries (registry corruption or "
+                "undeclared schema skew despite magic+version match)"});
+        }
 
         SPDLOG_INFO(
             "IcmpDirectory: secondary attached to '{}' (max_entries={})",
