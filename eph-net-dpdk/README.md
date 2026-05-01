@@ -130,12 +130,20 @@ int main(int argc, char** argv) {
         .port_id = 0, .rx_queue_id = 0,
     }).value();
 
-    // TLS WebSocket order channel over DPDK TCP
+    // TLS WebSocket order channel over DPDK TCP. The strict factory
+    // `create(cfg)` is shown here for brevity — it requires the caller
+    // to pre-pick `cfg.dpdk.tcp_low_level.tuple.src_port` and pre-attach
+    // to a Poller. Production callers should prefer
+    // `create_and_attach(cfg, platform)` which picks an RX queue, allocates
+    // a non-conflicting src_port (rebinding to match the RSS hash if
+    // needed), runs the TCP/TLS/WS handshakes, attaches to the per-queue
+    // poller, and registers the stream as an ICMP Frag Needed target.
+    // See `examples/simple_hft_dpdk.cpp` for the full production flow.
     auto orders = en::DpdkTcpStream<ec::WsCodec>::create(order_cfg).value();
     orders->on_message = handle_exec_report;
     poller->add(orders.get()).value();
 
-    // MoldUDP64 market data over DPDK UDP multicast
+    // MoldUDP64 market data over DPDK UDP multicast.
     auto md = en::DpdkUdpSocket<ec::Mold64Codec>::create(md_cfg).value();
     md->on_datagram = handle_itch_message;
     md->join_multicast(mcast_addr).value();
