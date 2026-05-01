@@ -55,6 +55,21 @@
 ///   # Custom group + port:
 ///   sudo ./dpdk_multicast_md --pci 0000:28:00.0 --pin 0=4
 ///        --group 224.0.50.50 --group-port 30000 --seconds 8
+///
+/// Full flag reference (all optional unless noted):
+///   --pci <BDF>          REQUIRED. PCI address bound to vfio-pci.
+///   --pin lcore=cpu[:role]   typed lcore→cpu mapping; mutually
+///                            exclusive with --lcores. Repeatable.
+///   --lcores '<spec>'    raw EAL `--lcores` escape hatch (e.g.
+///                        `(0-3)@(4-7)`); mutually exclusive with --pin.
+///   --port-id <n>        DPDK port enumeration index (default 0;
+///                        only relevant if multiple --pci are bound).
+///   --group <ip>         multicast group IP (default 233.54.12.111).
+///   --group-port <port>  multicast UDP port (default 26477).
+///   --seconds <n>        run duration (default 5).
+///   --rss-fail-test      install a deliberately-broken
+///                        `enable_rss=false + nb_rx_queues=2` config
+///                        to exercise the start()-time safety gate.
 
 #include <atomic>
 #include <chrono>
