@@ -421,3 +421,143 @@ TEST(MpRegistryAlive, ThreeProcsTangledRelease_CountAccurate) {
     EXPECT_EQ(p->count_alive_procs(), 1u);
     EXPECT_TRUE(p->is_last_alive_proc());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// lcore_mask cross-process conflict detection (v2 schema)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ProcSpec gained `uint64_t lcore_mask` in v2 to catch the silent
+// "two procs same lcore" mental model gap. The PRIMARY gate is
+// MpTopology::valid() pairwise overlap check — primary creation
+// rejects an invalid topology before any cross-proc state is
+// established. attach_secondary then enforces self-spec match
+// (declared mask in header == secondary's own declared mask),
+// which transitively prevents any peer from claiming a slot whose
+// lcore declaration differs from the primary-written header.
+//
+// The tests below verify both layers.
+
+namespace {
+MpTopology make_topo_lcored(uint8_t self_index, uint8_t total_procs,
+                            uint64_t self_mask, uint64_t peer_mask) {
+    MpTopology t = MpTopology::uniform(self_index, total_procs,
+                                       /*nb_rx_queues=*/4);
+    // Symmetric: every non-self slot gets `peer_mask`. Self gets
+    // `self_mask`. Tests can craft any overlap / disjoint scenario.
+    for (uint8_t i = 0; i < total_procs; ++i) {
+        t.procs[i].lcore_mask = (i == self_index) ? self_mask : peer_mask;
+    }
+    return t;
+}
+} // namespace
+
+TEST(MpRegistryLcore, OptOut_BothZero_NoCheck) {
+    // Default uniform() leaves lcore_mask=0; valid() skips lcore check.
+    auto p = MpRegistryHandle::create_primary("rglc_opt", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto s = MpRegistryHandle::attach_secondary("rglc_opt", make_topo(1));
+    ASSERT_TRUE(s.has_value()) << s.error();
+}
+
+TEST(MpRegistryLcore, DisjointMasks_Allowed) {
+    // proc 0 = 0|1 (0x3), proc 1 = 2|3 (0xC). No overlap.
+    auto p = MpRegistryHandle::create_primary(
+        "rglc_disj", make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0xC));
+    ASSERT_TRUE(p.has_value()) << p.error();
+    EXPECT_EQ(p->header()->procs[0].lcore_mask, 0x3u);
+    EXPECT_EQ(p->header()->procs[1].lcore_mask, 0xCu);
+
+    // Secondary declares matching topology (its own slot 0xC, peer 0x3).
+    auto s = MpRegistryHandle::attach_secondary(
+        "rglc_disj", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0x3));
+    ASSERT_TRUE(s.has_value()) << s.error();
+}
+
+TEST(MpRegistryLcore, ValidRejectsFullOverlap) {
+    // proc 0 and proc 1 both declare 0x3 → MpTopology::valid() fails.
+    MpTopology t = make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0x3);
+    EXPECT_FALSE(t.valid());
+
+    auto p = MpRegistryHandle::create_primary("rglc_dup", t);
+    ASSERT_FALSE(p.has_value());
+    EXPECT_EQ(p.error().code, Error::InvalidConfig);
+}
+
+TEST(MpRegistryLcore, ValidRejectsPartialOverlap) {
+    // proc 0 = 0x7 (bits 0,1,2), proc 1 = 0xC (bits 2,3) → bit 2 collides.
+    MpTopology t = make_topo_lcored(0, 2, /*self*/0x7, /*peer*/0xC);
+    EXPECT_FALSE(t.valid());
+
+    auto p = MpRegistryHandle::create_primary("rglc_par", t);
+    ASSERT_FALSE(p.has_value());
+}
+
+TEST(MpRegistryLcore, ValidAllowsAsymmetricOptOut) {
+    // proc 0 declares 0x3, proc 1 opts out (0). Mixed-mode is OK —
+    // valid() only fires the lcore check when at least one slot is
+    // tracked, but doesn't require all slots to be tracked.
+    MpTopology t = make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0);
+    EXPECT_TRUE(t.valid());
+
+    auto p = MpRegistryHandle::create_primary("rglc_asy", t);
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    // Secondary opts out (mask=0); declares matching peer view.
+    auto s = MpRegistryHandle::attach_secondary(
+        "rglc_asy", make_topo_lcored(1, 2, /*self*/0, /*peer*/0x3));
+    ASSERT_TRUE(s.has_value()) << s.error();
+}
+
+TEST(MpRegistryLcore, AttachConflictWithLiveSlot_Rejected) {
+    // Primary publishes its own slot's mask=0x3 to header. Secondary
+    // attaches declaring its own (proc 1) mask=0x3 too — overlaps with
+    // primary's published mask → cross-proc check fires.
+    // (Self-spec match no longer compares lcore_mask, so secondary's
+    // disagreement with primary's view of peer slots' masks doesn't
+    // trigger spec mismatch — the cross-proc liveness scan does.)
+    auto p_topo = make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0);
+    auto p = MpRegistryHandle::create_primary("rglc_lc", p_topo);
+    ASSERT_TRUE(p.has_value()) << p.error();
+    EXPECT_EQ(p->header()->procs[0].lcore_mask, 0x3u);
+
+    // Secondary topo: own slot mask=0x3 (collides with primary's live mask)
+    auto s_topo = make_topo_lcored(1, 2, /*self*/0x3, /*peer*/0);
+    auto s = MpRegistryHandle::attach_secondary("rglc_lc", s_topo);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, Error::InvalidConfig);
+    EXPECT_NE(std::string{s.error().detail}.find("lcore_mask"),
+              std::string::npos);
+}
+
+TEST(MpRegistryLcore, AttachPublishesOwnMask) {
+    // Primary's topo only declares its own slot's mask. Secondary
+    // attaches with its own mask; verify the slot's lcore_mask was
+    // written to header by attach.
+    auto p = MpRegistryHandle::create_primary(
+        "rglc_pub", make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+    EXPECT_EQ(p->header()->procs[1].lcore_mask, 0u);  // peer slot empty
+
+    auto s = MpRegistryHandle::attach_secondary(
+        "rglc_pub", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0));
+    ASSERT_TRUE(s.has_value()) << s.error();
+    // After attach, secondary's mask is published to its own slot.
+    EXPECT_EQ(p->header()->procs[1].lcore_mask, 0xCu);
+}
+
+TEST(MpRegistryLcore, AfterRelease_SlotReusable) {
+    // Proc 1 takes lcores 2|3, releases. Re-attach OK.
+    auto p = MpRegistryHandle::create_primary(
+        "rglc_reu", make_topo_lcored(0, 2, /*self*/0x3, /*peer*/0xC));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    {
+        auto s = MpRegistryHandle::attach_secondary(
+            "rglc_reu", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0x3));
+        ASSERT_TRUE(s.has_value()) << s.error();
+    }
+    auto s2 = MpRegistryHandle::attach_secondary(
+        "rglc_reu", make_topo_lcored(1, 2, /*self*/0xC, /*peer*/0x3));
+    ASSERT_TRUE(s2.has_value()) << s2.error();
+}

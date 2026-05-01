@@ -80,7 +80,17 @@ inline constexpr uint32_t kMpRegistryMagic =
     (static_cast<uint32_t>('P') << 16) |
     (static_cast<uint32_t>('R') << 24);
 
-inline constexpr uint32_t kMpRegistryVersion = 1;
+/// Schema version. Bumped when ProcSlot layout changes in a way
+/// that would corrupt cross-process reads if mixed with an older
+/// version. Hard-rejected at attach time (no compat layer); peers
+/// must rebuild from the same eph-net-dpdk source.
+///
+/// History:
+///   v1: claimed/tag/queue_lo/queue_hi/port_lo/port_hi
+///   v2: + lcore_mask (uint64_t) — cross-process lcore conflict
+///       detection, fix for "two procs same lcore silently steals
+///       CPU" mental model gap.
+inline constexpr uint32_t kMpRegistryVersion = 2;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
 
@@ -118,6 +128,11 @@ struct ProcSlot {
     uint16_t queue_hi;
     uint32_t port_lo;
     uint32_t port_hi;
+    /// Bitmask mirror of `ProcSpec::lcore_mask`. v2 schema.
+    /// Used by `attach_secondary` to reject overlapping lcore
+    /// declarations — two procs claiming bit N would silently steal
+    /// CPU from each other under the OS scheduler.
+    uint64_t lcore_mask;
 };
 
 struct alignas(64) MpRegistryHeader {
@@ -218,10 +233,11 @@ init_mp_registry_header(MpRegistryHeader* dst,
         ProcSlot& s = dst->procs[i];
         s.claimed.store(0, std::memory_order_relaxed);
         std::memset(s.tag, 0, kMpRegistryTagCap);
-        s.queue_lo = 0;
-        s.queue_hi = 0;
-        s.port_lo  = 0;
-        s.port_hi  = 0;
+        s.queue_lo   = 0;
+        s.queue_hi   = 0;
+        s.port_lo    = 0;
+        s.port_hi    = 0;
+        s.lcore_mask = 0;
     }
 
     for (uint8_t i = 0; i < topo.total_procs; ++i) {
@@ -229,10 +245,11 @@ init_mp_registry_header(MpRegistryHeader* dst,
         const auto& src = topo.procs[i];
         std::memcpy(s.tag, src.tag.data(),
                     std::min(src.tag.size(), kMpRegistryTagCap - 1));
-        s.queue_lo = src.queue_lo;
-        s.queue_hi = src.queue_hi;
-        s.port_lo  = src.port_lo;
-        s.port_hi  = src.port_hi;
+        s.queue_lo   = src.queue_lo;
+        s.queue_hi   = src.queue_hi;
+        s.port_lo    = src.port_lo;
+        s.port_hi    = src.port_hi;
+        s.lcore_mask = src.lcore_mask;
     }
 }
 
@@ -538,13 +555,17 @@ public:
         }
 
         // Cross-validate self spec — secondary may not silently disagree
-        // with primary's view of who owns what.
+        // with primary's view of queues/ports. lcore_mask is intentionally
+        // EXCLUDED here: in the autojoin path, each peer knows only its
+        // own lcores (via env / config), so primary writes its own slot's
+        // mask but leaves peer slots' masks at 0 — secondaries publish
+        // their own masks via the slot at claim time (see below).
         const ProcSlot& declared = hdr->procs[topo.self_index];
         const ProcSpec& wanted   = topo.procs[topo.self_index];
-        if (declared.queue_lo != wanted.queue_lo ||
-            declared.queue_hi != wanted.queue_hi ||
-            declared.port_lo  != wanted.port_lo  ||
-            declared.port_hi  != wanted.port_hi) {
+        if (declared.queue_lo   != wanted.queue_lo   ||
+            declared.queue_hi   != wanted.queue_hi   ||
+            declared.port_lo    != wanted.port_lo    ||
+            declared.port_hi    != wanted.port_hi) {
             SPDLOG_ERROR(
                 "MpRegistry: secondary's spec for self_index={} does not "
                 "match primary's: declared queues=[{},{}) ports=[{},{}) "
@@ -557,6 +578,51 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: secondary's self spec disagrees with primary"});
+        }
+
+        // Cross-process lcore overlap check — only triggers when this
+        // secondary's lcore_mask is non-zero (opt-in tracking) AND any
+        // OTHER currently-claimed slot has overlapping bits. Catches the
+        // "two processes accidentally pinned to lcore 0,1" mental model
+        // gap where the OS scheduler silently steals CPU between them.
+        //
+        // Order: runs BEFORE the CAS for `!already_claimed`, so a
+        // failure on that path leaves the slot un-claimed (no leak).
+        // For `already_claimed=true` (autojoin), the caller has already
+        // CAS-claimed via try_claim_free_slot before reaching here —
+        // we must release the slot before returning error, otherwise
+        // the slot leaks (caller's disarmed read-only handle won't
+        // clear it).
+        if (wanted.lcore_mask != 0) {
+            const uint32_t total = hdr->total_procs;
+            for (uint32_t i = 0; i < total; ++i) {
+                if (i == topo.self_index) continue;
+                if (hdr->procs[i].claimed.load(
+                        std::memory_order_acquire) == 0) continue;
+                const uint64_t other_mask = hdr->procs[i].lcore_mask;
+                const uint64_t overlap = wanted.lcore_mask & other_mask;
+                if (overlap != 0) {
+                    SPDLOG_ERROR(
+                        "MpRegistry: lcore conflict — self_index={} "
+                        "lcore_mask=0x{:016x} overlaps with active "
+                        "slot[{}] (tag='{}') lcore_mask=0x{:016x}; "
+                        "overlapping bits=0x{:016x}. Two processes on "
+                        "the same lcore cause OS scheduler CPU theft "
+                        "and silently corrupt benchmark data.",
+                        topo.self_index, wanted.lcore_mask,
+                        i, hdr->procs[i].tag, other_mask, overlap);
+                    if (already_claimed) {
+                        // Caller pre-claimed; release before bailing.
+                        hdr->procs[topo.self_index].claimed.store(
+                            0, std::memory_order_release);
+                    }
+                    return std::unexpected(core::ErrorInfo{
+                        core::Error::InvalidConfig,
+                        "MpRegistry: lcore_mask overlaps with another "
+                        "active process — silent CPU contention would "
+                        "result"});
+                }
+            }
         }
 
         if (!already_claimed) {
@@ -593,12 +659,29 @@ public:
             }
         }
 
+        // Publish this peer's lcore_mask into its own slot. Each peer
+        // owns its slot's lcore_mask write — primary leaves peer slots'
+        // masks at 0 because it doesn't know peers' lcore plans. The
+        // pre-CAS conflict scan (above) already verified no overlap
+        // with currently-claimed peers, so this write is safe.
+        // Use release ordering so subsequent peers' acquire-loads in
+        // their own conflict scan see this mask.
+        if (wanted.lcore_mask != 0) {
+            // (lcore_mask field is plain uint64_t, not atomic — but
+            // single-writer per slot semantics make this safe; the
+            // claimed.store(release) at slot release time provides
+            // happens-before for any reader that ACQUIRE-loads claimed
+            // first, then reads lcore_mask.)
+            hdr->procs[topo.self_index].lcore_mask = wanted.lcore_mask;
+            std::atomic_thread_fence(std::memory_order_release);
+        }
+
         SPDLOG_INFO(
             "MpRegistry: secondary attached to '{}' (self_index={} "
-            "queues=[{},{}) ports=[{},{}))",
+            "queues=[{},{}) ports=[{},{}) lcore_mask=0x{:016x})",
             name, topo.self_index,
             wanted.queue_lo, wanted.queue_hi,
-            wanted.port_lo,  wanted.port_hi);
+            wanted.port_lo,  wanted.port_hi, wanted.lcore_mask);
 
         MpRegistryHandle h;
         h.hdr_          = hdr;

@@ -71,6 +71,17 @@ struct ProcSpec {
     uint32_t port_lo  = 0;
     uint32_t port_hi  = 0;          ///< src_port range hi (exclusive)
 
+    /// @brief Bitmask of EAL lcore IDs this process owns. Bit N set
+    /// = lcore N is exclusively held by this proc. Default 0 means
+    /// "lcore tracking opted out" — `valid()` and `attach_secondary`
+    /// skip lcore cross-checks when ALL slots have lcore_mask == 0.
+    /// Set per-proc by the application that knows its lcore plan
+    /// (e.g. `EPH_LAT_AUTOJOIN_LCORES="0,1"` → bit 0 | bit 1 = 0x3).
+    /// Capped at 64 lcores; any RTE_MAX_LCORE > 64 deployments need
+    /// to opt out by leaving this 0 (most production NICs run < 64
+    /// per process).
+    uint64_t lcore_mask = 0;
+
     [[nodiscard]] friend constexpr bool
     operator==(const ProcSpec&, const ProcSpec&) noexcept = default;
 };
@@ -160,6 +171,13 @@ struct MpTopology {
 
         // Pairwise overlap check. Half-open intervals `[a, b)` and
         // `[c, d)` overlap iff `a < d && c < b`.
+        // lcore_mask overlap = AND non-zero. Skip lcore check entirely
+        // if ALL slots opted out (every lcore_mask == 0) — application
+        // either doesn't track lcores or hasn't migrated yet.
+        bool any_lcore_tracked = false;
+        for (uint8_t i = 0; i < total_procs; ++i) {
+            if (procs[i].lcore_mask != 0) { any_lcore_tracked = true; break; }
+        }
         for (uint8_t i = 0; i < total_procs; ++i) {
             for (uint8_t j = i + 1; j < total_procs; ++j) {
                 const auto& a = procs[i];
@@ -167,6 +185,9 @@ struct MpTopology {
                 if (a.queue_lo < b.queue_hi && b.queue_lo < a.queue_hi)
                     return false;
                 if (a.port_lo < b.port_hi && b.port_lo < a.port_hi)
+                    return false;
+                if (any_lcore_tracked &&
+                    (a.lcore_mask & b.lcore_mask) != 0)
                     return false;
             }
         }
