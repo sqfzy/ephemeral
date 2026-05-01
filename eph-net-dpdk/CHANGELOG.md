@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed — MP mental-model closure follow-ups (round 7 audit)
+
+A continuation of the same `/pax --review` LENS ("production /
+MP mental model / silent misuse closure") on round 7 found one
+more interlocking gap in the autojoin lcores intake — the
+symmetric closure of the round-6 gw_mac empty-path guard.
+
+* **Empty / mask-0 lcores accepted** (commits `937f7b19`, `a783c0d0`):
+  * `DpdkBenchEnv::create_via_autojoin` previously accepted
+    `lcores=""` and propagated `self_lcore_mask=0` into MpRegistry
+    v2's cross-peer overlap gate. A zero claim trivially overlaps
+    with no one, silently disabling the conflict detection that v2
+    was specifically added to provide — the same class of silent-
+    misuse bug closed for `gw_mac_share_path` in round 6.
+  * The bench dispatcher in `benchmarks/latency/core/dpdk_env.hpp`
+    also checked the env vars only with a null-pointer test, so
+    `export EPH_LAT_AUTOJOIN_LCORES=""` propagated the empty
+    string instead of falling back to bench.conf `eal_cores` as
+    the doc claimed.
+  * Fix (helper, commit `937f7b19`): hard reject empty lcores
+    AND post-parse `mask=0` (e.g. `"  ,  "`) at the
+    `create_via_autojoin` boundary, before
+    `Platform::join_dynamic`. Two new tests in
+    `test_dpdk_autojoin_gw_mac.cpp` pin both guards.
+  * Fix (bench dispatcher, commit `a783c0d0`): treat empty env-var
+    values as unset so the bench.conf fallback chain works as
+    documented; the helper-side hard reject still gates direct
+    programmatic callers passing `""` intentionally.
+  * Doc update (commit `e2c8de20`): clarify the bench-vs-helper
+    contract split in `dpdk-mp-teardown-protocol.md`.
+* **`is_pid_alive` direct boundary tests** (commit `91f4bcf0`):
+  * The `kill(pid, 0)` liveness probe gating stale-slot reclaim
+    in `try_claim_free_slot` was only tested indirectly via the
+    integration `StaleSlotReclaimed` test. Added 5 direct unit
+    tests pinning the contract: own pid alive, pid<=0 rejected,
+    INT32_MAX dead, PID 1 alive (covers the EPERM-from-non-root
+    branch), reaped child dead.
+
 ### Fixed — MP mental-model closure follow-ups (round 1-3 audit)
 
 A second `/pax --review` pass through the same LENS ("production /
