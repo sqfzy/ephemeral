@@ -277,6 +277,47 @@ public:
         return hdr_ != nullptr && self_index_ != kMpRegistrySelfIndexUnset;
     }
 
+    /// @brief Lock-free count of currently-claimed slots in this
+    /// registry (i.e. live processes attached to it). Scans
+    /// `procs[0..total_procs)` with `memory_order_acquire`. Returns
+    /// 0 for an inert handle (`hdr_ == nullptr`).
+    ///
+    /// **Race window**: a peer may CAS-claim a slot or release one
+    /// during the scan, so the result is a snapshot rather than a
+    /// strict invariant. For the primary-teardown gate this is
+    /// acceptable: if a peer releases its slot mid-scan, that peer
+    /// is already past its own `~Platform::Impl::cleanup()` and no
+    /// longer touches shared io_cq state — even if we incorrectly
+    /// conclude "I'm last alive" and proceed to `rte_eth_dev_stop`,
+    /// the released peer cannot fault on the resulting NULL writes
+    /// (it has no live `rte_eth_rx_burst` in flight).
+    [[nodiscard]] uint32_t count_alive_procs() const noexcept {
+        if (hdr_ == nullptr) return 0;
+        const uint32_t total = hdr_->total_procs;
+        uint32_t alive = 0;
+        for (uint32_t i = 0; i < total; ++i) {
+            if (hdr_->procs[i].claimed.load(
+                    std::memory_order_acquire) != 0) {
+                ++alive;
+            }
+        }
+        return alive;
+    }
+
+    /// @brief True iff this handle owns the only currently-claimed
+    /// slot. Equivalent to `owns_slot() && count_alive_procs() == 1`.
+    ///
+    /// Used by `Platform::Impl::cleanup()` (primary path) to gate
+    /// `rte_eth_dev_stop` / `rte_eth_dev_close` / `rte_mempool_free`:
+    /// if other peers still hold slots, the primary defers global
+    /// port teardown so the still-attached peers don't fault on
+    /// shared io_cq nullification (DPDK MP teardown protocol —
+    /// the port is system-owned, primary destruction ≠ everyone
+    /// detached).
+    [[nodiscard]] bool is_last_alive_proc() const noexcept {
+        return owns_slot() && count_alive_procs() == 1;
+    }
+
     /// @brief Drop slot-ownership without clearing the slot's
     /// `claimed` flag in shared memory. After this call,
     /// `owns_slot()` is `false` and the destructor will NOT

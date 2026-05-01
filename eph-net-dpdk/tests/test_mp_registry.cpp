@@ -320,3 +320,89 @@ TEST(MpRegistry, AttachSecondary_AlreadyClaimedRequiresActualClaim) {
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, Error::InvalidConfig);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// count_alive_procs / is_last_alive_proc — gate API for primary teardown
+// (introduced to fix the DPDK MP teardown-protocol violation in
+//  Platform::Impl::cleanup() — see eph-net-dpdk/docs/ena-mp-limitation.md)
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(MpRegistryAlive, InertHandle_CountIsZero) {
+    MpRegistryHandle h;  // default-constructed inert
+    EXPECT_FALSE(h.owns_slot());
+    EXPECT_EQ(h.count_alive_procs(), 0u);
+    EXPECT_FALSE(h.is_last_alive_proc());
+}
+
+TEST(MpRegistryAlive, PrimaryAlone_IsLast) {
+    auto p = MpRegistryHandle::create_primary("rgalive1", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    EXPECT_EQ(p->count_alive_procs(), 1u);
+    EXPECT_TRUE(p->is_last_alive_proc());
+}
+
+TEST(MpRegistryAlive, TwoProcs_NeitherIsLast) {
+    auto p = MpRegistryHandle::create_primary("rgalive2", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto s = MpRegistryHandle::attach_secondary("rgalive2", make_topo(1));
+    ASSERT_TRUE(s.has_value()) << s.error();
+
+    EXPECT_EQ(p->count_alive_procs(), 2u);
+    EXPECT_EQ(s->count_alive_procs(), 2u);
+    EXPECT_FALSE(p->is_last_alive_proc());
+    EXPECT_FALSE(s->is_last_alive_proc());
+}
+
+TEST(MpRegistryAlive, SecondaryReleased_PrimaryBecomesLast) {
+    auto p = MpRegistryHandle::create_primary("rgalive3", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    {
+        auto s = MpRegistryHandle::attach_secondary("rgalive3", make_topo(1));
+        ASSERT_TRUE(s.has_value()) << s.error();
+        EXPECT_EQ(p->count_alive_procs(), 2u);
+        EXPECT_FALSE(p->is_last_alive_proc());
+    }
+    // RAII drop of `s` released its slot.
+    EXPECT_EQ(p->count_alive_procs(), 1u);
+    EXPECT_TRUE(p->is_last_alive_proc());
+}
+
+TEST(MpRegistryAlive, ThreeProcsTangledRelease_CountAccurate) {
+    // 4-slot registry: primary at 0, secondaries at 1, 2, 3.
+    auto p = MpRegistryHandle::create_primary(
+        "rgalive4", MpTopology::uniform(0, 4, 8));
+    ASSERT_TRUE(p.has_value()) << p.error();
+    EXPECT_EQ(p->count_alive_procs(), 1u);
+
+    {
+        auto s1 = MpRegistryHandle::attach_secondary(
+            "rgalive4", MpTopology::uniform(1, 4, 8));
+        ASSERT_TRUE(s1.has_value()) << s1.error();
+        EXPECT_EQ(p->count_alive_procs(), 2u);
+
+        {
+            auto s2 = MpRegistryHandle::attach_secondary(
+                "rgalive4", MpTopology::uniform(2, 4, 8));
+            ASSERT_TRUE(s2.has_value()) << s2.error();
+            EXPECT_EQ(p->count_alive_procs(), 3u);
+
+            {
+                auto s3 = MpRegistryHandle::attach_secondary(
+                    "rgalive4", MpTopology::uniform(3, 4, 8));
+                ASSERT_TRUE(s3.has_value()) << s3.error();
+                EXPECT_EQ(p->count_alive_procs(), 4u);
+                EXPECT_FALSE(p->is_last_alive_proc());
+            }
+            // s3 released
+            EXPECT_EQ(p->count_alive_procs(), 3u);
+        }
+        // s2 released — out-of-order release relative to s3
+        EXPECT_EQ(p->count_alive_procs(), 2u);
+    }
+    // s1 released — primary is now alone again
+    EXPECT_EQ(p->count_alive_procs(), 1u);
+    EXPECT_TRUE(p->is_last_alive_proc());
+}
