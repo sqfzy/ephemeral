@@ -261,12 +261,12 @@ int main(int argc, char** argv) {
     // Single binary, single peer ⇒ single-process bring-up. Platform
     // owns the EAL session and runs eal_cleanup atomically on
     // destruction; no separate EalGuard needed.
-    ed::PlatformConfig pcfg{};
+    ed::PlatformConfigV3 pcfg{};
     pcfg.port_id          = args.eal.port_id;
     pcfg.nb_rx_queues     = args.nb_rx_queues;
     pcfg.nb_tx_queues     = args.nb_rx_queues;
     pcfg.per_lcore_pools  = args.per_lcore_pools;
-    pcfg.proc_type        = ed::ProcType::Primary;
+    // max_procs default 1 = single-process RSS multi-queue.
 
     if (!args.eal.pins.empty()) {
         spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "

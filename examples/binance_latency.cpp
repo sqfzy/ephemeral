@@ -315,12 +315,12 @@ int main(int argc, char** argv) {
     // ── 2) EAL + Platform via the unified create_with_eal factory ────────
     // Single binary, single peer, real-server probe ⇒ Platform owns EAL
     // and runs eal_cleanup atomically on destruction.
-    eph::dpdk::PlatformConfig pcfg{};
+    eph::dpdk::PlatformConfigV3 pcfg{};
     pcfg.port_id        = app_cfg.eal.port_id;
     pcfg.nb_rx_queues   = 1;
     pcfg.nb_tx_queues   = 1;
     pcfg.mbuf_pool_size = 8191;  // 2^n-1; generous for a single session
-    pcfg.proc_type      = ed::ProcType::Primary;
+    // max_procs default 1 = single-process.
 
     if (!app_cfg.eal.pins.empty()) {
         spdlog::info("binance_latency: bring-up via create_with_eal "

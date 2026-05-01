@@ -193,12 +193,12 @@ int main(int argc, char** argv) {
     // queue, THEN clear `MulticastConfig::rss_active_multi_queue` to
     // acknowledge the explicit pin. The receiver cannot reverse-pick a
     // src_port (it doesn't control the sender) so RSS without FD is unsafe.
-    ed::PlatformConfig pcfg{};
+    ed::PlatformConfigV3 pcfg{};
     pcfg.port_id            = args.eal.port_id;
     pcfg.nb_rx_queues       = 1;
     pcfg.nb_tx_queues       = 1;
     pcfg.enable_promiscuous = false;
-    pcfg.proc_type          = ed::ProcType::Primary;
+    // max_procs default 1 = single-process.
 
     auto plat_r = ed::Platform::create_with_eal(
         std::move(pcfg),
