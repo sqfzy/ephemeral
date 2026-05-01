@@ -503,14 +503,29 @@ fi
 MOCK_PID=""
 cleanup() {
     local rc=$?
-    if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
-        kill -TERM "$MOCK_PID" 2>/dev/null || true
-        for _ in 1 2 3 4 5; do
-            kill -0 "$MOCK_PID" 2>/dev/null || break
-            sleep 0.1
-        done
-        kill -0 "$MOCK_PID" 2>/dev/null && kill -KILL "$MOCK_PID" 2>/dev/null || true
-        wait "$MOCK_PID" 2>/dev/null || true
+    if [[ -n "$MOCK_PID" ]]; then
+        # Detect mockex died DURING the bench run (not just at init).
+        # If kill -0 fails NOW but didn't fail at startup, it died
+        # mid-run — surface its log so the user knows the bench data
+        # may be from a partial server.
+        if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+            local mock_rc=0
+            wait "$MOCK_PID" 2>/dev/null
+            mock_rc=$?
+            if [[ "$mock_rc" -ne 0 ]] && [[ -n "$MOCK_LOG" ]]; then
+                echo "─── mockex died mid-run: rc=$mock_rc, tail of $MOCK_LOG ───" >&2
+                tail -20 "$MOCK_LOG" >&2 2>/dev/null || true
+                echo "──────────────────────────────────────────────────────────" >&2
+            fi
+        else
+            kill -TERM "$MOCK_PID" 2>/dev/null || true
+            for _ in 1 2 3 4 5; do
+                kill -0 "$MOCK_PID" 2>/dev/null || break
+                sleep 0.1
+            done
+            kill -0 "$MOCK_PID" 2>/dev/null && kill -KILL "$MOCK_PID" 2>/dev/null || true
+            wait "$MOCK_PID" 2>/dev/null || true
+        fi
     fi
     exit $rc
 }
@@ -546,6 +561,7 @@ printf '   topo   : %s\n\n' \
 
 # Fork the mock — unless we're in real-server mode, in which case the
 # client will dial the exchange directly and there's nothing to fork.
+MOCK_LOG=""
 if $REAL_SERVER; then
     log_step "real-server mode: skipping mockex fork (endpoint=$ENDPOINT)"
     MOCK_PID=""
@@ -553,16 +569,36 @@ else
     MOCKEX_BIN="$BUILD_DIR/mockex"
     [[ -x "$MOCKEX_BIN" ]] || die "mockex binary not found: $MOCKEX_BIN" \
         "Build with: xmake build mockex"
-    log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE")"
-    "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" &
+    # Capture mockex stdout/stderr to a per-PID tempfile via mktemp so
+    # (a) we can surface its output when it dies before the client even
+    # starts (Vuln B from /pax --review — silent mockex bind failure),
+    # (b) two concurrent `lat` runs don't clobber each other's logs,
+    # (c) we sidestep TOCTOU symlink-attack on a fixed /tmp path.
+    MOCK_LOG=$(mktemp "/tmp/lat_mockex_${MOCK_ARG}_XXXXXX.log") || \
+        die "mktemp failed for /tmp/lat_mockex_${MOCK_ARG}" \
+            "  /tmp not writable? Check 'df -h /tmp' and 'ls -ld /tmp'."
+    log_step "forking mock: mockex --scenario $MOCK_ARG --config $(basename "$CONFIG_FILE") → $MOCK_LOG"
+    "$MOCKEX_BIN" --scenario "$MOCK_ARG" --config "$CONFIG_FILE" \
+        > "$MOCK_LOG" 2>&1 &
     MOCK_PID=$!
 fi
 
 if [[ -n "$MOCK_PID" ]]; then
     sleep 0.5
     if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+        # Mockex died during init — surface its log so the user sees
+        # WHY (port-in-use / config error / bind permission / etc.)
+        # instead of getting a "connect timeout" 30s later from the
+        # client and chasing a network-side red herring.
+        echo "─── mockex tail ($MOCK_LOG) ───────────────────" >&2
+        tail -30 "$MOCK_LOG" >&2 2>/dev/null || true
+        echo "──────────────────────────────────────────────" >&2
         die "mock exited before client could run" \
-            "Check the mock output above; it probably failed to bind $MOCK_IP."
+            "  Mockex died during init. Most common causes:" \
+            "    1. Port in use (TIME_WAIT from previous mockex; wait 120s or use a different port)" \
+            "    2. Config error (bad port / bad scenario section)" \
+            "    3. Bind permission (mock_ip not assigned to local NIC)" \
+            "  Full log: $MOCK_LOG"
     fi
 fi
 
