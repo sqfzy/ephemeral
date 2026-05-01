@@ -15,6 +15,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Stale `.bench/` artifact directories — the bench writes no files, so
   any residue was historical noise.
 
+### Fixed
+- `scripts/lat` `cleanup()` deletes the mockex log on clean exit and
+  preserves + prints the path on failure / mid-run mockex death /
+  SIGINT/SIGTERM (commit `afcfd223`). Stops `/tmp/lat_mockex_*.log`
+  from accumulating on a long-running dev box.
+- `scripts/lat` `conf_get()` / `conf_get_section()` now split on the
+  FIRST `=` only via `index()`+`substr()` (commit `12d239a3`). The
+  previous `split($0, a, "=")` silently truncated values containing
+  `=` — e.g. `endpoint = "wss://host/stream?streams=btc&depth=20"`
+  was returned as `wss://host/stream?streams`, causing opaque WS
+  connect failures with no diagnostic pointing at the parser.
+
 ## [Simplify Plan] — 2026-04
 
 End state of the 8-stage "simplify" plan that replaced the old
