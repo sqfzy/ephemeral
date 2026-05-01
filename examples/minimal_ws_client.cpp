@@ -2,6 +2,20 @@
 ///
 /// The shortest possible kernel-backed WebSocket client using the
 /// eph::net::kernel + eph::codec API.
+///
+/// Usage:
+///   minimal_ws_client [<ipv4>] [<port>]
+///
+///   <ipv4>   Remote IPv4 literal (default: 127.0.0.1)
+///   <port>   Remote TCP port     (default: 8080)
+///
+/// This skeleton leaves `cfg.ws.path` empty, so it opens a plain TCP
+/// socket against the target — `WsCodec` is still the frame parser, but
+/// no RFC 6455 handshake is performed. Set `cfg.ws.path = "/stream"`
+/// (or whatever path the server expects) to make `Stream::create` drive
+/// the full HTTP Upgrade and only return after the handshake completes.
+/// Pair with any echo server (`nc -lk 8080` for the raw-TCP shape, or
+/// `websocat -s 127.0.0.1:8080` once a `cfg.ws.path` is set).
 
 #include <atomic>
 #include <chrono>
