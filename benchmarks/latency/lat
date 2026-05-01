@@ -503,6 +503,12 @@ fi
 MOCK_PID=""
 cleanup() {
     local rc=$?
+    # Track whether mockex died of its own accord (vs. being killed by us
+    # in the clean shutdown path). Used below to decide whether to delete
+    # or preserve MOCK_LOG: clean shutdowns can drop the log; anything
+    # else (mid-run mockex death / non-zero client rc / SIGINT / SIGTERM)
+    # preserves it so the user has post-mortem material.
+    local mockex_died_mid_run=false
     if [[ -n "$MOCK_PID" ]]; then
         # Detect mockex died DURING the bench run (not just at init).
         # If kill -0 fails NOW but didn't fail at startup, it died
@@ -513,6 +519,7 @@ cleanup() {
             wait "$MOCK_PID" 2>/dev/null
             mock_rc=$?
             if [[ "$mock_rc" -ne 0 ]] && [[ -n "$MOCK_LOG" ]]; then
+                mockex_died_mid_run=true
                 echo "─── mockex died mid-run: rc=$mock_rc, tail of $MOCK_LOG ───" >&2
                 tail -20 "$MOCK_LOG" >&2 2>/dev/null || true
                 echo "──────────────────────────────────────────────────────────" >&2
@@ -525,6 +532,24 @@ cleanup() {
             done
             kill -0 "$MOCK_PID" 2>/dev/null && kill -KILL "$MOCK_PID" 2>/dev/null || true
             wait "$MOCK_PID" 2>/dev/null || true
+        fi
+    fi
+    # MOCK_LOG hygiene. Without this every successful run leaks a small
+    # log into /tmp; over months on a long-running dev box this
+    # accumulates thousands of stale `lat_mockex_*.log` files. Policy:
+    #   - clean exit (rc=0 AND mockex was killed cleanly by us)
+    #     → delete the log
+    #   - any failure / signal / mid-run mockex death
+    #     → preserve + print path so the user can `cat` it
+    # Idempotent: rm -f swallows already-deleted; -e check avoids the
+    # noise message when there's no log to preserve (real-server mode
+    # leaves MOCK_LOG=""; the init-time-death path has already
+    # informed the user the log path is the diagnostic artifact).
+    if [[ -n "$MOCK_LOG" && -e "$MOCK_LOG" ]]; then
+        if [[ "$rc" -eq 0 && "$mockex_died_mid_run" == false ]]; then
+            rm -f "$MOCK_LOG"
+        else
+            printf '   mockex log preserved: %s\n' "$MOCK_LOG" >&2
         fi
     fi
     exit $rc
