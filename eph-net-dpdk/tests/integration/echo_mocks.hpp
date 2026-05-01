@@ -48,12 +48,12 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
     auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
-        spdlog::error("test_e2e tcp_echo_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e tcp_echo_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
         return;
     }
     int listen_fd = *listen_r;
-    spdlog::info("test_e2e tcp_echo_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e tcp_echo_mock listening on {}:{}", ip, port);
 
     // Spawn a detached worker thread per accepted connection so multiple
     // clients can be served concurrently (e.g. fan-out producer tests with
@@ -75,7 +75,7 @@ inline void tcp_echo_mock_thread(const std::string& ip, uint16_t port,
     while (running.load(std::memory_order_acquire)) {
         auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
         if (!cfd_r) {
-            spdlog::warn("test_e2e tcp_echo accept: {}", cfd_r.error());
+            SPDLOG_WARN("test_e2e tcp_echo accept: {}", cfd_r.error());
             continue;
         }
         if (*cfd_r < 0) break; // shutdown requested
@@ -105,12 +105,12 @@ inline void udp_echo_mock_thread(const std::string& ip, uint16_t port,
                                   std::atomic<bool>& running) noexcept {
     auto fd_r = eph::net::posix::udp_bind(ip, port);
     if (!fd_r) {
-        spdlog::error("test_e2e udp_echo_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e udp_echo_mock {}:{} bind: {}",
                       ip, port, fd_r.error());
         return;
     }
     int fd = *fd_r;
-    spdlog::info("test_e2e udp_echo_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e udp_echo_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 2048;
     std::vector<uint8_t> buf(kBufSize);
@@ -149,12 +149,12 @@ inline void dns_mock_thread(const std::string& ip, uint16_t port,
                              std::atomic<bool>& running) noexcept {
     auto fd_r = eph::net::posix::udp_bind(ip, port);
     if (!fd_r) {
-        spdlog::error("test_e2e dns_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e dns_mock {}:{} bind: {}",
                       ip, port, fd_r.error());
         return;
     }
     int fd = *fd_r;
-    spdlog::info("test_e2e dns_mock listening on {}:{} (resolved_ip=0x{:08x})",
+    SPDLOG_INFO("test_e2e dns_mock listening on {}:{} (resolved_ip=0x{:08x})",
                  ip, port, resolved_ip);
 
     constexpr size_t kBufSize = 1500;
@@ -237,12 +237,12 @@ inline void tcp_rst_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
     auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
-        spdlog::error("test_e2e tcp_rst_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e tcp_rst_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
         return;
     }
     int listen_fd = *listen_r;
-    spdlog::info("test_e2e tcp_rst_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e tcp_rst_mock listening on {}:{}", ip, port);
 
     while (running.load(std::memory_order_acquire)) {
         auto cfd_r = eph::net::posix::accept_one(listen_fd, running);
@@ -268,12 +268,12 @@ inline void tcp_fin_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
     auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
-        spdlog::error("test_e2e tcp_fin_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e tcp_fin_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
         return;
     }
     int listen_fd = *listen_r;
-    spdlog::info("test_e2e tcp_fin_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e tcp_fin_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 4096;
     std::vector<uint8_t> buf(kBufSize);
@@ -315,12 +315,12 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
                                  std::atomic<bool>& running) noexcept {
     auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
-        spdlog::error("test_e2e ws_echo_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e ws_echo_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
         return;
     }
     int listen_fd = *listen_r;
-    spdlog::info("test_e2e ws_echo_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e ws_echo_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 65536;
     constexpr size_t kMaxPayload = 32768;
@@ -334,7 +334,7 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
 
         // ── Step 1: HTTP upgrade handshake ────────────────────────────
         if (auto h = bench::ws_server_handshake(cfd); !h) {
-            spdlog::warn("test_e2e ws_echo: handshake failed: {}", h.error());
+            SPDLOG_WARN("test_e2e ws_echo: handshake failed: {}", h.error());
             ::close(cfd);
             continue;
         }
@@ -352,7 +352,7 @@ inline void ws_echo_mock_thread(const std::string& ip, uint16_t port,
             if (!f_opt) {
                 // Need more bytes.
                 if (buf_used >= kBufSize) {
-                    spdlog::warn("test_e2e ws_echo: frame too large, dropping");
+                    SPDLOG_WARN("test_e2e ws_echo: frame too large, dropping");
                     break;
                 }
                 ssize_t n = ::recv(cfd, buf.data() + buf_used,
@@ -427,12 +427,12 @@ inline void ws_server_ping_mock_thread(const std::string& ip, uint16_t port,
                                         std::atomic<bool>& running) noexcept {
     auto listen_r = eph::net::posix::tcp_bind_listen(ip, port);
     if (!listen_r) {
-        spdlog::error("test_e2e ws_server_ping_mock {}:{} bind: {}",
+        SPDLOG_ERROR("test_e2e ws_server_ping_mock {}:{} bind: {}",
                       ip, port, listen_r.error());
         return;
     }
     int listen_fd = *listen_r;
-    spdlog::info("test_e2e ws_server_ping_mock listening on {}:{}", ip, port);
+    SPDLOG_INFO("test_e2e ws_server_ping_mock listening on {}:{}", ip, port);
 
     constexpr size_t kBufSize = 4096;
     constexpr size_t kMaxPayload = 256;
@@ -446,7 +446,7 @@ inline void ws_server_ping_mock_thread(const std::string& ip, uint16_t port,
 
         // ── 1) HTTP upgrade handshake ────────────────────────────────
         if (auto h = bench::ws_server_handshake(cfd); !h) {
-            spdlog::warn("test_e2e ws_server_ping: handshake failed: {}",
+            SPDLOG_WARN("test_e2e ws_server_ping: handshake failed: {}",
                          h.error());
             ::close(cfd);
             continue;
@@ -502,7 +502,7 @@ inline void ws_server_ping_mock_thread(const std::string& ip, uint16_t port,
                 ok_payload, sizeof(ok_payload));
             (void)eph::net::posix::send_all(cfd, ok_frame, ok_len);
         } else {
-            spdlog::warn("test_e2e ws_server_ping: pong verification failed "
+            SPDLOG_WARN("test_e2e ws_server_ping: pong verification failed "
                          "(buf_used={})", buf_used);
         }
 
