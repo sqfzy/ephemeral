@@ -485,6 +485,34 @@ TEST(StreamMetricsWsDeflateRatio, MetricNameConstantMatchesDocumented) {
     EXPECT_EQ(en::kWsDeflateRatioMetricName, "net.stream.ws.deflate_ratio");
 }
 
+TEST(StreamMetricsWsDeflateRatio, BytesOutGreaterThanBytesInEmitsRatioAboveOne) {
+    // Pathological-but-legal case explicitly called out in the helper's
+    // doc comment ("legal in pathological cases (very small payloads where
+    // deflate overhead exceeds savings) and useful as a signal that the
+    // upstream's compression strategy is degrading"). The helper must NOT
+    // clamp the ratio at 1.0 — dashboards rely on the verbatim quotient
+    // to detect a degraded compression regime. 150 / 100 = 1.5.
+    MockStreamForRatio s{.bytes_in = 100, .bytes_out = 150};
+    RecordingSink sink;
+    en::publish_ws_deflate_ratio(s, sink);
+
+    ASSERT_EQ(sink.records.size(), 1u);
+    EXPECT_EQ(sink.records[0].kind, RecordingSink::Record::Kind::Gauge);
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 1.5);
+}
+
+TEST(StreamMetricsWsDeflateRatio, EqualBytesEmitsRatioOfOne) {
+    // Boundary: bytes_out == bytes_in (deflate produced the same byte
+    // count as the wire payload). Must emit exactly 1.0 — not zero
+    // (no special-case break-even handling) and not subject to FP drift.
+    MockStreamForRatio s{.bytes_in = 1024, .bytes_out = 1024};
+    RecordingSink sink;
+    en::publish_ws_deflate_ratio(s, sink);
+
+    ASSERT_EQ(sink.records.size(), 1u);
+    EXPECT_DOUBLE_EQ(sink.records[0].scalar_value, 1.0);
+}
+
 TEST(StreamMetrics, MetricReturnsZeroForOutOfRangeEnumValue) {
     // Simulate ABI drift: a caller passing an enumerator value that is
     // past the current `kCount`. The bounds check in each backend's
