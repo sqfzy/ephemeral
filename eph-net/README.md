@@ -153,8 +153,12 @@ header provides the JWT envelope:
   with a `noexcept` `validate()` that enforces non-empty host, non-zero
   port, XOR'd basic-auth fields, positive timeout.
 - Consumed by the **kernel backend only** via `StreamConfig::proxy`. The
-  DPDK backend rejects any non-empty `proxy` with `Error::InvalidConfig`
-  because it has no kernel TCP path to tunnel through.
+  DPDK `eph::net::dpdk::StreamConfig` has no `proxy` field at all
+  (removed post-T3.19), so attempting to configure a CONNECT proxy on
+  the DPDK backend is a compile error rather than a runtime
+  `InvalidConfig` — the DPDK fast path has no kernel TCP through which
+  to tunnel and the field was removed entirely instead of left as a
+  rejected-at-runtime trap.
 - Wire implementation: `include/eph/net/detail/http_connect.hpp` (generic
   over a ByteSink adapter).
 
