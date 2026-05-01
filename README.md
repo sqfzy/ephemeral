@@ -65,7 +65,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the full story and
 - **GCC ≥ 13** or **Clang ≥ 17** (C++23: `std::expected`, `std::format`)
 - [xmake](https://xmake.io) build system
 - `aws-lc` (auto-fetched via xmake) for TLS / HMAC / CSPRNG
-- **Optional**: DPDK (via vcpkg) for `eph-net-dpdk` + `*_dpdk` targets
+- **Optional**: system libdpdk via pkg-config for `eph-net-dpdk` + `*_dpdk` targets
+  (`sudo pacman -S dpdk` / `sudo apt install libdpdk-dev`, or build from source)
 - **Optional**: `numactl` for NUMA-aware allocation
 
 ### Build
