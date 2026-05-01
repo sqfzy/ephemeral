@@ -6,10 +6,11 @@
 > for ergonomics.
 
 The library's TLS surface is `eph::net::TlsConfig` in
-`eph-net/include/eph/net/detail/tls_constants.hpp:134`. This page is the
-runbook for which combinations to pick per venue and why; pair it with
-`docs/production-config.md` (full `StreamConfig` profiles) and
-`docs/troubleshooting.md` (TLS error decoder).
+`eph-net/include/eph/net/detail/tls_constants.hpp` (search for
+`struct TlsConfig`). This page is the runbook for which combinations to
+pick per venue and why; pair it with `docs/production-config.md` (full
+`StreamConfig` profiles) and `docs/troubleshooting.md` (TLS error
+decoder).
 
 ---
 
@@ -31,7 +32,7 @@ risk on the next rotation.
 
 If you don't know what a venue's rotation cadence is, the safe default
 is: trust the system store, watch for `Error::TlsHandshakeFailed`
-(`eph-core/include/eph/core/error.hpp:46`) bubbling up through
+(in `eph-core/include/eph/core/error.hpp`) bubbling up through
 `ReconnectOrchestrator`, and alert on a sustained spike in
 `net.reconnect.failures` (see `docs/observability-metrics.md`).
 
@@ -39,24 +40,25 @@ is: trust the system store, watch for `Error::TlsHandshakeFailed`
 
 ## What `verify_peer` does
 
-When `TlsConfig::verify_peer = true` (the default —
-`tls_constants.hpp:137`), the TLS session does three things:
+When `TlsConfig::verify_peer = true` (the default in
+`tls_constants.hpp`), the TLS session does three things:
 
 1. Loads CA trust anchors. If `ca_cert_path` is empty,
    `SSL_CTX_set_default_verify_paths` is called and **must** succeed —
-   on failure, `tls_session.hpp:356` returns
-   `Error::TlsHandshakeFailed` rather than continuing insecurely.
+   on failure, `tls_session.hpp` returns `Error::TlsHandshakeFailed`
+   rather than continuing insecurely.
 2. Sets `SSL_VERIFY_PEER` on the SSL context, so aws-lc validates the
    chain back to a trust anchor and rejects unknown / expired /
    revoked certs at handshake time.
-3. Requires SNI to be set (`tls_session.hpp:421`). With `verify_peer =
-   true`, a missing SNI is a fatal error rather than a warning,
-   because the server uses SNI to choose which cert to present and
-   verification would otherwise be against the wrong cert.
+3. Requires SNI to be set (`SSL_set_tlsext_host_name` in
+   `tls_session.hpp`). With `verify_peer = true`, a missing SNI is a
+   fatal error rather than a warning, because the server uses SNI to
+   choose which cert to present and verification would otherwise be
+   against the wrong cert.
 
 Setting `verify_peer = false` skips all three steps. The library will
-log a warning via `TlsConfig::warnings()`
-(`tls_constants.hpp:240`) — `verify_peer=false -- server certificate
+log a warning via `TlsConfig::warnings()` —
+`verify_peer=false -- server certificate
 will NOT be validated (vulnerable to MITM attacks)`. This setting
 exists for local self-signed test servers and **must not** ship to
 production.
@@ -82,7 +84,8 @@ Override only when:
       .verify_peer  = true,
   };
   ```
-  See `tls_constants.hpp:136` for the field semantics.
+  See `tls_constants.hpp` (`TlsConfig::ca_cert_path`) for the field
+  semantics.
 
 - **Vendor-supplied private CA.** The exchange operates a separate
   private FIX/ITCH gateway behind their own CA (rare; mostly Tier-1
@@ -98,23 +101,23 @@ Override only when:
 If `ca_cert_path` is set but `verify_peer = false`,
 `TlsConfig::warnings()` emits `ca_cert_path is set but
 verify_peer=false -- CA certificate will be loaded but not used for
-verification` (`tls_constants.hpp:255`). This combination is almost
-always a misconfiguration.
+verification`. This combination is almost always a misconfiguration.
 
 ---
 
 ## When to use SPKI pinning
 
-`pinned_spki_sha256` (`tls_constants.hpp:148`) is a list of
-base64-encoded SHA-256 hashes of the peer certificate's SPKI
-(SubjectPublicKeyInfo). After the TLS handshake, the actual peer SPKI
-hash is computed (`tls_constants.hpp:274`) and matched against the
-list (`tls_constants.hpp:301`).
+`pinned_spki_sha256` (in `TlsConfig`) is a list of base64-encoded
+SHA-256 hashes of the peer certificate's SPKI (SubjectPublicKeyInfo).
+After the TLS handshake, the actual peer SPKI hash is computed via
+`spki_pin::compute_spki_sha256_b64` and matched against the list via
+`spki_pin::matches_any_pin` (both in `tls_constants.hpp`).
 
 Default behaviour on **mismatch**: when no `on_pin_mismatch` callback
 is set, the connection is **rejected** with
-`Error::TlsHandshakeFailed` (`tls_session.hpp:947`). Configure the
-callback only if you understand what overriding means:
+`Error::TlsHandshakeFailed` (in `tls_session.hpp`, search for the
+`SPKI pin mismatch` log line). Configure the callback only if you
+understand what overriding means:
 
 ```cpp
 eph::net::TlsConfig tls{
@@ -243,9 +246,8 @@ network failures.
 ## Anti-patterns
 
 - **`verify_peer = false` in production.** The
-  `TlsConfig::warnings()` helper exists specifically to flag this
-  (`tls_constants.hpp:240`). Run it on startup and refuse to boot if
-  any warning fires.
+  `TlsConfig::warnings()` helper exists specifically to flag this.
+  Run it on startup and refuse to boot if any warning fires.
 
 - **Hardcoded SPKI hash for an AWS- / Cloudflare-fronted venue.**
   This survives until the next ACM rotation, then turns into a
@@ -254,14 +256,13 @@ network failures.
   with an `on_pin_mismatch` callback that pages on-call.
 
 - **Skipping SNI.** Leaving `TlsConfig::hostname` empty with
-  `verify_peer = true` is a hard error
-  (`tls_session.hpp:432`). With `verify_peer = false` it is a
-  warning. Always set the SNI hostname to the actual venue host.
+  `verify_peer = true` is a hard error in `tls_session.hpp` (the
+  `Failed to set SNI hostname` path). With `verify_peer = false` it
+  is a warning. Always set the SNI hostname to the actual venue host.
 
 - **Mixing `ca_cert_path` with `verify_peer = false`.** Loads the
   bundle but never uses it; gives the false impression that
-  validation is happening. `warnings()` flags this
-  (`tls_constants.hpp:255`).
+  validation is happening. `warnings()` flags this.
 
 - **Catching `Error::TlsHandshakeFailed` and reconnecting silently.**
   Cert problems are a different operational class from transient
@@ -270,9 +271,8 @@ network failures.
   not after.
 
 - **Setting `client_cert_path` without `client_key_path` (or vice
-  versa).** `validate()` rejects this at config-build time
-  (`tls_constants.hpp:188`) — don't paper over the failure by
-  swallowing the `expected<>`.
+  versa).** `validate()` rejects this at config-build time — don't
+  paper over the failure by swallowing the `expected<>`.
 
 ---
 
