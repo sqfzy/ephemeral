@@ -69,7 +69,14 @@
 ///        --pci 0000:28:00.0
 ///        --pin 0=4 --pin 1=5 --pin 2=6 --pin 3=7
 ///        --nb-queues 4 --connections 4
-///        --src-ip 10.0.0.16 --dst-ip 10.0.0.32 --dst-port 30000
+///        --src-ip 0x0A000010 --dst-ip 0x0A000020 --dst-port 30000
+///
+/// `--src-ip` / `--dst-ip` take a **packed-uint32 hex literal** (host
+/// byte order), not a dotted quad — they are passed through `strtoul(...,
+/// 16)`. `0x0A000010` corresponds to `10.0.0.16` (`0x0A.0x00.0x00.0x10`).
+/// A dotted quad would silently truncate at the first dot and resolve to
+/// the wrong /32 — see the AppArgs default values below for the
+/// canonical encoding.
 ///
 /// Additional flags (all optional; full list at parse_args, line 173):
 ///   --lcores '<spec>'     raw EAL escape hatch, mutually exclusive

@@ -36,7 +36,7 @@
 /// Usage:
 ///   sudo ./simple_hft_dpdk --
 ///        --pci 0000:28:00.0 --pin 0=4 --pin 1=5
-///        --dst-ip 10.0.0.20 --dst-port 30000
+///        --dst-port 30000
 ///
 ///   # raw escape hatch (range / set-of-sets):
 ///   sudo ./simple_hft_dpdk --
@@ -49,12 +49,26 @@
 ///        --dpdk-port 1 --src-port 33000 --dst-port 30000
 ///        --pin 0=4
 ///
-/// Additional flags (all optional; see parse loop near line 136):
+/// Flags accepted by parse_args (all optional; see parse loop near line 136):
+///   --pci <bdf>          DPDK PCI allowlist (`-a` passthrough). Repeat
+///                        for multiple ports; pair with `--dpdk-port` to
+///                        select which one to bring up.
+///   --pin <lcore>=<cpu>[:<role>]  typed lcore→cpu pin (repeatable);
+///                        registers into the process-wide pin registry
+///                        before `rte_eal_init`.
+///   --lcores '<spec>'    raw EAL `--lcores` spec (e.g. `(0-3)@(4-7)`);
+///                        mutually exclusive with `--pin`.
 ///   --src-port <port>    local TCP source port (default 32768).
+///   --dst-port <port>    remote TCP destination port (default 30000).
 ///   --dpdk-port <id>     DPDK port enumeration index (default 0;
 ///                        only relevant when more than one --pci is
 ///                        bound — selects which allowlisted port to
 ///                        bring up).
+///
+/// `dst_ip` and `src_ip` are **not** CLI-configurable in this skeleton —
+/// they are hardcoded to `0x0A000010` (10.0.0.16) → `0x0A000020` (10.0.0.32)
+/// inside `main`. Edit the literals to retarget; for a fully
+/// CLI-driven shape see `simple_hft_dpdk_rss.cpp`.
 /// Note: this skeleton intentionally leaves `scfg.dpdk.pool` null
 /// so `create()` fails fast with `InvalidConfig` on a smoke boot;
 /// the demo's purpose is to exercise the error surface, not to
