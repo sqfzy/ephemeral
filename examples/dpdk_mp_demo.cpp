@@ -1,40 +1,35 @@
 /// @file dpdk_mp_demo.cpp
 ///
-/// DPDK single-NIC multi-process (primary + secondary) **declarative**
-/// path skeleton. Each process declares its own `MpTopology` and
-/// `Platform::create_primary` / `create_secondary` does the
-/// bring-up. For the **autojoin** alternative — same scenario but
-/// zero coordination between peers (no shared file_prefix, no
-/// manual self_index, launch order is the only "agreement") — see
-/// `Platform::join_dynamic` in `eph/dpdk/platform.hpp` and
-/// `eph-net-dpdk/docs/dpdk-multiprocess.md`.
+/// DPDK single-NIC multi-process (primary + secondary) **autojoin**
+/// path skeleton. Both peers run THIS SAME BINARY with the same
+/// arguments — `Platform::join_dynamic` races on `eal_init` to decide
+/// which process becomes primary and which becomes secondary, then
+/// CAS-claims a registry slot for each peer. There is no `--role`
+/// flag and no shared `--file-prefix` (it is auto-derived from the
+/// PCI BDF inside the library).
 ///
-/// One binary that plays *both* roles, selected by `--role primary|secondary`
-/// on the command line. Mirrors the spirit of `simple_hft.cpp` but
-/// brings in the MP scaffolding shipped with `eph-net-dpdk`:
+/// The cooperative MP path (`Platform::create_with_eal` /
+/// `attach_with_eal` with explicit role + shared file_prefix) was
+/// deleted in favor of this single autojoin entry point. See
+/// `eph-net-dpdk/docs/dpdk-multiprocess.md` for the full ordering /
+/// teardown protocol; for the single-process counterpart with full
+/// TLS+WS handshake via `create_and_attach`, see
+/// `examples/simple_hft.cpp`.
 ///
-///   * `eph::dpdk::EalConfig` + `build_eal_argv` — typed assembly of
-///     `--proc-type` / `--file-prefix` / `-l` / `-a`.
-///   * `eph::dpdk::Platform::create_primary` / `create_secondary` — the
-///     two factories that gate access to the shared NIC.
-///   * `eph::dpdk::MpTopology::uniform(self_index, total_procs, nb_rx_queues)`
-///     — the recommended auto-derive path. Both processes pass the same
-///     `file_prefix` plus their own `self_index` (0 for primary, 1 for
-///     secondary in this skeleton); the library carves RX queues +
-///     src_port windows into disjoint sub-ranges and cross-validates
-///     via the shared hugepage registry. Manual `rx_queue_range` +
-///     hand-allocated src_port is still supported as the "Advanced
-///     usage" escape hatch — see eph-net-dpdk/docs/dpdk-multiprocess.md.
-///   * Cross-process ICMP MTU propagation is automatic when
-///     `mp_topology` is set: ICMP Frag Needed messages that land on a
+/// What the library does for you (cross-process control plane):
+///   * RX-queue partitioning: each peer's `effective_rx_queue_range`
+///     resolves to a disjoint sub-range of `[0, nb_rx_queues)` so two
+///     processes never burst the same queue.
+///   * Source-port partitioning: each peer's
+///     `find_src_port_for_queue` window is narrowed to its own
+///     `[port_lo, port_hi)` segment so primary and secondary do not
+///     collide on `src_port` selection.
+///   * ICMP MTU propagation: ICMP Frag Needed messages that land on a
 ///     peer process's RX queue auto-forward via `rte_mp_*` IPC to the
-///     owning stream's `effective_mss` — no caller wiring needed. See
-///     "Cross-process ICMP MTU propagation" in the doc.
-///   * FlowDir secondary install fallback is automatic too: if your
-///     PMD rejects `rte_flow_create` from a secondary, the library
-///     transparently routes the install through `eph_fd_install` IPC
-///     to the primary; `Stream::create_and_attach` doesn't change.
-///     PMD compatibility is no longer the caller's concern.
+///     owning stream's `effective_mss`.
+///   * FlowDir secondary install fallback: if the PMD rejects
+///     `rte_flow_create` from a secondary, the library transparently
+///     routes the install through `eph_fd_install` IPC to the primary.
 ///
 /// Scope:
 ///   * UDP, not TCP — no connect handshake clutter (RawDatagramCodec).
@@ -44,59 +39,39 @@
 ///     bring-up vs skip, cleanup branches) — once that's clear, swap in
 ///     a real codec / connect / loop and this scales to production.
 ///
-/// For the single-process counterpart with full TLS+WS handshake via
-/// `create_and_attach`, see `examples/simple_hft.cpp`. For a full
-/// real-server probe with reconnect + latency histogram, see
-/// `examples/binance_latency.cpp`.
+/// Usage (two terminals, same host, same NIC, same args):
 ///
-/// Source-port partitioning across MP processes: with `mp_topology`
-/// set (the path this skeleton drives) the library auto-narrows
-/// `find_src_port_for_queue`'s search to `MpTopology::self().port_lo /
-/// port_hi` so primary and secondary draw from disjoint segments
-/// without the caller doing any manual range arithmetic. The legacy
-/// "caller-side hand-partition" mode still works when `mp_topology` is
-/// left empty — see `eph-net-dpdk/docs/dpdk-multiprocess.md` "Advanced
-/// usage" for that flow.
+///   # Terminal A — first peer; auto-resolves as primary
+///   sudo ./dpdk_mp_demo --pci 0000:28:00.0 --pin 0=0:rx --pin 1=1:tx
 ///
-/// Usage (two terminals, same host, same NIC):
+///   # Terminal B — second peer; auto-resolves as secondary
+///   sudo ./dpdk_mp_demo --pci 0000:28:00.0 --pin 0=2:rx --pin 1=3:tx
 ///
-///   # Terminal A — primary first; brings the port up
-///   sudo ./dpdk_mp_demo --role primary --
-///                             --file-prefix eph_mp_demo
-///                             --pci 0000:28:00.0
-///                             --pin 0=0:rx --pin 1=1:tx
+/// `--pin lcore_id=cpu_id[:role]` (repeatable) is the typed entry
+/// point — goes through `Platform::join_dynamic`'s typed-pin path,
+/// which validates each pin (cpu >= 0, no SMT/NUMA conflict per
+/// policy) and registers the cpus into the process-wide pin registry
+/// BEFORE `rte_eal_init` fires. Any later `eph::utils::pin_thread`
+/// on a colliding cpu is detected loudly instead of silently fighting
+/// EAL.
 ///
-///   # Terminal B — once primary logs "ready", secondary attaches
-///   sudo ./dpdk_mp_demo --role secondary --
-///                             --file-prefix eph_mp_demo
-///                             --pci 0000:28:00.0
-///                             --pin 0=2:rx --pin 1=3:tx
-///
-/// `--pin lcore_id=cpu_id[:role]` (repeatable) is the typed entry point —
-/// goes through `EalGuard::init_with_pins`, which validates each pin
-/// (cpu >= 0, no SMT/NUMA conflict per policy) and registers the cpus
-/// into the process-wide pin registry BEFORE `rte_eal_init` fires. Any
-/// later `eph::utils::pin_thread` on a colliding cpu is detected loudly
-/// instead of silently fighting EAL.
-///
-/// Escape hatch: `--lcores '<raw EAL spec>'` (e.g. `--lcores '(0-1)@(4,5)'`
-/// for set-of-sets) bypasses the typed path and goes through the legacy
-/// `EalGuard::init` — useful when you need DPDK syntax beyond the 1:1
-/// mapping `LcorePin` covers. Mutually exclusive with `--pin` in one call.
+/// Escape hatch: `--lcores '<raw EAL spec>'` (e.g.
+/// `--lcores '(0-1)@(4,5)'` for set-of-sets) bypasses the typed path
+/// and goes through the raw-lcores path. Mutually exclusive with
+/// `--pin` in one call.
 ///
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
-/// See `eph-net-dpdk/scripts/dpdk-setup.sh`. Both processes must use the
-/// SAME `--file-prefix` so the secondary's `rte_mempool_lookup` can find
-/// the primary's shared mempool.
+/// See `eph-net-dpdk/scripts/dpdk-setup.sh`. Both peers must use the
+/// SAME `--pci` (file_prefix is auto-derived from BDF, so identical
+/// pci → identical hugepage namespace → secondary's
+/// `rte_mempool_lookup` finds primary's mempool).
 ///
 /// Additional flags (all optional; full list at parse_args):
 ///   --port-id <id>    DPDK port enumeration index (default 0).
-///   --nb-queues <n>   per-process RX/TX queue count (default 4 — see
-///                     `AppArgs::nb_rx_queues` below). Both peers must
-///                     agree — `MpTopology::uniform` uses this value to
-///                     derive equal sub-ranges per `self_index`, so a
-///                     mismatch makes one process's range overlap the
-///                     other's.
+///   --nb-queues <n>   total RX/TX queue count primary configures
+///                     (default 4 — see AppArgs::nb_rx_queues below).
+///                     Both peers must agree; the library partitions
+///                     these queues into disjoint per-peer sub-ranges.
 ///   --seconds <n>     demo run duration (default 5).
 
 #include <atomic>
@@ -113,8 +88,7 @@
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
-#include "eph/dpdk/mp_topology.hpp" // MpTopology::uniform
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin
 #include "eph/dpdk/platform.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
@@ -131,38 +105,22 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppArgs {
-    ed::ProcType            role         = ed::ProcType::Primary;
-    std::string             file_prefix  = "eph_mp_demo";
     /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
     ed::cli::EalArgs        eal{};
     uint16_t                nb_rx_queues = 4;    // total queues primary configures
     std::chrono::seconds    run_seconds  = 5s;   // how long to drive poll()
 };
 
-// Split argv at the first "--" — same convention as simple_hft.cpp.
-// Anything before "--" is consumed by the wrapper that selects --role; the
-// rest is application config.
-int split_app_args(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--") return i;
-    }
-    return argc;
-}
-
 AppArgs parse_args(int argc, char** argv) {
     AppArgs out;
-    // Pass 1: pre-`--` selects role (so we can shape the EAL args).
-    const int sep = split_app_args(argc, argv);
-    for (int i = 1; i < sep; ++i) {
-        std::string_view a = argv[i];
-        if (a == "--role" && i + 1 < sep) {
-            std::string_view v = argv[++i];
-            out.role = (v == "secondary") ? ed::ProcType::Secondary
-                                          : ed::ProcType::Primary;
-        }
+    // Optional `--` separator is accepted but no longer required —
+    // every flag is consumed by the EAL CLI helper or the post-EAL
+    // application config.
+    int start = 1;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--") { start = i + 1; break; }
     }
-    // Pass 2: post-`--` is the app-specific config.
-    for (int i = sep + 1; i < argc; ++i) {
+    for (int i = start; i < argc; ++i) {
         std::string_view a = argv[i];
         char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
@@ -174,60 +132,10 @@ AppArgs parse_args(int argc, char** argv) {
         }
         if (*consumed > 0) { i += *consumed - 1; continue; }
 
-        if      (a == "--file-prefix" && next) { out.file_prefix  = next; ++i; }
-        else if (a == "--nb-queues"   && next) { out.nb_rx_queues = static_cast<uint16_t>(std::atoi(next)); ++i; }
-        else if (a == "--seconds"     && next) { out.run_seconds  = std::chrono::seconds(std::atoi(next));  ++i; }
+        if      (a == "--nb-queues" && next) { out.nb_rx_queues = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--seconds"   && next) { out.run_seconds  = std::chrono::seconds(std::atoi(next));  ++i; }
     }
     return out;
-}
-
-// Build a primary or secondary `PlatformConfig` from `AppArgs`.
-//
-// Recommended path (the one we drive here): the two roles share
-// `port_id`, `nb_rx_queues`, `file_prefix` (those MUST match), and
-// each declares the same `MpTopology::uniform(self_index, total_procs,
-// nb_rx_queues)`. The library auto-derives `rx_queue_range` and the
-// per-process src_port window from the topology and cross-validates
-// disjointness via the shared hugepage registry. Two numbers per
-// process (`self_index`, `total_procs`) — no other coordination.
-//
-// Legacy path (manual partitioning) — for context, equivalent of this
-// would have been:
-//
-//   const uint16_t mid = a.nb_rx_queues / 2;
-//   if (primary)  cfg.rx_queue_range = {0, mid};
-//   else          cfg.rx_queue_range = {mid, a.nb_rx_queues};
-//   // and then the caller had to allocate src_port from
-//   //   primary:   [32768, 49151]
-//   //   secondary: [49152, 65535]
-//   // by hand on every stream attach.
-//
-// That path still works (rx_queue_range remains a public field — see
-// docs/dpdk-multiprocess.md "Advanced usage: manual partitioning"),
-// but the recommended path below is shorter and lets the library
-// detect cross-process self_index collisions instead of trusting the
-// operator to keep them disjoint.
-//
-// v3 API: primary uses PlatformConfig with max_procs=2 (library
-// synthesizes MpTopology internally). Secondary uses
-// PlatformAttachConfig — only file_prefix + port_id needed; the
-// library reads the registry for everything else.
-
-ed::PlatformConfig make_primary_config(const AppArgs& a) {
-    ed::PlatformConfig cfg{};
-    cfg.port_id      = a.eal.port_id;
-    cfg.nb_rx_queues = a.nb_rx_queues;
-    cfg.nb_tx_queues = a.nb_rx_queues;
-    cfg.file_prefix  = a.file_prefix;
-    cfg.max_procs    = 2;  // 2 process slots — primary + 1 secondary
-    return cfg;
-}
-
-ed::PlatformAttachConfig make_secondary_config(const AppArgs& a) {
-    ed::PlatformAttachConfig cfg{};
-    cfg.file_prefix = a.file_prefix;
-    cfg.port_id     = a.eal.port_id;
-    return cfg;
 }
 
 } // namespace
@@ -239,8 +147,19 @@ int main(int argc, char** argv) {
 
     const AppArgs args = parse_args(argc, argv);
     if (args.nb_rx_queues < 2) {
-        spdlog::error("dpdk_mp_demo: nb_rx_queues must be >= 2 "
-                      "(50/50 partition needs disjoint sub-ranges)");
+        spdlog::error("dpdk_mp_demo: --nb-queues must be >= 2 "
+                      "(per-peer ranges need to be disjoint)");
+        return 1;
+    }
+    if (args.eal.pci.empty()) {
+        spdlog::error("dpdk_mp_demo: --pci <BDF> is required "
+                      "(autojoin auto-derives file_prefix from the PCI BDF)");
+        return 1;
+    }
+    if (args.eal.pci.size() > 1) {
+        spdlog::error("dpdk_mp_demo: --pci passed {} times; autojoin "
+                      "is single-NIC (file_prefix is derived from one BDF)",
+                      args.eal.pci.size());
         return 1;
     }
 
@@ -256,57 +175,50 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via v3 split factories ─────────────────────────
-    // V3 zero-consensus: primary uses create_with_eal(PlatformConfig),
-    // secondary uses attach_with_eal(PlatformAttachConfig). Their inputs
-    // are intentionally asymmetric — primary owns the NIC physical
-    // configuration, secondary owns nothing but "where is primary".
-    // EAL config: caller no longer sets proc_type / file_prefix —
-    // those are injected by the v3 factories from the per-role config.
-    const char* role_str =
-        args.role == ed::ProcType::Primary ? "primary" : "secondary";
-    ed::EalConfig eal_cfg = ed::cli::to_eal_config(
-        args.eal,
-        args.role == ed::ProcType::Primary ? "dpdk_mp_demo.primary"
-                                           : "dpdk_mp_demo.secondary");
+    // ── Single autojoin entry point — no role flag ─────────────────────
+    // Whoever wins the EAL race becomes primary; the other becomes
+    // secondary. Both peers populate primary_config.nb_rx_queues so the
+    // primary peer (whichever it ends up being) has the value it needs;
+    // secondary peers ignore it post-resolution.
+    const std::string& pci_bdf = args.eal.pci.front();
+    ed::JoinDynamicConfig cfg{};
+    cfg.pci                          = pci_bdf;
+    cfg.primary_config.port_id       = args.eal.port_id;
+    cfg.primary_config.nb_rx_queues  = args.nb_rx_queues;
+    cfg.primary_config.nb_tx_queues  = args.nb_rx_queues;
+    cfg.pins                         = std::span<ed::LcorePin const>{args.eal.pins};
+    cfg.lcores                       = args.eal.lcores_raw.empty()
+                                           ? std::vector<std::string>{}
+                                           : std::vector<std::string>{args.eal.lcores_raw};
+    cfg.pin_policy                   = eph::utils::CpuPinPolicy{};
 
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_mp_demo[{}]: bring-up (typed pins, {} pin(s))",
-                     role_str, args.eal.pins.size());
+        spdlog::info("dpdk_mp_demo: bring-up via Platform::join_dynamic "
+                     "(typed pins, {} pin(s); pci={})",
+                     args.eal.pins.size(), pci_bdf);
     } else {
-        spdlog::info("dpdk_mp_demo[{}]: bring-up (raw lcores='{}')",
-                     role_str, args.eal.lcores_raw);
+        spdlog::info("dpdk_mp_demo: bring-up via Platform::join_dynamic "
+                     "(raw lcores='{}'; pci={})",
+                     args.eal.lcores_raw, pci_bdf);
     }
 
-    std::expected<ed::Platform, std::string> plat_r =
-        std::unexpected(std::string{});
-    if (args.role == ed::ProcType::Primary) {
-        plat_r = ed::Platform::create_with_eal(
-            make_primary_config(args), std::move(eal_cfg),
-            std::span<ed::LcorePin const>{args.eal.pins},
-            eph::utils::CpuPinPolicy{});
-    } else {
-        plat_r = ed::Platform::attach_with_eal(
-            make_secondary_config(args), std::move(eal_cfg),
-            std::span<ed::LcorePin const>{args.eal.pins},
-            eph::utils::CpuPinPolicy{});
-    }
+    auto plat_r = ed::Platform::join_dynamic(std::move(cfg));
     if (!plat_r) {
-        spdlog::error("dpdk_mp_demo: Platform bring-up failed: {}",
+        spdlog::error("dpdk_mp_demo: Platform::join_dynamic failed: {}",
                       plat_r.error());
         return 2;
     }
     auto platform = std::move(*plat_r);
 
+    const bool is_secondary = platform.is_secondary();
+    const char* role_str = is_secondary ? "secondary" : "primary";
     const auto qr = platform.effective_rx_queue_range();
     spdlog::info("dpdk_mp_demo[{}]: ready — port={}, "
-                 "rx_queue_range=[{},{}), mempool={:p}, file_prefix='{}'",
-                 args.role == ed::ProcType::Primary ? "primary" : "secondary",
-                 platform.port_id(), qr.first, qr.second,
-                 static_cast<void*>(platform.mempool()),
-                 args.file_prefix);
+                 "rx_queue_range=[{},{}), mempool={:p}",
+                 role_str, platform.port_id(), qr.first, qr.second,
+                 static_cast<void*>(platform.mempool()));
 
-    // ── 3) Per-process Poller bound to one of the queues we own ──────────
+    // ── Per-process Poller bound to one of the queues we own ────────────
     // `effective_rx_queue_range` is a cold getter. Real production code
     // would create one Poller per owned RX queue and pin each to its own
     // lcore. This skeleton drives just the first queue in our range to
@@ -327,23 +239,19 @@ int main(int argc, char** argv) {
         return 5;
     }
 
-    // ── 4) DpdkUdpSocket via create_and_attach (turnkey factory) ─────────
-    // Hardcoded demo tuple. With `mp_topology` set in PlatformConfig (the
-    // path this skeleton drives), the library auto-narrows src_port
-    // selection to each role's `port_lo / port_hi` window inside
-    // `find_src_port_for_queue` — primary and secondary draw from
-    // disjoint segments without manual coordination. The legacy hand-
-    // partitioned path (`mp_topology` empty + caller picks ports from
-    // `[32768, 49151]` / `[49152, 65535]`) still works; see file header
-    // and `eph-net-dpdk/docs/dpdk-multiprocess.md` "Advanced usage".
-    // This skeleton does not actually drive traffic, so the tuple values
-    // here only need to pass validation.
+    // ── DpdkUdpSocket via create_and_attach (turnkey factory) ───────────
+    // Hardcoded demo tuple. With autojoin's mp_topology in place, the
+    // library auto-narrows src_port selection to each role's
+    // `port_lo / port_hi` window inside `find_src_port_for_queue` —
+    // primary and secondary draw from disjoint segments without manual
+    // coordination. This skeleton does not actually drive traffic, so
+    // the tuple values here only need to pass validation.
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
     ucfg.legacy.src_ip   = 0x0A000010;   // 10.0.0.16
     ucfg.legacy.dst_ip   = 0x0A000020;   // 10.0.0.32
-    ucfg.legacy.src_port = (args.role == ed::ProcType::Primary) ? 32768 : 49152;
+    ucfg.legacy.src_port = is_secondary ? 49152 : 32768;
     ucfg.legacy.dst_port = 30000;
     ucfg.legacy.port_id  = platform.port_id();
     ucfg.legacy.pool     = platform.mempool();
@@ -360,10 +268,9 @@ int main(int argc, char** argv) {
         // are exercised end-to-end on every run.
     }
 
-    // ── 5) Drive the burst loop for `--seconds` (default 5s) ─────────────
+    // ── Drive the burst loop for `--seconds` (default 5s) ───────────────
     spdlog::info("dpdk_mp_demo[{}]: entering poll loop for {}s",
-                 args.role == ed::ProcType::Primary ? "primary" : "secondary",
-                 args.run_seconds.count());
+                 role_str, args.run_seconds.count());
     const auto deadline = std::chrono::steady_clock::now() + args.run_seconds;
     while (g_running.load(std::memory_order_acquire)
            && std::chrono::steady_clock::now() < deadline) {
@@ -372,9 +279,8 @@ int main(int argc, char** argv) {
 
     spdlog::info("dpdk_mp_demo[{}]: shutting down — Platform RAII "
                  "will run the {}-mode cleanup branch",
-                 args.role == ed::ProcType::Primary ? "primary" : "secondary",
-                 args.role == ed::ProcType::Primary ? "primary" : "secondary");
-    // RAII: ~UdpSock → ~DpdkPoller → ~Platform → ~EalGuard.
+                 role_str, role_str);
+    // RAII: ~UdpSock → ~DpdkPoller → ~Platform (which owns EAL).
     // Secondary's ~Platform leaves the port + mempool untouched
     // (owned by primary); primary's ~Platform does dev_stop / dev_close /
     // mempool_free — see Platform::Impl::cleanup.
