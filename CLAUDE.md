@@ -194,7 +194,7 @@ When NIC_B is on the kernel driver, the tests SKIP cleanly with a diagnostic —
 run on any host.
 
 libFuzzer harnesses live under `eph-net-dpdk/fuzzers/` (currently `fuzz_dns_reply`,
-`fuzz_arp_reply`). They are **intentionally outside the xmake graph** because the
+`fuzz_arp_reply`, `fuzz_icmp_reply`, `fuzz_udp_packet`). They are **intentionally outside the xmake graph** because the
 default toolchain is GCC 14 and libFuzzer needs Clang ≥ 17 — build them with the
 `clang++ -fsanitize=fuzzer,address,undefined ...` command in
 `eph-net-dpdk/fuzzers/README.md`. Do not assume `xmake build -g tests` covers them.
