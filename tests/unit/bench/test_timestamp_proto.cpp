@@ -66,6 +66,44 @@ TEST(TimestampProto, ComputeLegsBasic) {
     EXPECT_EQ(lg.tx_ns + 1500u + lg.rx_ns, lg.rtt_ns);
 }
 
+TEST(TimestampProto, ComputeLegsWrapsLoudlyOnNegativeDelta) {
+    // The header documents the unsigned-subtraction policy: a negative
+    // leg (e.g. mock_recv < client_ns due to a clock-source bug) wraps
+    // to a huge positive value so it cannot silently slip through into
+    // the Recorder's "good sample" range — it shows up at the extreme
+    // tail of the histogram and is impossible to confuse with a real
+    // hot-path measurement. Lock that contract: feeding TS in the wrong
+    // order yields a wrap > 1e18 ns rather than a small or zero value.
+    const bench::TimestampBlock ts{
+        .client_ns    = 1'000'000,
+        .mock_recv_ns =   500'000,  // mock_recv_ns < client_ns: wrap target
+        .mock_send_ns =   600'000,
+    };
+    const uint64_t recv_ns = 1'010'000;
+
+    const auto lg = bench::compute_legs(ts, recv_ns);
+    // tx_ns = mock_recv - client = 500_000 - 1_000_000 → unsigned wrap
+    EXPECT_GT(lg.tx_ns, 1'000'000'000'000'000'000ull)
+        << "negative tx leg must wrap to a huge unsigned value, got "
+        << lg.tx_ns;
+    // rx_ns = recv - mock_send = 1_010_000 - 600_000 = 410_000 (legal)
+    EXPECT_EQ(lg.rx_ns, 410'000u);
+    // rtt_ns is unrelated to the broken mock TS, must still be sane.
+    EXPECT_EQ(lg.rtt_ns, 10'000u);
+}
+
+TEST(TimestampProto, ComputeLegsAllZeroIsConsistent) {
+    // When mock didn't fill in its bytes (e.g. a fresh client send that
+    // hasn't been echoed) and recv_ns is also 0 — the structure-preserving
+    // result must be all zeros, never a negative wrap. This locks the
+    // "honest zero" path the bench startup probe relies on.
+    const bench::TimestampBlock ts{0, 0, 0};
+    const auto lg = bench::compute_legs(ts, 0);
+    EXPECT_EQ(lg.rtt_ns, 0u);
+    EXPECT_EQ(lg.tx_ns,  0u);
+    EXPECT_EQ(lg.rx_ns,  0u);
+}
+
 TEST(TimestampProto, MockOverwritePreservesClient) {
     // Simulate the wire protocol: client writes its ts, sends, mock
     // overwrites bytes [8:24] with its two timestamps, then client
