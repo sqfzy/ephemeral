@@ -2,20 +2,22 @@
 /// Stage-1 surface tests for the v3 Platform API.
 ///
 /// **Scope**: type / signature / translation logic only. Runtime
-/// behavior of `Platform::create / attach / *_with_eal / join_dynamic`
-/// is verified by:
-///   - integration tests under `tests/integration/dpdk_mp_*` (stage 4)
-///   - examples (stage 4e/4f)
+/// behavior of `Platform::create / *_with_eal / join_dynamic` is
+/// verified by:
+///   - integration tests under `tests/integration/dpdk_mp_dynamic_*`
+///   - examples (`examples/dpdk_mp_demo.cpp`)
 /// Booting EAL inside a unit test would conflict with concurrent test
 /// runs and require vfio/hugepages, neither of which is present in the
 /// unit-test environment.
 ///
 /// What this file pins down:
-///   - v3 types (`PlatformConfig`, `PlatformAttachConfig`,
-///     `JoinDynamicConfig`) compile and have expected fields.
+///   - v3 types (`PlatformConfig`, `JoinDynamicConfig`) compile and
+///     have expected fields.
 ///   - v3 entry-point function pointers have the documented signatures.
 ///   - The v3 `validate_config(PlatformConfig)` rejection set
 ///     (max_procs / file_prefix / queues-per-proc invariants).
+///   - `Platform::create` / `create_with_eal` reject `max_procs > 1`
+///     (cooperative-MP path was removed; use `join_dynamic` for MP).
 
 #include <span>
 #include <string>
@@ -25,7 +27,6 @@
 
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/platform.hpp"
-#include "eph/dpdk/platform_attach.hpp"
 #include "eph/utils/cpu.hpp"
 
 using namespace eph::dpdk;
@@ -42,21 +43,6 @@ TEST(PlatformConfig, DefaultsAreSingleProcess) {
     EXPECT_EQ(cfg.nb_rx_queues, 1);
     EXPECT_EQ(cfg.nb_tx_queues, 1);
     EXPECT_TRUE(cfg.file_prefix.empty());
-}
-
-TEST(PlatformAttachConfig, MinimalSurface) {
-    // The whole point of v3: secondary input set is tiny.
-    PlatformAttachConfig cfg{};
-    EXPECT_TRUE(cfg.file_prefix.empty());
-    EXPECT_EQ(cfg.port_id, 0);
-    EXPECT_EQ(cfg.self_lcore_mask, 0);
-
-    // Verify dump format.
-    cfg.file_prefix = "demo";
-    cfg.port_id     = 1;
-    auto s = cfg.dump();
-    EXPECT_NE(s.find("file_prefix='demo'"), std::string::npos);
-    EXPECT_NE(s.find("port_id=1"),          std::string::npos);
 }
 
 TEST(JoinDynamicConfig, NoTopLevelConsensusFields) {
@@ -78,24 +64,55 @@ TEST(JoinDynamicConfig, NoTopLevelConsensusFields) {
 
 TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
     using CreateFn = std::expected<Platform, std::string> (*)(PlatformConfig);
-    using AttachFn = std::expected<Platform, std::string> (*)(PlatformAttachConfig);
     using CreateWithEalFn = std::expected<Platform, std::string> (*)(
         PlatformConfig, EalConfig,
-        std::span<LcorePin const>, eph::utils::CpuPinPolicy);
-    using AttachWithEalFn = std::expected<Platform, std::string> (*)(
-        PlatformAttachConfig, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
     using JoinDynV3Fn = std::expected<Platform, std::string> (*)(
         JoinDynamicConfig);
 
     [[maybe_unused]] CreateFn        f1 = &Platform::create;
-    [[maybe_unused]] AttachFn        f2 = &Platform::attach;
-    [[maybe_unused]] CreateWithEalFn f3 = static_cast<CreateWithEalFn>(
+    [[maybe_unused]] CreateWithEalFn f2 = static_cast<CreateWithEalFn>(
         &Platform::create_with_eal);
-    [[maybe_unused]] AttachWithEalFn f4 = &Platform::attach_with_eal;
-    [[maybe_unused]] JoinDynV3Fn     f5 = static_cast<JoinDynV3Fn>(
+    [[maybe_unused]] JoinDynV3Fn     f3 = static_cast<JoinDynV3Fn>(
         &Platform::join_dynamic);
     SUCCEED();
+}
+
+// `Platform::create` / `create_with_eal` are single-process only after
+// the cooperative-MP removal. `cfg.max_procs > 1` must be rejected with
+// a clear message pointing the caller at `Platform::join_dynamic`.
+
+TEST(PlatformCreate, RejectsMaxProcsGreaterThanOne) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 4;
+    cfg.nb_tx_queues = 4;
+    cfg.max_procs    = 2;
+    cfg.file_prefix  = "demo";  // satisfies validate_config
+
+    auto r = Platform::create(cfg);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("max_procs"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("join_dynamic"), std::string::npos)
+        << "actual error: " << r.error();
+}
+
+TEST(PlatformCreateWithEal, RejectsMaxProcsGreaterThanOne) {
+    PlatformConfig cfg{};
+    cfg.nb_rx_queues = 4;
+    cfg.nb_tx_queues = 4;
+    cfg.max_procs    = 2;
+    cfg.file_prefix  = "demo";
+    EalConfig eal_cfg{};
+
+    auto r = Platform::create_with_eal(cfg, std::move(eal_cfg),
+                                       std::span<const LcorePin>{},
+                                       eph::utils::CpuPinPolicy{});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("max_procs"), std::string::npos)
+        << "actual error: " << r.error();
+    EXPECT_NE(r.error().find("join_dynamic"), std::string::npos)
+        << "actual error: " << r.error();
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -158,21 +175,6 @@ TEST(PlatformConfigValidator, ZeroMaxProcsRejected) {
     ASSERT_FALSE(err.empty());
     EXPECT_NE(err.find("max_procs"), std::string_view::npos)
         << "actual error: " << err;
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Pre-EAL validation (PlatformAttachConfig::file_prefix must be non-empty)
-// ──────────────────────────────────────────────────────────────────────
-
-TEST(PlatformAttach, EmptyFilePrefixRejectedPreEal) {
-    PlatformAttachConfig cfg{};
-    // file_prefix left empty
-    auto r = Platform::attach(cfg);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("file_prefix"), std::string::npos)
-        << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("non-empty"), std::string::npos)
-        << "actual error: " << r.error();
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -252,55 +254,3 @@ TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
         << "actual error: " << r.error();
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Pre-EAL validation in Platform::attach_with_eal
-//
-// Fail-fast contract: attach_with_eal previously deferred the
-// file_prefix check to Platform::attach() AFTER eal_init had run,
-// which wasted hugepage init for an obvious caller error. The check
-// was lifted into attach_with_eal itself so the rejection happens
-// pre-EAL. Plus the pins / eal_cfg.lcores mutex check (round 2,
-// commit c003efca) needs a regression test for its size-context
-// format the same way join_dynamic's does above.
-// ──────────────────────────────────────────────────────────────────────
-
-TEST(AttachWithEalPreEal, EmptyFilePrefixRejectedFailFast) {
-    PlatformAttachConfig cfg{};
-    // file_prefix left empty
-    EalConfig eal_cfg{};
-
-    auto r = Platform::attach_with_eal(cfg, std::move(eal_cfg),
-                                       std::span<const LcorePin>{},
-                                       eph::utils::CpuPinPolicy{});
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("file_prefix"), std::string::npos)
-        << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("pre-EAL"), std::string::npos)
-        << "actual error: " << r.error();
-}
-
-TEST(AttachWithEalPreEal, PinsAndLcoresMutexIncludesSizes) {
-    PlatformAttachConfig cfg{};
-    cfg.file_prefix = "test_prefix";  // non-empty so we get past file_prefix check
-
-    EalConfig eal_cfg{};
-    eal_cfg.lcores = {"0", "1", "2"};
-
-    std::vector<LcorePin> pins{
-        LcorePin{.lcore_id=0, .cpu_id=0, .role=""},
-        LcorePin{.lcore_id=1, .cpu_id=1, .role=""},
-    };
-
-    auto r = Platform::attach_with_eal(cfg, std::move(eal_cfg),
-                                       std::span<const LcorePin>{pins},
-                                       eph::utils::CpuPinPolicy{});
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("attach_with_eal"), std::string::npos)
-        << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("size=2"), std::string::npos)
-        << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("size=3"), std::string::npos)
-        << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("mutually exclusive"), std::string::npos)
-        << "actual error: " << r.error();
-}

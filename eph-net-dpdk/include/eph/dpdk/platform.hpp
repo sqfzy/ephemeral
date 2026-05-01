@@ -180,10 +180,10 @@ namespace detail {
 /// Mirror of the v3 `PlatformConfig` user-facing shape, plus the
 /// role-and-topology fields the bring-up body needs at runtime
 /// (`proc_type`, `mp_topology`, `rx_queue_range`). Public callers see
-/// only `PlatformConfig` (primary / single-process) and
-/// `PlatformAttachConfig` (secondary); `BringupConfig` is synthesized
-/// internally by the v3 entry points and the `primary_bringup_` /
-/// `secondary_bringup_` helpers.
+/// only `PlatformConfig` (single-process) and `JoinDynamicConfig`
+/// (autojoin); `BringupConfig` is synthesized internally by the v3
+/// entry points and the `primary_bringup_` / `secondary_bringup_`
+/// helpers.
 ///
 /// @note Queue counts and descriptor counts are automatically clamped
 ///       to NIC-reported limits during the bring-up body. Values here
@@ -439,24 +439,25 @@ struct BringupConfig {
 // PlatformConfig (public, primary or single-process)
 // ─────────────────────────────────────────────────────────────────────
 
-/// @brief Primary-side (or single-process) Platform config.
+/// @brief Single-process Platform config (also embedded inside
+/// `JoinDynamicConfig::primary_config` for autojoin's primary path).
 ///
 /// Carries every NIC-physical-state field (queue counts, descriptor
-/// counts, mempool, RSS, promiscuous, etc.) and the MP knobs
-/// (`max_procs` / `queues_per_proc`). Secondary-side configuration is a
-/// separate `PlatformAttachConfig` — secondary peers don't restate any
-/// primary-decided value.
-///
-/// `max_procs` defaults to 1 (single-process); set > 1 to open N MP
-/// slots in the registry that secondaries can attach to via
-/// `Platform::attach`.
+/// counts, mempool, RSS, promiscuous, etc.). The `max_procs` /
+/// `queues_per_proc` fields are read by `Platform::join_dynamic`
+/// when this peer auto-resolves to primary; `Platform::create` and
+/// `Platform::create_with_eal` reject any value other than 1 since
+/// the cooperative-MP path was removed.
 struct PlatformConfig {
     // ── Identity ────────────────────────────────────────────────────
     /// DPDK port enumeration index.
     uint16_t         port_id      = 0;
-    /// Hugepage namespace (matches EAL `--file-prefix`). Empty value
-    /// is single-process default; non-empty publishes a registry that
-    /// secondaries find via `PlatformAttachConfig::file_prefix`.
+    /// Hugepage namespace (matches EAL `--file-prefix`). Used by
+    /// `Platform::join_dynamic` when this peer resolves to primary —
+    /// passed through into the registry memzone name. Empty value is
+    /// the single-process default; the `Platform::create` /
+    /// `create_with_eal` paths do not consult it (they are
+    /// single-process only).
     std::string_view file_prefix  = {};
 
     // ── NIC physical state (mirror v2) ─────────────────────────────
@@ -511,7 +512,6 @@ struct PlatformConfig {
 // join_dynamic.hpp checks at the top.
 #define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
 #include "eph/dpdk/join_dynamic.hpp"
-#include "eph/dpdk/platform_attach.hpp"
 
 namespace eph::dpdk {
 
@@ -704,43 +704,28 @@ public:
     // Public Platform factories (zero-consensus surface)
     // ─────────────────────────────────────────────────────────────────
 
-    /// @brief Single-process or MP-primary factory.
-    /// `cfg.max_procs == 1` (default) is single-process. `cfg.max_procs >= 2`
-    /// opens a registry that secondaries find via `Platform::attach`.
-    /// EAL must be initialized before this call (use `create_with_eal`
-    /// for the one-shot path).
+    /// @brief Single-process factory. `cfg.max_procs` MUST be 1 (the
+    /// default); `max_procs > 1` is rejected — multi-process is reached
+    /// exclusively through `Platform::join_dynamic`. EAL must be
+    /// initialized before this call (use `create_with_eal` for the
+    /// one-shot path).
     [[nodiscard]] static std::expected<Platform, std::string>
     create(PlatformConfig cfg);
 
-    /// @brief v3: MP secondary attach. Reads NIC physical state from
-    /// primary's registry + live NIC; the only required input is
-    /// `file_prefix` (locates primary's hugepage namespace). EAL must
-    /// be initialized as `--proc-type=secondary` before this call.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    attach(PlatformAttachConfig cfg);
-
-    /// @brief v3: one-shot EAL+Platform for primary path.
-    /// EalConfig caller-side: do NOT set `proc_type` / `file_prefix` —
-    /// this factory injects them from `cfg.file_prefix` and
-    /// `ProcType::Primary`.
+    /// @brief One-shot EAL+Platform for the single-process path. Same
+    /// `cfg.max_procs == 1` contract as `create`. EalConfig caller-side:
+    /// do NOT set `proc_type` / `file_prefix` — this factory injects
+    /// them from `cfg.file_prefix` and `ProcType::Primary`.
     [[nodiscard]] static std::expected<Platform, std::string>
     create_with_eal(PlatformConfig                        cfg,
                     EalConfig                               eal_cfg,
                     std::span<eph::dpdk::LcorePin const>    pins   = {},
                     eph::utils::CpuPinPolicy                policy = {});
 
-    /// @brief v3: one-shot EAL+Platform for secondary attach.
-    /// Same EalConfig contract as `create_with_eal` — caller does not
-    /// set `proc_type` / `file_prefix`; this factory injects them.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    attach_with_eal(PlatformAttachConfig                    cfg,
-                    EalConfig                               eal_cfg,
-                    std::span<eph::dpdk::LcorePin const>    pins   = {},
-                    eph::utils::CpuPinPolicy                policy = {});
-
-    /// @brief v3: autojoin — `pci` is the only required input. file_prefix
-    /// is auto-derived from PCI BDF; primary/secondary role auto-resolved
-    /// post `eal_init`; secondary needs no NIC physical knowledge.
+    /// @brief Autojoin — the only multi-process entry point. `pci` is
+    /// the only required input. file_prefix is auto-derived from PCI
+    /// BDF; primary/secondary role auto-resolved post `eal_init`;
+    /// secondary needs no NIC physical knowledge.
     [[nodiscard]] static std::expected<Platform, std::string>
     join_dynamic(JoinDynamicConfig cfg);
 
@@ -2432,9 +2417,10 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Public entry-point implementations (PlatformConfig / PlatformAttachConfig
-// / JoinDynamicConfig) — they synthesize an internal `BringupConfig` and
-// delegate to `primary_bringup_` / `secondary_bringup_`.
+// Public entry-point implementations (PlatformConfig single-process,
+// JoinDynamicConfig autojoin) — they synthesize an internal
+// `BringupConfig` and delegate to `primary_bringup_` /
+// `secondary_bringup_`.
 // ─────────────────────────────────────────────────────────────────────
 
 namespace detail {
@@ -2491,86 +2477,6 @@ Platform::create(PlatformConfig cfg) {
     // Project the public PlatformConfig into the internal BringupConfig
     // and delegate to the shared primary bring-up helper.
     return Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
-}
-
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::attach(PlatformAttachConfig cfg) {
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    if (cfg.file_prefix.empty()) {
-        return std::unexpected(std::string{
-            "Platform::attach: file_prefix must be non-empty (locates "
-            "primary's hugepage registry — without it secondary cannot "
-            "find primary)"});
-    }
-
-    // Registry attach + slot CAS-claim. Mirrors join_dynamic[secondary].
-    auto ro = ::eph::dpdk::detail::MpRegistryHandle::
-        attach_secondary_readonly(cfg.file_prefix);
-    if (!ro) {
-        SPDLOG_LOGGER_ERROR(log,
-            "Platform::attach: attach_secondary_readonly failed "
-            "(file_prefix='{}'): {}",
-            cfg.file_prefix, ro.error().detail);
-        return std::unexpected(std::format(
-            "Platform::attach: attach_secondary_readonly failed "
-            "(file_prefix='{}'): {}",
-            cfg.file_prefix, ro.error().detail));
-    }
-    const uint32_t total_procs = ro->header()->total_procs;
-
-    auto idx_r = ro->try_claim_free_slot();
-    if (!idx_r) {
-        SPDLOG_LOGGER_ERROR(log,
-            "Platform::attach: try_claim_free_slot failed "
-            "(file_prefix='{}', primary_total_procs={}): {}",
-            cfg.file_prefix, total_procs, idx_r.error().detail);
-        return std::unexpected(std::format(
-            "Platform::attach: try_claim_free_slot failed "
-            "(file_prefix='{}', primary_total_procs={}): {}",
-            cfg.file_prefix, total_procs, idx_r.error().detail));
-    }
-    const uint8_t self_idx = *idx_r;
-
-    // Query live NIC for nb_rx_queues — A1 assumption (verified
-    // empirically in stage 3). Secondary doesn't get this from caller.
-    rte_eth_dev_info dev_info{};
-    if (int rc = rte_eth_dev_info_get(cfg.port_id, &dev_info); rc != 0) {
-        SPDLOG_LOGGER_ERROR(log,
-            "Platform::attach: rte_eth_dev_info_get(port={}) failed: rc={}",
-            cfg.port_id, rc);
-        return std::unexpected(std::format(
-            "Platform::attach: rte_eth_dev_info_get(port_id={}) failed: "
-            "rc={} (port may not be configured by primary yet, or port_id "
-            "mismatch)",
-            cfg.port_id, rc));
-    }
-    const uint16_t nb_rx_queues = dev_info.nb_rx_queues;
-    if (nb_rx_queues == 0) {
-        return std::unexpected(std::format(
-            "Platform::attach: NIC reports nb_rx_queues=0 on port_id={} "
-            "(file_prefix='{}') — primary may not have configured the port "
-            "yet, or attach was called before primary's create finished",
-            cfg.port_id, cfg.file_prefix));
-    }
-
-    detail::BringupConfig bcfg{};
-    bcfg.port_id      = cfg.port_id;
-    bcfg.proc_type    = ProcType::Secondary;
-    bcfg.file_prefix  = cfg.file_prefix;
-    bcfg.nb_rx_queues = nb_rx_queues;
-    bcfg.nb_tx_queues = (dev_info.nb_tx_queues != 0)
-                           ? dev_info.nb_tx_queues : nb_rx_queues;
-    bcfg.mp_topology  = MpTopology::uniform(self_idx,
-                                            static_cast<uint8_t>(total_procs),
-                                            nb_rx_queues);
-    if (cfg.self_lcore_mask != 0) {
-        bcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
-    }
-    ro->disarm_slot();  // hand off slot ownership to the new Platform
-
-    return Platform::secondary_bringup_(std::move(bcfg),
-                                        /*registry_preclaimed=*/true);
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
@@ -2668,109 +2574,16 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     return plat;
 }
 
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::attach_with_eal(PlatformAttachConfig                    cfg,
-                          EalConfig                               eal_cfg,
-                          std::span<eph::dpdk::LcorePin const>    pins,
-                          eph::utils::CpuPinPolicy                policy) {
-    // Inject identity fields into EalConfig.
-    eal_cfg.proc_type     = ProcType::Secondary;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = cfg.file_prefix;
-
-    // The v2 `create_with_eal` dispatches by `pcfg.proc_type` to either
-    // `create_primary` or `create_secondary`. To reuse it, build a
-    // minimal BringupConfig with just enough to mark it Secondary;
-    // create_secondary_impl_ then reads from the registry / live NIC.
-    // BUT: the v2 path requires nb_rx_queues > 0 in validate_config,
-    // and the Stage 1 wrapper has no clean way to learn that pre-EAL.
-    // Instead we go via attach() which queries the live NIC after EAL
-    // is up. So: do EAL ourselves first via Platform::create_with_eal
-    // shim, then re-route to attach().
-    //
-    // For Stage 1 we mirror the v2 create_with_eal flow but call
-    // attach() at the dispatch point.
-    //
-    // Implementation strategy: temporarily call v2 create_with_eal with
-    // a placeholder BringupConfig{Secondary, file_prefix, nb_rx_queues=1}
-    // — but that fails validate_config when secondary's
-    // mp_topology.self.queue_hi > nb_rx_queues=1. So we cannot reuse
-    // v2's create_with_eal for the secondary path. Open-code the EAL
-    // bring-up here, then call attach().
-
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    // Pre-EAL fail-fast: file_prefix is the v3 secondary's only required
-    // input. Platform::attach() catches an empty value, but only after
-    // we've already burned eal_init below — wasting hugepage segments
-    // and leaving the caller to dig the cause out of the EAL log. Same
-    // shape as Platform::attach's check, lifted up to avoid the cost.
-    if (cfg.file_prefix.empty()) {
-        return std::unexpected(std::string{
-            "attach_with_eal: file_prefix must be non-empty (locates "
-            "primary's hugepage registry — without it secondary cannot "
-            "find primary; rejected pre-EAL to avoid burning eal_init)"});
-    }
-
-    // Mutex check (mirrors v2 create_with_eal step 1)
-    if (!pins.empty() && !eal_cfg.lcores.empty()) {
-        return std::unexpected(std::format(
-            "attach_with_eal: typed pins (size={}) and raw eal_cfg.lcores "
-            "(size={}) are mutually exclusive (pick the typed-pin path or "
-            "the raw-lcores path, not both)",
-            pins.size(), eal_cfg.lcores.size()));
-    }
-
-    // Pre-EAL pin registration (mirrors v2 create_with_eal step 2)
-    std::vector<eph::utils::PinGuard> pin_guards;
-    if (!pins.empty()) {
-        auto pg = pin_lcores(pins, policy);
-        if (!pg) {
-            return std::unexpected(std::string{
-                "attach_with_eal: pin_lcores: "} + pg.error());
-        }
-        pin_guards = std::move(*pg);
-        eal_cfg.extra_args.push_back(build_lcore_argv(pins));
-    }
-
-    // Build EAL argv + init
-    auto argv_owned = build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    argv.reserve(argv_owned.size());
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
-    if (!eal_r) {
-        return std::unexpected(std::string{
-            "attach_with_eal: eal_init failed: "} + eal_r.error());
-    }
-
-    // Now EAL is up — call v3 attach()
-    auto plat_r = Platform::attach(cfg);
-    if (!plat_r) {
-        [[maybe_unused]] bool ok = eal_cleanup();
-        return std::unexpected(std::string{
-            "attach_with_eal: "} + plat_r.error());
-    }
-
-    // Transfer EAL ownership into the Platform
-    Platform plat = std::move(*plat_r);
-    if (plat.impl_) {
-        plat.impl_->pin_session_guards = std::move(pin_guards);
-        plat.impl_->owns_eal_init      = true;
-    }
-    return plat;
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Autojoin — Platform::join_dynamic(JoinDynamicConfig)
 // ─────────────────────────────────────────────────────────────────────
 //
 // Cold-path orchestrator over EAL init + role detection + registry
-// claim. The hot path is unchanged from the declarative path: by the
-// time a Platform is returned the impl is byte-for-byte identical to
-// one produced by `Platform::create(PlatformConfig)` (primary role)
-// or `Platform::attach(PlatformAttachConfig)` (secondary role).
+// claim. The hot path is unchanged: by the time a Platform is
+// returned the impl is byte-for-byte identical to one produced by
+// `Platform::create(PlatformConfig)` (single-process). The
+// secondary-role impl is reached only via this path now that the
+// cooperative `Platform::attach` entry was removed.
 //
 // Failure modes are surfaced as `unexpected<std::string>` to match
 // the rest of `Platform::*` for source compatibility.
