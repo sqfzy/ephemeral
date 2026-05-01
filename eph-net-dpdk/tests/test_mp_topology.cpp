@@ -264,3 +264,103 @@ TEST(MpTopologyDump, ContainsTagAndStarMarksSelf) {
     EXPECT_NE(s.find("[1]*"),    std::string::npos);
     EXPECT_NE(s.find("[0] "),    std::string::npos);   // not self → space
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// lcore_mask invariants — pure topology level
+//
+// MpTopology::valid()'s lcore-overlap detection (mp_topology.hpp lines
+// 177-191) was added in commit `fceb0f78` for the v2 cross-process
+// conflict gate but went unrepresented in this file's test suite —
+// coverage was implicit via test_mp_registry only. These tests pin
+// the topology-level invariants directly so a future refactor can't
+// accidentally change `valid()` without flipping a unit test here.
+//
+// Discovered via /pax --review LENS round 4 (escalated to L1: drop
+// LENS filter, full coverage scan) on 2026-05-01.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+// Helper: build a 2-proc topology with explicit lcore_mask values.
+// Mirrors test_mp_registry's `make_topo_lcored` but local to this file
+// so test_mp_topology stays free of test_mp_registry dependencies.
+inline MpTopology make_lcored_topo(uint8_t self_index,
+                                   uint64_t self_mask,
+                                   uint64_t peer_mask) {
+    auto t = MpTopology::uniform(self_index, /*total_procs=*/2,
+                                 /*nb_rx_queues=*/4);
+    t.procs[0].lcore_mask = (self_index == 0) ? self_mask : peer_mask;
+    t.procs[1].lcore_mask = (self_index == 1) ? self_mask : peer_mask;
+    return t;
+}
+} // namespace
+
+TEST(MpTopologyLcoreValid, AllOptedOut_ValidNoCheck) {
+    // Default uniform() leaves all lcore_masks=0 — back-compat opt-out.
+    // valid() must not run the lcore overlap check at all and must
+    // accept the topology.
+    auto t = MpTopology::uniform(0, 2, 4);
+    EXPECT_TRUE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, DisjointMasks_Valid) {
+    // proc 0 = bits 0,1; proc 1 = bits 2,3. No overlap.
+    auto t = make_lcored_topo(0, /*self*/0x3, /*peer*/0xC);
+    EXPECT_TRUE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, FullyOverlappingMasks_Rejected) {
+    // Both procs claim the same bits — exactly the silent-CPU-theft
+    // misuse mode v2 was introduced to catch.
+    auto t = make_lcored_topo(0, /*self*/0x3, /*peer*/0x3);
+    EXPECT_FALSE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, PartialOverlap_Rejected) {
+    // proc 0 = bits 0,1,2 (0x7); proc 1 = bits 2,3 (0xC). Bit 2 collides.
+    auto t = make_lcored_topo(0, /*self*/0x7, /*peer*/0xC);
+    EXPECT_FALSE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, AsymmetricOptOut_Valid) {
+    // proc 0 declares 0x3, proc 1 leaves mask=0 (opt-out). The
+    // lcore-tracking section of valid() is "opt-in" — it triggers
+    // when ANY proc has a non-zero mask, but proc-1's zero mask is
+    // safe (zero & anything == 0, no overlap).
+    auto t = make_lcored_topo(0, /*self*/0x3, /*peer*/0);
+    EXPECT_TRUE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, HighBitMasks_Valid) {
+    // Bits at the top of the uint64_t — exercise the schema cap.
+    // bit 63 = 0x8000000000000000.
+    auto t = make_lcored_topo(0,
+                              /*self*/uint64_t{1} << 63,
+                              /*peer*/uint64_t{1} << 62);
+    EXPECT_TRUE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, ThreeProcs_TwoOverlap_Rejected) {
+    // Custom 3-proc topology: proc 0 and proc 2 both declare bit 5 —
+    // valid() must catch this even though procs 0,1 and 1,2 are clean.
+    auto t = MpTopology::custom(/*self_index=*/1, {
+        ProcSpec{.tag="A", .queue_lo=0, .queue_hi=1, .port_lo=32768, .port_hi=40000,
+                 .lcore_mask=uint64_t{1} << 5},
+        ProcSpec{.tag="B", .queue_lo=1, .queue_hi=2, .port_lo=40000, .port_hi=50000,
+                 .lcore_mask=uint64_t{1} << 6},
+        ProcSpec{.tag="C", .queue_lo=2, .queue_hi=3, .port_lo=50000, .port_hi=60000,
+                 .lcore_mask=uint64_t{1} << 5},  // collides with A
+    });
+    EXPECT_FALSE(t.valid());
+}
+
+TEST(MpTopologyLcoreValid, ThreeProcs_AllDisjoint_Valid) {
+    auto t = MpTopology::custom(/*self_index=*/0, {
+        ProcSpec{.tag="A", .queue_lo=0, .queue_hi=1, .port_lo=32768, .port_hi=40000,
+                 .lcore_mask=uint64_t{1} << 0},
+        ProcSpec{.tag="B", .queue_lo=1, .queue_hi=2, .port_lo=40000, .port_hi=50000,
+                 .lcore_mask=uint64_t{1} << 1},
+        ProcSpec{.tag="C", .queue_lo=2, .queue_hi=3, .port_lo=50000, .port_hi=60000,
+                 .lcore_mask=uint64_t{1} << 2},
+    });
+    EXPECT_TRUE(t.valid());
+}
