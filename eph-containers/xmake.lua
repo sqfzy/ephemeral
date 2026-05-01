@@ -2,6 +2,7 @@ target("eph-containers")
     set_kind("headeronly")
     add_includedirs("include", { public = true })
     add_headerfiles("include/(eph/containers/**.hpp)")
+    add_headerfiles("include/(eph/containers.hpp)")  -- umbrella
     add_deps("eph-utils", { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
