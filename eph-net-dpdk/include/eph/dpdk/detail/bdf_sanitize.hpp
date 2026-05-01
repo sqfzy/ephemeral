@@ -63,14 +63,14 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
     // string form (see platform.hpp line ~2421 — autojoin forwards the detail
     // back as a `std::string` without a SPDLOG_ call on the failure path).
     if (bdf.empty()) {
-        spdlog::error("sanitize_bdf: BDF must be non-empty");
+        SPDLOG_ERROR("sanitize_bdf: BDF must be non-empty");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "sanitize_bdf: BDF must be non-empty"});
     }
 
     if (bdf.size() < kBdfMinLen || bdf.size() > kBdfMaxLen) {
-        spdlog::error(
+        SPDLOG_ERROR(
             "sanitize_bdf: BDF length {} out of range [7, 12] (bdf='{}')",
             bdf.size(), bdf);
         return std::unexpected(core::ErrorInfo{
@@ -88,7 +88,7 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
         if (c == ':') { has_colon = true; continue; }
         if (c == '.') { has_dot   = true; continue; }
         if (!is_hex) {
-            spdlog::error(
+            SPDLOG_ERROR(
                 "sanitize_bdf: BDF contains non-hex/':'/'.' char "
                 "(byte={:#x}, bdf='{}')",
                 static_cast<unsigned>(static_cast<unsigned char>(c)), bdf);
@@ -99,7 +99,7 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
         }
     }
     if (!has_colon || !has_dot) {
-        spdlog::error(
+        SPDLOG_ERROR(
             "sanitize_bdf: BDF missing required separator "
             "(has_colon={} has_dot={} bdf='{}')",
             has_colon, has_dot, bdf);
