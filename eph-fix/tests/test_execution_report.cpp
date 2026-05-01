@@ -461,3 +461,59 @@ TEST(ExecutionReport, integer_qty_works_on_both_accessors) {
     ASSERT_TRUE(er.leaves_qty_d().has_value());
     EXPECT_DOUBLE_EQ(*er.leaves_qty_d(), 150.0);
 }
+
+// ===========================================================================
+// is_fill / is_terminal — defensive returns when the underlying enum tag
+// is missing. The accessors' "missing" path was previously only validated
+// by checking optional accessors directly; the convenience predicates have
+// their own conditional and need their own coverage.
+// ===========================================================================
+
+TEST(ExecutionReport, is_fill_returns_false_when_exec_type_missing) {
+    // Body deliberately has no tag 150 (ExecType)
+    std::string body = "35=8\x01"
+                       "49=SENDER\x01"
+                       "56=TARGET\x01"
+                       "34=1\x01"
+                       "39=0\x01";   // OrdStatus only
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse<256>({raw.data(), raw.size()});
+    ASSERT_TRUE(result.has_value());
+
+    ExecutionReportView<256> er(result.value());
+    EXPECT_FALSE(er.exec_type().has_value());
+    EXPECT_FALSE(er.is_fill())
+        << "is_fill must short-circuit on missing ExecType, not crash";
+}
+
+TEST(ExecutionReport, is_terminal_returns_false_when_ord_status_missing) {
+    // Body deliberately has no tag 39 (OrdStatus)
+    std::string body = "35=8\x01"
+                       "49=SENDER\x01"
+                       "56=TARGET\x01"
+                       "34=1\x01"
+                       "150=0\x01";  // ExecType only
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse<256>({raw.data(), raw.size()});
+    ASSERT_TRUE(result.has_value());
+
+    ExecutionReportView<256> er(result.value());
+    EXPECT_FALSE(er.ord_status().has_value());
+    EXPECT_FALSE(er.is_terminal())
+        << "is_terminal must short-circuit on missing OrdStatus, not crash";
+}
+
+TEST(ExecutionReport, is_fill_returns_false_for_unknown_exec_type_char) {
+    // ExecType='D' is not a valid OUCH/FIX value — to_exec_type returns
+    // nullopt and is_fill must propagate as false.
+    auto body = make_exec_report_body('D', '0',  // Unknown ExecType
+        "ORD", "EX", "EXC", "AAPL", '1',
+        "100.0", "10", "100.0", "10", "0");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse<256>({raw.data(), raw.size()});
+    ASSERT_TRUE(result.has_value());
+
+    ExecutionReportView<256> er(result.value());
+    EXPECT_FALSE(er.exec_type().has_value());
+    EXPECT_FALSE(er.is_fill());
+}
