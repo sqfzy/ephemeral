@@ -10,14 +10,19 @@ Designed for the short, flat JSON payloads typical of crypto exchange WebSocket 
 
 ## Basic Parsing
 
+The stream's `on_message` callback delivers a single `std::span<const
+uint8_t>` per decoded application frame (see `Stream::OnMessage` in
+`eph-net/include/eph/net/concepts.hpp`). Pass that span straight to
+`eph::json::parse`:
+
 ```cpp
 #include "eph/json/parser.hpp"
 
-void on_message(const uint8_t* data, uint16_t len, uint8_t) {
-    auto result = eph::json::parse(data, len);
+stream->on_message = [](std::span<const uint8_t> frame) {
+    auto result = eph::json::parse(frame.data(), frame.size());
     if (!result) {
         // ParseError: kIncomplete, kInvalidFormat, or kFieldOverflow
-        SPDLOG_WARN("JSON parse failed: {}", result.error());
+        SPDLOG_WARN("JSON parse failed");
         return;
     }
 
@@ -39,7 +44,7 @@ void on_message(const uint8_t* data, uint16_t len, uint8_t) {
         const auto& f = result->field_at(i);
         // f.key, f.value, f.is_string
     }
-}
+};
 ```
 
 **Limits**: Up to 32 fields per object (`JsonView::kMaxFields`). Nested objects/arrays are captured as opaque `string_view` values (not recursively parsed).
@@ -61,8 +66,8 @@ Typed adapters extract strongly-typed structs from parsed `JsonView` objects. Ea
 ```cpp
 #include "eph/json/adapters/binance.hpp"
 
-void on_message(const uint8_t* data, uint16_t len, uint8_t) {
-    auto json = eph::json::parse(data, len);
+stream->on_message = [](std::span<const uint8_t> frame) {
+    auto json = eph::json::parse(frame.data(), frame.size());
     if (!json) return;
 
     auto ticker = eph::json::binance::BookTicker::from(*json);
@@ -80,7 +85,7 @@ void on_message(const uint8_t* data, uint16_t len, uint8_t) {
     // Integer fields
     int64_t update_id  = ticker->update_id;
     int64_t event_time = ticker->event_time;
-}
+};
 ```
 
 ### OKX BookTicker
