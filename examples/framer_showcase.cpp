@@ -91,7 +91,7 @@ int main() {
         demo("RawStreamCodec", codec, payload);
     }
 
-    // 2) LengthPrefixCodec — 4-byte LE length header.
+    // 2) LengthPrefixCodec — 4-byte BE length header.
     {
         ec::LengthPrefixCodec codec{};
         demo("LengthPrefixCodec", codec, payload);
