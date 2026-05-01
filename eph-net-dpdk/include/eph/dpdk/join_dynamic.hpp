@@ -1,31 +1,30 @@
 #pragma once
 
 /// @file join_dynamic.hpp
-/// `LegacyJoinDynamicConfig` — the user-facing config for the **autojoin**
+/// `JoinDynamicConfig` — the user-facing config for the **autojoin**
 /// MP factory (`Platform::join_dynamic`). Autojoin is the
 /// zero-coordination multi-process bring-up: two unrelated processes
 /// that share a NIC agree on nothing except the PCI BDF and
-/// `pcfg_template.nb_rx_queues`. Whoever `rte_eal_init`s first
+/// `primary_config.nb_rx_queues`. Whoever `rte_eal_init`s first
 /// becomes primary; later peers attach as secondaries and CAS-claim
 /// the next free process slot themselves.
 ///
-/// **Mental model**: `LegacyJoinDynamicConfig` only carries
-/// **autojoin-specific** inputs — everything `LegacyPlatformConfig` already
+/// **Mental model**: `JoinDynamicConfig` only carries
+/// **autojoin-specific** inputs — everything `PlatformConfig` already
 /// has (per_lcore_pools / mbuf_pool_size / port_id / nb_rx_queues /
-/// every other field) flows through `pcfg_template`. Autojoin only
-/// overrides three fields it must own: `proc_type` (resolved at EAL
-/// init), `mp_topology` (synthesized from claimed slot), and
-/// `file_prefix` (auto-derived from BDF unless caller overrides).
-/// Single source of truth: LegacyPlatformConfig.
+/// every other field) flows through `primary_config`. Autojoin only
+/// overrides three fields it must own: process role (resolved at EAL
+/// init), MpTopology (synthesized from claimed slot), and `file_prefix`
+/// (auto-derived from BDF).
 ///
-/// Compared to the **declarative** path (`Platform::create_primary` /
-/// `create_secondary` + a hand-written `MpTopology`), autojoin
-/// trades per-peer slot precision for *no protocol* between peers:
+/// Compared to the **declarative** path (`Platform::create` /
+/// `Platform::attach` + a hand-written EalConfig), autojoin trades
+/// per-peer slot precision for *no protocol* between peers:
 ///   - file_prefix is auto-derived from the BDF (so two peers naming
 ///     the same NIC name the same hugepage segment without sharing
 ///     a string)
-///   - max_procs is auto-derived from `pcfg_template.nb_rx_queues /
-///     queues_per_proc`
+///   - max_procs is auto-derived from `primary_config.nb_rx_queues /
+///     primary_config.queues_per_proc`
 ///   - self_index is auto-claimed at attach time (CAS-strong against
 ///     the registry's `procs[].claimed` flags)
 ///
@@ -46,84 +45,56 @@
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin (typed pin spec)
 #include "eph/utils/cpu.hpp"        // CpuPinPolicy
 
-// This header references `eph::dpdk::LegacyPlatformConfig` (`pcfg_template`
+// This header references `eph::dpdk::PlatformConfig` (`primary_config`
 // is a value member) but cannot directly `#include
 // "eph/dpdk/platform.hpp"` without a circular include — platform.hpp
-// includes this header from inside its own body, after LegacyPlatformConfig
+// includes this header from inside its own body, after PlatformConfig
 // is fully parsed. The contract: include `eph/dpdk/platform.hpp` to
-// get `LegacyJoinDynamicConfig`. Users who try to include this header
+// get `JoinDynamicConfig`. Users who try to include this header
 // standalone get a loud diagnostic instead of a confusing
-// "LegacyPlatformConfig has not been declared".
+// "PlatformConfig has not been declared".
 #ifndef EPH_DPDK_PLATFORM_CONFIG_DEFINED
 #  error "Include eph/dpdk/platform.hpp instead of join_dynamic.hpp directly: " \
-         "LegacyJoinDynamicConfig embeds a LegacyPlatformConfig and must be parsed " \
-         "after LegacyPlatformConfig is fully defined."
+         "JoinDynamicConfig embeds a PlatformConfig and must be parsed " \
+         "after PlatformConfig is fully defined."
 #endif
 
 namespace eph::dpdk {
 
-/// @brief Autojoin (`Platform::join_dynamic`) configuration.
+/// @brief Zero-consensus autojoin config.
 ///
-/// Required: `pci`, `pcfg_template.nb_rx_queues > 0`. Everything
-/// else has a sensible default.
-struct LegacyJoinDynamicConfig {
-    // ─── Autojoin-specific inputs ────────────────────────────────────────
-
-    /// PCI BDF of the NIC to attach (e.g. `"0000:28:00.0"` or short
-    /// form `"28:00.0"`). The BDF is also fed through
-    /// `detail::sanitize_bdf_for_file_prefix` to derive the DPDK
-    /// `--file-prefix` when `file_prefix` below is empty.
+/// Required: `pci`. Everything else has a sensible default.
+/// **Secondary peers only need `pci` (and per-peer EAL args).**
+struct JoinDynamicConfig {
+    /// PCI BDF of the NIC to attach. Drives BOTH the EAL `-a` allowlist
+    /// AND the auto-derived `file_prefix` (`"eph_" + sanitize(pci)`).
+    /// Two peers naming the same BDF naturally agree on hugepage
+    /// namespace without sharing any string.
     std::string_view pci;
 
-    /// Queues per process slot. Defaults to 1 — i.e. each MP peer
-    /// owns exactly one RX queue. Set to >1 to give each peer a
-    /// contiguous queue range (e.g. 4-queue NIC with
-    /// `queues_per_proc=2` ⇒ 2 peers, each owning 2 queues).
-    uint16_t queues_per_proc{1};
-
-    /// Maximum number of process slots. `0` means auto-derive as
-    /// `pcfg_template.nb_rx_queues / queues_per_proc`. Capped at
-    /// `MpTopology::kMaxProcs` (= 64) by the registry.
-    uint8_t max_procs{0};
-
-    /// Optional override for the DPDK `--file-prefix`. Empty means
-    /// derive from `pci` as `"eph_" + sanitize(pci)` so two peers
-    /// pointing at the same BDF naturally agree on the prefix
-    /// without sharing any state. Override only when you need to
-    /// run multiple autojoin sessions on the same BDF (rare;
-    /// usually a configuration mistake).
-    std::string_view file_prefix{};
-
-    // ─── LegacyPlatformConfig pass-through ─────────────────────────────────────
-
-    /// Template LegacyPlatformConfig — every field that `Platform::create_*`
-    /// understands flows through here unchanged. Autojoin only
-    /// overrides three fields it must own at construction time:
-    ///   - `proc_type`     resolved by `rte_eal_process_type()`
-    ///                     after EAL init (Primary or Secondary)
-    ///   - `mp_topology`   synthesized as
-    ///                     `MpTopology::uniform(self_idx, max_procs,
-    ///                                          nb_rx_queues)`
-    ///   - `file_prefix`   set to the auto-derived (or
-    ///                     caller-overridden) value
-    ///
-    /// Everything else (`port_id` / `nb_rx_queues` / `nb_tx_queues` /
-    /// `mbuf_pool_size` / `per_lcore_pools` / `enable_promiscuous` /
-    /// future fields) lands verbatim on the constructed Platform.
-    /// **Required: `pcfg_template.nb_rx_queues > 0`** (autojoin
-    /// derives `max_procs` from it).
-    LegacyPlatformConfig pcfg_template{};
+    /// Primary-side full PlatformConfig — used ONLY when this peer
+    /// resolves to primary (first to call `eal_init`). Secondary peers
+    /// have every field of this struct ignored except as fallback
+    /// defaults; the library reads NIC physical state from the live
+    /// device after attach. The `max_procs` / `queues_per_proc` knobs
+    /// live here, not at the top level, so secondary callers can't
+    /// accidentally specify them.
+    /// **Required when this peer resolves to primary**:
+    /// `primary_config.nb_rx_queues > 0`. (Secondary peers may leave
+    /// at default — the autojoin path queries the live NIC.)
+    PlatformConfig primary_config{};
 
     // ─── EAL options ─────────────────────────────────────────────────────
+    // Per-peer (not consensus-bearing).
 
     /// Typed lcore→cpu pin spec. When non-empty, autojoin validates
-    /// each pin against the process-wide pin registry (SMT
-    /// siblings / NUMA / IRQ / duplicate-cpu policy per `pin_policy`
-    /// below) BEFORE `rte_eal_init` fires, so a misconfigured
-    /// topology surfaces as a loud cold-path error. The validated
-    /// pins are then lowered to a `--lcores=<lcore>@<cpu>,...` argv
-    /// fragment. Pin ownership transfers to the returned Platform
-    /// and is released when the Platform is destroyed.
+    /// each pin against the process-wide pin registry (SMT siblings /
+    /// NUMA / IRQ / duplicate-cpu policy per `pin_policy` below) BEFORE
+    /// `rte_eal_init` fires, so a misconfigured topology surfaces as a
+    /// loud cold-path error. The validated pins are then lowered to a
+    /// `--lcores=<lcore>@<cpu>,...` argv fragment. Pin ownership
+    /// transfers to the returned Platform and is released when the
+    /// Platform is destroyed.
     ///
     /// Mutually exclusive with `lcores` below.
     std::span<eph::dpdk::LcorePin const> pins{};
@@ -163,55 +134,6 @@ struct LegacyJoinDynamicConfig {
     /// Catches "two procs accidentally pinned to the same lcore →
     /// silent OS-scheduler CPU theft → p99 noise" mental-model gap.
     /// Capped at 64 bits (matches `MpTopology::kMaxProcs`).
-    uint64_t self_lcore_mask{0};
-};
-
-// ─────────────────────────────────────────────────────────────────────
-// v3 LegacyJoinDynamicConfig (zero-consensus autojoin)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Parallel to v2 `LegacyJoinDynamicConfig` during the v3 transition.
-// Differences:
-//   - `pcfg_template` renamed to `primary_config` (only consulted on
-//     primary path; secondary discards every field except for the
-//     library's internal use of file_prefix derived from `pci`).
-//   - `queues_per_proc` / `max_procs` moved INSIDE primary_config (as
-//     `PlatformConfig::queues_per_proc` / `max_procs`). Top-level
-//     fields removed — secondary peers no longer specify them.
-//   - `file_prefix` removed entirely (always auto-derived from `pci`
-//     to enforce zero-consensus).
-//
-// Stage 5 will rename `JoinDynamicConfig` -> `LegacyJoinDynamicConfig`
-// after the v2 struct + v2 entry points are deleted.
-
-/// @brief Zero-consensus autojoin config (v3).
-///
-/// Required: `pci`. Everything else has a sensible default.
-/// **Secondary peers only need `pci` (and per-peer EAL args).**
-struct JoinDynamicConfig {
-    /// PCI BDF of the NIC to attach. Drives BOTH the EAL `-a` allowlist
-    /// AND the auto-derived `file_prefix` (`"eph_" + sanitize(pci)`).
-    /// Two peers naming the same BDF naturally agree on hugepage
-    /// namespace without sharing any string.
-    std::string_view pci;
-
-    /// Primary-side full LegacyPlatformConfig — used ONLY when this peer
-    /// resolves to primary (first to call `eal_init`). Secondary peers
-    /// have every field of this struct ignored. The `max_procs` /
-    /// `queues_per_proc` knobs live here, not at the top level, so
-    /// secondary callers can't accidentally specify them.
-    /// **Required when this peer resolves to primary**:
-    /// `primary_config.nb_rx_queues > 0`. (Secondary peers may leave
-    /// at default — discarded anyway.)
-    PlatformConfig primary_config{};
-
-    // ─── EAL options ─────────────────────────────────────────────────────
-    // Same shape as v2 — these are per-peer (not consensus-bearing).
-
-    std::span<eph::dpdk::LcorePin const> pins{};
-    eph::utils::CpuPinPolicy pin_policy{};
-    std::vector<std::string> lcores{};
-    std::vector<std::string> eal_extras{};
     uint64_t self_lcore_mask{0};
 };
 

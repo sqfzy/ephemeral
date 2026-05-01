@@ -11,7 +11,7 @@
 ///   RX/TX queue setup → port start → link poll
 ///
 /// Compile-time philosophy:
-///   - LegacyPlatformConfig fields that are structurally constrained (pool size
+///   - PlatformConfig fields that are structurally constrained (pool size
 ///     must be 2^n-1, queues/descs must be > 0) are validated at compile
 ///     time when the config is constexpr, and at runtime otherwise.
 ///   - clamp_desc is constexpr — usable in static assertions if NIC
@@ -41,8 +41,8 @@
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
-// NOTE: `eph/dpdk/join_dynamic.hpp` is included AFTER `LegacyPlatformConfig`
-// is defined — `LegacyJoinDynamicConfig::pcfg_template` embeds it by value.
+// NOTE: `eph/dpdk/join_dynamic.hpp` is included AFTER `PlatformConfig`
+// is defined — `JoinDynamicConfig::primary_config` embeds it by value.
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
@@ -173,10 +173,22 @@ inline constexpr uint16_t kMaxRssQueues = 64;
 // `ProcType` lives in `eph/dpdk/proc_type.hpp` so both this header and
 // `eal.hpp` can share a single source of truth without forward declarations.
 
-/// @note Queue counts and descriptor counts are automatically clamped to
-///       NIC-reported limits during Platform::create(). Values here are
-///       the *requested* values — actual values may be smaller.
-struct LegacyPlatformConfig {
+namespace detail {
+
+/// @brief Internal-only Platform bring-up config.
+///
+/// Mirror of the v3 `PlatformConfig` user-facing shape, plus the
+/// role-and-topology fields the bring-up body needs at runtime
+/// (`proc_type`, `mp_topology`, `rx_queue_range`). Public callers see
+/// only `PlatformConfig` (primary / single-process) and
+/// `PlatformAttachConfig` (secondary); `BringupConfig` is synthesized
+/// internally by the v3 entry points and the `primary_bringup_` /
+/// `secondary_bringup_` helpers.
+///
+/// @note Queue counts and descriptor counts are automatically clamped
+///       to NIC-reported limits during the bring-up body. Values here
+///       are the *requested* values — actual values may be smaller.
+struct BringupConfig {
     uint16_t port_id         = 0;       ///< DPDK port ID to initialize
     uint16_t nb_rx_queues    = 1;       ///< Requested number of RX queues
     uint16_t nb_tx_queues    = 1;       ///< Requested number of TX queues
@@ -242,10 +254,9 @@ struct LegacyPlatformConfig {
 
     // ── Multi-process (primary+secondary) configuration ─────────────────
     //
-    // All fields default to single-process / primary semantics: existing
-    // code compiled against the old LegacyPlatformConfig continues to work
-    // byte-for-byte. Multi-process callers opt in by setting proc_type /
-    // file_prefix and (for secondary) an explicit rx_queue_range. See
+    // All fields default to single-process / primary semantics. Multi-
+    // process callers opt in by setting proc_type / file_prefix and (for
+    // secondary) an explicit rx_queue_range. See
     // `docs/dpdk-multiprocess.md` and `ProcType` above.
 
     /// @brief DPDK process role. Primary owns the port lifecycle
@@ -261,11 +272,12 @@ struct LegacyPlatformConfig {
     /// prefix the primary used, otherwise `rte_mempool_lookup` will fail
     /// with "primary not running or file_prefix mismatch".
     ///
-    /// Held as `std::string_view` to keep `LegacyPlatformConfig` a literal type
-    /// (preserves `constexpr LegacyPlatformConfig cfg{};` + `validate_config`
-    /// static_assert usage). Caller owns the backing buffer — typical
-    /// values are string literals or long-lived application-owned
-    /// strings; don't point at a temporary.
+    /// Held as `std::string_view` to keep `BringupConfig` a literal type
+    /// (mirrors the public `PlatformConfig`'s constexpr-friendliness;
+    /// useful when test fixtures want `static_assert(...)` on a synthesized
+    /// bring-up config). Caller owns the backing buffer — typical values
+    /// are string literals or long-lived application-owned strings;
+    /// don't point at a temporary.
     std::string_view file_prefix {};
 
     /// @brief Half-open RX queue range `[lo, hi)` that THIS process owns.
@@ -331,9 +343,7 @@ struct LegacyPlatformConfig {
     //
     // `MpTopology` is a literal type (fixed `std::array<ProcSpec, 64>`
     // backing — see mp_topology.hpp) so wrapping it in `std::optional`
-    // keeps `LegacyPlatformConfig` constexpr-constructible: existing
-    // `static_assert(config_ok(kBaseCfg))` patterns in tests continue
-    // to compile against the default-empty optional.
+    // keeps `BringupConfig` constexpr-constructible.
     std::optional<MpTopology> mp_topology {};
 
     // NOTE on source-port partitioning across MP processes:
@@ -351,13 +361,13 @@ struct LegacyPlatformConfig {
     // `docs/dpdk-multiprocess.md` for guidance on partitioning.
 
     /// Defaulted equality — all fields must match exactly.
-    [[nodiscard]] friend bool operator==(const LegacyPlatformConfig&,
-                                         const LegacyPlatformConfig&) = default;
+    [[nodiscard]] friend bool operator==(const BringupConfig&,
+                                         const BringupConfig&) = default;
 
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         std::string base = std::format(
-            "LegacyPlatformConfig:\n"
+            "BringupConfig:\n"
             "  port_id: {}, queues: {}rx/{}tx, descriptors: {}rx/{}tx\n"
             "  mbuf pool: {} (cache: {}), promiscuous: {}, link_timeout: {}ms\n"
             "  rx_cksum_offload: {}, strict_rx_cksum: {}\n"
@@ -383,7 +393,7 @@ struct LegacyPlatformConfig {
 
     /// Check for non-fatal contradictions or likely misconfigurations.
     /// Returns a list of warning messages (empty if no issues).
-    /// Unlike validate_config() which blocks construction, these are advisory.
+    /// Advisory only — does not block construction.
     [[nodiscard]] std::vector<std::string> warnings() const {
         std::vector<std::string> w;
         // Very small descriptor counts may cause drops under burst
@@ -421,64 +431,25 @@ struct LegacyPlatformConfig {
                            "to establish");
         return w;
     }
-
-    /// JSON-formatted config for monitoring system integration.
-    [[nodiscard]] std::string to_json() const {
-        return std::format(
-            "{{\"port_id\":{},\"nb_rx_queues\":{},\"nb_tx_queues\":{},"
-            "\"nb_rx_desc\":{},\"nb_tx_desc\":{},"
-            "\"mbuf_pool_size\":{},\"mbuf_cache_size\":{},"
-            "\"enable_promiscuous\":{},"
-            "\"enable_rx_checksum_offload\":{},"
-            "\"enable_strict_rx_checksum\":{},"
-            "\"link_timeout_ms\":{},"
-            "\"proc_type\":\"{}\",\"file_prefix\":\"{}\","
-            "\"rx_queue_range\":[{},{}],"
-            "\"per_lcore_pools\":{},"
-            "\"mp_topology_set\":{},\"mp_topology_self_index\":{},"
-            "\"mp_topology_total_procs\":{}}}",
-            port_id, nb_rx_queues, nb_tx_queues,
-            nb_rx_desc, nb_tx_desc,
-            mbuf_pool_size, mbuf_cache_size,
-            enable_promiscuous ? "true" : "false",
-            enable_rx_checksum_offload ? "true" : "false",
-            enable_strict_rx_checksum  ? "true" : "false",
-            link_timeout_ms,
-            proc_type == ProcType::Primary ? "Primary" : "Secondary",
-            file_prefix,
-            rx_queue_range.first, rx_queue_range.second,
-            per_lcore_pools,
-            mp_topology.has_value() ? "true" : "false",
-            mp_topology.has_value() ? mp_topology->self_index : uint8_t{0},
-            mp_topology.has_value() ? mp_topology->total_procs : uint8_t{0});
-    }
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// v3 LegacyPlatformConfig (primary-only)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Parallel to v2 `LegacyPlatformConfig` during the v3 transition. Removes
-// fields that secondary should never set (proc_type, mp_topology,
-// rx_queue_range — see plan reflective-rolling-hellman.md). Adds
-// `max_procs` / `queues_per_proc` so primary expresses MP topology
-// in caller-friendly terms, never `MpTopology::uniform(...)` directly.
-//
-// Stage 1 status (this file): the v3 entry points (`Platform::create`,
-// `create_with_eal`) are wrappers that translate `PlatformConfig`
-// back into the v2 `LegacyPlatformConfig` shape and call the v2 lifecycle.
-// Stage 3 will rewrite the entry points to native v3 implementation.
-//
-// Stage 5 will rename `PlatformConfig` -> `LegacyPlatformConfig` after the
-// v2 struct + v2 entry points are deleted.
+} // namespace detail
 
-/// @brief Primary-side (or single-process) Platform config — v3 shape.
+// ─────────────────────────────────────────────────────────────────────
+// PlatformConfig (public, primary or single-process)
+// ─────────────────────────────────────────────────────────────────────
+
+/// @brief Primary-side (or single-process) Platform config.
 ///
-/// Symmetric to v2 `LegacyPlatformConfig` for the NIC-physical-state fields
-/// (queue counts, descriptor counts, mempool, RSS, promiscuous, etc.)
-/// but without the secondary-side baggage. `max_procs` defaults to 1
-/// (single-process); set > 1 to open N MP slots in the registry that
-/// secondaries can attach to via `Platform::attach`.
+/// Carries every NIC-physical-state field (queue counts, descriptor
+/// counts, mempool, RSS, promiscuous, etc.) and the MP knobs
+/// (`max_procs` / `queues_per_proc`). Secondary-side configuration is a
+/// separate `PlatformAttachConfig` — secondary peers don't restate any
+/// primary-decided value.
+///
+/// `max_procs` defaults to 1 (single-process); set > 1 to open N MP
+/// slots in the registry that secondaries can attach to via
+/// `Platform::attach`.
 struct PlatformConfig {
     // ── Identity ────────────────────────────────────────────────────
     /// DPDK port enumeration index.
@@ -534,9 +505,9 @@ struct PlatformConfig {
 
 } // namespace eph::dpdk
 
-// LegacyJoinDynamicConfig embeds a LegacyPlatformConfig as a value member, so it
-// must be parsed after LegacyPlatformConfig is fully defined. We signal
-// that LegacyPlatformConfig is now in scope via the sentinel macro that
+// JoinDynamicConfig embeds a PlatformConfig as a value member, so it
+// must be parsed after PlatformConfig is fully defined. We signal that
+// PlatformConfig is now in scope via the sentinel macro that
 // join_dynamic.hpp checks at the top.
 #define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
 #include "eph/dpdk/join_dynamic.hpp"
@@ -544,40 +515,35 @@ struct PlatformConfig {
 
 namespace eph::dpdk {
 
-/// Validation result — empty string_view on success, error description otherwise.
-/// constexpr-evaluable: use in static_assert for compile-time configs, or
-/// call at runtime for dynamic configs.
+namespace detail {
+
+/// @brief Internal bring-up validator. Mirror of the public v3
+/// `validate_config(PlatformConfig)` rejection set, plus checks for
+/// the v2-only fields that only the bring-up pipeline carries
+/// (`rx_queue_range` half-set protection; `mp_topology` validity).
 ///
-/// A result containing "2^n" is a performance warning (DPDK rounds up silently),
-/// not a hard error.
-[[nodiscard]] constexpr std::string_view validate_config(const LegacyPlatformConfig& cfg) noexcept {
+/// Used by `primary_bringup_` / `secondary_bringup_` and the bring-up
+/// body — each runs this validator at the start to surface a
+/// structural problem before any DPDK syscall fires. Empty
+/// string_view on success.
+[[nodiscard]] constexpr std::string_view
+validate_bringup_(const BringupConfig& cfg) noexcept {
     if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
     if (cfg.nb_tx_queues  == 0) return "nb_tx_queues must be > 0";
-    // RSS-aware multi-queue layouts require at least one TX queue per
-    // RX queue: `DpdkTcpStream::create_and_attach`'s RSS-aware connect
-    // pins `tx_queue_id = rx_queue_id` so the egress half stays affine
-    // with the same RSS bucket the reply lands on. With only 1 TX queue
-    // and >1 RX queue, every stream past the first that picks a non-
-    // zero RSS queue would silently configure `tx_queue_id >= nb_tx_
-    // queues`, hit a Phase-1-style TX starvation, and never surface a
-    // configuration error — the symptom is a clean connect followed by
-    // zero TX bytes. Reject up-front. Source: TODO.md P1, retro
-    // .artifacts/reshape-rss-aware-connect-final-20260430.md.
     if (cfg.nb_rx_queues > 1 && cfg.nb_tx_queues == 1)
         return "nb_tx_queues must be >= nb_rx_queues when nb_rx_queues > 1 "
                "(RSS-aware connect pins tx_queue_id = rx_queue_id)";
     if (cfg.nb_rx_desc    == 0) return "nb_rx_desc must be > 0";
     if (cfg.nb_tx_desc    == 0) return "nb_tx_desc must be > 0";
     if (cfg.link_timeout_ms < 0) return "link_timeout_ms must be >= 0";
-    if (!detail::is_power_of_two_minus_one(cfg.mbuf_pool_size))
+    if (!is_power_of_two_minus_one(cfg.mbuf_pool_size))
         return "mbuf_pool_size must be 2^n - 1 (e.g. 1023, 4095, 8191)";
-    // DPDK rte_pktmbuf_pool_create requires cache_size < pool_size.
     if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
         return "mbuf_cache_size must be less than mbuf_pool_size";
-    // rx_queue_range: either the {0,0} sentinel ("full range") or a non-
-    // empty sub-range bounded by nb_rx_queues. Without this check, a
-    // half-set range (lo == hi != 0, or lo > hi, or hi > nb_rx_queues)
-    // would silently slip through `Platform::create_primary` and corrupt
+    // rx_queue_range: either the {0,0} sentinel ("full range") or a
+    // non-empty sub-range bounded by nb_rx_queues. Without this check,
+    // a half-set range (lo == hi != 0, or lo > hi, or hi >
+    // nb_rx_queues) would silently slip through and corrupt
     // round-robin queue selection at create_and_attach time.
     if (cfg.rx_queue_range.first != 0 || cfg.rx_queue_range.second != 0) {
         if (cfg.rx_queue_range.first >= cfg.rx_queue_range.second)
@@ -585,16 +551,10 @@ namespace eph::dpdk {
         if (cfg.rx_queue_range.second > cfg.nb_rx_queues)
             return "rx_queue_range.hi must not exceed nb_rx_queues";
     }
-    // Per-lcore pools: 0 = disabled (legacy single-shared-pool layout).
-    // Upper bound matches RTE_MAX_LCORE so the on-Platform fixed array
-    // can hold every populated slot. We don't enforce
-    // `per_lcore_pools <= rte_lcore_count()` here because the active lcore
-    // mask is an EAL-runtime value, not a config-time constant.
     if (cfg.per_lcore_pools > 256)
         return "per_lcore_pools must be <= RTE_MAX_LCORE (256)";
-    // mp_topology (auto-derived MP layout) is mutually exclusive with a
-    // hand-set rx_queue_range. Allowing both would let two source-of-
-    // truth values disagree silently — pick one path or the other.
+    // mp_topology and rx_queue_range are mutually exclusive: when both
+    // are set, they're two sources of truth that could disagree.
     if (cfg.mp_topology.has_value()) {
         if (cfg.rx_queue_range.first != 0 || cfg.rx_queue_range.second != 0)
             return "mp_topology is set; rx_queue_range must remain {0,0} sentinel";
@@ -607,12 +567,7 @@ namespace eph::dpdk {
     return {};
 }
 
-/// For use in static_assert with constexpr configs:
-///   constexpr LegacyPlatformConfig cfg{...};
-///   static_assert(config_ok(cfg), "bad platform config");
-[[nodiscard]] constexpr bool config_ok(const LegacyPlatformConfig& cfg) noexcept {
-    return validate_config(cfg).empty();
-}
+} // namespace detail
 
 /// @brief v3 PlatformConfig structural validator. Mirrors the v2 validator's
 /// rejection set for fields that exist on both shapes (queue counts,
@@ -745,28 +700,11 @@ public:
         [[nodiscard]] friend bool operator==(const Stats&, const Stats&) = default;
     };
 
-    /// Create and fully initialize the DPDK platform for one port.
-    /// EAL must already be initialized (via eph::dpdk::eal_init).
-    ///
-    /// This is the original single-process factory. It honours
-    /// `config.proc_type` (default Primary → full port bringup), so pre-MP
-    /// callers continue to work byte-for-byte. For new multi-process code
-    /// prefer the explicit `create_primary` / `create_secondary` entry
-    /// points — they make the role visible at the call site and (for
-    /// secondary) surface the strict config validation earlier.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    create(const LegacyPlatformConfig& config);
-
     // ─────────────────────────────────────────────────────────────────
-    // v3 entry points (zero-consensus surface)
+    // Public Platform factories (zero-consensus surface)
     // ─────────────────────────────────────────────────────────────────
-    //
-    // These are the recommended API for new code; v2 entry points above
-    // remain functional for backwards-compat during the v3 transition
-    // (stage 4 migrates callers, stage 5 deletes v2). See
-    // .claude/plans/reflective-rolling-hellman.md for the migration plan.
 
-    /// @brief v3: single-process or MP primary (zero-consensus primary).
+    /// @brief Single-process or MP-primary factory.
     /// `cfg.max_procs == 1` (default) is single-process. `cfg.max_procs >= 2`
     /// opens a registry that secondaries find via `Platform::attach`.
     /// EAL must be initialized before this call (use `create_with_eal`
@@ -1080,37 +1018,33 @@ private:
     explicit Platform(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
 
-    /// @brief Internal primary bring-up. Used to be the public
-    /// `create_primary` factory; now a private helper consumed by the
-    /// v3 `create(PlatformConfig)` entry point and (transitionally)
-    /// by the v2 `create_with_eal(LegacyPlatformConfig, ...)` and v2
-    /// `join_dynamic(LegacyJoinDynamicConfig)` autojoin paths until
-    /// those v2 entries are removed in subsequent cleanup commits.
-    /// Reads the optional `mp_topology` from the legacy config to
-    /// reserve the cross-process registry, derive `rx_queue_range`
-    /// from `self()`, reserve the ICMP directory, then delegates to
-    /// the v2 `create(LegacyPlatformConfig)` dispatcher for the
-    /// per-port DPDK bring-up.
+    /// @brief Internal: per-port DPDK bring-up. Owns the
+    /// enumerate→mempool→configure→queues→start sequence and the RSS
+    /// fallback path. Reads `config.proc_type` to pick the primary vs
+    /// secondary code path (secondary skips configure/start in favour of
+    /// `lookup_mempool_secondary`). `primary_bringup_` /
+    /// `secondary_bringup_` synthesize the BringupConfig from caller
+    /// input and invoke this method.
     [[nodiscard]] static std::expected<Platform, std::string>
-    primary_bringup_(LegacyPlatformConfig config);
+    bringup_port_(const detail::BringupConfig& config);
 
-    /// @brief Internal secondary bring-up. Used to be the public
-    /// `create_secondary` factory plus its `_impl_` sibling; now a
-    /// private helper consumed by the v3 `attach(PlatformAttachConfig)`
-    /// entry point and (transitionally) by the v2
-    /// `create_with_eal(LegacyPlatformConfig, ...)` and v2
-    /// `join_dynamic(LegacyJoinDynamicConfig)` paths until those v2
-    /// entries are removed in subsequent cleanup commits.
-    ///
-    /// `registry_preclaimed=false` (caller-driven attach): mirrors
-    /// the previous public `create_secondary` semantics — perform a
-    /// fresh CAS-claim of `*config.mp_topology->self_index` against
-    /// the primary's registry. `registry_preclaimed=true` (autojoin
-    /// path or v3 `attach()`): the caller already CAS-claimed the
-    /// slot via `try_claim_free_slot`, so `attach_secondary` skips
-    /// the double-CAS.
+    /// @brief Internal primary bring-up. Reads the optional
+    /// `mp_topology` from the synthesized BringupConfig to reserve the
+    /// cross-process registry, derive `rx_queue_range` from `self()`,
+    /// reserve the ICMP directory, then delegates to `bringup_port_`
+    /// for the per-port DPDK bring-up.
     [[nodiscard]] static std::expected<Platform, std::string>
-    secondary_bringup_(LegacyPlatformConfig config, bool registry_preclaimed);
+    primary_bringup_(detail::BringupConfig config);
+
+    /// @brief Internal secondary bring-up. `registry_preclaimed=false`
+    /// (caller-driven `Platform::attach` flow): perform a fresh
+    /// CAS-claim of `*config.mp_topology->self_index` against the
+    /// primary's registry. `registry_preclaimed=true` (autojoin or v3
+    /// `attach()`): the caller already CAS-claimed the slot via
+    /// `try_claim_free_slot`, so `attach_secondary` skips the
+    /// double-CAS.
+    [[nodiscard]] static std::expected<Platform, std::string>
+    secondary_bringup_(detail::BringupConfig config, bool registry_preclaimed);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1938,11 +1872,11 @@ inline Platform& Platform::operator=(Platform&&) noexcept = default;
 // On success, pin_guards transfer into Impl and owns_eal_init is set.
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create(const LegacyPlatformConfig& config) {
+Platform::bringup_port_(const detail::BringupConfig& config) {
     [[maybe_unused]] auto log = detail::platform_logger();
 
-    if (auto err = validate_config(config); !err.empty()) {
-        SPDLOG_LOGGER_ERROR(log, "Invalid LegacyPlatformConfig: {}", err);
+    if (auto err = detail::validate_bringup_(config); !err.empty()) {
+        SPDLOG_LOGGER_ERROR(log, "Invalid BringupConfig: {}", err);
         return std::unexpected(std::string{err});
     }
 
@@ -1950,7 +1884,7 @@ Platform::create(const LegacyPlatformConfig& config) {
     // zero link-timeout, etc.) at WARN so operators see them in production
     // logs. Advisory only — does not block construction.
     for (const auto& w : config.warnings()) {
-        SPDLOG_LOGGER_WARN(log, "LegacyPlatformConfig advisory: {}", w);
+        SPDLOG_LOGGER_WARN(log, "BringupConfig advisory: {}", w);
     }
 
     auto impl = std::make_unique<Impl>();
@@ -2079,7 +2013,7 @@ Platform::create(const LegacyPlatformConfig& config) {
                 "configure_rss rejected ('{}') AND rss_hash_conf_get "
                 "probe also failed ('{}'). Cannot safely route packets "
                 "to nb_rx_queues={}. Recovery: set "
-                "LegacyPlatformConfig::nb_rx_queues=1.",
+                "PlatformConfig::nb_rx_queues=1.",
                 config.port_id, configure_rss_error, probe_err,
                 impl->config.nb_rx_queues));
         }
@@ -2121,7 +2055,7 @@ Platform::create(const LegacyPlatformConfig& config) {
             "cannot route packets to multiple queues without functional RSS",
             impl->config.nb_rx_queues, config.port_id);
         return std::unexpected(std::format(
-            "LegacyPlatformConfig has nb_rx_queues={} but RSS bring-up failed "
+            "PlatformConfig has nb_rx_queues={} but RSS bring-up failed "
             "(both rss_hash_update and rss_hash_conf_get were rejected by "
             "the PMD); eph cannot route packets to multiple queues without "
             "a functional RSS path. Recovery: set nb_rx_queues=1 to use "
@@ -2145,7 +2079,7 @@ Platform::create(const LegacyPlatformConfig& config) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::primary_bringup_(LegacyPlatformConfig config) {
+Platform::primary_bringup_(detail::BringupConfig config) {
     [[maybe_unused]] auto log = detail::platform_logger();
     // Force-set the role so mis-assembled configs can't accidentally
     // travel into create() with Secondary marked but primary semantics
@@ -2174,18 +2108,18 @@ Platform::primary_bringup_(LegacyPlatformConfig config) {
     std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_dir;
     uint8_t captured_self_idx = 0xFF;   // mp_topology not set
     if (config.mp_topology.has_value()) {
-        if (auto err = validate_config(config); !err.empty()) {
+        if (auto err = detail::validate_bringup_(config); !err.empty()) {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_primary: invalid LegacyPlatformConfig: {}", err);
+                "primary_bringup_: invalid BringupConfig: {}", err);
             return std::unexpected(std::string{err});
         }
         if (config.file_prefix.empty()) {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_primary: mp_topology requires a "
-                "non-empty file_prefix (used as the registry memzone "
-                "name eph_mp/<file_prefix>)");
+                "primary_bringup_: mp_topology requires a non-empty "
+                "file_prefix (used as the registry memzone name "
+                "eph_mp/<file_prefix>)");
             return std::unexpected(std::string{
-                "create_primary: mp_topology set but file_prefix is empty"});
+                "primary_bringup_: mp_topology set but file_prefix is empty"});
         }
         auto r = ::eph::dpdk::detail::MpRegistryHandle::create_primary(
             config.file_prefix, *config.mp_topology);
@@ -2231,7 +2165,7 @@ Platform::primary_bringup_(LegacyPlatformConfig config) {
             icmp_dir.has_value() ? "ready" : "degraded");
     }
 
-    auto p = create(config);
+    auto p = bringup_port_(config);
     if (!p) return p;  // reg's RAII frees the memzone on early-out
 
     if (reg.has_value() && p->impl_) {
@@ -2277,7 +2211,7 @@ Platform::primary_bringup_(LegacyPlatformConfig config) {
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::secondary_bringup_(LegacyPlatformConfig config,
+Platform::secondary_bringup_(detail::BringupConfig config,
                              bool registry_preclaimed) {
     [[maybe_unused]] auto log = detail::platform_logger();
     config.proc_type = ProcType::Secondary;
@@ -2292,11 +2226,11 @@ Platform::secondary_bringup_(LegacyPlatformConfig config,
     // Source-port partitioning across MP processes is the *caller's*
     // responsibility — `eph-net-dpdk` does not auto-allocate src_port,
     // and has no global view to enforce disjoint ranges. See
-    // `LegacyPlatformConfig` comment + `docs/dpdk-multiprocess.md`.
+    // `docs/dpdk-multiprocess.md`.
 
-    if (auto err = validate_config(config); !err.empty()) {
+    if (auto err = detail::validate_bringup_(config); !err.empty()) {
         SPDLOG_LOGGER_ERROR(log,
-            "Platform::create_secondary: invalid LegacyPlatformConfig: {}", err);
+            "secondary_bringup_: invalid BringupConfig: {}", err);
         return std::unexpected(std::string{err});
     }
 
@@ -2380,9 +2314,9 @@ Platform::secondary_bringup_(LegacyPlatformConfig config,
     // caller's hot path anyway.
 
     // Surface non-fatal misconfigurations (undersized rings, etc.) to
-    // keep parity with create()'s advisory output.
+    // keep parity with the primary path's advisory output.
     for (const auto& w : config.warnings()) {
-        SPDLOG_LOGGER_WARN(log, "LegacyPlatformConfig advisory: {}", w);
+        SPDLOG_LOGGER_WARN(log, "BringupConfig advisory: {}", w);
     }
 
     if (!rte_eth_dev_is_valid_port(config.port_id)) {
@@ -2438,7 +2372,7 @@ Platform::secondary_bringup_(LegacyPlatformConfig config,
                     "create_secondary: caller nb_rx_queues={} exceeds live "
                     "max_rx_queues={} on port {} — rr_counter may hand out "
                     "queue ids the NIC has no rings for; check that the "
-                    "secondary's LegacyPlatformConfig matches the primary's",
+                    "secondary's BringupConfig matches the primary's",
                     config.nb_rx_queues, dev_info.max_rx_queues,
                     config.port_id);
             }
@@ -2497,89 +2431,56 @@ Platform::secondary_bringup_(LegacyPlatformConfig config,
     return Platform(std::move(impl));
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Autojoin — Platform::join_dynamic
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Cold-path orchestrator over EAL init + role detection + registry
-// claim. The hot path is unchanged from the declarative path: by
-// the time a Platform is returned the impl is byte-for-byte
-// identical to one produced by `create_primary` (primary role) or
-// `create_secondary_impl_` (secondary role).
-//
-// Failure modes are surfaced as `unexpected<std::string>` to match
-// the rest of `Platform::*` for source compatibility.
-
-// (v2 join_dynamic body removed — body now lives at the v3 entry point
-//  below. See `Platform::join_dynamic(JoinDynamicConfig)`.)
-
 // ─────────────────────────────────────────────────────────────────────
-// v3 entry-point implementations (Stage 1: thin wrappers over v2)
+// Public entry-point implementations (PlatformConfig / PlatformAttachConfig
+// / JoinDynamicConfig) — they synthesize an internal `BringupConfig` and
+// delegate to `primary_bringup_` / `secondary_bringup_`.
 // ─────────────────────────────────────────────────────────────────────
-//
-// These reshape `PlatformConfig` / `PlatformAttachConfig` /
-// `JoinDynamicConfig` into the v2 forms and delegate to the existing
-// lifecycle. Stage 3 will replace the wrapper bodies with native v3
-// implementations that no longer need the v2 path; stage 5 deletes v2.
-//
-// **Stage 1 testable surface**:
-//   * `Platform::create(PlatformConfig{max_procs=1})` — single-process
-//     happy path: byte-for-byte equivalent to v2 `create_primary`.
-//   * `Platform::attach(PlatformAttachConfig)` — calls into v2
-//     `create_secondary_impl_` after registry attach + slot CAS-claim.
-//   * `Platform::create_with_eal` / `attach_with_eal` v3 — assemble
-//     EalConfig with caller-supplied lcores/pci then delegate to v2.
-//   * `Platform::join_dynamic(JoinDynamicConfig)` — translates to v2
-//     `LegacyJoinDynamicConfig` (queues_per_proc / max_procs read from
-//     primary_config) and calls v2 path.
 
 namespace detail {
 
-/// Translate v3 PlatformConfig (primary or single-process) to v2
-/// LegacyPlatformConfig. Synthesizes MpTopology from `max_procs`/
-/// `queues_per_proc` when MP is requested.
-inline LegacyPlatformConfig v3_to_legacy_(const PlatformConfig& v3) {
-    LegacyPlatformConfig v2{};
-    v2.port_id                    = v3.port_id;
-    v2.nb_rx_queues               = v3.nb_rx_queues;
-    v2.nb_tx_queues               = v3.nb_tx_queues;
-    v2.nb_rx_desc                 = v3.nb_rx_desc;
-    v2.nb_tx_desc                 = v3.nb_tx_desc;
-    v2.mbuf_pool_size             = v3.mbuf_pool_size;
-    v2.mbuf_cache_size            = v3.mbuf_cache_size;
-    v2.enable_promiscuous         = v3.enable_promiscuous;
-    v2.enable_rx_checksum_offload = v3.enable_rx_checksum_offload;
-    v2.enable_strict_rx_checksum  = v3.enable_strict_rx_checksum;
-    v2.link_timeout_ms            = v3.link_timeout_ms;
-    v2.per_lcore_pools            = v3.per_lcore_pools;
-    v2.proc_type                  = ProcType::Primary;
-    v2.file_prefix                = v3.file_prefix;
+/// @brief Project a public `PlatformConfig` (primary or single-process)
+/// into the internal `BringupConfig` shape consumed by the bring-up
+/// helpers. Synthesizes `MpTopology` from `max_procs` / `queues_per_proc`
+/// when `max_procs > 1` (`MpTopology::uniform` handles `queues_per_proc=0`
+/// by splitting `nb_rx_queues / max_procs`).
+inline BringupConfig bringup_from_v3_(const PlatformConfig& v3) {
+    BringupConfig bcfg{};
+    bcfg.port_id                    = v3.port_id;
+    bcfg.nb_rx_queues               = v3.nb_rx_queues;
+    bcfg.nb_tx_queues               = v3.nb_tx_queues;
+    bcfg.nb_rx_desc                 = v3.nb_rx_desc;
+    bcfg.nb_tx_desc                 = v3.nb_tx_desc;
+    bcfg.mbuf_pool_size             = v3.mbuf_pool_size;
+    bcfg.mbuf_cache_size            = v3.mbuf_cache_size;
+    bcfg.enable_promiscuous         = v3.enable_promiscuous;
+    bcfg.enable_rx_checksum_offload = v3.enable_rx_checksum_offload;
+    bcfg.enable_strict_rx_checksum  = v3.enable_strict_rx_checksum;
+    bcfg.link_timeout_ms            = v3.link_timeout_ms;
+    bcfg.per_lcore_pools            = v3.per_lcore_pools;
+    bcfg.proc_type                  = ProcType::Primary;
+    bcfg.file_prefix                = v3.file_prefix;
 
     if (v3.max_procs > 1) {
-        // MP primary — synthesize uniform topology. The library handles
-        // queues_per_proc=0 (auto) by using nb_rx_queues / max_procs
-        // splitting via MpTopology::uniform.
-        v2.mp_topology = MpTopology::uniform(
+        bcfg.mp_topology = MpTopology::uniform(
             /*self_index=*/0, v3.max_procs, v3.nb_rx_queues);
         if (v3.self_lcore_mask != 0) {
-            v2.mp_topology->procs[0].lcore_mask = v3.self_lcore_mask;
+            bcfg.mp_topology->procs[0].lcore_mask = v3.self_lcore_mask;
         }
     }
-    return v2;
+    return bcfg;
 }
 
 } // namespace detail
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(PlatformConfig cfg) {
-    // v3 entry: synthesize the v2 LegacyPlatformConfig (with optional
-    // mp_topology if `cfg.max_procs > 1`) via the canonical translator,
-    // then delegate to the shared primary bring-up helper. The helper
-    // owns the registry / ICMP-directory reservations and the per-port
-    // DPDK bring-up; commits in this cleanup series will inline its
-    // body here once `LegacyPlatformConfig` is the only remaining
-    // consumer.
-    return Platform::primary_bringup_(detail::v3_to_legacy_(cfg));
+    // Project the public PlatformConfig into the internal BringupConfig
+    // (synthesizing MpTopology when `cfg.max_procs > 1`), then delegate
+    // to the shared primary bring-up helper. The helper owns the
+    // registry / ICMP-directory reservations and the per-port DPDK
+    // bring-up.
+    return Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
@@ -2643,22 +2544,22 @@ Platform::attach(PlatformAttachConfig cfg) {
             cfg.port_id, cfg.file_prefix));
     }
 
-    LegacyPlatformConfig v2{};
-    v2.port_id      = cfg.port_id;
-    v2.proc_type    = ProcType::Secondary;
-    v2.file_prefix  = cfg.file_prefix;
-    v2.nb_rx_queues = nb_rx_queues;
-    v2.nb_tx_queues = (dev_info.nb_tx_queues != 0)
-                         ? dev_info.nb_tx_queues : nb_rx_queues;
-    v2.mp_topology  = MpTopology::uniform(self_idx,
-                                          static_cast<uint8_t>(total_procs),
-                                          nb_rx_queues);
+    detail::BringupConfig bcfg{};
+    bcfg.port_id      = cfg.port_id;
+    bcfg.proc_type    = ProcType::Secondary;
+    bcfg.file_prefix  = cfg.file_prefix;
+    bcfg.nb_rx_queues = nb_rx_queues;
+    bcfg.nb_tx_queues = (dev_info.nb_tx_queues != 0)
+                           ? dev_info.nb_tx_queues : nb_rx_queues;
+    bcfg.mp_topology  = MpTopology::uniform(self_idx,
+                                            static_cast<uint8_t>(total_procs),
+                                            nb_rx_queues);
     if (cfg.self_lcore_mask != 0) {
-        v2.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
+        bcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
     }
     ro->disarm_slot();  // hand off slot ownership to the new Platform
 
-    return Platform::secondary_bringup_(std::move(v2),
+    return Platform::secondary_bringup_(std::move(bcfg),
                                         /*registry_preclaimed=*/true);
 }
 
@@ -2721,7 +2622,7 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     }
 
     // ── 4. Primary bring-up via the shared helper ──────────────────────
-    auto plat_r = Platform::primary_bringup_(detail::v3_to_legacy_(cfg));
+    auto plat_r = Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
     if (!plat_r) {
         SPDLOG_LOGGER_ERROR(log,
             "create_with_eal: primary_bringup_ failed: {} — "
@@ -2757,7 +2658,7 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
 
     // The v2 `create_with_eal` dispatches by `pcfg.proc_type` to either
     // `create_primary` or `create_secondary`. To reuse it, build a
-    // minimal v2 LegacyPlatformConfig with just enough to mark it Secondary;
+    // minimal BringupConfig with just enough to mark it Secondary;
     // create_secondary_impl_ then reads from the registry / live NIC.
     // BUT: the v2 path requires nb_rx_queues > 0 in validate_config,
     // and the Stage 1 wrapper has no clean way to learn that pre-EAL.
@@ -2769,7 +2670,7 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
     // attach() at the dispatch point.
     //
     // Implementation strategy: temporarily call v2 create_with_eal with
-    // a placeholder LegacyPlatformConfig{Secondary, file_prefix, nb_rx_queues=1}
+    // a placeholder BringupConfig{Secondary, file_prefix, nb_rx_queues=1}
     // — but that fails validate_config when secondary's
     // mp_topology.self.queue_hi > nb_rx_queues=1. So we cannot reuse
     // v2's create_with_eal for the secondary path. Open-code the EAL
@@ -2890,8 +2791,8 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
 
     // ── 2. derive file_prefix ─────────────────────────────────────────────
     // v3 zero-consensus: always auto-derive from pci. The escape hatch
-    // (caller-supplied prefix) lived on v2 `LegacyJoinDynamicConfig`;
-    // v3 removed it deliberately.
+    // (caller-supplied prefix) lived on a now-removed config shape;
+    // v3 removed it deliberately to enforce the zero-consensus contract.
     std::string derived_prefix;
     std::string_view file_prefix;
     {
@@ -2957,7 +2858,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
 
     // ── 5. EAL init (we do this directly here, not via create_with_eal,
     //                because we need to inspect rte_eal_process_type
-    //                BEFORE deciding which LegacyPlatformConfig to build).
+    //                BEFORE deciding which BringupConfig to build).
     //                pin_lcores happens in step 7 after role is known
     //                — secondary path doesn't need to call
     //                create_with_eal (it goes through `secondary_bringup_`
@@ -3007,12 +2908,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
                                      : "<invalid>",
         file_prefix, max_procs, nb_rx_queues);
 
-    // Build the role-specific LegacyPlatformConfig from the user's
+    // Build the role-specific BringupConfig from the user's
     // primary_config template. Autojoin owns three fields: proc_type,
     // mp_topology, file_prefix. Other fields (mbuf pool, descriptor
     // counts, RSS / promiscuous flags, per_lcore_pools) flow through
     // the v3 PlatformConfig template.
-    LegacyPlatformConfig pcfg = detail::v3_to_legacy_(cfg.primary_config);
+    detail::BringupConfig pcfg = detail::bringup_from_v3_(cfg.primary_config);
     pcfg.file_prefix    = file_prefix;
     // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
     if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
@@ -3187,7 +3088,7 @@ inline bool         Platform::is_running()       const noexcept { return impl_ &
 inline bool         Platform::is_promiscuous()   const noexcept { return impl_ && impl_->promiscuous_active; }
 inline bool         Platform::strict_rx_checksum() const noexcept {
     // Gated by offload: strict is only meaningful when the NIC is actually
-    // producing per-mbuf cksum flags (see LegacyPlatformConfig doc).
+    // producing per-mbuf cksum flags (see PlatformConfig doc).
     return impl_ && impl_->config.enable_strict_rx_checksum
                  && impl_->config.enable_rx_checksum_offload;
 }
@@ -3395,12 +3296,12 @@ struct std::formatter<eph::dpdk::Platform::Stats> : std::formatter<std::string> 
     }
 };
 
-/// @brief std::formatter for LegacyPlatformConfig — compact one-line summary.
+/// @brief std::formatter for the internal BringupConfig — compact one-line summary.
 template <>
-struct std::formatter<eph::dpdk::LegacyPlatformConfig> : std::formatter<std::string> {
-    auto format(const eph::dpdk::LegacyPlatformConfig& c, auto& ctx) const {
+struct std::formatter<eph::dpdk::detail::BringupConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::detail::BringupConfig& c, auto& ctx) const {
         return std::formatter<std::string>::format(
-            std::format("LegacyPlatformConfig(port={}, q={}rx/{}tx, desc={}rx/{}tx, "
+            std::format("BringupConfig(port={}, q={}rx/{}tx, desc={}rx/{}tx, "
                         "pool={}, promisc={})",
                 c.port_id, c.nb_rx_queues, c.nb_tx_queues,
                 c.nb_rx_desc, c.nb_tx_desc, c.mbuf_pool_size,

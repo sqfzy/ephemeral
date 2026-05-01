@@ -103,21 +103,24 @@ identical) — the bump signals API generation only.
 
 **Deferred (future cleanup commits)**:
 - ~~Rename `PlatformConfigV3` → `PlatformConfig`~~ — done in
-  the "Changed" section above. v2-shape struct now lives as
-  `LegacyPlatformConfig` and is internal-only.
+  the "Changed" section above.
 - ~~Rename `JoinDynamicConfigV3` → `JoinDynamicConfig`~~ — done.
-  v2-shape lives as `LegacyJoinDynamicConfig`.
 - ~~MultiPortPlatform v3 migration~~ — done; `create()` now
   takes `std::span<const PlatformConfig>`.
-- Inline `Platform::create_primary` / `create_secondary_impl_` /
+- ~~Inline `Platform::create_primary` / `create_secondary_impl_` /
   `create_with_eal(Legacy, ...)` bodies into the v3 entry points
-  and delete the Legacy entries + types entirely. Currently the
-  v3 entries still translate via `detail::v3_to_legacy_`.
+  and delete the Legacy entries + types entirely.~~ — done. The
+  public `create_primary` / `create_secondary` /
+  `create_with_eal(LegacyPlatformConfig, ...)` /
+  `join_dynamic(LegacyJoinDynamicConfig)` overloads are gone;
+  `LegacyPlatformConfig` / `LegacyJoinDynamicConfig` are gone
+  (the bring-up pipeline carries an internal
+  `eph::dpdk::detail::BringupConfig` synthesized via
+  `detail::bringup_from_v3_`); the only remaining Platform
+  factories are the v3 ones (`create` / `attach` /
+  `create_with_eal` / `attach_with_eal` / `join_dynamic`).
 - Move `MpTopology` to `detail::` namespace.
 - Delete `EalConfig::proc_type / proc_type_set / file_prefix` fields.
-
-The v2 surface remains functional during the transition — every
-existing caller still compiles. New code should target v3.
 
 See `.claude/plans/reflective-rolling-hellman.md` for the full
 plan, design assumptions, and stage breakdown.

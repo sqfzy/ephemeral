@@ -44,23 +44,6 @@ TEST(PlatformConfig, DefaultsAreSingleProcess) {
     EXPECT_TRUE(cfg.file_prefix.empty());
 }
 
-TEST(PlatformConfig, NicPhysicalFieldsMirrorV2Defaults) {
-    // Sanity: v3's NIC physical defaults match v2's so silent semantic
-    // shift is impossible in stage 1.
-    PlatformConfig v3{};
-    LegacyPlatformConfig   v2{};
-    EXPECT_EQ(v3.nb_rx_queues,    v2.nb_rx_queues);
-    EXPECT_EQ(v3.nb_tx_queues,    v2.nb_tx_queues);
-    EXPECT_EQ(v3.nb_rx_desc,      v2.nb_rx_desc);
-    EXPECT_EQ(v3.nb_tx_desc,      v2.nb_tx_desc);
-    EXPECT_EQ(v3.mbuf_pool_size,  v2.mbuf_pool_size);
-    EXPECT_EQ(v3.mbuf_cache_size, v2.mbuf_cache_size);
-    EXPECT_EQ(v3.link_timeout_ms, v2.link_timeout_ms);
-    EXPECT_EQ(v3.enable_promiscuous,         v2.enable_promiscuous);
-    EXPECT_EQ(v3.enable_rx_checksum_offload, v2.enable_rx_checksum_offload);
-    EXPECT_EQ(v3.enable_strict_rx_checksum,  v2.enable_strict_rx_checksum);
-}
-
 TEST(PlatformAttachConfig, MinimalSurface) {
     // The whole point of v3: secondary input set is tiny.
     PlatformAttachConfig cfg{};

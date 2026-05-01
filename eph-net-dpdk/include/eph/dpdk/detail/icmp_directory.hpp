@@ -174,7 +174,7 @@ build_icmp_directory_name(std::string_view file_prefix) noexcept {
     if (file_prefix.empty()) {
         SPDLOG_ERROR(
             "IcmpDirectory::build_name: file_prefix is empty — "
-            "LegacyPlatformConfig.file_prefix must be set for MP-IPC");
+            "PlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "IcmpDirectory: file_prefix must be non-empty"});
@@ -763,7 +763,7 @@ static_assert(std::is_trivially_copyable_v<IcmpDispatchMsg>);
 inline constexpr std::string_view kIcmpDispatchActionName = "eph_icmp_dispatch";
 
 /// @brief Process-level pointer to the active IcmpDirectory. Set by
-/// `Platform::create_primary/secondary` when mp_topology is in
+/// `Platform::create / Platform::attach` when mp_topology is in
 /// effect; cleared on Platform destruction. Loaded by the static
 /// dispatch thunk and by `tcp_stream`'s closure.
 inline std::atomic<IcmpDirectoryHandle*> g_active_icmp_directory{nullptr};
