@@ -17,11 +17,13 @@
 /// runtime dir not being held by a sibling process.
 
 #include <atomic>
+#include <climits>      // INT32_MAX for stale-pid test
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unistd.h>     // getpid for live-pid claims in tests
 
 #include <gtest/gtest.h>
 
@@ -272,10 +274,13 @@ TEST(MpRegistry, TryClaimFreeSlot_AllClaimedReturnsOom) {
     ASSERT_TRUE(p.has_value()) << p.error();
 
     // Claim slot 1 by hand to fully saturate the registry.
+    // Also write a real (live) pid so try_claim_free_slot's stale-
+    // slot reclaim pass (v2) doesn't immediately preempt it.
     auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
     uint8_t exp = 0;
     ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
         exp, 1, std::memory_order_acq_rel));
+    hdr->procs[1].pid = static_cast<int32_t>(::getpid());  // alive
 
     auto ro = MpRegistryHandle::attach_secondary_readonly("rgtcoom");
     ASSERT_TRUE(ro.has_value()) << ro.error();
@@ -288,6 +293,33 @@ TEST(MpRegistry, TryClaimFreeSlot_AllClaimedReturnsOom) {
     // Restore for clean shutdown — primary's destructor needs slot 0,
     // and we touched slot 1 by hand outside of any handle.
     hdr->procs[1].claimed.store(0, std::memory_order_release);
+}
+
+TEST(MpRegistryPid, TryClaimFreeSlot_StaleSlotReclaimed) {
+    // Manually claim slot 1 with a guaranteed-dead pid (high number
+    // unlikely to collide with any live process). try_claim_free_slot
+    // pass-2 should detect ESRCH via kill(pid, 0) and reclaim the slot.
+    auto p = MpRegistryHandle::create_primary("rgpidstale", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    uint8_t exp = 0;
+    ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
+        exp, 1, std::memory_order_acq_rel));
+    // Pick a pid that's almost certainly dead: PID 1 (init) might
+    // exist; use INT32_MAX which is way above pid_max (typically
+    // 32768 or 4194304). kill(INT32_MAX, 0) → ESRCH.
+    hdr->procs[1].pid = INT32_MAX;
+
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgpidstale");
+    ASSERT_TRUE(ro.has_value()) << ro.error();
+
+    auto idx = ro->try_claim_free_slot();
+    ASSERT_TRUE(idx.has_value()) << idx.error();
+    EXPECT_EQ(*idx, 1u);  // reclaimed slot 1 (the stale one)
+    EXPECT_TRUE(ro->owns_slot());
+    // Reclaimed slot now has OUR pid.
+    EXPECT_EQ(hdr->procs[1].pid, static_cast<int32_t>(::getpid()));
 }
 
 TEST(MpRegistry, AttachSecondary_AlreadyClaimedSkipsCAS) {

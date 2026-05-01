@@ -36,12 +36,16 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>       // errno / ESRCH for is_pid_alive
+#include <csignal>      // kill(pid, 0) for stale-slot liveness probe
 #include <cstdint>
 #include <cstring>
 #include <expected>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+
+#include <unistd.h>     // getpid
 
 #include <spdlog/spdlog.h>
 
@@ -90,6 +94,9 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///   v2: + lcore_mask (uint64_t) — cross-process lcore conflict
 ///       detection, fix for "two procs same lcore silently steals
 ///       CPU" mental model gap.
+///       + pid (pid_t) — owner PID; attach-time liveness probe
+///       via kill(pid, 0) detects stale slots from kill-9'd peers
+///       and CAS-preempts them. Same v2 schema, no further bump.
 inline constexpr uint32_t kMpRegistryVersion = 2;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
@@ -133,6 +140,13 @@ struct ProcSlot {
     /// declarations — two procs claiming bit N would silently steal
     /// CPU from each other under the OS scheduler.
     uint64_t lcore_mask;
+    /// Owner PID written at slot-claim time. v2 schema.
+    /// Used by `attach_secondary` / `try_claim_free_slot` to detect
+    /// stale slots: kill(pid, 0) returns ESRCH iff the owner died
+    /// without releasing (kill -9, OOM, segfault). Stale slot is
+    /// then CAS-preempted with WARN log. Stored as int32_t for ABI
+    /// stability (pid_t is typically int but ABI-portable size).
+    int32_t pid;
 };
 
 struct alignas(64) MpRegistryHeader {
@@ -166,6 +180,20 @@ static_assert(alignof(MpRegistryHeader) >= 64,
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Check if a PID corresponds to a live process via kill(pid, 0).
+/// Returns true if the process exists (signal 0 = no-op delivery,
+/// just permission/existence check). Returns false on ESRCH (process
+/// dead) or EPERM with !ESRCH-via-cred (process exists but we can't
+/// signal — treat as alive). pid <= 0 is invalid → false (clears
+/// stale slot).
+[[nodiscard]] inline bool is_pid_alive(int32_t pid) noexcept {
+    if (pid <= 0) return false;
+    if (::kill(pid, 0) == 0) return true;       // process exists, signalable
+    if (errno == ESRCH)      return false;      // process truly dead
+    if (errno == EPERM)      return true;       // exists but we lack perms
+    return false;                                // any other errno = treat dead
+}
 
 /// @brief Compose the memzone name `eph_mp/<file_prefix>`. Returns
 /// `InvalidConfig` if `file_prefix` is empty or is `kMpRegistryFilePrefixMax`
@@ -238,6 +266,7 @@ init_mp_registry_header(MpRegistryHeader* dst,
         s.port_lo    = 0;
         s.port_hi    = 0;
         s.lcore_mask = 0;
+        s.pid        = 0;
     }
 
     for (uint8_t i = 0; i < topo.total_procs; ++i) {
@@ -440,12 +469,15 @@ public:
                 "(impossible on a freshly initialized header — "
                 "indicates a torn write or memzone collision)"});
         }
+        // Publish own pid for liveness probe by future peers.
+        hdr->procs[topo.self_index].pid = static_cast<int32_t>(::getpid());
 
         SPDLOG_INFO(
             "MpRegistry: primary reserved memzone '{}' "
-            "(magic=0x{:08x} ver={} total_procs={} self_index={})",
+            "(magic=0x{:08x} ver={} total_procs={} self_index={} pid={})",
             name, kMpRegistryMagic, kMpRegistryVersion,
-            hdr->total_procs, topo.self_index);
+            hdr->total_procs, topo.self_index,
+            hdr->procs[topo.self_index].pid);
 
         MpRegistryHandle h;
         h.hdr_          = hdr;
@@ -659,22 +691,23 @@ public:
             }
         }
 
-        // Publish this peer's lcore_mask into its own slot. Each peer
-        // owns its slot's lcore_mask write — primary leaves peer slots'
-        // masks at 0 because it doesn't know peers' lcore plans. The
-        // pre-CAS conflict scan (above) already verified no overlap
-        // with currently-claimed peers, so this write is safe.
-        // Use release ordering so subsequent peers' acquire-loads in
-        // their own conflict scan see this mask.
+        // Publish this peer's lcore_mask + pid into its own slot.
+        // Each peer owns its slot's metadata writes — primary leaves
+        // peer slots' lcore_masks at 0 because it doesn't know peers'
+        // lcore plans. The pre-CAS conflict scan (above) already
+        // verified no overlap with currently-claimed peers.
+        // Use a release fence so subsequent peers' acquire-loads in
+        // their own conflict scan / liveness probe see these writes.
+        // (lcore_mask + pid are plain types, not atomic — but
+        // single-writer-per-slot semantics make this safe; the
+        // claimed.store(release) at slot release time provides
+        // happens-before for any reader that ACQUIRE-loads claimed
+        // first, then reads these fields.)
+        hdr->procs[topo.self_index].pid = static_cast<int32_t>(::getpid());
         if (wanted.lcore_mask != 0) {
-            // (lcore_mask field is plain uint64_t, not atomic — but
-            // single-writer per slot semantics make this safe; the
-            // claimed.store(release) at slot release time provides
-            // happens-before for any reader that ACQUIRE-loads claimed
-            // first, then reads lcore_mask.)
             hdr->procs[topo.self_index].lcore_mask = wanted.lcore_mask;
-            std::atomic_thread_fence(std::memory_order_release);
         }
+        std::atomic_thread_fence(std::memory_order_release);
 
         SPDLOG_INFO(
             "MpRegistry: secondary attached to '{}' (self_index={} "
@@ -809,21 +842,61 @@ public:
         }
 
         const uint32_t total = hdr_->total_procs;
+        // Pass 1: try to claim a truly-free slot.
         for (uint32_t i = 0; i < total; ++i) {
             uint8_t expected = 0;
             if (hdr_->procs[i].claimed.compare_exchange_strong(
                     expected, 1, std::memory_order_acq_rel)) {
                 self_index_ = static_cast<uint8_t>(i);
+                hdr_->procs[i].pid = static_cast<int32_t>(::getpid());
                 SPDLOG_INFO(
                     "MpRegistry: try_claim_free_slot claimed self_index={} "
-                    "(of total_procs={})",
-                    i, total);
+                    "(of total_procs={}, pid={})",
+                    i, total, hdr_->procs[i].pid);
                 return self_index_;
             }
         }
+        // Pass 2: reclaim slots whose owner is dead (kill -9 / OOM).
+        // Vuln 2 from /pax --review: stale slots from killed peers
+        // permanently block new attaches and prevent primary teardown
+        // from firing (count_alive_procs sees ghost process).
+        // Probe via kill(pid, 0) and CAS-preempt on ESRCH.
+        for (uint32_t i = 0; i < total; ++i) {
+            const int32_t stored_pid = hdr_->procs[i].pid;
+            if (is_pid_alive(stored_pid)) continue;
+            // Slot's owner is dead. Force claim (claimed was 1 → CAS to 1
+            // again is a no-op; we just overwrite pid + lcore_mask).
+            // Race: another peer may probe and steal at the same instant;
+            // CAS to 0 first (release stale), then to 1 (own claim) using
+            // strict expected sequence.
+            uint8_t exp_claimed = 1;
+            if (!hdr_->procs[i].claimed.compare_exchange_strong(
+                    exp_claimed, 0, std::memory_order_acq_rel)) {
+                // Slot state changed between probe and CAS — another
+                // peer either released or also reclaimed it. Skip and
+                // let the next loop iteration / next call retry.
+                continue;
+            }
+            // We hold "claimed=0"; immediately try to re-claim it.
+            uint8_t exp_free = 0;
+            if (hdr_->procs[i].claimed.compare_exchange_strong(
+                    exp_free, 1, std::memory_order_acq_rel)) {
+                // Reset slot's stale data before publishing own pid.
+                hdr_->procs[i].pid        = static_cast<int32_t>(::getpid());
+                hdr_->procs[i].lcore_mask = 0;
+                self_index_ = static_cast<uint8_t>(i);
+                SPDLOG_WARN(
+                    "MpRegistry: try_claim_free_slot reclaimed stale "
+                    "self_index={} (previous owner pid={} dead — kill -9 "
+                    "/ OOM / segfault); now owned by pid={}",
+                    i, stored_pid, hdr_->procs[i].pid);
+                return self_index_;
+            }
+            // Another peer raced us back to 1 — try next slot.
+        }
         SPDLOG_WARN(
             "MpRegistry: try_claim_free_slot found all {} slots claimed "
-            "(resource exhausted)",
+            "(and all owners alive — resource exhausted)",
             total);
         return std::unexpected(core::ErrorInfo{
             core::Error::OutOfMemory,
