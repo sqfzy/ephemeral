@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Removed — cooperative multi-process surface (BREAKING)
+
+The cooperative MP path (declarative primary + secondaries calling
+`Platform::attach`) has been deleted to eliminate the dual mental
+model. After this change, the only multi-process entry point is
+`Platform::join_dynamic` (autojoin); `Platform::create` /
+`Platform::create_with_eal` are single-process only.
+
+Removed surface:
+- `Platform::attach(PlatformAttachConfig)`
+- `Platform::attach_with_eal(PlatformAttachConfig, EalConfig, ...)`
+- `struct PlatformAttachConfig` (and its header
+  `eph/dpdk/platform_attach.hpp`)
+- The `cfg.max_procs > 1` path inside `Platform::create` /
+  `Platform::create_with_eal` — both now hard-reject any
+  `max_procs > 1` config with a message pointing the caller at
+  `Platform::join_dynamic`.
+
+`PlatformConfig::max_procs` / `queues_per_proc` / `file_prefix`
+fields are retained because they are still consumed via
+`JoinDynamicConfig::primary_config` when the autojoin race
+resolves this peer to primary. Setting `max_procs > 1` on a config
+passed to `Platform::create` / `create_with_eal` is now a runtime
+error.
+
+Migration: any binary that used the cooperative path needs to be
+restructured around `Platform::join_dynamic`. Both peers run the
+same binary with the same arguments; whichever wins the EAL race
+becomes primary, the other becomes secondary. The example
+`examples/dpdk_mp_demo.cpp` was rewritten to demonstrate the new
+single-binary form.
+
+Five cooperative-only integration test pairs were deleted along
+with their shell orchestrators (`dpdk_mp_topology_*`,
+`dpdk_mp_fd_fallback_*`, `dpdk_mp_icmp_*`, `dpdk_mp_v3_secondary`).
+The autojoin path retains coverage via `dpdk_mp_dynamic_*` and
+`dpdk_mp_dynamic_tcp_handshake_*`.
+
 ### Changed — `PlatformConfig` is now the v3 shape (BREAKING)
 
 Following the v3 zero-consensus rollout below, the canonical name

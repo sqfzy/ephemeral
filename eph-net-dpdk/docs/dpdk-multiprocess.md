@@ -9,25 +9,23 @@ strategies that must share a single expensive 25/100 Gbps card.
 This document is the operational contract. For the design rationale see
 `eph-net-dpdk/CHANGELOG.md`.
 
-> **API note (post-v3 merge)**: the canonical public surface is
-> `Platform::create(PlatformConfig)` for primary / single-process and
-> `Platform::attach(PlatformAttachConfig)` for secondary attach.
-> `PlatformConfig` is the v3 zero-consensus shape (`max_procs` /
-> `queues_per_proc` + `file_prefix`); secondary peers do not restate
-> `nb_rx_queues` / topology — they read it from the registry + live
-> NIC.
+> **API note**: the only multi-process entry point is
+> `Platform::join_dynamic(JoinDynamicConfig)` (autojoin). The
+> cooperative path (`Platform::attach(PlatformAttachConfig)` plus
+> a declarative-primary `Platform::create(PlatformConfig)` with
+> `max_procs > 1`) was removed; both `Platform::create` and
+> `Platform::create_with_eal` now reject any `max_procs > 1`
+> config. Single-process programs continue to use `Platform::create` /
+> `Platform::create_with_eal` with `max_procs == 1` (the default).
 >
-> Sections below that reference `Platform::create_primary` /
-> `Platform::create_secondary` / `LegacyPlatformConfig::mp_topology` /
-> `rx_queue_range` describe the **internal lifecycle path** the v3
-> entry points still delegate to. New code should not target those
-> names; they're documented here only because some operational
-> failure modes (registry preclaim, file_prefix mismatch) surface
-> through the legacy-named diagnostics in DPDK logs.
+> Sections below that reference `primary_bringup_` /
+> `secondary_bringup_` describe the **internal lifecycle helpers**
+> that `Platform::join_dynamic` delegates to. They are not part
+> of the public API.
 
 ---
 
-## TL;DR — autojoin (recommended path)
+## TL;DR — autojoin
 
 Two unrelated processes share one NIC by agreeing on **only the
 PCI BDF and `pcfg_template.nb_rx_queues`** — no shared file_prefix,
@@ -59,7 +57,7 @@ auto platform = eph::dpdk::Platform::join_dynamic({
 // Platform owns EAL: ~Platform releases DPDK resources, then runs
 // eal_cleanup atomically. No manual eal_cleanup() needed.
 //
-// Hot-path code is byte-for-byte identical to a declarative-path
+// Hot-path code is byte-for-byte identical to a single-process
 // platform with the same self_index. inc_<StreamMetric::*>,
 // rr_counter, ICMP / FlowDirector / Poller state are all per-process.
 ```
@@ -74,44 +72,31 @@ peers ignore `primary_config` entirely — DPDK's
 secondary path queries the primary's registry / live NIC for any
 field it needs.
 
-For the declarative path (explicit `--role primary|secondary`,
-shared `--file-prefix`), see `examples/dpdk_mp_demo.cpp`.
-
-### When to use which path
-
-| Need                                                          | Path                          |
-|---------------------------------------------------------------|-------------------------------|
-| Two independent binaries / teams sharing one NIC              | **autojoin** (`join_dynamic`) |
-| Single team, simple uniform partition                         | **autojoin** (`join_dynamic`) |
-| Asymmetric topology (one peer gets 6 queues, others get 1)    | declarative + `MpTopology::custom` |
-| Tagged process roles where slot order matters semantically    | declarative + `MpTopology::uniform` (manual self_index) |
-| Pre-existing EAL bootstrap you don't want join_dynamic to own | declarative                   |
-| Cross-node coordinated RSS / hand-tuned partitions            | manual `rx_queue_range`       |
-
-The autojoin path is built **on top of** the declarative path: by
-the time `Platform::join_dynamic` returns, the resulting Platform's
-`Impl` is byte-for-byte identical to one produced by the
-declarative factories.
+For a runnable single-binary skeleton, see
+[`examples/dpdk_mp_demo.cpp`](../../examples/dpdk_mp_demo.cpp).
 
 ---
 
 ## Startup / teardown ordering
 
-DPDK shared-hugepage multi-process imposes a strict ordering contract:
+DPDK shared-hugepage multi-process imposes a strict ordering contract.
+With autojoin both peers run the same code; the table below describes
+the steps each process performs once `Platform::join_dynamic` has
+resolved its role:
 
-| Step | Primary | Secondary |
-|------|---------|-----------|
-| 1 | `eal_init(--proc-type=primary --file-prefix=X)` | — |
-| 2 | `Platform::create_primary(cfg)` — creates mempool, configures+starts port | — |
-| 3 | start streams / Poller loops | — |
-| 4 | — | `eal_init(--proc-type=secondary --file-prefix=X)` |
-| 5 | — | `Platform::create_secondary(cfg)` — `rte_mempool_lookup`, skip port bringup |
-| 6 | — | start streams / Poller loops |
-| 7 | — | teardown streams / Poller / `~Platform` / `eal_cleanup` |
-| 8 | teardown streams / Poller / `~Platform` / `eal_cleanup` | — |
+| Step | Primary peer | Secondary peer |
+|------|--------------|----------------|
+| 1 | `Platform::join_dynamic` → eal_init wins primary lock; primary_bringup_ creates mempool, configures+starts port | — |
+| 2 | start streams / Poller loops | — |
+| 3 | — | `Platform::join_dynamic` → eal_init resolves to secondary; secondary_bringup_ does `rte_mempool_lookup`, skips port bringup, CAS-claims a registry slot |
+| 4 | — | start streams / Poller loops |
+| 5 | — | teardown streams / Poller / `~Platform` (releases EAL via owned session) |
+| 6 | teardown streams / Poller / `~Platform` | — |
 
-**Secondary must start after primary** — `rte_mempool_lookup` fails
-otherwise with "primary not running or file_prefix mismatch".
+**Secondary peers must start after primary** — `rte_mempool_lookup`
+fails otherwise. With autojoin you control this by launch order: the
+first invocation of the binary becomes primary, subsequent
+invocations attach as secondaries.
 
 **Primary may exit before secondaries** (since fix `0b3a4aaa→067dccbc`).
 Primary's `~Platform()` is gated on `MpRegistry::is_last_alive_proc()`:
@@ -122,7 +107,7 @@ by whichever process happens to be the **last** to call `~Platform()`.
 See `dpdk-mp-teardown-protocol.md` for the full protocol and rationale
 behind the gate.
 
-`Platform::create_secondary`'s cleanup is narrowed: it does **not** call
+The secondary's cleanup is narrowed: it does **not** call
 `rte_eth_dev_stop/close` or `rte_mempool_free` — those would corrupt the
 primary's port state.
 
@@ -130,10 +115,11 @@ primary's port state.
 
 ## Primary restart semantics
 
-* `Platform::create_primary` always **resets** the registry on entry —
-  it frees any stale memzone left from a previous run, writes a fresh
-  header, and CAS-claims its own slot. There is no "rejoin" mode for
-  the primary; restarting the primary always invalidates secondaries.
+* When this peer wins the EAL race and `primary_bringup_` runs, it
+  always **resets** the registry on entry — it frees any stale
+  memzone left from a previous run, writes a fresh header, and
+  CAS-claims its own slot. There is no "rejoin" mode for the
+  primary; restarting the primary always invalidates secondaries.
 * If you need to restart the primary, **stop every secondary first**,
   then bring up the primary, then re-attach the secondaries. A
   secondary that survives a primary restart will see a fresh registry
@@ -193,114 +179,45 @@ v2 candidate (IPC heartbeat reaper) is parked in `TODO.md`.
 Full root-cause and acceptance evidence:
 `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`.
 
-## Advanced usage: declarative topology
+## `JoinDynamicConfig` knobs
 
-The path the autojoin TL;DR builds on. Use it directly when you
-need precise control over `self_index`, asymmetric per-peer
-specs (`MpTopology::custom`), or when you're managing EAL
-bootstrap yourself (e.g. a wrapper that already calls
-`eal_init`).
+`JoinDynamicConfig` carries the autojoin-specific inputs; everything
+else flows through `primary_config` (a `PlatformConfig`) which the
+peer that wins the EAL race reads when bringing up the port.
 
-```cpp
-// Primary process — declare only (self_index, total_procs).
-PlatformConfig p_cfg{
-    .port_id      = 0,
-    .nb_rx_queues = 4,
-    .enable_rss   = true,
-    .proc_type    = ProcType::Primary,
-    .file_prefix  = "eph_mp_demo",
-    .mp_topology  = MpTopology::uniform(/*self_index=*/0,
-                                        /*total_procs=*/2,
-                                        /*nb_rx_queues=*/4),
-};
-auto platform = Platform::create_primary(std::move(p_cfg));
-// Library auto-derives queues=[0,2) and src_port=[32768, 49152) for
-// this process. Stream create_and_attach picks src_ports from that
-// window automatically; no manual partition tables.
+| Field                        | Type                          | Required | Notes |
+|------------------------------|-------------------------------|----------|-------|
+| `pci`                        | `std::string_view`            | yes      | PCI BDF (e.g. `0000:28:00.0`); file_prefix is auto-derived as `eph_<sanitized BDF>` |
+| `primary_config.nb_rx_queues`| `uint16_t`                    | yes (primary) | Total RX queues primary configures; secondary peers may leave at default and read from the live NIC |
+| `primary_config.max_procs`   | `uint8_t`                     | optional | Number of process slots primary opens in the registry. Default 1 means "auto-derive from nb_rx_queues / queues_per_proc"; explicit values are validated against primary's registry on the secondary side |
+| `primary_config.queues_per_proc` | `uint16_t`                | optional | Queues per slot. 0 = auto-split |
+| `pins`                       | `std::span<LcorePin const>`   | optional | Typed pin set (mutually exclusive with `lcores`) |
+| `lcores`                     | `std::vector<std::string>`    | optional | Raw `--lcores` spec (mutually exclusive with `pins`) |
+| `pin_policy`                 | `eph::utils::CpuPinPolicy`    | optional | NUMA / IRQ / duplicate-cpu policy (only consulted when `pins` is set) |
+| `eal_extras`                 | `std::vector<std::string>`    | optional | Additional EAL argv tokens |
+| `self_lcore_mask`            | `uint64_t`                    | optional | Lcores this process owns; published into the registry for cross-process conflict detection. 0 = opt out |
 
-// Secondary process (separate binary; same file_prefix).
-PlatformConfig s_cfg{
-    .port_id      = 0,
-    .nb_rx_queues = 4,                   // must match primary
-    .proc_type    = ProcType::Secondary,
-    .file_prefix  = "eph_mp_demo",
-    .mp_topology  = MpTopology::uniform(/*self_index=*/1,
-                                        /*total_procs=*/2,
-                                        /*nb_rx_queues=*/4),
-};
-auto platform_sec = Platform::create_secondary(std::move(s_cfg));
-// Auto-derives queues=[2,4) and src_port=[49152, 65536). The shared
-// hugepage registry rejects two processes that declare the same
-// self_index — silent collisions become loud cold-path errors.
-```
-
-For non-uniform layouts (e.g. one trader process gets 6 queues, the
-rest 1 each), use `MpTopology::custom(self_index, {ProcSpec{...}, ...})`.
-
-The same code with `mp_topology` left empty falls back to the legacy
-"hand-partitioned `rx_queue_range` + caller-allocated src_port" path;
-see "Advanced usage: manual partitioning" below if you need it.
-
----
-
-## Advanced usage: manual partitioning
-
-> Most users should use `MpTopology` (above). The following sections
-> describe the hand-partitioned path: callers set
-> `cfg.rx_queue_range` directly and allocate src_port from disjoint
-> sub-ranges by hand. This path is preserved for two cases — neither
-> common in HFT:
->
->   1. Cross-node coordinated RSS, where the partition is dictated by
->      a topology larger than a single host (the library has no view
->      of the cluster, so it can't help).
->   2. Hand-tuned non-uniform layouts where you want to bypass even
->      `MpTopology::custom` and own every byte of the partition.
->
-> In both cases the legacy contract still holds: the caller is
-> responsible for keeping the ranges disjoint. The library will not
-> detect collisions on this path.
-
-### `PlatformConfig` multi-process fields
-
-All three fields have safe single-process defaults. Existing call sites
-that don't set any MP fields continue to work byte-for-byte.
-
-| Field | Type | Default | Primary meaning | Secondary meaning |
-|-------|------|---------|-----------------|-------------------|
-| `proc_type` | `ProcType` | `Primary` | process role | process role |
-| `file_prefix` | `std::string_view` | `""` | optional `--file-prefix`; empty = DPDK default | **required** non-empty, must match primary's |
-| `rx_queue_range` | `{uint16_t,uint16_t}` | `{0, 0}` | sentinel `{0,0}` = `[0, nb_rx_queues)` | half-open `[lo, hi)` — must be disjoint from primary's |
-
-`validate_config` (called by `create_primary` / `create_secondary` /
-`create`) rejects:
-
-* `rx_queue_range` with `lo >= hi` (unless it is the `{0, 0}` sentinel)
-* `rx_queue_range.hi > nb_rx_queues`
-
-Additionally, `Platform::create_secondary` rejects:
-
-* empty `file_prefix`
-* `rte_eth_dev_is_valid_port(port_id)` false (primary not running or
-  file-prefix mismatch)
-
-Source-port partitioning across MP processes is the **caller's**
-responsibility — see "Source-port partitioning" section below.
+`Platform::join_dynamic` also carries optional registry checks:
+when both peers explicitly set `primary_config.max_procs > 1`, the
+secondary path validates that the value matches the primary's
+registry total_procs and refuses to attach if they disagree.
 
 ---
 
 ## EAL argv: `EalConfig` / `build_eal_argv`
 
-Hand-splicing `--proc-type` and `--file-prefix` is mistake-prone; use the
-typed helper:
+`Platform::join_dynamic` builds the EAL argv internally — callers
+typically don't have to think about this layer. For escape hatches
+(e.g. a unit-test harness that needs to drive `eal_init` itself),
+the typed helper is:
 
 ```cpp
 EalConfig cfg{
-    .program_name  = "my_secondary",
-    .proc_type     = ProcType::Secondary,
+    .program_name  = "my_app",
+    .proc_type     = ProcType::Auto,        // primary if first; secondary otherwise
     .proc_type_set = true,
-    .file_prefix   = "eph_mp_demo",
-    .lcores        = {"2,3"},
+    .file_prefix   = "eph_0000_28_00_0",
+    .lcores        = {"0,1"},
     .allowed_devs  = {"0000:05:00.1"},
 };
 auto argv_owned = build_eal_argv(cfg);   // std::vector<std::string>
@@ -309,9 +226,11 @@ for (auto& s : argv_owned) argv.push_back(s.data());
 eal_init(static_cast<int>(argv.size()), argv.data());
 ```
 
-Leaving `proc_type_set = false` suppresses the `--proc-type` flag entirely
-(DPDK then uses `auto`, which becomes primary for the first process to
-init under a given file-prefix).
+Leaving `proc_type_set = false` suppresses the `--proc-type` flag entirely.
+DPDK's default is `primary` (NOT `auto`), so for the autojoin race
+to resolve the second peer to secondary, callers building EAL argv
+manually must use `--proc-type=auto` — that is what
+`Platform::join_dynamic` emits internally.
 
 ---
 
@@ -333,18 +252,20 @@ Re-using the same `(src_ip, src_port)` across processes makes
 exchange-grade peers see duplicate connection 4-tuples and trigger
 anti-abuse disconnects.
 
-A typical static partition for 1 primary + N secondaries:
+With `Platform::join_dynamic`, `MpTopology::uniform` synthesizes
+disjoint `[port_lo, port_hi)` windows automatically from
+`(self_index, total_procs)` and `find_src_port_for_queue`
+narrows its candidate space to each peer's window. Callers that
+construct streams via `create_and_attach` therefore inherit a
+correct partition without manual coordination — the ranges below
+are what the library auto-derives for the typical 4-process layout:
 
-| Process   | `rx_queue_range` | suggested src_port range |
-|-----------|------------------|--------------------------|
-| primary   | `{0, 4}`         | `[32768, 40959]`         |
-| sec #1    | `{4, 8}`         | `[40960, 49151]`         |
-| sec #2    | `{8, 12}`        | `[49152, 57343]`         |
-| sec #3    | `{12, 16}`       | `[57344, 65535]`         |
-
-`nb_rx_queues` must be the same across all processes (secondaries see
-the port the primary configured; over- or under-reporting will have
-surprising effects on `DpdkPoller` bookkeeping).
+| `self_index` | `rx_queue_range` | port range          |
+|--------------|------------------|---------------------|
+| 0 (primary)  | `{0, 4}`         | `[32768, 40959]`    |
+| 1            | `{4, 8}`         | `[40960, 49151]`    |
+| 2            | `{8, 12}`        | `[49152, 57343]`    |
+| 3            | `{12, 16}`       | `[57344, 65535]`    |
 
 ---
 
@@ -401,38 +322,45 @@ detail.
 ## Example skeleton
 
 For a single-file, runnable skeleton that you can adapt directly, see
-[`examples/dpdk_mp_demo.cpp`](../../examples/dpdk_mp_demo.cpp).
-One binary, role picked via `--role primary|secondary`. Demonstrates
-`EalConfig` + `build_eal_argv`, `Platform::create_primary` /
-`create_secondary`, queue-range partitioning, and the secondary
-cleanup branch. Run from two terminals on the same host (primary
-first, then secondary once primary logs "ready"); see the file
-header for the launch commands.
+[`examples/dpdk_mp_demo.cpp`](../../examples/dpdk_mp_demo.cpp). One
+binary, no `--role` flag — both peers run with the same args and
+`Platform::join_dynamic` decides the role. Demonstrates `EalConfig`
++ `build_eal_argv` flowing through the autojoin path, queue-range
+partitioning, and the secondary cleanup branch. Run from two
+terminals on the same host (the first to launch becomes primary);
+see the file header for the launch commands.
 
 ---
 
-## Running the integration test
+## Running the integration tests
 
 ```bash
 # Needs: NIC bound to vfio-pci + ≥128 free 2 MiB hugepages + root
 sudo EPH_MP_ALLOWED_DEV=0000:05:00.1 \
-     EPH_MP_LCORES="0,1" \
-     EPH_MP_LCORES_SEC="2,3" \
-     eph-net-dpdk/tests/integration/dpdk_mp_e2e.sh
+     EPH_MP_LCORES="0" \
+     EPH_MP_LCORES_SEC="1" \
+     eph-net-dpdk/tests/integration/dpdk_mp_dynamic_e2e.sh
 ```
 
 The script:
 
 1. Preflight-checks binaries / vfio-pci / hugepages / DPDK idle (retries
    once after a 3-minute wait if another DPDK process is active).
-2. Launches `dpdk_mp_primary` in the background; waits up to 10 s for its
-   ready-file.
-3. Launches `dpdk_mp_secondary` in the foreground.
+2. Launches `dpdk_mp_dynamic_primary` (which calls
+   `Platform::join_dynamic` and asserts it auto-resolved as primary)
+   in the background; waits up to 10 s for its ready-file.
+3. Launches `dpdk_mp_dynamic_secondary` (same `join_dynamic` call,
+   asserts it resolved as secondary) in the foreground.
 4. Waits for both to exit, reports pass/fail, dumps the per-role logs on
    failure.
 
 Exit code `77` means "environment not ready, test skipped" — CI treats it
 as success.
+
+A second integration suite,
+`dpdk_mp_dynamic_tcp_handshake_e2e.sh`, drives both peers through a
+real TCP connect to a kernel echo mock spawned inside primary —
+the acceptance gate for `reshape/rss-aware-connect`.
 
 ---
 
@@ -452,7 +380,7 @@ churn. Hard to diagnose in production.
 
 The library's solution is automatic and transparent to user code:
 
-1. **Cross-process directory**: `Platform::create_*` reserves an
+1. **Cross-process directory**: `Platform::join_dynamic` reserves an
    extra hugepage memzone `eph_mp_icmp/<file_prefix>`, parallel to
    `eph_mp/<file_prefix>` (the existing MpRegistry). It holds a
    1024-slot POD table mapping `(4-tuple, proto) →
@@ -469,7 +397,7 @@ The library's solution is automatic and transparent to user code:
    `local IcmpRegistry::dispatch_returns_hit(parsed) ? done :
    directory.lookup → mp_ipc_send_oneway("eph_icmp_dispatch", ...)`.
    Fire-and-forget — does not block the secondary's RX poll loop.
-4. **Owner-side dispatch**: `Platform::create_*` registers an
+4. **Owner-side dispatch**: `Platform::join_dynamic` registers an
    `eph_icmp_dispatch` rte_mp action handler. On incoming msg it
    validates magic / version / generation, rebuilds enough of the
    `ParsedIcmp` struct to feed `IcmpRegistry::dispatch`, and the
@@ -481,7 +409,7 @@ is a cold-path RPC, and the receiving thunk runs on DPDK's IPC
 thread (not your RX poll lcore).
 
 Degrade-on-failure: if `rte_mp_action_register` returns an error
-(e.g. an EAL `--no-shconf` mode), `Platform::create_*` logs ERROR
+(e.g. an EAL `--no-shconf` mode), `Platform::join_dynamic` logs ERROR
 and continues. Cross-proc forwarding then falls back to silent drop
 — equivalent to pre-reshape behavior, the rest of the eph stack
 keeps working.
