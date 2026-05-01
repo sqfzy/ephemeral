@@ -170,7 +170,7 @@ public:
             std::move(*env_r));
         reaper.pid = -1;
         ready_ = true;
-        spdlog::info("RssFanoutEnv: ready (PCI={}, mock pid={}, "
+        SPDLOG_INFO("RssFanoutEnv: ready (PCI={}, mock pid={}, "
                      "nb_rx_queues={}, dispatch_mode={})",
                      pci, mock_pid_, env_->platform.nb_rx_queues(),
                      ed::rx_dispatch_mode_name(env_->platform.dispatch_mode()));
@@ -249,7 +249,7 @@ TEST(PlatformRssFanout, NStreamsSameQueueSameEndpoint) {
             hex += buf;
         }
         if (!hex.empty()) hex.pop_back();
-        spdlog::info("RssFanout: probed RSS key (key_len={}, "
+        SPDLOG_INFO("RssFanout: probed RSS key (key_len={}, "
                      "rss_using_probed_key={}, reta_size={}): {}",
                      state_r->key_len,
                      platform.rss_using_probed_key(),

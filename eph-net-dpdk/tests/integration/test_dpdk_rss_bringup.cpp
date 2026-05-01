@@ -137,7 +137,7 @@ public:
 
         pci_bdf_ = pci;
         ready_ = true;
-        spdlog::info("RssBringupEnv: ready (NIC_B PCI={})", pci_bdf_);
+        SPDLOG_INFO("RssBringupEnv: ready (NIC_B PCI={})", pci_bdf_);
     }
 
     void TearDown() override {
@@ -261,14 +261,14 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
                       ::eph::net::dpdk::RxDispatchMode::Software)
                 << "probe-based RSS bring-up should leave dispatch_mode at "
                    "the NIC's native capability, not pin to Software.";
-            spdlog::info(
+            SPDLOG_INFO(
                 "RssBringup: probe path succeeded "
                 "(dispatch_mode={}, rss_using_probed_key=true)",
                 ::eph::net::dpdk::rx_dispatch_mode_name(plat.dispatch_mode()));
         } else {
             // Path (b): both configure_rss and probe failed → hard-fail.
             const std::string& err = plat_r.error();
-            spdlog::info("RssBringup: hard-fail path triggered: {}", err);
+            SPDLOG_INFO("RssBringup: hard-fail path triggered: {}", err);
             EXPECT_NE(err.find("probe also failed"), std::string::npos)
                 << "error message must mention 'probe also failed' so "
                    "operators can distinguish this from configure_rss-only "

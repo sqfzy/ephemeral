@@ -185,7 +185,7 @@ public:
         // Transfer mock ownership to TearDown — ChildReaper must NOT reap.
         reaper.pid = -1;
         ready_ = true;
-        spdlog::info("RssPlatformEnv: ready (PCI={}, mock pid={}, "
+        SPDLOG_INFO("RssPlatformEnv: ready (PCI={}, mock pid={}, "
                      "nb_rx_queues={}, dispatch_mode={})",
                      pci, mock_pid_, env_->platform.nb_rx_queues(),
                      ::eph::net::dpdk::rx_dispatch_mode_name(
@@ -249,7 +249,7 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     EXPECT_TRUE(mode == ::eph::net::dpdk::RxDispatchMode::Software ||
                 mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned ||
                 mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector);
-    spdlog::info("dispatch_mode = {}",
+    SPDLOG_INFO("dispatch_mode = {}",
                  ::eph::net::dpdk::rx_dispatch_mode_name(mode));
     const uint16_t n = platform.nb_rx_queues();
     // Platform clamps to NIC max_rx_queues; use range check rather than
