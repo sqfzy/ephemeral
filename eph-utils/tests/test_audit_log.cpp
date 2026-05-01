@@ -170,6 +170,23 @@ TEST(AuditLog, AuditEventNameCoversAllValues) {
     EXPECT_EQ(audit_event_name(AuditEvent::KillSwitch), "KILL_SWITCH");
 }
 
+TEST(AuditLog, AuditEventNameReturnsUnknownForOutOfRangeValue) {
+    // KillSwitch is the highest legal enumerator (12). Any uint8_t past it
+    // is undefined enum territory — `audit_event_name` must fall through
+    // the switch and return the "UNKNOWN" sentinel rather than alias to
+    // a real event. This guards forward-compat (a future enum addition
+    // shipped in a header without a matching switch arm is the more
+    // realistic regression than "user constructs garbage value").
+    auto bogus = static_cast<AuditEvent>(99);
+    EXPECT_EQ(audit_event_name(bogus), "UNKNOWN");
+
+    // 255 is the uint8_t max — distinct from the 99 case so a bug that
+    // accidentally returns the *last* matched arm (KillSwitch=12) for
+    // anything > kMax also fails here, not just the 99 case.
+    auto bogus_max = static_cast<AuditEvent>(255);
+    EXPECT_EQ(audit_event_name(bogus_max), "UNKNOWN");
+}
+
 TEST(AuditLog, MultiThreadedRecordMt) {
     AuditLog<1024> log;
     constexpr int N_THREADS = 4;
