@@ -55,7 +55,7 @@ See `../docs/dpdk-setup.md` for the full flow:
 4. Build with `xmake -m release` — no compiler wrapper needed; system libdpdk
    lives in an isolated `/usr/include/dpdk/` tree so the previous vcpkg path's
    aws-lc / openssl header collision no longer applies.
-5. Verify with a DPDK example: `sudo xmake run simple_hft_dpdk -- --host …`.
+5. Verify with a DPDK example: `sudo xmake run simple_hft -- --pci 0000:28:00.0 --pin 0=2 --local-ip … --gateway-ip … --host …`.
 
 The latency benchmark wrapper (`../benchmarks/latency/lat tcp --dpdk`) is the
 friendliest way to verify NIC-B state transitions end-to-end.
@@ -164,8 +164,7 @@ Source-port partitioning across MP processes:
 
 See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
 1+N partitioning table, PMD caveats, and the orchestrator script;
-`examples/simple_hft_dpdk_mp.cpp` for a runnable single-file
-skeleton.
+`examples/dpdk_mp_demo.cpp` for a runnable single-file skeleton.
 
 ### Debugging TLS handshake failures
 

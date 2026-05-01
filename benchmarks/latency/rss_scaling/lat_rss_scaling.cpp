@@ -23,7 +23,7 @@
 /// Topology mirrors `test_dpdk_rss_fanout` `NStreamsDistributedAcrossQueues`:
 ///   - DPDK: nb_rx_queues=4 RSS, 4 EAL **worker lcores** each polling one
 ///     DpdkPoller via `rte_eal_remote_launch` (canonical pattern, mirrors
-///     `examples/simple_hft_dpdk_rss.cpp`). Workers re-launched per cell;
+///     `examples/dpdk_rss_demo.cpp`). Workers re-launched per cell;
 ///     setaffinity is done by EAL itself from `--lcores=N@cpu` (driven by
 ///     `cpu.eal_cores` → `LcorePin` → `init_with_pins`). Socket i pinned
 ///     to queue (i % nb_q). The previous `std::jthread` + `pin_thread`

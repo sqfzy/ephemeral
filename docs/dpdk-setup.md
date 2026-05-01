@@ -193,7 +193,7 @@ Then:
 xmake f -m release -y
 
 # Build DPDK examples (see examples/ and eph-net-dpdk/tests/)
-xmake build simple_hft_dpdk
+xmake build simple_hft
 xmake build ws_echo_client_dpdk
 ```
 
@@ -209,12 +209,13 @@ so aws-lc resolved first. With system libdpdk the conflict is gone (isolated
 
 ```bash
 # Build a DPDK example
-xmake build simple_hft_dpdk
+xmake build simple_hft
 
 # Run with EAL args (adjust for your setup)
-sudo xmake run simple_hft_dpdk \
-    -l 2,3 --huge-dir /dev/hugepages -- \
-    --host echo.websocket.org --local-ip 10.0.0.2 --gateway 10.0.0.1
+sudo xmake run simple_hft \
+    -- --pci 0000:28:00.0 --pin 0=2:ws \
+    --local-ip 10.0.0.2 --gateway-ip 10.0.0.1 \
+    --host stream.binance.com
 
 # Or use the latency benchmark wrapper (handles NIC-B state transitions)
 sudo ./benchmarks/latency/lat tcp --dpdk

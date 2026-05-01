@@ -179,7 +179,7 @@ Use `isolcpus=2-5` at boot and `eph::utils::pin_thread(cpu, name, policy)`
 validates against the process-wide pin registry so a second pin onto an
 already-claimed cpu is detected loudly. For the DPDK lcore-pin path see
 `eph-net-dpdk/docs/lcore-pin-integration.md` and the `--pin lcore=cpu`
-flag in `examples/simple_hft_dpdk.cpp` / `simple_hft_dpdk_rss.cpp`.
+flag in `examples/simple_hft.cpp` / `dpdk_rss_demo.cpp`.
 
 ## Backpressure
 

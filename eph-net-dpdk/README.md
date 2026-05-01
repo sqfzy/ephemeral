@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
     // a non-conflicting src_port (rebinding to match the RSS hash if
     // needed), runs the TCP/TLS/WS handshakes, attaches to the per-queue
     // poller, and registers the stream as an ICMP Frag Needed target.
-    // See `examples/simple_hft_dpdk.cpp` for the full production flow.
+    // See `examples/simple_hft.cpp` for the full production flow.
     auto orders = en::DpdkTcpStream<ec::WsCodec>::create(order_cfg).value();
     orders->on_message = handle_exec_report;
     poller->add(orders.get()).value();

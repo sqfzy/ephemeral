@@ -1,4 +1,4 @@
-/// @file simple_hft_dpdk_mp.cpp
+/// @file dpdk_mp_demo.cpp
 ///
 /// DPDK single-NIC multi-process (primary + secondary) **declarative**
 /// path skeleton. Each process declares its own `MpTopology` and
@@ -6,10 +6,11 @@
 /// bring-up. For the **autojoin** alternative — same scenario but
 /// zero coordination between peers (no shared file_prefix, no
 /// manual self_index, launch order is the only "agreement") — see
-/// `examples/simple_hft_dpdk_mp_dynamic.cpp`.
+/// `Platform::join_dynamic` in `eph/dpdk/platform.hpp` and
+/// `eph-net-dpdk/docs/dpdk-multiprocess.md`.
 ///
 /// One binary that plays *both* roles, selected by `--role primary|secondary`
-/// on the command line. Mirrors the spirit of `simple_hft_dpdk.cpp` but
+/// on the command line. Mirrors the spirit of `simple_hft.cpp` but
 /// brings in the MP scaffolding shipped with `eph-net-dpdk`:
 ///
 ///   * `eph::dpdk::EalConfig` + `build_eal_argv` — typed assembly of
@@ -43,9 +44,10 @@
 ///     bring-up vs skip, cleanup branches) — once that's clear, swap in
 ///     a real codec / connect / loop and this scales to production.
 ///
-/// For the lower-level "raw create()" pattern without the MP machinery,
-/// see `examples/simple_hft_dpdk.cpp`. For a full real-server probe (TLS
-/// + WS + ARP + DNS + reconnect), see `examples/binance_latency.cpp`.
+/// For the single-process counterpart with full TLS+WS handshake via
+/// `create_and_attach`, see `examples/simple_hft.cpp`. For a full
+/// real-server probe with reconnect + latency histogram, see
+/// `examples/binance_latency.cpp`.
 ///
 /// Source-port partitioning across MP processes: with `mp_topology`
 /// set (the path this skeleton drives) the library auto-narrows
@@ -59,13 +61,13 @@
 /// Usage (two terminals, same host, same NIC):
 ///
 ///   # Terminal A — primary first; brings the port up
-///   sudo ./simple_hft_dpdk_mp --role primary --
+///   sudo ./dpdk_mp_demo --role primary --
 ///                             --file-prefix eph_mp_demo
 ///                             --pci 0000:28:00.0
 ///                             --pin 0=0:rx --pin 1=1:tx
 ///
 ///   # Terminal B — once primary logs "ready", secondary attaches
-///   sudo ./simple_hft_dpdk_mp --role secondary --
+///   sudo ./dpdk_mp_demo --role secondary --
 ///                             --file-prefix eph_mp_demo
 ///                             --pci 0000:28:00.0
 ///                             --pin 0=2:rx --pin 1=3:tx
@@ -171,7 +173,7 @@ parse_pin_spec(std::string_view s) {
     return ed::LcorePin{static_cast<uint16_t>(lcore), cpu, std::move(role)};
 }
 
-// Split argv at the first "--" — same convention as simple_hft_dpdk.cpp.
+// Split argv at the first "--" — same convention as simple_hft.cpp.
 // Anything before "--" is consumed by the wrapper that selects --role; the
 // rest is application config.
 int split_app_args(int argc, char** argv) {
@@ -202,7 +204,7 @@ AppArgs parse_args(int argc, char** argv) {
         else if (a == "--pin"         && i + 1 < argc) {
             auto p = parse_pin_spec(argv[++i]);
             if (!p) {
-                spdlog::error("simple_hft_dpdk_mp: {}", p.error());
+                spdlog::error("dpdk_mp_demo: {}", p.error());
                 std::exit(1);
             }
             out.pins.push_back(std::move(*p));
@@ -263,7 +265,7 @@ int main(int argc, char** argv) {
 
     const AppArgs args = parse_args(argc, argv);
     if (args.nb_rx_queues < 2) {
-        spdlog::error("simple_hft_dpdk_mp: nb_rx_queues must be >= 2 "
+        spdlog::error("dpdk_mp_demo: nb_rx_queues must be >= 2 "
                       "(50/50 partition needs disjoint sub-ranges)");
         return 1;
     }
@@ -276,12 +278,12 @@ int main(int argc, char** argv) {
     const bool typed_pins = !args.pins.empty();
     const bool raw_lcores = !args.lcores.empty();
     if (typed_pins && raw_lcores) {
-        spdlog::error("simple_hft_dpdk_mp: --pin and --lcores are mutually "
+        spdlog::error("dpdk_mp_demo: --pin and --lcores are mutually "
                       "exclusive (typed and raw EAL paths); pick one");
         return 1;
     }
     if (!typed_pins && !raw_lcores) {
-        spdlog::error("simple_hft_dpdk_mp: provide either --pin lcore=cpu[:role] "
+        spdlog::error("dpdk_mp_demo: provide either --pin lcore=cpu[:role] "
                       "(preferred typed path) or --lcores '<raw EAL spec>' "
                       "(escape hatch for set-of-sets / coremask syntax)");
         return 1;
@@ -297,8 +299,8 @@ int main(int argc, char** argv) {
 
     ed::EalConfig eal_cfg{};
     eal_cfg.program_name  = (args.role == ed::ProcType::Primary)
-                                ? "simple_hft_dpdk_mp.primary"
-                                : "simple_hft_dpdk_mp.secondary";
+                                ? "dpdk_mp_demo.primary"
+                                : "dpdk_mp_demo.secondary";
     eal_cfg.proc_type     = args.role;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = args.file_prefix;
@@ -306,12 +308,12 @@ int main(int argc, char** argv) {
     if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
     if (typed_pins) {
-        spdlog::info("simple_hft_dpdk_mp[{}]: bring-up via create_with_eal "
+        spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
                      "(typed pins, {} pin(s))",
                      args.role == ed::ProcType::Primary ? "primary" : "secondary",
                      args.pins.size());
     } else {
-        spdlog::info("simple_hft_dpdk_mp[{}]: bring-up via create_with_eal "
+        spdlog::info("dpdk_mp_demo[{}]: bring-up via create_with_eal "
                      "(raw lcores='{}')",
                      args.role == ed::ProcType::Primary ? "primary" : "secondary",
                      args.lcores);
@@ -322,14 +324,14 @@ int main(int argc, char** argv) {
         std::span<ed::LcorePin const>{args.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("simple_hft_dpdk_mp: Platform::create_with_eal failed: {}",
+        spdlog::error("dpdk_mp_demo: Platform::create_with_eal failed: {}",
                       plat_r.error());
         return 2;
     }
     auto platform = std::move(*plat_r);
 
     const auto qr = platform.effective_rx_queue_range();
-    spdlog::info("simple_hft_dpdk_mp[{}]: ready — port={}, "
+    spdlog::info("dpdk_mp_demo[{}]: ready — port={}, "
                  "rx_queue_range=[{},{}), mempool={:p}, file_prefix='{}'",
                  args.role == ed::ProcType::Primary ? "primary" : "secondary",
                  platform.port_id(), qr.first, qr.second,
@@ -380,10 +382,10 @@ int main(int argc, char** argv) {
 
     auto sock_r = UdpSock::create_and_attach(std::move(ucfg), platform);
     if (!sock_r) {
-        spdlog::warn("simple_hft_dpdk_mp: create_and_attach failed "
+        spdlog::warn("dpdk_mp_demo: create_and_attach failed "
                      "(expected on a smoke-boot without ARP-resolved peer): {}",
                      sock_r.error().detail);
-        spdlog::info("simple_hft_dpdk_mp: skeleton path — populate "
+        spdlog::info("dpdk_mp_demo: skeleton path — populate "
                      "src_mac / dst_mac (e.g. via eph::dpdk::arp::resolve) "
                      "to drive real traffic.");
         // Fall through to the poll loop anyway so the cleanup branches
@@ -391,7 +393,7 @@ int main(int argc, char** argv) {
     }
 
     // ── 5) Drive the burst loop for `--seconds` (default 5s) ─────────────
-    spdlog::info("simple_hft_dpdk_mp[{}]: entering poll loop for {}s",
+    spdlog::info("dpdk_mp_demo[{}]: entering poll loop for {}s",
                  args.role == ed::ProcType::Primary ? "primary" : "secondary",
                  args.run_seconds.count());
     const auto deadline = std::chrono::steady_clock::now() + args.run_seconds;
@@ -400,7 +402,7 @@ int main(int argc, char** argv) {
         (void)poller->poll();
     }
 
-    spdlog::info("simple_hft_dpdk_mp[{}]: shutting down — Platform RAII "
+    spdlog::info("dpdk_mp_demo[{}]: shutting down — Platform RAII "
                  "will run the {}-mode cleanup branch",
                  args.role == ed::ProcType::Primary ? "primary" : "secondary",
                  args.role == ed::ProcType::Primary ? "primary" : "secondary");

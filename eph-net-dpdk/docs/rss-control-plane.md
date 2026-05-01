@@ -4,10 +4,10 @@ How DNS / ARP / Multicast behave under RSS multi-queue dispatch
 (`Platform::is_rss_active() == true && nb_rx_queues > 1`), and the
 contract each control-plane API enforces to make that combination safe.
 
-> **See also**: `examples/simple_hft_dpdk_rss.cpp` for a runnable
+> **See also**: `examples/dpdk_rss_demo.cpp` for a runnable
 > single-process Platform-with-RSS demo (one Poller per queue, several
 > `DpdkUdpSocket`s pinned to distinct queues via `create_and_attach`'s
-> Toeplitz reverse-pick), and `examples/simple_hft_dpdk_mp.cpp` for the
+> Toeplitz reverse-pick), and `examples/dpdk_mp_demo.cpp` for the
 > multi-process variant.
 
 ## The problem in one paragraph

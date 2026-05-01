@@ -49,8 +49,8 @@ PlatformConfig-level customization (`per_lcore_pools`,
 `mbuf_pool_size`, `enable_promiscuous`, `port_id`, …) flows through
 `pcfg_template`. **Single source of truth**: PlatformConfig.
 
-See `examples/simple_hft_dpdk_mp_dynamic.cpp` for
-a runnable end-to-end demo.
+For the declarative path (explicit `--role primary|secondary`,
+shared `--file-prefix`), see `examples/dpdk_mp_demo.cpp`.
 
 ### When to use which path
 
@@ -376,7 +376,7 @@ detail.
 ## Example skeleton
 
 For a single-file, runnable skeleton that you can adapt directly, see
-[`examples/simple_hft_dpdk_mp.cpp`](../../examples/simple_hft_dpdk_mp.cpp).
+[`examples/dpdk_mp_demo.cpp`](../../examples/dpdk_mp_demo.cpp).
 One binary, role picked via `--role primary|secondary`. Demonstrates
 `EalConfig` + `build_eal_argv`, `Platform::create_primary` /
 `create_secondary`, queue-range partitioning, and the secondary

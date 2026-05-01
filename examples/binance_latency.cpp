@@ -132,7 +132,7 @@ static int split_at_dash_dash(int argc, char** argv) noexcept {
 }
 
 // Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
-// Mirrors `simple_hft_dpdk_mp.cpp::parse_pin_spec`.
+// Mirrors `dpdk_mp_demo.cpp::parse_pin_spec`.
 [[nodiscard]] static std::expected<ed::LcorePin, std::string>
 parse_pin_spec(std::string_view s) {
     auto eq = s.find('=');

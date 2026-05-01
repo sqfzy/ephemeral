@@ -98,7 +98,7 @@ build_lcore_argv(std::span<LcorePin const> pins) {
 // claim cpu(s) in the process-wide registry BEFORE rte_eal_init. The
 // actual setaffinity happens later, inside rte_eal_init, when EAL either
 // repurposes the calling thread (main lcore) or pthread_create-s a new
-// worker thread (worker lcores). See examples/simple_hft_dpdk_rss.cpp
+// worker thread (worker lcores). See examples/dpdk_rss_demo.cpp
 // for the multi-lcore launch pattern.
 //
 // Both return eph::utils::PinGuard (the same RAII type pin_thread uses)

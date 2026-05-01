@@ -27,7 +27,7 @@
 ///
 /// What's deliberately out of scope:
 ///
-///   * RSS multi-queue per port — see `examples/simple_hft_dpdk_rss.cpp`.
+///   * RSS multi-queue per port — see `examples/dpdk_rss_demo.cpp`.
 ///     `MultiPortPlatform` is orthogonal to RSS: each owned Platform can
 ///     independently turn on `enable_rss + nb_rx_queues > 1`. We pin
 ///     `nb_rx_queues = 1` here to keep the focus on the aggregator.
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
     if (args.pci_addrs.size() < 2) {
         spdlog::error("multi_port_platform_demo: need at least 2 --pci entries "
                       "(single-port case goes through Platform::create_primary "
-                      "directly — see simple_hft_dpdk.cpp)");
+                      "directly — see simple_hft.cpp)");
         return 1;
     }
     const bool typed_pins = !args.pins.empty();

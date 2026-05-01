@@ -134,8 +134,8 @@ int main(int argc, char** argv) {
     // DpdkTcpStream's create_and_attach is the production factory — it
     // takes a much fuller StreamConfig (dpdk.tcp_low_level 4-tuple, MAC,
     // mempool, queue selection) plus a Platform reference. See
-    // examples/binance_latency.cpp and examples/simple_hft_dpdk_rss.cpp
-    // for runnable end-to-end DPDK setups.
+    // examples/simple_hft.cpp and examples/dpdk_rss_demo.cpp for
+    // runnable end-to-end DPDK setups.
     auto stream = /* see binance_latency.cpp for the full DpdkTcpStream
                      setup — irreducibly more involved than the kernel
                      snippet above */;

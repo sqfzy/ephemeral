@@ -31,9 +31,9 @@
 ///   - Reconnect orchestration on top: that is T1.3
 ///     (`eph::net::ReconnectOrchestrator`) and is a separate concern.
 ///
-/// Smoke-boot vs real-NIC behaviour: this example is structured like
-/// `simple_hft_dpdk.cpp` — when `--smoke` is set (or when the mempool /
-/// gateway-MAC params are missing), each `start()` returns a clear
+/// Smoke-boot vs real-NIC behaviour: when `--smoke` is set (or when
+/// the mempool / gateway-MAC params are missing), each `start()` returns
+/// a clear
 /// `ErrorInfo` and the program exits 0 having demonstrated the API
 /// surface only. With a real NIC + ARP'd gateway, the same flow drives
 /// real queries.
@@ -116,7 +116,7 @@ static int split_eal(int argc, char** argv) noexcept {
 }
 
 // Parse a single `--pin` token: `lcore=cpu` or `lcore=cpu:role`.
-// Mirrors `simple_hft_dpdk_mp.cpp::parse_pin_spec`.
+// Mirrors `dpdk_mp_demo.cpp::parse_pin_spec`.
 [[nodiscard]] static std::expected<ed::LcorePin, std::string>
 parse_pin_spec(std::string_view s) noexcept {
     auto eq = s.find('=');

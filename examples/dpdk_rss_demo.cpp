@@ -1,11 +1,11 @@
-/// @file simple_hft_dpdk_rss.cpp
+/// @file dpdk_rss_demo.cpp
 ///
 /// Single-process DPDK example: one `Platform` with `enable_rss=true` and
 /// `nb_rx_queues > 1`, multiple `DpdkUdpSocket`s spawned via the turnkey
 /// `create_and_attach` factory and spread across the NIC's RX queues. The
 /// point is the **RSS data plane in single-process mode** — the missing
-/// piece between `simple_hft_dpdk.cpp` (single-queue skeleton) and
-/// `simple_hft_dpdk_mp.cpp` (multi-process, where RSS is a side effect of
+/// piece between `simple_hft.cpp` (single-queue HFT client) and
+/// `dpdk_mp_demo.cpp` (multi-process, where RSS is a side effect of
 /// queue partitioning).
 ///
 /// What's demonstrated:
@@ -45,7 +45,7 @@
 ///     a real router, but that's not what this example exists to show.
 ///     For a real-server probe with full control plane, see
 ///     `examples/binance_latency.cpp`.
-///   * Multi-process mode. See `examples/simple_hft_dpdk_mp.cpp` and
+///   * Multi-process mode. See `examples/dpdk_mp_demo.cpp` and
 ///     `eph-net-dpdk/docs/dpdk-multiprocess.md` for that surface.
 ///   * `RxDispatchMode::FlowDirector`. The same `create_and_attach` API
 ///     handles FD via rte_flow rule install when the NIC supports it;
@@ -65,7 +65,7 @@
 ///
 /// Usage:
 ///
-///   sudo ./simple_hft_dpdk_rss --
+///   sudo ./dpdk_rss_demo --
 ///        --pci 0000:28:00.0
 ///        --pin 0=4 --pin 1=5 --pin 2=6 --pin 3=7
 ///        --nb-queues 4 --connections 4
@@ -155,7 +155,7 @@ struct AppArgs {
     uint16_t                per_lcore_pools = 0;
 };
 
-/// Parse `--pin lcore=cpu[:role]`. Mirrors simple_hft_dpdk_mp.cpp.
+/// Parse `--pin lcore=cpu[:role]`. Mirrors dpdk_mp_demo.cpp.
 std::expected<ed::LcorePin, std::string>
 parse_pin_spec(std::string_view s) {
     auto eq = s.find('=');
@@ -197,7 +197,7 @@ AppArgs parse_args(int argc, char** argv) {
         else if (a == "--pin"         && i + 1 < argc) {
             auto p = parse_pin_spec(argv[++i]);
             if (!p) {
-                spdlog::error("simple_hft_dpdk_rss: {}", p.error());
+                spdlog::error("dpdk_rss_demo: {}", p.error());
                 std::exit(1);
             }
             out.pins.push_back(std::move(*p));
@@ -234,12 +234,12 @@ int worker_main(void* arg) noexcept {
     auto* ctx = static_cast<WorkerCtx*>(arg);
     const unsigned lcore = rte_lcore_id();
     const unsigned cpu   = rte_lcore_to_cpu_id(static_cast<int>(lcore));
-    spdlog::info("simple_hft_dpdk_rss: worker lcore={} cpu={} queue={} entering poll loop",
+    spdlog::info("dpdk_rss_demo: worker lcore={} cpu={} queue={} entering poll loop",
                  lcore, cpu, ctx->queue_id);
     while (ctx->running->load(std::memory_order_acquire)) {
         (void)ctx->poller->poll();
     }
-    spdlog::info("simple_hft_dpdk_rss: worker lcore={} queue={} exited",
+    spdlog::info("dpdk_rss_demo: worker lcore={} queue={} exited",
                  lcore, ctx->queue_id);
     return 0;
 }
@@ -253,12 +253,12 @@ int main(int argc, char** argv) {
 
     const AppArgs args = parse_args(argc, argv);
     if (args.nb_rx_queues < 2) {
-        spdlog::error("simple_hft_dpdk_rss: --nb-queues must be >= 2 "
+        spdlog::error("dpdk_rss_demo: --nb-queues must be >= 2 "
                       "(RSS demo needs multi-queue dispatch)");
         return 1;
     }
     if (args.connections == 0) {
-        spdlog::error("simple_hft_dpdk_rss: --connections must be >= 1");
+        spdlog::error("dpdk_rss_demo: --connections must be >= 1");
         return 1;
     }
 
@@ -266,12 +266,12 @@ int main(int argc, char** argv) {
     const bool typed_pins = !args.pins.empty();
     const bool raw_lcores = !args.lcores.empty();
     if (typed_pins && raw_lcores) {
-        spdlog::error("simple_hft_dpdk_rss: --pin and --lcores are mutually "
+        spdlog::error("dpdk_rss_demo: --pin and --lcores are mutually "
                       "exclusive; pick one");
         return 1;
     }
     if (!typed_pins && !raw_lcores) {
-        spdlog::error("simple_hft_dpdk_rss: provide either --pin lcore=cpu[:role] "
+        spdlog::error("dpdk_rss_demo: provide either --pin lcore=cpu[:role] "
                       "(typed) or --lcores '<raw EAL spec>' (escape hatch)");
         return 1;
     }
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
     // bypasses this check (we have no way to count its lcores without
     // re-parsing DPDK's set-of-sets syntax).
     if (typed_pins && args.pins.size() != args.nb_rx_queues) {
-        spdlog::error("simple_hft_dpdk_rss: --pin count ({}) must equal "
+        spdlog::error("dpdk_rss_demo: --pin count ({}) must equal "
                       "--nb-queues ({}) — one lcore per RSS queue",
                       args.pins.size(), args.nb_rx_queues);
         return 1;
@@ -299,15 +299,15 @@ int main(int argc, char** argv) {
     pcfg.proc_type        = ed::ProcType::Primary;
 
     ed::EalConfig eal_cfg{};
-    eal_cfg.program_name = "simple_hft_dpdk_rss";
+    eal_cfg.program_name = "dpdk_rss_demo";
     if (raw_lcores) eal_cfg.lcores = {args.lcores};
     if (!args.pci.empty()) eal_cfg.allowed_devs = {args.pci};
 
     if (typed_pins) {
-        spdlog::info("simple_hft_dpdk_rss: bring-up via create_with_eal "
+        spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
                      "(typed pins, {} pin(s))", args.pins.size());
     } else {
-        spdlog::info("simple_hft_dpdk_rss: bring-up via create_with_eal "
+        spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
                      "(raw lcores='{}')", args.lcores);
     }
 
@@ -316,7 +316,7 @@ int main(int argc, char** argv) {
         std::span<ed::LcorePin const>{args.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("simple_hft_dpdk_rss: Platform::create_with_eal failed: {}",
+        spdlog::error("dpdk_rss_demo: Platform::create_with_eal failed: {}",
                       plat_r.error());
         return 2;
     }
@@ -328,7 +328,7 @@ int main(int argc, char** argv) {
     // NIC's own hash key for `predict_rss_queue`.
     const auto qr = platform.effective_rx_queue_range();
     spdlog::info(
-        "simple_hft_dpdk_rss: Platform up — port={}, nb_rx_queues={}, "
+        "dpdk_rss_demo: Platform up — port={}, nb_rx_queues={}, "
         "dispatch_mode={}, is_rss_active={}, rss_using_probed_key={}, "
         "rx_queue_range=[{},{})",
         platform.port_id(), platform.nb_rx_queues(),
@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
         qr.first, qr.second);
 
     if (platform.dispatch_mode() != edpdk::RxDispatchMode::RssPartitioned) {
-        spdlog::warn("simple_hft_dpdk_rss: NIC did not resolve to "
+        spdlog::warn("dpdk_rss_demo: NIC did not resolve to "
                      "RssPartitioned mode — RSS-pinned src_port path will "
                      "not engage. The example continues so cleanup branches "
                      "are exercised, but this is not what the demo is for.");
@@ -359,17 +359,17 @@ int main(int argc, char** argv) {
         poller_cfg.rx_queue_id = q;
         auto pr = edpdk::DpdkPoller<>::create(poller_cfg);
         if (!pr) {
-            spdlog::error("simple_hft_dpdk_rss: DpdkPoller::create(queue={}) "
+            spdlog::error("dpdk_rss_demo: DpdkPoller::create(queue={}) "
                           "failed: {}", q, pr.error().detail);
             return 4;
         }
         if (auto r = platform.register_poller(q, pr->get()); !r) {
-            spdlog::error("simple_hft_dpdk_rss: register_poller(queue={}) "
+            spdlog::error("dpdk_rss_demo: register_poller(queue={}) "
                           "failed: {}", q, r.error().detail);
             return 5;
         }
         pollers.emplace_back(std::move(*pr));
-        spdlog::info("simple_hft_dpdk_rss: poller registered for queue={}", q);
+        spdlog::info("dpdk_rss_demo: poller registered for queue={}", q);
     }
 
     // ── 5) Spawn UDP sockets, each pinned to a distinct RX queue ─────────
@@ -416,16 +416,16 @@ int main(int argc, char** argv) {
         auto sr = UdpSock::create_and_attach(std::move(ucfg), platform);
         if (!sr) {
             spdlog::warn(
-                "simple_hft_dpdk_rss: create_and_attach[{}] (pin queue={}) "
+                "dpdk_rss_demo: create_and_attach[{}] (pin queue={}) "
                 "failed: {} -- continuing so RAII cleanup is exercised",
                 i, want_q, sr.error().detail);
             continue;
         }
-        spdlog::info("simple_hft_dpdk_rss: socket[{}] attached, pinned to queue={}",
+        spdlog::info("dpdk_rss_demo: socket[{}] attached, pinned to queue={}",
                      i, want_q);
         sockets.emplace_back(std::move(*sr));
     }
-    spdlog::info("simple_hft_dpdk_rss: {}/{} sockets attached",
+    spdlog::info("dpdk_rss_demo: {}/{} sockets attached",
                  sockets.size(), args.connections);
 
     // ── 6) Multi-lcore launch — one EAL lcore per RX queue ───────────────
@@ -444,7 +444,7 @@ int main(int argc, char** argv) {
     // worker (use-after-free hazard).
     const uint16_t nb_pollers = static_cast<uint16_t>(pollers.size());
     if (nb_pollers == 0) {
-        spdlog::error("simple_hft_dpdk_rss: no pollers registered — bailing");
+        spdlog::error("dpdk_rss_demo: no pollers registered — bailing");
         return 6;
     }
     std::vector<WorkerCtx> ctxs;
@@ -465,7 +465,7 @@ int main(int argc, char** argv) {
     RTE_LCORE_FOREACH_WORKER(lcore_id) {
         if (worker_idx >= nb_pollers) {
             spdlog::error(
-                "simple_hft_dpdk_rss: more EAL worker lcores than queues "
+                "dpdk_rss_demo: more EAL worker lcores than queues "
                 "({} > {}); pin/queue layout must be 1:1",
                 static_cast<unsigned>(worker_idx) + 1, nb_pollers);
             g_running.store(false, std::memory_order_release);
@@ -478,19 +478,19 @@ int main(int argc, char** argv) {
                                            &ctxs[worker_idx],
                                            lcore_id);
             rc != 0) {
-            spdlog::error("simple_hft_dpdk_rss: rte_eal_remote_launch(lcore={}, "
+            spdlog::error("dpdk_rss_demo: rte_eal_remote_launch(lcore={}, "
                           "queue={}) failed: rc={}",
                           lcore_id, ctxs[worker_idx].queue_id, rc);
             g_running.store(false, std::memory_order_release);
             break;
         }
-        spdlog::info("simple_hft_dpdk_rss: launched worker on lcore={} "
+        spdlog::info("dpdk_rss_demo: launched worker on lcore={} "
                      "for queue={}", lcore_id, ctxs[worker_idx].queue_id);
         ++worker_idx;
     }
 
     // ── 7) Main lcore polls queue 0 until SIGINT or deadline ─────────────
-    spdlog::info("simple_hft_dpdk_rss: main lcore={} cpu={} polling queue={} "
+    spdlog::info("dpdk_rss_demo: main lcore={} cpu={} polling queue={} "
                  "for {}s (workers polling queues 1..{})",
                  rte_lcore_id(),
                  rte_lcore_to_cpu_id(static_cast<int>(rte_lcore_id())),
@@ -508,15 +508,15 @@ int main(int argc, char** argv) {
     // and then re-arms the lcore for a future launch (we don't reuse it).
     // This MUST run before pollers / sockets / platform are destroyed —
     // otherwise a worker still inside poll() would crash on freed memory.
-    spdlog::info("simple_hft_dpdk_rss: signalling workers to stop");
+    spdlog::info("dpdk_rss_demo: signalling workers to stop");
     g_running.store(false, std::memory_order_release);
     RTE_LCORE_FOREACH_WORKER(lcore_id) {
         const int rc = rte_eal_wait_lcore(lcore_id);
-        spdlog::info("simple_hft_dpdk_rss: lcore={} joined (rc={})",
+        spdlog::info("dpdk_rss_demo: lcore={} joined (rc={})",
                      lcore_id, rc);
     }
 
-    spdlog::info("simple_hft_dpdk_rss: shutting down — RAII teardown");
+    spdlog::info("dpdk_rss_demo: shutting down — RAII teardown");
     // RAII: ~UdpSock (each socket unregisters from its Poller) →
     //       ~DpdkPoller (each poller unregisters from Platform) →
     //       ~Platform (dev_stop / dev_close / mempool_free / pin guards
