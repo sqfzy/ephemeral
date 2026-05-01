@@ -20,6 +20,26 @@
 /// Note that the template argument `/*Tls=*/false` means this binary
 /// only works against a plaintext WS endpoint (e.g. mockex). For a
 /// real `wss://stream.binance.com` flip Tls to true and link aws-lc.
+///
+/// Usage:
+///
+///   # Default: 127.0.0.1:443, btcusdt, 5s. Pair with a plaintext
+///   # WS echo (e.g. mockex's ws_echo_run scenario, started with
+///   # whatever port that scenario binds to) to drive frames.
+///   ./binance_book
+///
+///   # Custom endpoint + symbol:
+///   ./binance_book --host 127.0.0.1 --port 9443
+///                  --symbol ethusdt --duration 30
+///
+/// Flags (all optional; see parse loop near line 77):
+///   --host <ip>      IPv4 literal of the WS server (default 127.0.0.1;
+///                    no DNS in this demo).
+///   --port <p>       TCP port (default 443).
+///   --symbol <s>     bookTicker symbol forwarded into the WS path
+///                    (`/ws/<symbol>@bookTicker`; default `btcusdt`,
+///                    Binance expects lowercase).
+///   --duration <n>   run duration in seconds (default 5).
 
 #include <atomic>
 #include <chrono>
