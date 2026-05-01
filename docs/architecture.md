@@ -21,44 +21,37 @@ and DPDK users never get kernel fallback paths.
 
 ## Module dependency graph
 
+Edges point from consumer to dependency (`A → B` means "A depends
+on B"). `eph-core` is the leaf — every other module roots there
+directly or transitively.
+
 ```
-                        eph-utils
-                           |
-                           v
-                      eph-containers
-                           |
-              +------------+-------------------+
-              v            v                   v
-           eph-core   (consumed by)       parsers:
-         (StreamCodec  eph-net          eph-fix, eph-itch,
-          /Datagram-                    eph-json, eph-book
-          Codec concept,                (plug in as codecs)
-          ErrorInfo,
-          OutputBuffer)
-              |
-      +-------+-------+
-      v               v
-  eph-codec        eph-net
- (WsCodec,       (Stream /
-  Mold64Codec,    Datagram /
-  Raw*,           Pollable /
-  LengthPrefix)   Poller concepts,
-                  SocketAddr,
-                  ReconnectPolicy,
-                  test mocks,
-                  TLS + WS wire detail)
-                     |
-            +--------+--------+
-            v                 v
-      eph-net-kernel    eph-net-dpdk
-      (epoll-based      (lcore burst +
-       Kernel*          Dpdk* + Eal +
-       types)           flow steering)
+  eph-net-kernel       eph-net-dpdk            eph-codec
+  ─────┬───────        ─────┬──────            ────┬────
+       │ eph-net           │ eph-net,              │ eph-net,
+       │ eph-core          │ eph-utils,            │ eph-itch,
+       │                   │ eph-containers,       │ eph-core
+       │                   │ eph-core              │
+       ▼                   ▼                       ▼
+                        eph-net
+                       ──┬────
+                         │ eph-utils, eph-core
+                         ▼
+       eph-containers ───► eph-utils ───► eph-core ◄─── eph-fix
+                                                   ◄─── eph-itch
+                                                   ◄─── eph-json
+                                                   ◄─── eph-book
 ```
 
-`eph-net-kernel` and `eph-net-dpdk` are siblings — applications link whichever they
-need. The parser modules (`eph-fix`, `eph-itch`, `eph-json`, `eph-book`) never depend
-on any networking module; they provide codecs the application composes at link time.
+`eph-net-kernel` and `eph-net-dpdk` are siblings — they never depend
+on each other; an application links whichever (or both) it needs.
+`eph-codec` is **not** a dependency of `eph-net`: codecs are
+template parameters, so each consumer separately picks the codec
+modules it needs and links them alongside the chosen backend. The
+parser modules (`eph-fix`, `eph-itch`, `eph-json`, `eph-book`) only
+depend on `eph-core` (no networking, no `eph-utils`); they provide
+the `Codec` types an application composes against the chosen
+backend at link time.
 
 ## The three concept layer
 
