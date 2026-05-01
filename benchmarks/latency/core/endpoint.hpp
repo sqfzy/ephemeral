@@ -105,7 +105,10 @@ parse_ws_url(std::string_view url) noexcept {
             }
             p = p * 10 + static_cast<uint32_t>(c - '0');
             if (p > 65535) {
-                return std::unexpected("parse_ws_url: port out of range");
+                return std::unexpected(
+                    "parse_ws_url: port out of range '" +
+                    std::string{port_str} +
+                    "' (TCP port must be in [1, 65535])");
             }
         }
         // Explicit `:0` is meaningless for a client URL — TCP port 0
