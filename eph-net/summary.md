@@ -336,8 +336,10 @@ struct ProxyConfig {
 
 `validate()` rejects empty host, zero port, half-specified basic auth
 (user XOR pass), and non-positive timeout. Consumed only by the kernel
-backend via `StreamConfig::proxy`. DPDK `TcpStream::create()` returns
-`Error::InvalidConfig` on any non-empty `proxy`. SOCKS5, digest / NTLM /
+backend via `StreamConfig::proxy`. The DPDK `eph::net::dpdk::StreamConfig`
+has no `proxy` field at all (removed post-T3.19), so attempting to
+configure a CONNECT proxy on the DPDK backend is a compile error
+rather than a runtime `InvalidConfig`. SOCKS5, digest / NTLM /
 Kerberos auth are explicitly out of scope.
 
 ### Stream metrics (`eph/net/stream_metrics.hpp`)
