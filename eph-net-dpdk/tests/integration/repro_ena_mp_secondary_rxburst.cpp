@@ -1,33 +1,39 @@
 /// @file repro_ena_mp_secondary_rxburst.cpp
-/// Sentinel: ENA PMD MP secondary `rx_burst` on idle rings does NOT crash.
+/// Sentinel: secondary `rte_eth_rx_burst` against idle rings does NOT
+/// crash. Now serves as a regression detector for the DPDK MP teardown
+/// gate (commits 0b3a4aaa→067dccbc).
 ///
 /// ────────────────────────────────────────────────────────────────────
-/// Two-condition root cause (2026-04-30 A/B isolation)
+/// Original framing (superseded — see
+/// `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md` and the CHANGELOG
+/// "Superseded" section)
 ///
-/// The SIGSEGV inside `ena_com_get_next_rx_cdesc` requires BOTH
-/// conditions to be true simultaneously:
+/// This binary was originally written as an "idle-ring sentinel against
+/// an AWS ENA PMD limitation". The 100% confirmed root cause (commit
+/// `aa625b4d`) turned out to be a DPDK MP teardown protocol violation
+/// inside eph: primary's `~Platform()` unconditionally called
+/// `rte_eth_dev_stop` / `rte_eth_dev_close` / `rte_eal_cleanup` while
+/// secondaries were still attached. ENA was tearing down all queues
+/// per spec when stop was called — eph's destructor was the violator.
 ///
-///   (1) PRIMARY is doing high-rate DpdkPoller-driven I/O — specifically
-///       the Stream / Socket send+poll-burst loop that lat_*_dpdk uses.
-///       A primary that just brings up Platform and idles is not enough.
+/// ────────────────────────────────────────────────────────────────────
+/// Current role: MP teardown gate sentinel
 ///
-///   (2) SECONDARY is driving its own DpdkPoller::poll() → DpdkUdpSocket
-///       receive path.  Raw `rte_eth_rx_burst` calls alone — even under
-///       live traffic — are NOT enough.
+/// Idle rings short-circuit on `head == tail` before dereferencing
+/// ring metadata, so even pre-fix this case never crashed (the SIGSEGV
+/// only surfaced under live traffic + concurrent primary teardown).
+/// Expected: exit 9 ("sentinel holds") on ENA / DPDK 24.11.2.
 ///
-/// A/B evidence:
-///
-///   Config                                                        Result
-///   ──────────────────────────────────────────────────────────────────
-///   primary=lat_tcp_dpdk (high-rate)  +  secondary=lat_udp_dpdk    CRASH
-///   primary=lat_tcp_dpdk (high-rate)  +  secondary=raw rx_burst     NO CRASH
-///   primary=benign (Platform up, idle)+  secondary=lat_udp_dpdk     NO CRASH (753k samples)
-///   primary=benign (Platform up, idle)+  secondary=raw rx_burst     NO CRASH
-///
-/// This binary exercises the bottom two rows (idle primary + raw
-/// secondary) — the idle-ring sentinel.  Expected: exit 9 on ENA
-/// DPDK 24.11.2.  If it ever exits 0 (SIGSEGV under idle), that is new
-/// evidence worth chasing.
+/// If this binary ever exits 0 (SIGSEGV under idle), the gate has
+/// regressed in one of two ways:
+///   (a) ENA's idle-ring fast path changed and now dereferences shared
+///       state on empty queues.
+///   (b) The MP teardown gate (`MpRegistry::is_last_alive_proc`) failed
+///       to fire and primary stopped the port while secondary was mid
+///       fast-path.
+/// Investigate by re-running the production stress harness
+/// `/tmp/ena_mp_rootcause.sh` first to confirm gate behaviour, then
+/// bisect against the fix commits.
 ///
 /// ────────────────────────────────────────────────────────────────────
 /// What this program does
@@ -45,8 +51,9 @@
 ///        exit 9 : child survived all three calls — idle-ring sentinel holds.
 ///        exit 0 : SIGSEGV — idle-ring path is now broken; file upstream.
 ///
-/// Background and full isolation log:
-/// `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`.
+/// Background and full root cause:
+/// `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`
+/// `.artifacts/retro-20260501-ena-mp-rootcause-discovery.md`
 ///
 /// ────────────────────────────────────────────────────────────────────
 /// Confirmed on:
@@ -54,9 +61,11 @@
 ///   Kernel          6.1.163-186.299.amzn2023.aarch64
 ///   Instance        AWS EC2 c8g.4xlarge (Graviton4)
 ///   PCI (NIC_B)     0000:28:00.0  (ENA, vfio-pci-bound)
-///   Date            2026-04-30
+///   Original date   2026-04-30 (idle-ring framing)
+///   Re-validated    2026-05-01 (post-fix; sentinel still holds at exit 9)
 ///
-/// Reference backtrace (observed only in the two-condition configuration):
+/// Reference backtrace (observed pre-fix only, in the two-condition
+/// configuration that is now closed by the gate):
 ///
 ///     Thread 1 received signal SIGSEGV
 ///       #0  ena_com_get_next_rx_cdesc ()  librte_net_ena.so.25.0
