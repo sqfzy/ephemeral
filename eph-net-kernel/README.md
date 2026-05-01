@@ -142,9 +142,15 @@ counters (one slot per `eph::net::StreamMetric`). Readers:
 - Push: `eph::net::publish_metrics(*stream, sink, tags)` forwards every
   counter into any `MetricsSink`.
 
-UDP backends wire `kBytesSent` / `kBytesRecv` / `kFramesDecoded` /
-`kCodecErrors`; TCP wires those plus `kReasmOverflows` (TLS-only metrics
-stay at 0 on the kernel path — see `eph/net/stream_metrics.hpp`).
+Per-backend wiring (others stay at 0 — see `eph/net/stream_metrics.hpp`
+for the full enum):
+
+- `KernelUdpSocket`: `kBytesSent`, `kBytesRecv`, `kFramesDecoded`, `kCodecErrors`.
+- `KernelTcpStream`: the four UDP metrics plus `kReasmOverflows`,
+  `kRxSessionResets`, and (when `EnableTls=true`) `kTlsHandshakeCount` /
+  `kTlsResumeCount` / `kTlsSendDesyncs`. The DPDK-only TCP-session metrics
+  (`kTcpOutOfOrder*`, `kTcpDupSegments`, `kIcmpFragNeededReceived`, …) stay
+  at 0 here.
 
 ## Dependencies
 
