@@ -32,7 +32,7 @@
 using namespace eph::dpdk;
 
 TEST(PlatformCreateWithEal, LcoresAndPinsMutex_Rejected) {
-    PlatformConfig pcfg{};
+    PlatformConfigV3 pcfg{};
     pcfg.port_id      = 0;
     pcfg.nb_rx_queues = 1;
     pcfg.nb_tx_queues = 1;
@@ -69,12 +69,12 @@ TEST(PlatformCreateWithEal, EmptyPinsAndEmptyLcores_PassesMutex) {
     // function here without booting EAL, so this test is structural
     // (encodes the contract documentation) — the success path is
     // exercised by e2e binaries.
-    PlatformConfig pcfg{};
+    PlatformConfigV3 pcfg{};
     EalConfig eal_cfg{};
     std::vector<LcorePin> empty_pins;
 
     // Just verify the call compiles with empty parameters.
-    [[maybe_unused]] auto fn = +[](PlatformConfig p, EalConfig e,
+    [[maybe_unused]] auto fn = +[](PlatformConfigV3 p, EalConfig e,
                                    std::span<LcorePin const> pins,
                                    eph::utils::CpuPinPolicy pol)
         -> std::expected<Platform, std::string> {
@@ -90,7 +90,7 @@ TEST(PlatformCreateWithEal, ContractIsLiteral) {
     // If a future refactor breaks the signature, this static_cast
     // fails to instantiate.
     using FnPtr = std::expected<Platform, std::string> (*)(
-        PlatformConfig, EalConfig,
+        PlatformConfigV3, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
     [[maybe_unused]] FnPtr fp = &Platform::create_with_eal;
     SUCCEED();
