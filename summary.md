@@ -88,8 +88,8 @@ hot-path `inc_<M>()` calls; no template signature changes anywhere.
 | **eph-utils** | TSC timing, CPU pinning, hugepage allocator, HDR histogram, audit log, recorder, EMA | spdlog |
 | **eph-containers** | SPSC bounded queue, evicting queue, ring buffer, byte-level variants | eph-utils |
 | **eph-core** | `Error` / `ErrorInfo` / `StreamCodec` / `DatagramCodec` / `OutputBuffer` / `PacketView` contract + legacy framer primitives still used by parser modules | spdlog |
-| **eph-codec** | `WsCodec`, `RawStreamCodec`, `LengthPrefixCodec`, `RawDatagramCodec`, `Mold64Codec` — all stateful, all satisfying `Codec` | eph-core |
-| **eph-net** | `Stream` / `Datagram` / `Pollable` / `Poller` concepts, `SocketAddr`, `ReconnectPolicy`, `TcpState`, test mocks, shared TLS / WebSocket wire helpers | eph-core, eph-utils, eph-containers, aws-lc |
+| **eph-codec** | `WsCodec`, `RawStreamCodec`, `LengthPrefixCodec`, `RawDatagramCodec`, `Mold64Codec` — all stateful, all satisfying `Codec` | eph-core, eph-net (TLS / WS wire helpers), eph-itch (Mold64 wraps `parse_moldudp64`), aws-lc, zlib |
+| **eph-net** | `Stream` / `Datagram` / `Pollable` / `Poller` concepts, `SocketAddr`, `ReconnectPolicy`, `TcpState`, test mocks, shared TLS / WebSocket wire helpers | eph-core, eph-utils, aws-lc |
 | **eph-net-kernel** | `KernelTcpStream<C,Tls>`, `KernelUdpSocket<C>`, `KernelPoller` (epoll). Contiguous `SpanView` `PacketView`. | eph-net |
 | **eph-net-dpdk** | `DpdkTcpStream<C,Tls>`, `DpdkUdpSocket<C>`, `DpdkPoller<>`, `Eal`, internal DPDK primitives (arp, dns, flow_steering, packet templates). `MbufView` `PacketView` with in-place TLS decrypt. | eph-net, dpdk, aws-lc |
 | **eph-fix** | FIX 4.4 parser/builder/session, orders, execution reports, position, risk checks, order manager | eph-core, eph-utils |
