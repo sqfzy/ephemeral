@@ -97,6 +97,11 @@ user-visible nature of each change, not the underlying commit order.
   bounded queue.
 - Minor: removed unused includes, fixed Doxygen typos, fixed missing
   space before `///` comment in Stats declarations.
+- `eph/containers.hpp` umbrella header is now actually installed by
+  `xmake install` — the matching `add_headerfiles(...)` line was
+  missing, so downstream consumers using the documented
+  single-header `#include <eph/containers.hpp>` form hit a "file
+  not found" against the staged include tree.
 
 ### Performance
 

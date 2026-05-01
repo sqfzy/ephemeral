@@ -164,6 +164,24 @@ on the `dev` branch touching `eph-utils/`.
   millisecond epochs so pre-1970 timestamps render correctly.
 - Windows `hugepage.hpp` now pulls in the correct headers
   (`<memoryapi.h>`, `<sysinfoapi.h>`) to build outside of Linux.
+- `eph/utils.hpp` umbrella header is now actually installed by
+  `xmake install` — the `add_headerfiles(...)` line for the umbrella
+  was missing, so downstream consumers using the documented
+  single-header `#include <eph/utils.hpp>` form hit a "file not
+  found" against a fresh staged include tree.
+
+### Changed (post-batch-29)
+
+- `eph/utils.hpp` umbrella now pulls in five additional headers
+  that were previously listed as **not** transitively included:
+  `kill_switch.hpp`, `phased_timer.hpp`, `rate_limiter.hpp`,
+  `shutdown_signal.hpp`, and (separately) `hdr_histogram.hpp` was
+  already pulled in via `record.hpp`. Only `linux/netns.hpp` remains
+  intentionally excluded (POSIX-only test fixture).
+  Including these headers does not run any code: `KillSwitch` /
+  `TokenBucket` are inert until constructed, and
+  `shutdown_signal.hpp` only installs handlers when the consumer
+  calls `install_shutdown_handlers()`.
 
 ### Removed
 
