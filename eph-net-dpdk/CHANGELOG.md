@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+### Added — v3 zero-consensus MP API (BREAKING in registry schema)
+
+**Design principle**: in competitive multi-process mode (primary
++ secondary share one NIC), secondary peers should not need to
+know what primary chose. Any field a caller has to set identically
+in both primary and secondary binaries is a misdesign — secondary
+is a tenant, primary is the resource owner.
+
+**New surface** (alongside the v2 surface during transition):
+
+```cpp
+// Single-process or MP primary
+struct PlatformConfigV3 { ... };  // no proc_type, no mp_topology
+auto plat = Platform::create(PlatformConfigV3{...});
+
+// MP secondary attach — the smallest possible "how to find primary"
+struct PlatformAttachConfig {
+    std::string_view file_prefix;       // required
+    uint16_t         port_id = 0;
+    uint64_t         self_lcore_mask = 0;
+};
+auto plat = Platform::attach(PlatformAttachConfig{.file_prefix="..."});
+
+// Autojoin — `pci` is the only required input
+struct JoinDynamicConfigV3 {
+    std::string_view pci;               // required
+    PlatformConfigV3 primary_config{};   // ignored on secondary path
+    // ... lcores / pins / pin_policy ...
+};
+auto plat = Platform::join_dynamic(JoinDynamicConfigV3{.pci="..."});
+```
+
+**One-shot EAL+Platform variants** split by role:
+- `Platform::create_with_eal(PlatformConfigV3, EalConfig, ...)`
+- `Platform::attach_with_eal(PlatformAttachConfig, EalConfig, ...)`
+
+The v3 factories inject `EalConfig::proc_type` / `file_prefix`
+internally, so callers no longer set them in two places.
+
+**B8 BREAKING — Registry schema bump v2 → v3**: `kMpRegistryVersion`
+changed from 2 to 3. v3 processes hard-reject v2 hugepages and
+vice-versa. Recovery procedure:
+  1. stop all secondaries
+  2. restart primary (it recreates the registry at v3)
+  3. start secondaries
+
+The wire layout is unchanged (magic still `'EMPR'`, ProcSlot fields
+identical) — the bump signals API generation only.
+
+**Empirical zero-consensus validation** (real NIC end-to-end):
+- `tests/integration/dpdk_mp_v3_e2e.sh`: secondary attaches with
+  ONLY `file_prefix` as input. Library reads `nb_rx_queues` from
+  live NIC via `rte_eth_dev_info_get` (plan assumption A1).
+- `tests/integration/dpdk_mp_dynamic_e2e.sh`: autojoin secondary
+  attaches with ONLY `pci` + `lcores`. Internal `v2 join_dynamic`
+  was patched to inherit `max_procs` and `nb_rx_queues` from
+  primary's registry + live NIC when caller leaves them at default.
+
+**Migration coverage (stage 4 of plan)**:
+- 4 primary-only examples (simple_hft, binance_latency,
+  dpdk_multicast_md, dpdk_rss_demo) → PlatformConfigV3.
+- dpdk_mp_demo dual-role → split create/attach by role.
+- 6 MP integration test pairs (topology / icmp / fd_fallback) → v3.
+- 5 autojoin integration tests → JoinDynamicConfigV3.
+- Legacy non-registry MP path (dpdk_mp_primary / dpdk_mp_secondary /
+  test_dpdk_multiprocess_config) deleted entirely.
+
+**Deferred (future cleanup commits)**:
+- Rename `PlatformConfigV3` → `PlatformConfig` + delete v2 PlatformConfig
+  (blocked on `create_primary/secondary` internal rewrite).
+- Rename `JoinDynamicConfigV3` → `JoinDynamicConfig`.
+- Move `MpTopology` to `detail::` namespace.
+- Delete `EalConfig::proc_type / proc_type_set / file_prefix` fields.
+- MultiPortPlatform v3 migration.
+
+The v2 surface remains functional during the transition — every
+existing caller still compiles. New code should target v3.
+
+See `.claude/plans/reflective-rolling-hellman.md` for the full
+plan, design assumptions, and stage breakdown.
+
 ### Fixed — MP mental-model closure follow-ups (round 7 audit)
 
 A continuation of the same `/pax --review` LENS ("production /
