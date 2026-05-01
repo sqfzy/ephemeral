@@ -36,10 +36,11 @@ xmake build test_fix        # main parser/builder tests
 xmake build bench_fix_parse # parse throughput benchmark
 ```
 
-Or build everything for the subproject:
+Or build every test / benchmark across the monorepo (groups defined in the root `xmake.lua`):
 
 ```bash
-xmake build -g eph-fix      # if grouped; otherwise iterate the test targets
+xmake build -g tests        # builds test_fix, test_fix_session, …
+xmake build -g benchmarks   # builds bench_fix_parse along with all other modules' benches
 ```
 
 ### Run tests
