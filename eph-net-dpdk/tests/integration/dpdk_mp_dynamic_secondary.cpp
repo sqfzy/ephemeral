@@ -50,10 +50,14 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
         static_cast<uint16_t>(std::stoul(nb_rx_queues_s));
     ASSERT_GE(nb_rx_queues, 2u);
 
-    eph::dpdk::JoinDynamicConfig cfg{};
-    cfg.pci                          = pci;
-    cfg.pcfg_template.nb_rx_queues   = nb_rx_queues;
-    cfg.lcores                       = {lcores};
+    // V3 autojoin secondary: zero-consensus — only `pci` and `lcores`
+    // are needed. primary_config left at default (discarded when this
+    // peer resolves to Secondary). nb_rx_queues env var preserved for
+    // post-attach assertions only.
+    (void)nb_rx_queues;
+    eph::dpdk::JoinDynamicConfigV3 cfg{};
+    cfg.pci    = pci;
+    cfg.lcores = {lcores};
 
     auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
     ASSERT_TRUE(plat_r)

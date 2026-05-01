@@ -2604,7 +2604,8 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         return std::unexpected(std::string{
             "join_dynamic: queues_per_proc must be > 0"});
 
-    const uint16_t nb_rx_queues = cfg.pcfg_template.nb_rx_queues;
+    // Mutable: secondary path may overwrite from live NIC (A1).
+    uint16_t nb_rx_queues = cfg.pcfg_template.nb_rx_queues;
 
     // ── 2. derive file_prefix ─────────────────────────────────────────────
     std::string derived_prefix;
@@ -2621,16 +2622,25 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     }
 
     // ── 3. derive max_procs ───────────────────────────────────────────────
+    // `max_procs == 0` is the caller's "auto-derive" sentinel. Track
+    // whether the caller explicitly set it — v3 zero-consensus secondary
+    // peers leave it at 0 (default) and inherit primary's value from
+    // the registry. The "max_procs disagreement" check below only fires
+    // when the caller explicitly disagreed.
+    const bool max_procs_explicit = (cfg.max_procs > 0);
     uint8_t max_procs = cfg.max_procs;
     if (max_procs == 0) {
         const uint16_t auto_max = nb_rx_queues / cfg.queues_per_proc;
-        if (auto_max == 0)
-            return std::unexpected(std::string{
-                "join_dynamic: nb_rx_queues / queues_per_proc < 1; "
-                "supply queues_per_proc <= nb_rx_queues or set max_procs "
-                "explicitly"});
-        max_procs = static_cast<uint8_t>(
-            std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
+        if (auto_max == 0) {
+            // Secondary peers in v3 zero-consensus leave nb_rx_queues at
+            // default (1) and queues_per_proc at default (1) → auto_max=1.
+            // This is fine; secondary will read the actual value from
+            // primary's registry post-EAL. Don't reject here.
+            max_procs = 1;  // placeholder; replaced from registry on secondary path
+        } else {
+            max_procs = static_cast<uint8_t>(
+                std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
+        }
     }
     if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
         return std::unexpected(std::string{
@@ -2760,17 +2770,38 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         }
 
         const uint32_t primary_total = ro->header()->total_procs;
-        if (primary_total != max_procs) {
+        if (max_procs_explicit && primary_total != max_procs) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: primary's total_procs={} "
-                "differs from this peer's derived max_procs={} "
-                "(both peers must derive the same value)",
-                primary_total, max_procs);
+                "join_dynamic[secondary]: caller explicitly set "
+                "max_procs={} but primary's registry reports total_procs={} "
+                "— explicit caller value disagreed with primary",
+                max_procs, primary_total);
             std::expected<Platform, std::string> err{std::unexpected(std::string{
-                "join_dynamic[secondary]: max_procs disagreement with "
-                "primary's registry — peers must derive identical "
-                "max_procs"})};
+                "join_dynamic[secondary]: caller-supplied max_procs "
+                "disagrees with primary's registry value"})};
             return rollback_eal_on_error(std::move(err));
+        }
+        // Adopt primary's value (zero-consensus path: caller didn't
+        // supply max_procs and trusts primary's registry).
+        max_procs = static_cast<uint8_t>(primary_total);
+        // Likewise, secondary may not have known nb_rx_queues. The
+        // registry doesn't carry it, but the live NIC does — query it
+        // so MpTopology::uniform below builds the same topology
+        // primary did. (A1: rte_eth_dev_info_get returns
+        // primary-configured queue count from secondary.)
+        const uint16_t port_id_for_query =
+            (cfg.pcfg_template.port_id != 0) ? cfg.pcfg_template.port_id : 0;
+        rte_eth_dev_info dev_info{};
+        if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);
+            rc == 0 && dev_info.nb_rx_queues > 0) {
+            // Override with live NIC value (which secondary trusts as
+            // primary-configured). Uses the same query as
+            // Platform::attach() — see plan A1.
+            nb_rx_queues       = dev_info.nb_rx_queues;
+            pcfg.nb_rx_queues  = dev_info.nb_rx_queues;
+            pcfg.nb_tx_queues  = (dev_info.nb_tx_queues != 0)
+                                     ? dev_info.nb_tx_queues
+                                     : dev_info.nb_rx_queues;
         }
 
         // 8S. CAS-claim the lowest free slot.
@@ -3037,13 +3068,22 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::join_dynamic(JoinDynamicConfigV3 v3cfg) {
     // Translate v3 → v2 JoinDynamicConfig. queues_per_proc and
-    // max_procs flow from primary_config to top-level.
+    // max_procs flow from primary_config to top-level. v2 uses
+    // sentinel 0 = "auto-derive"; v3 PlatformConfigV3 inherits
+    // PlatformConfig defaults where max_procs=1 = "single-process".
+    // For the autojoin context, treat primary_config.max_procs<=1 as
+    // "let library auto-derive from nb_rx_queues / queues_per_proc"
+    // — secondary peers leave primary_config at default and must
+    // not lock the library into max_procs=1 (which would forbid any
+    // secondary attach).
     JoinDynamicConfig v2cfg{};
     v2cfg.pci             = v3cfg.pci;
     v2cfg.queues_per_proc = (v3cfg.primary_config.queues_per_proc > 0)
                                 ? v3cfg.primary_config.queues_per_proc
                                 : 1;
-    v2cfg.max_procs       = v3cfg.primary_config.max_procs;
+    v2cfg.max_procs       = (v3cfg.primary_config.max_procs > 1)
+                                ? v3cfg.primary_config.max_procs
+                                : 0;  // 0 = v2 auto-derive
     // file_prefix always auto-derived from pci in v3 (zero-consensus).
     v2cfg.file_prefix     = {};
     v2cfg.pcfg_template   = detail::v3_to_v2_primary(v3cfg.primary_config);

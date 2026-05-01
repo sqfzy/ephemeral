@@ -179,14 +179,13 @@ void log(const char* role, const char* fmt, ...) {
     log("secondary", "join_dynamic-attaching: pci=%s queue=%u",
         allowed_dev, kSecondaryQueueId);
 
-    eph::dpdk::JoinDynamicConfig jcfg{};
-    jcfg.pci                          = allowed_dev;
-    jcfg.queues_per_proc              = 1;
-    jcfg.pcfg_template.port_id        = 0;
-    jcfg.pcfg_template.nb_rx_queues   = kNbRxQueues;
-    jcfg.pcfg_template.nb_tx_queues   = kNbRxQueues;
+    // V3 secondary autojoin: zero-consensus — pci + lcores only.
+    // primary_config remains default; ignored when this peer
+    // resolves to Secondary.
+    eph::dpdk::JoinDynamicConfigV3 jcfg{};
+    jcfg.pci    = allowed_dev;
     const char* lc = env_or_null("EPH_REPRO_LCORES");
-    jcfg.lcores                       = {std::string{lc ? lc : "1"}};
+    jcfg.lcores = {std::string{lc ? lc : "1"}};
 
     auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
     if (!plat_r) {
@@ -286,13 +285,15 @@ int primary_main(char** argv) {
         }
         log("primary", "BENIGN MODE — Platform up, no I/O, idle %s seconds",
             env_or_null("EPH_REPRO_BENIGN_HOLD") ? env_or_null("EPH_REPRO_BENIGN_HOLD") : "30");
-        eph::dpdk::JoinDynamicConfig jcfg{};
-        jcfg.pci                          = allowed_dev;
-        jcfg.queues_per_proc              = 1;
-        jcfg.pcfg_template.port_id        = 0;
-        jcfg.pcfg_template.nb_rx_queues   = kNbRxQueues;
-        jcfg.pcfg_template.nb_tx_queues   = kNbRxQueues;
-        jcfg.lcores                       = {"0"};
+        // V3 primary autojoin (benign-mode): primary_config carries
+        // NIC physical state; queues_per_proc moved into primary_config.
+        eph::dpdk::JoinDynamicConfigV3 jcfg{};
+        jcfg.pci                              = allowed_dev;
+        jcfg.primary_config.port_id           = 0;
+        jcfg.primary_config.nb_rx_queues      = kNbRxQueues;
+        jcfg.primary_config.nb_tx_queues      = kNbRxQueues;
+        jcfg.primary_config.queues_per_proc   = 1;
+        jcfg.lcores                           = {"0"};
         auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
         if (!plat_r) {
             log("primary", "BENIGN: join_dynamic failed: %s", plat_r.error().c_str());
