@@ -97,7 +97,15 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///       + pid (pid_t) — owner PID; attach-time liveness probe
 ///       via kill(pid, 0) detects stale slots from kill-9'd peers
 ///       and CAS-preempts them. Same v2 schema, no further bump.
-inline constexpr uint32_t kMpRegistryVersion = 2;
+///   v3: API reshape — secondary attach surface shrunk to "how to
+///       find primary" (`PlatformAttachConfig{file_prefix, port_id}`).
+///       Wire layout unchanged; bump signals API generation. v3
+///       processes hard-reject v2 hugepages and vice-versa: a primary
+///       running v2 + secondary launched at v3 is an environment
+///       mismatch that should fail loudly, not silently misbehave.
+///       Recovery: stop all secondaries → upgrade primary (it
+///       recreates the registry) → upgrade secondaries.
+inline constexpr uint32_t kMpRegistryVersion = 3;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
 
@@ -554,12 +562,14 @@ public:
             SPDLOG_ERROR(
                 "MpRegistry: header version mismatch on '{}' "
                 "(got={}, expected={}) — primary built with a different "
-                "eph-net-dpdk version",
+                "eph-net-dpdk version. Recovery: stop all secondaries, "
+                "restart primary (it recreates the registry at the "
+                "current schema), then start secondaries.",
                 name, hdr->version, kMpRegistryVersion);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
-                "MpRegistry: header version mismatch (primary built "
-                "with a different eph-net-dpdk version)"});
+                "MpRegistry: header version mismatch — recovery: stop "
+                "all secondaries, restart primary, then start secondaries"});
         }
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),
@@ -789,12 +799,13 @@ public:
             SPDLOG_ERROR(
                 "MpRegistry: header version mismatch on '{}' "
                 "(got={}, expected={}) — primary built with a different "
-                "eph-net-dpdk version (read-only attach)",
+                "eph-net-dpdk version (read-only attach). Recovery: stop "
+                "all secondaries, restart primary, then start secondaries.",
                 name, hdr->version, kMpRegistryVersion);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
-                "MpRegistry: header version mismatch (primary built "
-                "with a different eph-net-dpdk version)"});
+                "MpRegistry: header version mismatch — recovery: stop "
+                "all secondaries, restart primary, then start secondaries"});
         }
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),

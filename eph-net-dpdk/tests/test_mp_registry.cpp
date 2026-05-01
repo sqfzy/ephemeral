@@ -118,6 +118,48 @@ TEST(MpRegistry, CreatePrimary_WritesHeader) {
     EXPECT_EQ(hdr->procs[1].claimed.load(std::memory_order_acquire), 0);
 }
 
+TEST(MpRegistrySchema, V3VersionConstantBumped) {
+    // Stage 2 of the v3 reshape bumps schema 2 -> 3. Hard-pin the
+    // version constant so a future accidental revert (e.g. cherry-pick
+    // from a v2 branch) triggers a loud unit-test failure instead of a
+    // silent cross-process corruption window.
+    EXPECT_EQ(kMpRegistryVersion, 3u);
+}
+
+TEST(MpRegistrySchema, V2RegistryRejectedByV3SecondaryAttach) {
+    // Simulate a stale v2 hugepage by creating a v3 registry then
+    // poking the version field back to 2, then verifying secondary
+    // attach (both writeable + readonly) hard-rejects with the
+    // recovery hint. This is the cross-version rejection contract
+    // documented in the v3 plan (BREAKING B8: registry schema bump).
+    auto p = MpRegistryHandle::create_primary("rgv2sim", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    // Bypass header() const-ness via const_cast: tests are in the same
+    // namespace as the impl and this is a deliberate poke at a stable
+    // POD layout, not a behavior-altering hack on production code.
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    ASSERT_NE(hdr, nullptr);
+    hdr->version = 2;  // pretend primary is one schema generation back
+
+    // Read-only attach must reject.
+    auto ro = MpRegistryHandle::attach_secondary_readonly("rgv2sim");
+    ASSERT_FALSE(ro.has_value());
+    EXPECT_NE(std::strstr(ro.error().detail, "version mismatch"), nullptr)
+        << "actual: " << ro.error().detail;
+    EXPECT_NE(std::strstr(ro.error().detail, "recovery"), nullptr)
+        << "actual: " << ro.error().detail;
+
+    // Writeable attach must reject too.
+    auto rw = MpRegistryHandle::attach_secondary("rgv2sim", make_topo(1));
+    ASSERT_FALSE(rw.has_value());
+    EXPECT_NE(std::strstr(rw.error().detail, "version mismatch"), nullptr)
+        << "actual: " << rw.error().detail;
+
+    // Restore so cleanup doesn't hit assertion paths.
+    hdr->version = kMpRegistryVersion;
+}
+
 TEST(MpRegistry, AttachSecondary_LookupMatchesPrimary) {
     auto p = MpRegistryHandle::create_primary("rgsec", make_topo(0));
     ASSERT_TRUE(p.has_value()) << p.error();
