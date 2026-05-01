@@ -107,10 +107,11 @@ using namespace std::chrono_literals;
 int main() {
     auto poller = en::KernelPoller::create({}).value();
 
-    // EnableTls is the second template parameter (default false). Setting
-    // it true folds the TLS 1.3 handshake into create(). Resolve the
-    // host's IP via your usual mechanism (sync getaddrinfo or
-    // eph::dpdk::dns::resolve on the DPDK path) and pass it as a
+    // EnableTls is the second template parameter (default true). Set
+    // it to false for plaintext-only streams; the TLS 1.3 handshake
+    // path then compiles out entirely (TlsState is std::monostate).
+    // Resolve the host's IP via your usual mechanism (sync getaddrinfo
+    // or eph::dpdk::dns::resolve on the DPDK path) and pass it as a
     // SocketAddr.
     auto stream = en::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>::create({
         .remote = en::SocketAddr{ /* resolved IPv4 */, 443 },
