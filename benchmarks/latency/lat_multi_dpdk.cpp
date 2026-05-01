@@ -69,7 +69,7 @@ namespace {
 std::atomic<bool> g_running{true};
 void on_signal(int) { g_running.store(false, std::memory_order_release); }
 
-constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
+constexpr const char* kDefaultConfigPath = "benchmarks/latency/config.toml";
 
 const char* parse_config_path(int argc, char** argv) noexcept {
     for (int i = 1; i + 1 < argc; ++i) {

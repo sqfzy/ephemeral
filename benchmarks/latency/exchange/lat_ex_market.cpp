@@ -94,7 +94,7 @@ using StreamTls = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 using Poller    = ek::KernelPoller;
 #endif
 
-constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
+constexpr const char* kDefaultConfigPath = "benchmarks/latency/config.toml";
 
 [[nodiscard, maybe_unused]] const char* parse_config_path(int argc, char** argv) noexcept {
     for (int i = 1; i + 1 < argc; ++i) {

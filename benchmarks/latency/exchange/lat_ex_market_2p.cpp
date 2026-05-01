@@ -97,7 +97,7 @@ using StreamTls = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 using Poller    = ek::KernelPoller;
 #endif
 
-constexpr const char* kDefaultConfigPath = "benchmarks/latency/bench.conf";
+constexpr const char* kDefaultConfigPath = "benchmarks/latency/config.toml";
 constexpr std::size_t kMaxSymbols = 64;
 constexpr std::size_t kMaxFrameSize = 512;
 

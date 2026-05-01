@@ -237,7 +237,7 @@ xmake build lat_tcp lat_udp lat_ws lat_ex_market lat_ex_order lat_ex_md_udp
 xmake build lat_tcp_dpdk lat_udp_dpdk lat_ws_dpdk \
             lat_ex_market_dpdk lat_ex_order_dpdk lat_ex_md_udp_dpdk
 
-# Edit benchmarks/latency/bench.conf once, then:
+# Edit benchmarks/latency/config.toml once, then:
 sudo ./benchmarks/latency/lat tcp                # raw TCP RTT, kernel client
 sudo ./benchmarks/latency/lat udp --dpdk         # raw UDP RTT, DPDK client
 sudo ./benchmarks/latency/lat ex_market          # exchange bookTicker push
