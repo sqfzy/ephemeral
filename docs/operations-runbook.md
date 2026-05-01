@@ -1,6 +1,37 @@
 # Operations Runbook
 
-Monitoring, alerting, and incident response for ephemeral in production.
+Monitoring, alerting, and incident response for ephemeral in
+production.
+
+> **Heads-up: API names below predate the v3.x concept refactor.** The
+> code samples in this file (`transport->stats()`,
+> `connection_info()`, `tx_queue_occupancy()`, `BoundedQueue` /
+> `EvictingQueue` template params, the `TransportStats` struct, the
+> `on_state_change` / `on_rx_drop` callbacks, etc.) describe the
+> **shape** of a production observability/shutdown integration but
+> **do not** match the current public surface. The current surface is:
+>
+> - **Metrics**: `eph::net::StreamMetric` + `eph::net::publish_metrics`
+>   for stream-level counters (RX/TX/codec/checksum/fragments),
+>   `eph::net::ReconnectMetric` + `publish_reconnect_metrics` for
+>   reconnect attempts/failures, with a user-supplied `MetricsSink`
+>   (`eph::core::MetricsSink` concept). See
+>   `docs/observability-metrics.md` and `docs/observability-guide.md`.
+> - **TLS info**: `Stream::tls_version()` / `tls_cipher()` (when the
+>   stream is TLS-enabled), `cfg.tls.hostname` for SNI.
+> - **Graceful close**: `Stream::close_gracefully(timeout)` exists on
+>   both kernel and DPDK `TcpStream`; the `(close_code, reason,
+>   timeout)` overload below is WS-codec specific.
+> - **Health**: read the latest `StreamMetric::kRxPackets` /
+>   `kTxPackets` counter delta; there is no `is_connected()` /
+>   `last_rx_tsc` member on `Stream`.
+>
+> The Prometheus alert thresholds, playbooks, and shutdown sequencing
+> below are still operationally correct — only the bindings to the
+> library API need adapting. The plan is to rewrite this file against
+> the current surface; until then, treat the C++ snippets as
+> pseudo-code and use the metrics in `docs/observability-metrics.md`
+> for the actual metric names.
 
 ## Metrics Export
 
