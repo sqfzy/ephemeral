@@ -186,20 +186,6 @@ The user-facing names deliberately mirror Tokio / mio:
 or "variants" — the threading model collapsed to "whatever thread owns the
 Poller runs the callbacks in that thread."
 
-## Preset aliases
-
-The design doc reserves four short aliases for the most common template combinations,
-so application code can avoid repeating the full template parameter list:
-
-```cpp
-using KernelWsClient = eph::net::kernel::KernelTcpStream<eph::codec::WsCodec, true>;
-using DpdkWsClient   = eph::net::dpdk::DpdkTcpStream<eph::codec::WsCodec, true>;
-using KernelWsPoller = eph::net::kernel::KernelPoller;
-using DpdkWsPoller   = eph::net::dpdk::DpdkPoller<>;
-```
-
-These live alongside the concrete types when added and are purely syntactic sugar.
-
 ## Where to go next
 
 - **Want to write a new codec?** → `docs/custom-codec.md`
