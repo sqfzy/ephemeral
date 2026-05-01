@@ -477,16 +477,23 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     size_t offset = kDnsHeaderLen;
     for (uint16_t i = 0; i < qd_count; ++i) {
         offset = skip_dns_name(dns_data, offset, dns_len);
-        if (offset == 0) return std::unexpected("DNS response: malformed question");
+        if (offset == 0) return std::unexpected(std::format(
+            "DNS response: malformed question name at qd[{}/{}], dns_len={}",
+            i, qd_count, dns_len));
         offset += 4;  // QTYPE(2) + QCLASS(2)
-        if (offset > dns_len) return std::unexpected("DNS response: truncated question");
+        if (offset > dns_len) return std::unexpected(std::format(
+            "DNS response: truncated question at qd[{}/{}] (offset={} > dns_len={})",
+            i, qd_count, offset, dns_len));
     }
 
     // Parse answer section — find first A record
     for (uint16_t i = 0; i < an_count; ++i) {
         offset = skip_dns_name(dns_data, offset, dns_len);
         if (offset == 0 || offset + 10 > dns_len) {
-            return std::unexpected("DNS response: malformed answer RR");
+            return std::unexpected(std::format(
+                "DNS response: malformed answer RR at an[{}/{}] "
+                "(offset={}, dns_len={}, need offset+10 bytes for fixed RR header)",
+                i, an_count, offset, dns_len));
         }
 
         uint16_t rr_type, rr_class, rdlength;
@@ -501,7 +508,10 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
         offset += 10;  // TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2)
 
         if (rdlength > kMaxDnsPacketLen || offset + rdlength > dns_len) {
-            return std::unexpected("DNS response: RDATA exceeds packet");
+            return std::unexpected(std::format(
+                "DNS response: RDATA exceeds packet at an[{}/{}] "
+                "(rdlength={}, offset={}, dns_len={}, kMaxDnsPacketLen={})",
+                i, an_count, rdlength, offset, dns_len, kMaxDnsPacketLen));
         }
 
         if (rr_type == kDnsTypeA && rr_class == kDnsClassIn && rdlength == 4) {
@@ -514,7 +524,10 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
         offset += rdlength;  // Skip this RR, try next
     }
 
-    return std::unexpected("DNS response: no A record found");
+    return std::unexpected(std::format(
+        "DNS response: no A record found among {} answer record(s) "
+        "(only AAAA / CNAME / etc. seen)",
+        an_count));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
