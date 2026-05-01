@@ -2942,20 +2942,28 @@ Platform::attach(PlatformAttachConfig cfg) {
         attach_secondary_readonly(cfg.file_prefix);
     if (!ro) {
         SPDLOG_LOGGER_ERROR(log,
-            "Platform::attach: attach_secondary_readonly failed: {}",
-            ro.error().detail);
-        return std::unexpected(std::string{ro.error().detail});
+            "Platform::attach: attach_secondary_readonly failed "
+            "(file_prefix='{}'): {}",
+            cfg.file_prefix, ro.error().detail);
+        return std::unexpected(std::format(
+            "Platform::attach: attach_secondary_readonly failed "
+            "(file_prefix='{}'): {}",
+            cfg.file_prefix, ro.error().detail));
     }
+    const uint32_t total_procs = ro->header()->total_procs;
 
     auto idx_r = ro->try_claim_free_slot();
     if (!idx_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "Platform::attach: try_claim_free_slot failed: {}",
-            idx_r.error().detail);
-        return std::unexpected(std::string{idx_r.error().detail});
+            "Platform::attach: try_claim_free_slot failed "
+            "(file_prefix='{}', primary_total_procs={}): {}",
+            cfg.file_prefix, total_procs, idx_r.error().detail);
+        return std::unexpected(std::format(
+            "Platform::attach: try_claim_free_slot failed "
+            "(file_prefix='{}', primary_total_procs={}): {}",
+            cfg.file_prefix, total_procs, idx_r.error().detail));
     }
-    const uint8_t self_idx     = *idx_r;
-    const uint32_t total_procs = ro->header()->total_procs;
+    const uint8_t self_idx = *idx_r;
 
     // Query live NIC for nb_rx_queues — A1 assumption (verified
     // empirically in stage 3). Secondary doesn't get this from caller.
@@ -2964,15 +2972,19 @@ Platform::attach(PlatformAttachConfig cfg) {
         SPDLOG_LOGGER_ERROR(log,
             "Platform::attach: rte_eth_dev_info_get(port={}) failed: rc={}",
             cfg.port_id, rc);
-        return std::unexpected(std::string{
-            "Platform::attach: rte_eth_dev_info_get failed (port may not "
-            "be configured by primary yet, or port_id mismatch)"});
+        return std::unexpected(std::format(
+            "Platform::attach: rte_eth_dev_info_get(port_id={}) failed: "
+            "rc={} (port may not be configured by primary yet, or port_id "
+            "mismatch)",
+            cfg.port_id, rc));
     }
     const uint16_t nb_rx_queues = dev_info.nb_rx_queues;
     if (nb_rx_queues == 0) {
-        return std::unexpected(std::string{
-            "Platform::attach: NIC reports nb_rx_queues=0 — primary may "
-            "not have configured the port yet"});
+        return std::unexpected(std::format(
+            "Platform::attach: NIC reports nb_rx_queues=0 on port_id={} "
+            "(file_prefix='{}') — primary may not have configured the port "
+            "yet, or attach was called before primary's create finished",
+            cfg.port_id, cfg.file_prefix));
     }
 
     PlatformConfig v2{};
@@ -3041,9 +3053,11 @@ Platform::attach_with_eal(PlatformAttachConfig                    cfg,
 
     // Mutex check (mirrors v2 create_with_eal step 1)
     if (!pins.empty() && !eal_cfg.lcores.empty()) {
-        return std::unexpected(std::string{
-            "attach_with_eal: typed pins and raw eal_cfg.lcores are "
-            "mutually exclusive"});
+        return std::unexpected(std::format(
+            "attach_with_eal: typed pins (size={}) and raw eal_cfg.lcores "
+            "(size={}) are mutually exclusive (pick the typed-pin path or "
+            "the raw-lcores path, not both)",
+            pins.size(), eal_cfg.lcores.size()));
     }
 
     // Pre-EAL pin registration (mirrors v2 create_with_eal step 2)
