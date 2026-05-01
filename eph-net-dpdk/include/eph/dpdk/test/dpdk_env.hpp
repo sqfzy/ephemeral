@@ -196,7 +196,14 @@ struct DpdkBenchEnv {
     ///                            `JoinDynamicConfig::max_procs` and
     ///                            `pcfg_template.{nb_rx_queues,
     ///                            nb_tx_queues}`
-    /// @param lcores             EAL lcore CSV for this peer
+    /// @param lcores             EAL lcore CSV for this peer (e.g.
+    ///                            `"0,1"`). Auto-parsed into a bitmask
+    ///                            for the registry's cross-process
+    ///                            lcore-conflict check; supports
+    ///                            individual ids (`"0,2,4"`) and
+    ///                            ranges (`"0-3"` or `"0-1,4-5"`).
+    ///                            Empty string → no lcore tracking
+    ///                            (back-compat opt-out).
     /// @param mock_ip            Server IP — dotted-quad
     /// @param client_ip          Local source IP — dotted-quad
     /// @param gateway_ip         Gateway IP for ARP — dotted-quad
@@ -217,6 +224,43 @@ struct DpdkBenchEnv {
                 "(use create() for single-process)");
         }
 
+        // Parse lcore CSV into bitmask for cross-process conflict
+        // detection (MpRegistry v2). Supports "0,1,2", "0-3",
+        // "0-1,4-5". Bit N set ↔ this peer claims lcore N.
+        // Cap at 64 (MpTopology::kMaxProcs); lcore IDs >= 64 are
+        // silently dropped (matches the schema cap — most NICs
+        // run far fewer worker lcores than 64 per peer).
+        uint64_t self_lcore_mask = 0;
+        {
+            const char* p = lcores.c_str();
+            while (*p) {
+                while (*p == ' ' || *p == ',') ++p;
+                if (!*p) break;
+                char* end = nullptr;
+                unsigned long lo = std::strtoul(p, &end, 10);
+                if (end == p) {
+                    return std::unexpected(
+                        std::string{"DpdkBenchEnv::create_via_autojoin: "
+                                    "malformed lcores CSV near '"} + p + "'");
+                }
+                unsigned long hi = lo;
+                p = end;
+                if (*p == '-') {
+                    ++p;
+                    hi = std::strtoul(p, &end, 10);
+                    if (end == p || hi < lo) {
+                        return std::unexpected(
+                            std::string{"DpdkBenchEnv::create_via_autojoin: "
+                                        "malformed lcore range near '"} + p + "'");
+                    }
+                    p = end;
+                }
+                for (unsigned long i = lo; i <= hi && i < 64; ++i) {
+                    self_lcore_mask |= (uint64_t{1} << i);
+                }
+            }
+        }
+
         // ── 1. Platform::join_dynamic ──────────────────────────────
         eph::dpdk::JoinDynamicConfig jd{};
         jd.pci                          = pci_bdf;
@@ -224,6 +268,7 @@ struct DpdkBenchEnv {
         jd.pcfg_template.nb_tx_queues   = static_cast<uint16_t>(max_procs);
         jd.max_procs                    = static_cast<uint16_t>(max_procs);
         jd.lcores                       = {lcores};
+        jd.self_lcore_mask              = self_lcore_mask;
 
         auto plat = eph::dpdk::Platform::join_dynamic(std::move(jd));
         if (!plat) {

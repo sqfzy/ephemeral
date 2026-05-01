@@ -2607,6 +2607,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         pcfg.proc_type   = ProcType::Primary;
         pcfg.mp_topology = MpTopology::uniform(
             /*self_index=*/0, max_procs, nb_rx_queues);
+        // Inject this peer's lcore_mask into its own slot so registry
+        // cross-process conflict check fires on overlap. Default 0 =
+        // opt out (back-compat). See JoinDynamicConfig::self_lcore_mask.
+        if (cfg.self_lcore_mask != 0) {
+            pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
+        }
         auto plat_r = Platform::create_primary(std::move(pcfg));
         if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
         return attach_eal_session(std::move(plat_r));
@@ -2654,6 +2660,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         pcfg.proc_type   = ProcType::Secondary;
         pcfg.mp_topology = MpTopology::uniform(
             self_idx, max_procs, nb_rx_queues);
+        // Same as primary path: opt-in lcore_mask publishing for
+        // cross-process conflict detection.
+        if (cfg.self_lcore_mask != 0) {
+            pcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
+        }
         ro->disarm_slot();  // hand off slot ownership to next handle
 
         auto plat_r = Platform::create_secondary_impl_(std::move(pcfg),
