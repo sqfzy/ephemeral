@@ -465,3 +465,70 @@ TEST(BinanceBookAdapter, LastUpdateIdTracking) {
     EXPECT_EQ(adapter.book().bid_depth(), 1u);
     EXPECT_NEAR(adapter.book().best_bid()->price, 200.0, kEps);
 }
+
+// ---------------------------------------------------------------------------
+// Defensive boundary cases — paths the existing tests don't reach
+// ---------------------------------------------------------------------------
+
+// Non-numeric ticker fields (parse_number returns nullopt) must surface as
+// `false` from update_from_ticker, leaving the book unmodified rather than
+// silently NaN-poisoning the BBO state.
+TEST(BinanceBookAdapter, NonNumericTickerLeavesBookUnchanged) {
+    BinanceBookAdapter<20> adapter;
+
+    // First seed a clean BBO so we can compare before/after.
+    auto good = make_bookticker_json("BTCUSDT", "100.0", "1.0", "101.0", "1.0");
+    ASSERT_TRUE(feed_ticker(adapter, good));
+    const double seed_bid = adapter.book().best_bid()->price;
+    const double seed_ask = adapter.book().best_ask()->price;
+
+    // Hand-craft a bookTicker JSON with a garbage bid_price string. The
+    // outer JSON parses fine, but parse_number on "abc" returns nullopt
+    // and update_from_ticker must reject without mutating any field.
+    std::string bad =
+        R"({"e":"bookTicker","u":1,"s":"BTCUSDT","b":"abc","B":"1.0",)"
+        R"("a":"101.0","A":"1.0","T":1,"E":2})";
+    auto parsed = eph::json::parse(
+        reinterpret_cast<const uint8_t*>(bad.data()), bad.size());
+    ASSERT_TRUE(parsed.has_value());
+    auto ticker = eph::json::binance::BookTicker::from(parsed.value());
+    ASSERT_TRUE(ticker.has_value());
+
+    EXPECT_FALSE(adapter.update_from_ticker(*ticker))
+        << "non-numeric bid price must surface as false";
+
+    // Book unchanged.
+    EXPECT_NEAR(adapter.book().best_bid()->price, seed_bid, kEps);
+    EXPECT_NEAR(adapter.book().best_ask()->price, seed_ask, kEps);
+}
+
+// After a qty=0 tick clears `last_bid_valid_`, the adapter must NOT try to
+// retire the (already-removed) old level on the next price-changing tick.
+// The previous logic would call book_.update_bid(stale_price, 0.0) and we
+// already saw nothing happen — but if last_*_valid_ tracking ever regressed,
+// this test would catch a phantom-level resurrection.
+TEST(BinanceBookAdapter, ZeroQtyResetsLastValidPreventingStaleRetirement) {
+    BinanceBookAdapter<20> adapter;
+
+    // Step 1: seed BBO at 100 / 101.
+    auto t1 = make_bookticker_json("BTCUSDT", "100.0", "1.0", "101.0", "1.0");
+    ASSERT_TRUE(feed_ticker(adapter, t1));
+    EXPECT_EQ(adapter.book().bid_depth(), 1u);
+
+    // Step 2: zero-qty bid clears the bid side AND must reset last_bid_valid_
+    // so the next tick at a different price does not double-remove.
+    auto t2 = make_bookticker_json("BTCUSDT", "100.0", "0.0", "101.0", "1.0");
+    ASSERT_TRUE(feed_ticker(adapter, t2));
+    EXPECT_EQ(adapter.book().bid_depth(), 0u);
+
+    // Step 3: re-seed bid at a NEW price 99.5. If last_bid_valid_ had not
+    // been reset, the adapter would call update_bid(100.0, 0.0) — a no-op
+    // here (already gone) but the contract is "do not act on stale state".
+    // Asserting bid_depth == 1 with the new price after step 3 confirms
+    // the new level was installed cleanly.
+    auto t3 = make_bookticker_json("BTCUSDT", "99.5", "2.0", "101.0", "1.0");
+    ASSERT_TRUE(feed_ticker(adapter, t3));
+    EXPECT_EQ(adapter.book().bid_depth(), 1u);
+    EXPECT_NEAR(adapter.book().best_bid()->price, 99.5, kEps);
+    EXPECT_NEAR(adapter.book().best_bid()->qty, 2.0, kEps);
+}
