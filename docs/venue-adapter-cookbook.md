@@ -22,6 +22,16 @@ what `Stream<C>`, `Poller`, and `KernelTcpStream<WsCodec, EnableTls>` are.
 
 ## TL;DR
 
+All snippets in this guide use these namespace aliases (declare them
+once at the top of your TU):
+
+```cpp
+namespace en = eph::net;          // SocketAddr / ReconnectOrchestrator /
+                                  // HttpClient / SignedRequest / Ipv4Addr
+namespace ek = eph::net::kernel;  // KernelTcpStream / KernelPoller
+namespace ec = eph::codec;        // WsCodec / RawStreamCodec / ...
+```
+
 ```cpp
 using TlsWsStream = ek::KernelTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 using Orch        = en::ReconnectOrchestrator<TlsWsStream>;
@@ -359,7 +369,12 @@ to seed the book before applying incremental WS updates.
 Build a one-shot HTTPS client over the same kernel TLS stream:
 
 ```cpp
-using TlsStream = ek::KernelTcpStream<eph::codec::HttpCodec, /*EnableTls=*/true>;
+// HttpClient drives the HTTP exchange itself; the underlying stream
+// just needs to deliver raw bytes — RawStreamCodec is the canonical
+// pairing (matches examples/binance_signed_rest.cpp +
+// examples/coinbase_jwt_rest.cpp). There is no `HttpCodec` type in
+// eph-codec.
+using TlsStream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/true>;
 
 ek::StreamConfig cfg{};
 cfg.remote                = en::SocketAddr{api_ip, 443};
