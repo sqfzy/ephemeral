@@ -58,6 +58,7 @@
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/mp_topology.hpp"
+#include "eph/utils/scope_guard.hpp"
 
 namespace eph::dpdk::detail {
 
@@ -531,20 +532,16 @@ public:
         // earlier validation failure (memzone lookup, magic/version,
         // file_prefix, total_procs, self_index range). We can only honour
         // the release once `hdr` has been resolved AND we know the slot
-        // index is in range; failures before that point return as-is
-        // because no slot was identified.
-        struct PreclaimedSlotGuard {
-            MpRegistryHeader* hdr_to_release{nullptr};
-            uint8_t           idx_to_release{0};
-            bool              armed{false};
-            void disarm() noexcept { armed = false; }
-            ~PreclaimedSlotGuard() noexcept {
-                if (armed && hdr_to_release != nullptr) {
-                    hdr_to_release->procs[idx_to_release].claimed.store(
-                        0, std::memory_order_release);
-                }
+        // index is in range; failures before that point leave
+        // `hdr_for_release` null so the guard's lambda is a no-op.
+        MpRegistryHeader* hdr_for_release = nullptr;
+        uint8_t           idx_for_release = 0;
+        auto slot_guard = utils::ScopeGuard{[&] {
+            if (hdr_for_release != nullptr) {
+                hdr_for_release->procs[idx_for_release].claimed.store(
+                    0, std::memory_order_release);
             }
-        } slot_guard;
+        }};
 
         if (!topo.valid()) {
             SPDLOG_ERROR(
@@ -588,9 +585,8 @@ public:
         // releases at the spec-disagree / lcore-overlap branches still
         // disarm the guard before returning so we never double-release.
         if (already_claimed && topo.self_index < MpTopology::kMaxProcs) {
-            slot_guard.hdr_to_release = hdr;
-            slot_guard.idx_to_release = topo.self_index;
-            slot_guard.armed          = true;
+            hdr_for_release = hdr;
+            idx_for_release = topo.self_index;
         }
 
         if (hdr->magic != kMpRegistryMagic) {
