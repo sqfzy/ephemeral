@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Changed — Tier-1 naming audit follow-ups (BREAKING)
+
+Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 1, executed
+the 5 highest-priority renames (no transitional aliases):
+
+  * Platform::IcmpTargetCompoundHandle → Platform::IcmpTargetHandle
+    (alias collapsed)
+  * Removed PlatformConfig::self_lcore_mask (kept only on
+    JoinDynamicConfig — single source of truth; later renamed to
+    CreateOrJoinConfig)
+  * eph::net::dpdk::UdpConfig::legacy → cfg.dpdk.udp_low_level (with
+    Dpdk substruct mirroring TCP T3.19)
+  * eph::dpdk::UdpConfig (wire-level)  → eph::dpdk::wire::UdpConfig
+  * JoinDynamicConfig::primary_config → CreateOrJoinConfig::nic
+  * Platform::join_dynamic              → Platform::create_or_join
+  * JoinDynamicConfig                   → CreateOrJoinConfig
+  * eph/dpdk/join_dynamic.hpp           → eph/dpdk/create_or_join.hpp
+
+Migration: every caller updates at compile time. No alias shim.
+
 ### Removed — cooperative multi-process surface (BREAKING)
 
 The cooperative MP path (declarative primary + secondaries calling
