@@ -299,7 +299,7 @@ integration fixtures that need namespace isolation. Requires
 
 ## Tests
 
-20 GoogleTest files under `tests/`, covering every public module plus
+22 GoogleTest files under `tests/`, covering every public module plus
 `test_version`. All tests are `[nodiscard]`-clean and exercise boundary
 conditions:
 
@@ -314,11 +314,13 @@ conditions:
 | `test_hdr_histogram.cpp`        | percentiles, merge/subtract, linear / percentile iter       |
 | `test_hugepage.cpp`             | zero-size, fallback, destructor                             |
 | `test_kill_switch.cpp`          | single-fire idempotency, CAS under concurrent trip          |
+| `test_netns_compile.cpp`        | Compile-time gate for `linux/netns.hpp` on non-Linux hosts  |
 | `test_phased_timer.cpp`         | warmup → measurement transition, uncalibrated fall-through  |
 | `test_rate_limiter.cpp`         | `TokenBucket` refill, weighted acquire, capacity clamp      |
 | `test_rate_limiter_edge.cpp`    | `weight=0` / `weight>capacity`, clock-backward, long idle   |
 | `test_record.cpp`               | Stats dump/json, operator-                                  |
 | `test_recorder.cpp`             | record, export_json/csv, overflow saturation                |
+| `test_recorder_runtime.cpp`     | `ConcurrentRecorder` thread-local + retired-thread merge    |
 | `test_shutdown_signal.cpp`      | handler installation, flag flip on SIGTERM                  |
 | `test_spin_for_ns.cpp`          | busy-wait accuracy at 1 us / 10 us / 100 us                 |
 | `test_system_stats.cpp`         | delta, move semantics, format                               |

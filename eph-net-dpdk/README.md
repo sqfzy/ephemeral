@@ -138,12 +138,15 @@ namespace en = eph::net::dpdk;
 namespace ec = eph::codec;
 
 int main(int argc, char** argv) {
-    // `Eal::init` returns a move-only RAII guard that runs rte_eal_cleanup
-    // on scope exit. There is no bare `Eal(argc, argv)` ctor — the factory
-    // is the only public entry so the `std::expected` error contract is
-    // honoured (EAL init can legitimately fail: missing hugepages, bad
-    // --vdev, etc.).
-    auto eal = en::Eal::init(argc, argv).value();
+    // `Eal::init(EalConfig, span<LcorePin>, CpuPinPolicy={})` is the
+    // recommended typed-pin path: pre-validates lcore→cpu pinning against
+    // the `eph::utils` pin registry, builds `--lcores=…` argv, calls
+    // `rte_eal_init`, and transfers `PinGuard` ownership into the returned
+    // RAII guard. `Eal::init_raw(argc, argv)` is the escape hatch for
+    // hand-assembled argv (skips pin validation). Both return
+    // `std::expected<Eal, std::string>` — EAL init can legitimately fail
+    // (missing hugepages, bad --vdev, etc.).
+    auto eal = en::Eal::init_raw(argc, argv).value();
 
     // `PollerConfig` has two fields: `port_id` and `rx_queue_id`. lcore
     // affinity is the caller's responsibility (DpdkPoller does not spawn
