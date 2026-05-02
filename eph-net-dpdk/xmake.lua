@@ -143,9 +143,11 @@ target("test_dpdk_rss_key_correctness")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
--- EalGuard::init_with_pins integration test (rte_eal_init success path
--- with typed LcorePin spec). Runs in --no-pci mode so no vfio binding
--- is needed; SKIPs cleanly when no free hugepages are available.
+-- EalGuard::init (typed-pin overload) integration test — exercises the
+-- rte_eal_init success path with a typed LcorePin spec. Runs in --no-pci
+-- mode so no vfio binding is needed; SKIPs cleanly when no free hugepages
+-- are available. Target name retained for git-history continuity (file
+-- intentionally not renamed when init_with_pins → init landed).
 target("test_eal_init_with_pins")
     add_rules("eph-test")
     add_files("tests/integration/test_eal_init_with_pins.cpp")
