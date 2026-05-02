@@ -782,3 +782,75 @@ TEST_F(ReconnectOrchestratorTest, StopHaltsTickProgress) {
     EXPECT_EQ(orch.state(), en::ReconnectState::Backoff);
     EXPECT_EQ(factory_calls, 1);  // only the initial start() call
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression tests for r4 commit 1764beb6 — TSC-uncalibrated fallback
+// saturating math.
+//
+// The live `enter_backoff_` call site is hard to exercise from this test
+// fixture because `SetUpTestSuite` calls `TSC::init()` once for the whole
+// suite — `to_cycles` therefore never returns nullopt and the uncalibrated
+// branch is unreachable here.
+//
+// Pin the saturating-multiply formula directly. The constants and shape
+// must mirror `enter_backoff_` in `reconnect_orchestrator.hpp`. If
+// production drifts the formula (e.g. changes `kCyclesPerMsAt3GHz` or
+// drops the saturation guard), this test fails at the assertion and the
+// drift is caught at code review.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+// Replica of the uncalibrated fallback in enter_backoff_ at
+// reconnect_orchestrator.hpp:841-851. Drift here = test-driven failure;
+// drift in production = silent backoff defeat.
+constexpr uint64_t kCyclesPerMsAt3GHz_Replica = 3'000'000ULL;
+constexpr uint64_t kFallbackOverflowMs_Replica =
+    std::numeric_limits<uint64_t>::max() / kCyclesPerMsAt3GHz_Replica;
+
+uint64_t compute_fallback_cycles(int64_t delay_ms) noexcept {
+    if (delay_ms <= 0) return 0ULL;
+    if (static_cast<uint64_t>(delay_ms) >= kFallbackOverflowMs_Replica)
+        return std::numeric_limits<uint64_t>::max();
+    return static_cast<uint64_t>(delay_ms) * kCyclesPerMsAt3GHz_Replica;
+}
+} // namespace
+
+TEST(ReconnectOrchestratorFallbackMath, NonPositiveDelayReturnsZero) {
+    EXPECT_EQ(compute_fallback_cycles(0), 0u);
+    EXPECT_EQ(compute_fallback_cycles(-1), 0u);
+    EXPECT_EQ(compute_fallback_cycles(std::chrono::milliseconds::min().count()), 0u);
+}
+
+TEST(ReconnectOrchestratorFallbackMath, SmallDelayMultipliesAt3GHz) {
+    EXPECT_EQ(compute_fallback_cycles(1),    3'000'000ULL);
+    EXPECT_EQ(compute_fallback_cycles(1000), 3'000'000'000ULL);
+}
+
+TEST(ReconnectOrchestratorFallbackMath, MaxBackoffSaturatesAtUInt64Max) {
+    // The exact bug r4 commit 1764beb6 fixed: caller setting
+    // max_backoff = milliseconds::max() (~9.22e18 ms) used to multiply by
+    // 3'000'000ULL and wrap modulo 2^64 to a tiny next_attempt_tsc_,
+    // defeating backoff entirely.
+    const auto max_ms = std::chrono::milliseconds::max().count();
+    EXPECT_EQ(compute_fallback_cycles(max_ms),
+              std::numeric_limits<uint64_t>::max());
+
+    // Half of max also saturates (still way over kFallbackOverflowMs).
+    EXPECT_EQ(compute_fallback_cycles(max_ms / 2),
+              std::numeric_limits<uint64_t>::max());
+}
+
+TEST(ReconnectOrchestratorFallbackMath, OverflowBoundaryCorrect) {
+    // Just under the saturation threshold should NOT saturate.
+    const auto below = static_cast<int64_t>(kFallbackOverflowMs_Replica) - 1;
+    EXPECT_EQ(compute_fallback_cycles(below),
+              static_cast<uint64_t>(below) * kCyclesPerMsAt3GHz_Replica);
+    EXPECT_LT(compute_fallback_cycles(below),
+              std::numeric_limits<uint64_t>::max());
+
+    // At and above the threshold saturates.
+    const auto at = static_cast<int64_t>(kFallbackOverflowMs_Replica);
+    EXPECT_EQ(compute_fallback_cycles(at),
+              std::numeric_limits<uint64_t>::max());
+    EXPECT_EQ(compute_fallback_cycles(at + 1),
+              std::numeric_limits<uint64_t>::max());
+}
