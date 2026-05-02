@@ -173,7 +173,14 @@ struct TlsConfig {
     /// Callback invoked when peer cert SPKI hash doesn't match any pin.
     /// Receives the actual base64-encoded SPKI SHA-256 hash.
     /// Return true to continue connection despite mismatch, false to abort.
-    /// nullptr = log warning only, continue connection (default soft-pin behavior).
+    ///
+    /// nullptr = HARD PIN: reject the connection on mismatch (default).
+    /// This is the safe default — an empty callback combined with a non-empty
+    /// `pinned_spki_sha256` list makes a mismatch fatal so a MITM with a
+    /// valid CA-signed cert can't bypass the pin. To opt into soft-pin
+    /// (warn + continue) install a callback that returns `true` regardless
+    /// of `actual_hash`. See `TlsSession::verify_spki_pin()` for the
+    /// enforcement path.
     std::function<bool(std::string_view actual_hash)> on_pin_mismatch{};
 
     /// Validate configuration, returning an error on failure.
