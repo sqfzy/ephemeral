@@ -38,6 +38,21 @@ See `docs/dpdk-daemon-deployment.md` for the deployment story and
 - `EalConfig` as a public factory parameter. The struct still exists in
   `eph/dpdk/eal.hpp` as an internal helper for `build_eal_argv`; it is
   no longer accepted by any `Platform` factory.
+- `eph::dpdk::MultiPortPlatform` (entire `eph/dpdk/multi_port_platform.hpp`
+  header), the `examples/multi_port_platform_demo.cpp` demo, and the
+  `tests/test_dpdk_multi_port_platform.cpp` test. Rationale: under the
+  daemon-led model each NIC has its own independent `eph-nicd` daemon
+  and its own per-process `Platform` instance; there is no shared
+  resource for an aggregator to orchestrate. Multi-port deployments
+  (separate MD vs OE NICs, AWS multi-ENI, redundant feeds) now call
+  `Platform::create({.pci="A", .queues=N})` and
+  `Platform::create({.pci="B", .queues=M})` directly — same number of
+  lines as the wrapper, no abstraction overhead, and the "one Platform
+  per NIC" mental model becomes explicit at the call site. ICMP
+  registries and Pollers were already per-port under the old wrapper;
+  that property is unchanged. The xmake target
+  `multi_port_platform_demo` and the `test_dpdk_multi_port_platform`
+  README index entry were removed alongside.
 
 #### Added
 

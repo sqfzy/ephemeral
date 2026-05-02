@@ -48,13 +48,13 @@ Full operational contract: [`docs/dpdk-daemon-deployment.md`](docs/dpdk-daemon-d
 (tenant reconnect on daemon restart).
 
 For **multi-port** deployments inside a single process (separate MD vs
-OE NICs, AWS multi-ENI, redundant feeds), `eph::dpdk::MultiPortPlatform`
-in `eph/dpdk/multi_port_platform.hpp` owns N independent `Platform`
-instances and exposes them by index. Strictly additive — single-port
-semantics are unchanged. ICMP registries and Pollers stay per-port
-(cross-port routing would be a bug, not a feature). See the header
-docstring and `tests/test_dpdk_multi_port_platform.cpp` for the full
-contract.
+OE NICs, AWS multi-ENI, redundant feeds), call `Platform::create` once
+per NIC — each PCI BDF has its own independent `eph-nicd` daemon, so
+there is no shared resource for an aggregator to orchestrate. ICMP
+registries and Pollers are per-NIC by construction (cross-port routing
+would be a bug, not a feature). The previous `MultiPortPlatform`
+wrapper was removed in the daemon-led reshape (2026-05-02) — under the
+new model it added no value over two direct `Platform::create` calls.
 
 For lcore × application-thread cpu pinning (so `pin_thread` can detect
 SMT / NUMA conflicts against running EAL lcores), use the typed
@@ -89,10 +89,6 @@ User-facing — call directly from your application:
   / `EalGuard::init_raw` (raw argv escape hatch). `EalConfig` +
   `build_eal_argv` are internal helpers used by `Platform::create` /
   `serve_nic` to assemble argv; not a public factory parameter.
-- `multi_port_platform.hpp` — `MultiPortPlatform` aggregates N
-  independent `Platform`s (one per NIC port). Strictly additive over
-  single-port semantics; each sub-platform calls `Platform::create`
-  against its own NIC.
 - `lcore_pin.hpp` — `LcorePin` declarative spec + pure-function
   `--lcores` argv builder; integrates with the `eph::utils` pin
   registry so application threads see the same SMT / NUMA conflict
@@ -312,7 +308,6 @@ the preserved internal-primitive tests under `tests/legacy/`.
 | `test_dpdk_poller_timeout`         | `DpdkPoller` no-blocking-poll contract + idle deadline behaviour        |
 | `test_dpdk_poller_scale`           | Poller scaling: many streams, ICMP cross-queue dispatch                 |
 | `test_dpdk_udp_multicast_rss`      | UDP multicast under RSS — fail-fast on multi-queue, allow single-queue  |
-| `test_dpdk_multi_port_platform`    | `MultiPortPlatform` aggregator: per-port isolation, ICMP scoping        |
 | `test_dpdk_platform_mempool`       | Platform mempool naming / lookup across primary+secondary processes     |
 | `test_platform_config_validate`    | `validate(PlatformConfig)` / `validate(NicServiceConfig)` — config rejection set + happy paths + constexpr-evaluability |
 | `test_arp_api` / `test_arp_resolve`| `eph::dpdk::arp::resolve` (sync + RSS-safe reply routing)               |

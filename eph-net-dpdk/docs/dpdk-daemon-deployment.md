@@ -120,10 +120,14 @@ independent — no federation, no cross-NIC coordination, no shared
 state. Tenants pick which NIC to attach to via their
 `PlatformConfig::pci`.
 
-For redundant feeds (MD-A / MD-B on separate NICs), the existing
-`MultiPortPlatform` aggregator owns N independent `Platform` objects
-in one process — each sub-platform calls `Platform::create` against
-its own NIC and so attaches to its own daemon.
+For redundant feeds (MD-A / MD-B on separate NICs), call
+`Platform::create({.pci="A", .queues=N})` and
+`Platform::create({.pci="B", .queues=M})` directly in one process —
+each Platform attaches to its own daemon. There is no aggregator
+wrapper: under the daemon-led model the two NICs share no resource
+that an aggregator could orchestrate (each has its own hugepage
+segment, RSS table, ICMP registry, queue pool), so direct calls are
+both shorter and clearer than a wrapper.
 
 ## Operator commands (`eph-nicctl`) — coming in S6
 
