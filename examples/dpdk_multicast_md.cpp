@@ -214,8 +214,10 @@ int main(int argc, char** argv) {
     auto platform = std::move(*plat_r);
     const bool rss_active_diag =
         platform.dispatch_mode() == ::eph::net::dpdk::RxDispatchMode::RssPartitioned;
-    spdlog::info("dpdk_multicast_md: Platform up — port={}, is_rss_active={}",
-                 platform.port_id(), rss_active_diag);
+    spdlog::info(
+        "dpdk_multicast_md: Platform up — port={}, "
+        "dispatch_mode==RssPartitioned={}",
+        platform.port_id(), rss_active_diag);
 
     // ── 2) Build MulticastConfig + receiver ──────────────────────────────
     ed::MulticastConfig mc_cfg{};

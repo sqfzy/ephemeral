@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
         const auto& p = mp->port(i);
         const auto qr = p.effective_rx_queue_range();
         spdlog::info("  port[slot={}]: dpdk_port_id={}, nb_rx_queues={}, "
-                     "dispatch_mode={}, is_rss_active={}, "
+                     "dispatch_mode={}, dispatch_mode==RssPartitioned={}, "
                      "rx_queue_range=[{},{})",
                      i, p.port_id(), p.nb_rx_queues(),
                      edpdk::rx_dispatch_mode_name(p.dispatch_mode()),
