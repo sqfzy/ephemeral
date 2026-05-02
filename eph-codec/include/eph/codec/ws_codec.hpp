@@ -324,7 +324,16 @@ public:
                     frag_buf_.size());
             }
             frag_buf_.clear();
-            frag_opcode_ = frame.opcode;
+            // Honor the field's invariant ("opcode of the in-flight
+            // fragmented message"): only set when this frame actually
+            // begins an in-flight fragmented message. FIN=1 single-frame
+            // messages have no in-flight state — leaving frag_opcode_
+            // non-zero across calls would (a) trip the guard above on
+            // the next non-continuation frame producing spurious WARN
+            // spam, and (b) defeat the orphan-continuation check below
+            // (line 345), letting a stray continuation accumulate onto
+            // a stale buffer and deliver corrupt data to the application.
+            frag_opcode_ = frame.fin ? 0 : frame.opcode;
             // RFC 7692 §6: only the first frame of a message carries
             // the per-message-compressed bit (RSV1). Continuation
             // frames inherit the bit. Capture once at message start.
