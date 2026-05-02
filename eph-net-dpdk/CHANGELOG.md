@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Tests / Observability — post-rename audit follow-ups (non-BREAKING)
+
+Second-pass cleanup after the Tier-3 naming audit and the
+post-rename docs sweep:
+
+  * `eph/dpdk/platform.hpp` Doxygen + log-string scrub: 4
+    Doxygen field comments and 11 SPDLOG strings inside
+    `primary_bringup_` / `secondary_bringup_` referenced the
+    deleted public symbols `Platform::create_primary` /
+    `Platform::create_secondary` (so log output users grepped
+    for them found a function that no longer exists). Comments
+    now point at `Platform::create_or_join` + the impl_ helpers;
+    log strings are tagged with the actual function name.
+  * `eph/net/dpdk/flow_steering.hpp` — same scrub on the two
+    Doxygen comments documenting `g_active_remote_flow_rules`
+    setter (now `Platform::primary_bringup_`).
+  * `eph/dpdk/eal.hpp` — `eal_init` now emits `SPDLOG_LOGGER_ERROR`
+    with argc / ret / rte_errno / rte_strerror context before
+    returning `unexpected`. Operators reading test-harness output
+    that drops the returned `expected` on the floor previously had
+    no diagnostic on EAL init failure. Cold path; only fires once
+    per process at most.
+  * `examples/dpdk_multicast_md.cpp` / `dpdk_rss_demo.cpp` /
+    `multi_port_platform_demo.cpp` — log labels still said
+    `is_rss_active=...` even though the printed value was
+    `dispatch_mode() == RxDispatchMode::RssPartitioned`. Renamed
+    the labels to `dispatch_mode==RssPartitioned=...` so log
+    output matches the actual API surface.
+  * `benchmarks/latency/config.toml` / `eph-utils/README.md` —
+    two stragglers from the `init_with_pins → init` rename now
+    spell `EalGuard::init`.
+
+Test additions (concept conformance and boundary coverage):
+
+  * `tests/test_dpdk_tcp_stream.cpp` —
+    `static_assert`s for `DpdkTcpStream<WsCodec, false/true>` on
+    Pollable / Stream / DpdkPollable. WS-over-TCP (with optional
+    TLS) is the production-canonical shape for HFT exchange WS
+    feeds (binance / okx / coinbase) and previously was only
+    exercised via `tests/integration/test_dpdk_e2e` (NIC-bound,
+    SKIPs without vfio-pci).
+  * `tests/test_dpdk_udp_socket.cpp` —
+    `static_assert`s for `DpdkUdpSocket<Mold64Codec>`. Mold64Codec
+    is the canonical multi-frame DatagramCodec; pinning concept
+    conformance prevents a future tweak from breaking the
+    `template<class PacketView> decode(...)` template instantiation
+    path silently.
+  * `tests/test_eal_config_argv.cpp` — three boundary cases for
+    `build_eal_argv`: empty `lcores` / `allowed_devs` don't emit
+    dangling prefixes; `file_prefix` round-trips embedded `/`
+    space `=` verbatim (the typed layer is not a sanitizer);
+    multiple `extra_args` preserve user-supplied order and stay
+    after the structured -l / -a block.
+  * `tests/test_lcore_pin.cpp` — two empty-input boundary cases
+    for `parse_pin_spec` (`""` and `"="`).
+
+Symmetric coverage on the kernel backend (post-rename audit was
+DPDK-only, but `eph::net::Stream<KernelTcpStream<WsCodec, …>>`
+deserves the same compile-time pin):
+
+  * `eph-net-kernel/tests/test_kernel_tcp_stream.cpp` —
+    `static_assert`s for `KernelTcpStream<WsCodec, false/true>`.
+  * `eph-net-kernel/tests/test_kernel_udp_socket.cpp` —
+    `static_assert`s for `KernelUdpSocket<Mold64Codec>`.
+
+No code, signatures, or behaviour changed (other than the new
+ERROR-level log line on EAL init failure).
+
 ### Docs — post-rename audit sweep (non-BREAKING)
 
 After the Tier-1 / Tier-2 / Tier-3 naming-audit renames landed, a
