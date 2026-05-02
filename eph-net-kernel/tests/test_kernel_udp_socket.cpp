@@ -30,8 +30,10 @@
 #include <limits>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
+#include "eph/codec/mold64_codec.hpp"
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/kernel/poller.hpp"
@@ -41,6 +43,11 @@ namespace ek = eph::net::kernel;
 namespace en = eph::net;
 
 using RawUdp = ek::KernelUdpSocket<eph::codec::RawDatagramCodec>;
+// MoldUDP64 is the canonical multi-frame DatagramCodec example
+// (Nasdaq ITCH feeds run on top of it). Pin its concept conformance
+// for the kernel backend so a future tweak that breaks the
+// multi-frame template path gets caught at compile time.
+using MoldUdp = ek::KernelUdpSocket<eph::codec::Mold64Codec>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -52,6 +59,13 @@ static_assert(eph::net::Datagram<RawUdp>,
               "KernelUdpSocket<RawDatagramCodec> must be Datagram");
 static_assert(eph::net::kernel::KernelPollable<RawUdp>,
               "KernelUdpSocket<RawDatagramCodec> must be KernelPollable");
+static_assert(eph::net::Pollable<MoldUdp>,
+              "KernelUdpSocket<Mold64Codec> must be Pollable");
+static_assert(eph::net::Datagram<MoldUdp>,
+              "KernelUdpSocket<Mold64Codec> must be Datagram");
+static_assert(eph::net::kernel::KernelPollable<MoldUdp>,
+              "KernelUdpSocket<Mold64Codec> must be KernelPollable");
+static_assert(std::is_same_v<MoldUdp::CodecType, eph::codec::Mold64Codec>);
 
 // ---------------------------------------------------------------------------
 // Tests
