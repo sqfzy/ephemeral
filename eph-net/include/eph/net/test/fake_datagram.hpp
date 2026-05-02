@@ -230,19 +230,29 @@ public:
 
     /// @brief Drain the rx queue by invoking `on_datagram` once per queued
     ///        datagram. Returns the number of datagrams delivered.
+    ///
+    /// Re-entrancy: `on_datagram` callbacks may call `inject_datagram` to
+    /// queue more rx entries (e.g. tests that simulate request/response
+    /// echo). The naive `for (auto& e : rx_queue_)` loop would invalidate
+    /// the iterator on push_back-induced reallocation. Move the queue
+    /// out, drain locally, and re-merge any callback-queued entries so
+    /// they are processed on the NEXT `poll_once_()` — matching the
+    /// real-backend semantic where freshly-arrived bytes wait for the
+    /// next poll cycle rather than being dispatched mid-callback.
     std::size_t poll_once_() noexcept {
         if (rx_queue_.empty()) return 0;
+        std::vector<RxEntry> drain;
+        drain.swap(rx_queue_);
         std::size_t delivered = 0;
         if (on_datagram) {
-            for (const auto& e : rx_queue_) {
+            for (const auto& e : drain) {
                 on_datagram(std::span<const uint8_t>(e.data.data(), e.data.size()),
                             e.src);
                 ++delivered;
             }
         } else {
-            delivered = rx_queue_.size();
+            delivered = drain.size();
         }
-        rx_queue_.clear();
         return delivered;
     }
 

@@ -207,3 +207,40 @@ TEST(FakeDatagram, InjectLeaveErrorDoesNotMutateJoinedList) {
     ASSERT_TRUE(r2.has_value());
     EXPECT_TRUE(fd.joined_groups().empty());
 }
+
+TEST(FakeDatagram, OnDatagramReentrantInjectionDoesNotInvalidateIterator) {
+    // Re-entrancy regression: previously, `poll_once_` iterated `rx_queue_`
+    // by reference and cleared the queue at the end. A callback that called
+    // `inject_datagram` to enqueue a follow-up datagram would (a) trigger
+    // vector reallocation, invalidating the loop's reference, and (b) get
+    // its newly-injected entry silently dropped by the post-loop `clear()`.
+    //
+    // After the fix, the queue is swap-drained into a local before
+    // dispatch, so the callback may safely re-inject; the new entry is
+    // delivered on the NEXT poll cycle, mirroring the real-backend
+    // semantic where freshly-arrived bytes wait for the next epoll/burst.
+    ent::FakeDatagram fd;
+    int callbacks = 0;
+    bool injected_followup = false;
+    fd.on_datagram = [&](std::span<const uint8_t> /*payload*/,
+                         const eph::net::SocketAddr& /*src*/) noexcept {
+        ++callbacks;
+        if (!injected_followup) {
+            injected_followup = true;
+            const std::array<uint8_t, 3> follow{0x9, 0x9, 0x9};
+            fd.inject_datagram(follow, addr(2, 2, 2, 2, 200));
+        }
+    };
+
+    const std::array<uint8_t, 3> first{0x1, 0x2, 0x3};
+    fd.inject_datagram(first, addr(1, 1, 1, 1, 100));
+
+    // First poll: callback for `first`, which queues `follow` (held back).
+    EXPECT_EQ(fd.poll_once_(), 1u);
+    EXPECT_EQ(callbacks, 1);
+    // Second poll: callback for the queued `follow`.
+    EXPECT_EQ(fd.poll_once_(), 1u);
+    EXPECT_EQ(callbacks, 2);
+    // Third poll: queue empty.
+    EXPECT_EQ(fd.poll_once_(), 0u);
+}
