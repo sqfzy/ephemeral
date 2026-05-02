@@ -51,7 +51,7 @@ contract.
 
 For lcore × application-thread cpu pinning (so `pin_thread` can detect
 SMT / NUMA conflicts against running EAL lcores), use the typed
-`eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
+`eph::dpdk::LcorePin` + `EalGuard::init` API in
 `eph/dpdk/lcore_pin.hpp` and `eph/dpdk/eal.hpp`. Full rationale and
 escape-hatch rules: [`docs/lcore-pin-integration.md`](docs/lcore-pin-integration.md).
 
@@ -75,8 +75,9 @@ User-facing — call directly from your application:
 - `platform.hpp` — `Platform` (port bring-up, RSS configure / probe,
   ICMP registry, primary / secondary process roles), `PlatformConfig`,
   `ProcType` re-export.
-- `eal.hpp` — `Eal` RAII guard, `EalGuard::init_with_pins`, `EalConfig`
-  + `build_eal_argv` typed argv builder.
+- `eal.hpp` — `Eal` RAII guard, `EalGuard::init` (typed-pin overload)
+  / `EalGuard::init_raw` (raw argv escape hatch), `EalConfig` +
+  `build_eal_argv` typed argv builder.
 - `multi_port_platform.hpp` — `MultiPortPlatform` aggregates N
   independent `Platform`s (one per NIC port). Strictly additive over
   single-port semantics.
