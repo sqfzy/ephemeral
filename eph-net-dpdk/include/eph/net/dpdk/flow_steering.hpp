@@ -811,6 +811,10 @@ public:
     /// @brief ~Platform::Impl helper: destroy every still-tracked
     /// rule. Called once on Platform teardown so a primary that dies
     /// before its peer secondaries doesn't leak NIC flow state.
+    /// Per-rule rte_flow_destroy failures are logged at WARN — teardown
+    /// is best-effort but the operator must still get a signal when
+    /// the PMD refuses (e.g. port already closed by a parallel path),
+    /// otherwise NIC state diverges silently from the registry.
     void destroy_all() noexcept {
         std::vector<std::pair<uint16_t, rte_flow*>> snapshot;
         {
@@ -822,7 +826,14 @@ public:
         for (auto& [port, flow] : snapshot) {
             if (flow == nullptr) continue;
             rte_flow_error err{};
-            (void)rte_flow_destroy(port, flow, &err);
+            const int rc = rte_flow_destroy(port, flow, &err);
+            if (rc != 0) {
+                SPDLOG_LOGGER_WARN(flow_logger(),
+                    "RemoteFlowRulesMap::destroy_all: rte_flow_destroy "
+                    "failed during teardown (port={}, rc={}, msg={}); "
+                    "NIC flow state may be stale until port close",
+                    port, rc, err.message ? err.message : "unknown");
+            }
         }
     }
 
