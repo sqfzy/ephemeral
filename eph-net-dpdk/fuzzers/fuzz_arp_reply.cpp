@@ -91,5 +91,19 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     expected.addr_bytes[4] = 0xDD; expected.addr_bytes[5] = 0xEE;
     [[maybe_unused]] auto r3 = eph::dpdk::arp::parse_arp_reply(&m, 0u, expected);
 
+    // 4. With expected_local_ip set — exercises the reflection-attack
+    //    mitigation branch (the `target_ip` field check that rejects
+    //    replies whose target_ip doesn't match our local IP). Production
+    //    callers via `resolve_with_io` always set this, so omitting it
+    //    from the corpus leaves the WARN log + format_ipv4 path
+    //    unfuzzed. Derive the expected local IP from input bytes [4..8)
+    //    so libFuzzer can drive both the match and mismatch sub-paths.
+    if (size >= 8) {
+        uint32_t want_local = 0;
+        std::memcpy(&want_local, data + 4, sizeof(want_local));
+        [[maybe_unused]] auto r4 =
+            eph::dpdk::arp::parse_arp_reply(&m, 0u, std::nullopt, want_local);
+    }
+
     return 0;
 }
