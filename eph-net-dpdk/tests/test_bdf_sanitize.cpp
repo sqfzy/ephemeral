@@ -2,10 +2,11 @@
 /// Unit tests for `eph::dpdk::detail::sanitize_bdf_for_file_prefix`.
 ///
 /// Pure logic — no EAL or DPDK runtime dependency. The helper is the
-/// auto-derivation step inside `Platform::create_or_join` (Mode 2):
-/// `file_prefix = "eph_" + sanitize(bdf)` lets two processes sharing
-/// the same NIC agree on the prefix without explicit string
-/// coordination.
+/// auto-derivation step inside `Platform::create` / `Platform::serve_nic`
+/// (daemon-led model): `file_prefix = "eph_" + sanitize(bdf)` lets the
+/// daemon primary and every secondary application agree on the EAL
+/// `--file-prefix` from the PCI BDF alone, with no explicit string
+/// coordination between operators and developers.
 
 #include <string>
 #include <string_view>

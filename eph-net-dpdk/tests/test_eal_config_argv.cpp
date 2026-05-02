@@ -8,8 +8,8 @@
 /// runtime side-effects. Running them safely coexists with another DPDK
 /// process holding hugepages on the host.
 ///
-/// The pre-existing tests for the EAL plumbing (`test_platform_launch`,
-/// `test_eal_init_with_pins`) all require a real EAL bring-up and so are
+/// The pre-existing tests for the EAL plumbing
+/// (`test_eal_init_with_pins`) all require a real EAL bring-up and so are
 /// gated behind hugepage / vfio-pci availability. This file fills the
 /// gap by pinning the argv-shape contract that those tests depend on.
 
@@ -87,11 +87,15 @@ TEST(BuildEalArgv, ProcTypeSecondaryEmitted) {
 }
 
 TEST(BuildEalArgv, ProcTypeAutoEmitted) {
-    // The autojoin path (`Platform::create_or_join`) requires
-    // `--proc-type=auto`; DPDK then resolves the role at
-    // `rte_eal_init` time. A regression that dropped Auto from
-    // the to_eal_string switch (returning "primary" via the
-    // conservative-default fallback) would silently break autojoin.
+    // `--proc-type=auto` is no longer used by the public Platform
+    // factories (post-daemon-reshape: applications go through
+    // `Platform::create` with proc_type=Secondary, the daemon goes
+    // through `Platform::serve_nic` with proc_type=Primary). The
+    // enum value and serializer remain for any caller that drives
+    // EAL by hand. A regression that dropped Auto from the
+    // to_eal_string switch (returning "primary" via the
+    // conservative-default fallback) would silently break those
+    // callers.
     EalConfig cfg{};
     cfg.proc_type     = ProcType::Auto;
     cfg.proc_type_set = true;
