@@ -48,6 +48,23 @@ target("eph-net-dpdk")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+-- ============================================================================
+-- eph_nicd — the DPDK NIC daemon binary (S4 of the daemon-reshape).
+--
+-- One daemon per NIC. ops side: `eph-nicd@<bdf>.service` reads
+-- `/etc/eph/<bdf>.toml` → `Platform::serve_nic(NicServiceConfig)` → blocks
+-- on `Platform::join()` until SIGTERM/SIGINT. Application processes attach
+-- as DPDK secondaries against the same `pci` via `Platform::create`.
+-- ============================================================================
+target("eph_nicd")
+    set_kind("binary")
+    set_default(true)
+    add_files("tools/eph-nicd.cpp")
+    add_deps("eph-net-dpdk")
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module unit tests (v3 API tests). Every test target needs PMD
 -- whole-archive linking. Tests use --no-pci mode (see dpdk_test_env.hpp)
 -- so they run on any host without a vfio-pci NIC.

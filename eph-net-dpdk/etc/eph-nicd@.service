@@ -1,0 +1,21 @@
+[Unit]
+Description=eph DPDK NIC service for %i
+Documentation=man:eph-nicd(8)
+After=network-pre.target
+Wants=hugetlbfs.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/eph-nicd --config-file=/etc/eph/%i.toml
+Restart=on-failure
+RestartSec=1s
+LimitMEMLOCK=infinity
+# DPDK requires CAP_IPC_LOCK + (typically) root for VFIO group fd ownership
+# and hugepage mmap. Run as root; per-app processes (DPDK secondaries) can
+# inherit the daemon's hugepage segments without needing root themselves.
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

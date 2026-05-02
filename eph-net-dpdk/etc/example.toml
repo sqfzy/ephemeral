@@ -1,0 +1,77 @@
+# /etc/eph/<bdf>.toml — eph-nicd per-NIC config.
+#
+# One file per NIC. The file basename (minus `.toml`) MUST match the systemd
+# instance name passed to `eph-nicd@<bdf>.service` so `%i` lines up exactly:
+#
+#     # /etc/eph/0000:01:00.1.toml
+#     # systemctl start eph-nicd@0000:01:00.1.service
+#
+# Schema is parsed by `eph::dpdk::detail::parse_nic_toml` into
+# `NicServiceConfig`; structural rules are validated by
+# `validate(NicServiceConfig)` after parsing. Any rejection causes
+# `eph-nicd` to log the offending field and exit non-zero before EAL init.
+
+# ── PCI BDF of the NIC the daemon will claim. ─────────────────────────────
+# Required. Drives both the EAL `-a` allowlist AND the auto-derived
+# `--file-prefix` (= "eph_" + sanitize(bdf)) — application processes attach
+# by passing the same `pci` to `Platform::create`.
+#
+# Use the canonical full form (4-hex domain : 2-hex bus : 2-hex device .
+# 1-hex function). Case is preserved, NOT normalized: `0000:AF:00.1` and
+# `0000:af:00.1` derive *different* file_prefixes — pick one and stick to it
+# across this toml AND every app's PlatformConfig.
+pci = "0000:01:00.1"
+
+# ── Total queue-pair pool capacity. ────────────────────────────────────────
+# Default: 16. Each queue pair = 1 RX + 1 TX (1:1 bound). Sum of every
+# attached app's `cfg.queues` is upper-bounded by this value. If the pool
+# fills up, `Platform::create` returns `ErrorInfo{QueuePoolExhausted}`.
+#
+# Sizing rule of thumb: total_queues >= max concurrent apps * apps' queues
+# ask. Lab single-strategy box: 4 is plenty. Multi-team production NIC: 16.
+total_queues = 16
+
+# ── RSS Toeplitz hash key. ─────────────────────────────────────────────────
+# Default: "auto" (= the symmetric Toeplitz key in `kDefaultRssKey`,
+# 0x6d 0x5a repeated 20 times). Override with an exact 80-character hex
+# string (40 bytes, no `0x` prefix, no separators) when the deployment
+# requires a site-specific key — e.g. matching an upstream load-balancer's
+# RSS layout.
+#
+#   rss_key = "6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a6d5a"
+rss_key = "auto"
+
+# ── NIC promiscuous mode. ──────────────────────────────────────────────────
+# Default: false. HFT default — explicit unicast subscribe instead. Set
+# `true` only for capture / debugging / multicast-heavy taps.
+promiscuous = false
+
+# ── RX/TX descriptor ring depths. ──────────────────────────────────────────
+# Default: 1024 each. Clamped to NIC limits at bring-up time. Larger rings
+# = more in-flight cushion but more memory + worse cache behavior; HFT
+# typically wants smaller (256-1024).
+nb_rx_desc = 1024
+nb_tx_desc = 1024
+
+# ── Mempool sizing. ────────────────────────────────────────────────────────
+# `mbuf_pool_size`: default 8191. MUST be of the form 2^n - 1 (DPDK ring
+# bucket-hashing constraint). Valid values: 1023, 2047, 4095, 8191, 16383,
+# 32767, 65535, ...
+# `mbuf_cache_size`: default 256. Per-lcore cache; MUST be < mbuf_pool_size.
+mbuf_pool_size  = 8191
+mbuf_cache_size = 256
+
+# ── Daemon lcore. ──────────────────────────────────────────────────────────
+# Default: 0. Single-lcore daemon today; this is the lcore EAL passes to
+# the daemon's primary process. Coordinate with app `lcores` / `pins`
+# settings so they don't collide.
+daemon_lcore = 0
+
+# ── Default-NIC marker. ────────────────────────────────────────────────────
+# Default: false. When `true`, this NIC is the implicit default for apps
+# that pass an empty `PlatformConfig::pci`. Only S6 will consume this; S4
+# only parses it (no behavioral effect yet).
+#
+# At most one toml per host should set `default = true`; the resolver
+# behavior on multiple defaults is unspecified.
+default = false
