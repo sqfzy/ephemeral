@@ -765,13 +765,13 @@ public:
             // RSS input "src" is the REMOTE end on the inbound SYN-ACK
             // (peer→local direction): find_src_port_for_queue takes
             // (remote_ip, remote_port, local_ip) explicitly and searches
-            // the local sp in the dst_port slot. self_port_range gives
+            // the local sp in the dst_port slot. port_range gives
             // autojoin / mp_topology a disjoint segment per process;
             // single-process Platform returns nullopt → use Linux default
             // ephemeral range. The helper takes a CLOSED upper bound, so
             // we hand it `port_hi - 1`.
             const auto& t = cfg.dpdk.wire.tuple;
-            const auto pr = platform.self_port_range();
+            const auto pr = platform.port_range();
             const uint16_t port_lo_arg =
                 pr ? static_cast<uint16_t>(pr->first)
                    : uint16_t{32768};

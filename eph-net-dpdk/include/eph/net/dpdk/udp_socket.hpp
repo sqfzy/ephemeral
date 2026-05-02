@@ -228,9 +228,9 @@ public:
 
             // RSS input "src" is the REMOTE end on the inbound reply
             // (peer→local). find_src_port_for_queue puts the local sp
-            // in the dst_port slot. self_port_range narrows the search
+            // in the dst_port slot. port_range narrows the search
             // to this peer's autojoin-derived window when present.
-            const auto pr = platform.self_port_range();
+            const auto pr = platform.port_range();
             const uint16_t port_lo_arg =
                 pr ? static_cast<uint16_t>(pr->first)
                    : uint16_t{32768};

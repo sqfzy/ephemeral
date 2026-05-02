@@ -78,7 +78,7 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
     EXPECT_GT(qr.first, 0)
         << "secondary queue range must not overlap primary's [0, 1)";
 
-    auto pr = platform.self_port_range();
+    auto pr = platform.port_range();
     ASSERT_TRUE(pr.has_value());
     EXPECT_GT(pr->first, 32768u)
         << "secondary's port range must start above the primary's";

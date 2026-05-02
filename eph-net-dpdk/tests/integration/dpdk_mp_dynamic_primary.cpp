@@ -83,8 +83,8 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
     EXPECT_EQ(qr.first, 0);
     EXPECT_EQ(qr.second, 1);
 
-    auto pr = platform.self_port_range();
-    ASSERT_TRUE(pr.has_value()) << "self_port_range expected non-empty";
+    auto pr = platform.port_range();
+    ASSERT_TRUE(pr.has_value()) << "port_range expected non-empty";
     EXPECT_EQ(pr->first, 32768u);
 
     {

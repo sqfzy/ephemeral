@@ -838,7 +838,7 @@ public:
     /// the caller to hand-partition src_port ranges across processes.
     /// Cold getter; safe on moved-from instances (returns nullopt).
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
-    self_port_range() const noexcept;
+    port_range() const noexcept;
 
     /// @brief True iff this Platform was created via
     /// `Platform::create_secondary` (i.e. `cfg.proc_type ==
@@ -2074,7 +2074,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
     //      the memzone if `create()` fails).
     //
     // The original topology survives via `Impl::mp_registry` —
-    // `is_multi_process()` and `self_port_range()` consult it for the
+    // `is_multi_process()` and `port_range()` consult it for the
     // stream-attach src_port narrowing path.
     std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
     std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_dir;
@@ -2942,7 +2942,7 @@ inline bool Platform::is_multi_process() const noexcept {
 }
 
 inline std::optional<std::pair<uint32_t, uint32_t>>
-Platform::self_port_range() const noexcept {
+Platform::port_range() const noexcept {
     if (!impl_ || !impl_->mp_registry.has_value()) return std::nullopt;
     const auto& slot = impl_->mp_registry->self();
     return std::pair{slot.port_lo, slot.port_hi};
