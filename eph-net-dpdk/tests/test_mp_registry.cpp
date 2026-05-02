@@ -465,6 +465,80 @@ TEST(MpRegistry, AttachSecondary_AlreadyClaimedRequiresActualClaim) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Regression for r3 commit d5c8ff1d + r4 commit 750aa0a1 + r4 reshape b95e9114
+// (the "release symmetry" bug class that hit attach_secondary 3 times):
+// when already_claimed=true and a post-hdr-resolution validation fails, the
+// preclaimed slot MUST be released so the same process can retry.
+//
+// Pre-fix shape: validation failed → return std::unexpected(...) without
+// clearing procs[idx].claimed. The pid stayed alive (it's the running test
+// process), is_pid_alive blocked pass-2 reclaim, every subsequent
+// attach_secondary in the same process saw "no free slots".
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(MpRegistry,
+     AttachSecondary_AlreadyClaimedReleasesSlotOnVersionMismatch) {
+    auto p = MpRegistryHandle::create_primary("rgrelvm", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    // Preclaim slot 1 ourselves (mirrors try_claim_free_slot's CAS).
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    uint8_t exp = 0;
+    ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
+        exp, 1, std::memory_order_acq_rel));
+    hdr->procs[1].pid = static_cast<int32_t>(::getpid());
+
+    // Sabotage the registry so attach_secondary takes the version-mismatch
+    // branch (post-`hdr` resolution, BEFORE the spec-disagree branch).
+    const auto saved_version = hdr->version;
+    hdr->version = 0xDEADu;
+
+    auto fail = MpRegistryHandle::attach_secondary("rgrelvm", make_topo(1),
+                                                    /*already_claimed=*/true);
+    ASSERT_FALSE(fail.has_value());
+    EXPECT_EQ(fail.error().code, Error::InvalidConfig);
+
+    // Pre-fix THIS would still be 1 (this process's pid), blocking retry.
+    EXPECT_EQ(hdr->procs[1].claimed.load(std::memory_order_acquire), 0)
+        << "attach_secondary(already_claimed=true) failed on version "
+           "mismatch but DID NOT release the preclaimed slot — same "
+           "process can never retry create_or_join (regression of r3 "
+           "d5c8ff1d / r4 750aa0a1)";
+
+    // Restore so cleanup is clean.
+    hdr->version = saved_version;
+}
+
+TEST(MpRegistry,
+     AttachSecondary_AlreadyClaimedReleasesSlotOnFilePrefixMismatch) {
+    auto p = MpRegistryHandle::create_primary("rgrelfp", make_topo(0));
+    ASSERT_TRUE(p.has_value()) << p.error();
+
+    auto* hdr = const_cast<eph::dpdk::detail::MpRegistryHeader*>(p->header());
+    uint8_t exp = 0;
+    ASSERT_TRUE(hdr->procs[1].claimed.compare_exchange_strong(
+        exp, 1, std::memory_order_acq_rel));
+    hdr->procs[1].pid = static_cast<int32_t>(::getpid());
+
+    // Sabotage: rewrite hdr->file_prefix so the in-header value disagrees
+    // with what attach_secondary will pass.
+    char saved[sizeof(hdr->file_prefix)];
+    std::memcpy(saved, hdr->file_prefix, sizeof(saved));
+    std::strncpy(hdr->file_prefix, "OTHER!!", sizeof(hdr->file_prefix) - 1);
+    hdr->file_prefix[sizeof(hdr->file_prefix) - 1] = '\0';
+
+    auto fail = MpRegistryHandle::attach_secondary("rgrelfp", make_topo(1),
+                                                    /*already_claimed=*/true);
+    ASSERT_FALSE(fail.has_value());
+    EXPECT_EQ(fail.error().code, Error::InvalidConfig);
+
+    EXPECT_EQ(hdr->procs[1].claimed.load(std::memory_order_acquire), 0)
+        << "file_prefix mismatch leaked the preclaimed slot — regression "
+           "of r4 commit 750aa0a1 (broader pre-CAS validation surface)";
+
+    std::memcpy(hdr->file_prefix, saved, sizeof(saved));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // count_alive_procs / is_last_alive_proc — gate API for primary teardown
 // (introduced to fix the DPDK MP teardown-protocol violation in
 //  Platform::Impl::cleanup() — see eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md)
