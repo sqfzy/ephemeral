@@ -53,11 +53,9 @@ TEST(ErrorName, CoversEveryEnumValue) {
     EXPECT_NAMED(WsHandshakeFailed,  "WS_HANDSHAKE_FAILED");
     EXPECT_NAMED(WsFrameBad,         "WS_FRAME_BAD");
     EXPECT_NAMED(WsCloseReceived,    "WS_CLOSE_RECEIVED");
-    EXPECT_NAMED(CodecNeedMoreData,  "CODEC_NEED_MORE_DATA");
     EXPECT_NAMED(CodecBad,           "CODEC_BAD");
     EXPECT_NAMED(CodecOverflow,      "CODEC_OVERFLOW");
     EXPECT_NAMED(WouldBlock,         "WOULD_BLOCK");
-    EXPECT_NAMED(NoData,             "NO_DATA");
     EXPECT_NAMED(BufferFull,         "BUFFER_FULL");
     EXPECT_NAMED(InvalidConfig,      "INVALID_CONFIG");
     EXPECT_NAMED(OutOfMemory,        "OUT_OF_MEMORY");

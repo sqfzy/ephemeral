@@ -14,9 +14,9 @@ enum class Error : uint8_t {
     // WebSocket
     WsHandshakeFailed, WsFrameBad, WsCloseReceived,
     // Codec / application protocol
-    CodecNeedMoreData, CodecBad, CodecOverflow,
+    CodecBad, CodecOverflow,
     // I/O
-    WouldBlock, NoData, BufferFull,
+    WouldBlock, BufferFull,
     // Internal
     InvalidConfig, OutOfMemory,
     // HTTP CONNECT proxy

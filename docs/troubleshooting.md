@@ -219,12 +219,6 @@ clean shutdown; `1011` / `1013` indicate server-side issues; `1008` /
 
 ## Codec / Application Protocol
 
-### `Error::CodecNeedMoreData`
-
-**Internal signal**, not surfaced to user code in the post-v3.3 API.
-Streams loop on this until enough bytes arrive. If you see it leak, it is
-a bug in a custom codec.
-
 ### `Error::CodecBad`
 
 **Cause**: Application protocol violation — invalid FIX checksum, invalid
@@ -263,12 +257,6 @@ than synchronously send.
 - Drain via the poller faster — check `poll(timeout)` is being called
 - For DPDK, check `tx_queue_id` is on a CPU not contending with other lcores
 - Check application backpressure (downstream consumer not keeping up)
-
-### `Error::NoData`
-
-**Cause**: `recv()` returned zero packets. Not an error in poll-driven code
-— it means "nothing this cycle." Tests assert on it; production code
-treats it as a fast-path no-op.
 
 ---
 

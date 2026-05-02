@@ -43,6 +43,16 @@
   and `operator<<` for `std::ostream` / gtest. All three stay in
   lockstep ("CODE: detail", detail omitted when empty).
 
+### Removed (BREAKING)
+- `Error::CodecNeedMoreData` and `Error::NoData` (`eph/core/error.hpp`).
+  Both had zero producers in production code and were internal signals
+  only. The `error_name()` switch, `test_error.cpp` `EXPECT_NAMED`
+  assertions, and the `docs/troubleshooting.md` sections that
+  documented them are all removed in lockstep. Downstream code with
+  exhaustive `switch` on `Error` must remove the corresponding cases;
+  no production site ever returned these values, so runtime behavior
+  is preserved everywhere except in source-level pattern matching.
+
 ## Phase 9 Recovery (2026-04-10)
 
 ### Added

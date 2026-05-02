@@ -53,13 +53,11 @@ enum class Error : uint8_t {
     WsCloseReceived,     ///< peer sent a Close frame (clean shutdown signal)
 
     // ── Codec / application protocol ──────────────────────────────────────
-    CodecNeedMoreData,   ///< stream codec needs more bytes (internal signal)
     CodecBad,            ///< application protocol violation
     CodecOverflow,       ///< decoded frame exceeds buffer capacity
 
     // ── I/O ───────────────────────────────────────────────────────────────
     WouldBlock,          ///< non-blocking op would block (EAGAIN equivalent)
-    NoData,              ///< receive poll returned zero packets
     BufferFull,          ///< TX/RX buffer has no room
 
     // ── Internal ──────────────────────────────────────────────────────────
@@ -145,11 +143,9 @@ struct ErrorInfo {
         case Error::WsHandshakeFailed:   return "WS_HANDSHAKE_FAILED";
         case Error::WsFrameBad:          return "WS_FRAME_BAD";
         case Error::WsCloseReceived:     return "WS_CLOSE_RECEIVED";
-        case Error::CodecNeedMoreData:   return "CODEC_NEED_MORE_DATA";
         case Error::CodecBad:            return "CODEC_BAD";
         case Error::CodecOverflow:       return "CODEC_OVERFLOW";
         case Error::WouldBlock:          return "WOULD_BLOCK";
-        case Error::NoData:              return "NO_DATA";
         case Error::BufferFull:          return "BUFFER_FULL";
         case Error::InvalidConfig:       return "INVALID_CONFIG";
         case Error::OutOfMemory:         return "OUT_OF_MEMORY";
