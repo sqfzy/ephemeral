@@ -20,6 +20,7 @@
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
+#include "eph/codec/mold64_codec.hpp"
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/dpdk/packet_template.hpp"
 #include "eph/net/concepts.hpp"
@@ -32,6 +33,12 @@ namespace edpk = eph::net::dpdk;
 namespace ec  = eph::codec;
 
 using RawUdpSocket = edpk::DpdkUdpSocket<ec::RawDatagramCodec>;
+// MoldUDP64 is the canonical multi-frame DatagramCodec example
+// (per `summary.md` / `docs/architecture.md`). The PMP-based feed
+// pattern (Nasdaq ITCH over MoldUDP64) lives on UDP, so pinning
+// concept conformance for `DpdkUdpSocket<Mold64Codec>` keeps the
+// public Datagram contract honest under the multi-frame codec.
+using MoldUdpSocket = edpk::DpdkUdpSocket<ec::Mold64Codec>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -43,6 +50,13 @@ static_assert(eph::net::Datagram<RawUdpSocket>,
               "DpdkUdpSocket<RawDatagramCodec> must be Datagram");
 static_assert(eph::net::dpdk::DpdkPollable<RawUdpSocket>,
               "DpdkUdpSocket<RawDatagramCodec> must be DpdkPollable");
+static_assert(eph::net::Pollable<MoldUdpSocket>,
+              "DpdkUdpSocket<Mold64Codec> must be Pollable");
+static_assert(eph::net::Datagram<MoldUdpSocket>,
+              "DpdkUdpSocket<Mold64Codec> must be Datagram");
+static_assert(eph::net::dpdk::DpdkPollable<MoldUdpSocket>,
+              "DpdkUdpSocket<Mold64Codec> must be DpdkPollable");
+static_assert(std::is_same_v<MoldUdpSocket::CodecType, ec::Mold64Codec>);
 
 // ---------------------------------------------------------------------------
 // Tests
