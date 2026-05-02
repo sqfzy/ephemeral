@@ -166,7 +166,7 @@ conn_count_list            = [5, 20, 100]
 nb_rx_queues_override      = 4
 # 5 lcores: cpu 0 = main lcore, cpus 8..11 = worker lcores (one per RX
 # queue). EAL itself does the setaffinity from the `--lcores=N@cpu`
-# argv that `init_with_pins` synthesizes; the bench dispatches the
+# argv that `EalGuard::init` synthesizes; the bench dispatches the
 # per-queue `poll()` onto those workers via `rte_eal_remote_launch`.
 # No separate `pin_thread` / `std::jthread` is involved — that path
 # would collide with EAL's own lcore on the same cpu and bypass
