@@ -51,7 +51,7 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
     ASSERT_GE(nb_rx_queues, 2u);
 
     // V3 autojoin secondary: zero-consensus — only `pci` and `lcores`
-    // are needed. primary_config left at default (discarded when this
+    // are needed. nic left at default (discarded when this
     // peer resolves to Secondary). nb_rx_queues env var preserved for
     // post-attach assertions only.
     (void)nb_rx_queues;

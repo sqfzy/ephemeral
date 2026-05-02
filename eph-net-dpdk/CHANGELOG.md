@@ -22,7 +22,7 @@ Removed surface:
 
 `PlatformConfig::max_procs` / `queues_per_proc` / `file_prefix`
 fields are retained because they are still consumed via
-`JoinDynamicConfig::primary_config` when the autojoin race
+`JoinDynamicConfig::nic` when the autojoin race
 resolves this peer to primary. Setting `max_procs > 1` on a config
 passed to `Platform::create` / `create_with_eal` is now a runtime
 error.
@@ -98,7 +98,7 @@ auto plat = Platform::attach(PlatformAttachConfig{.file_prefix="..."});
 // Autojoin — `pci` is the only required input
 struct JoinDynamicConfig {
     std::string_view pci;               // required
-    PlatformConfig   primary_config{};   // ignored on secondary path
+    PlatformConfig   nic{};              // ignored on secondary path
     // ... lcores / pins / pin_policy ...
 };
 auto plat = Platform::join_dynamic(JoinDynamicConfig{.pci="..."});

@@ -38,20 +38,20 @@ auto-attaches as secondary and CAS-claims the lowest free slot.
 
 // Same code in BOTH binaries. Run them in any order.
 auto platform = eph::dpdk::Platform::join_dynamic({
-    .pci            = "0000:28:00.0",
-    .primary_config = {
+    .pci    = "0000:28:00.0",
+    .nic    = {
         .nb_rx_queues    = 4,
         .max_procs       = 2,        // 2 process slots
         .queues_per_proc = 2,        // each process owns 2 RX queues
     },
-    .lcores         = {"0,1"},        // process-specific lcore set
+    .lcores = {"0,1"},                // process-specific lcore set
 });
 // First peer  → primary, owns queue/port slot 0.
 // Second peer → secondary, CAS-claims slot 1, owns queue/port slot 1.
 //
 // file_prefix derived as "eph_0000_28_00_0" (sanitized BDF) so
 // both peers automatically agree on the hugepage segment name.
-// Secondary peers can leave primary_config at default — the library
+// Secondary peers can leave nic at default — the library
 // reads nb_rx_queues / max_procs from primary's registry post-EAL.
 //
 // Platform owns EAL: ~Platform releases DPDK resources, then runs
@@ -66,8 +66,8 @@ auto platform = eph::dpdk::Platform::join_dynamic({
 specific inputs (pci, lcores, pin policy). NIC-physical-state and
 multi-process layout (`per_lcore_pools`, `mbuf_pool_size`,
 `enable_promiscuous`, `port_id`, `max_procs`, `queues_per_proc`)
-all live inside `primary_config` (a `PlatformConfig`). Secondary
-peers ignore `primary_config` entirely — DPDK's
+all live inside `nic` (a `PlatformConfig`). Secondary
+peers ignore `nic` entirely — DPDK's
 `rte_eal_process_type` resolves the role post-init, and the
 secondary path queries the primary's registry / live NIC for any
 field it needs.
@@ -182,15 +182,15 @@ Full root-cause and acceptance evidence:
 ## `JoinDynamicConfig` knobs
 
 `JoinDynamicConfig` carries the autojoin-specific inputs; everything
-else flows through `primary_config` (a `PlatformConfig`) which the
+else flows through `nic` (a `PlatformConfig`) which the
 peer that wins the EAL race reads when bringing up the port.
 
 | Field                        | Type                          | Required | Notes |
 |------------------------------|-------------------------------|----------|-------|
 | `pci`                        | `std::string_view`            | yes      | PCI BDF (e.g. `0000:28:00.0`); file_prefix is auto-derived as `eph_<sanitized BDF>` |
-| `primary_config.nb_rx_queues`| `uint16_t`                    | yes (primary) | Total RX queues primary configures; secondary peers may leave at default and read from the live NIC |
-| `primary_config.max_procs`   | `uint8_t`                     | optional | Number of process slots primary opens in the registry. Default 1 means "auto-derive from nb_rx_queues / queues_per_proc"; explicit values are validated against primary's registry on the secondary side |
-| `primary_config.queues_per_proc` | `uint16_t`                | optional | Queues per slot. 0 = auto-split |
+| `nic.nb_rx_queues`           | `uint16_t`                    | yes (primary) | Total RX queues primary configures; secondary peers may leave at default and read from the live NIC |
+| `nic.max_procs`              | `uint8_t`                     | optional | Number of process slots primary opens in the registry. Default 1 means "auto-derive from nb_rx_queues / queues_per_proc"; explicit values are validated against primary's registry on the secondary side |
+| `nic.queues_per_proc`        | `uint16_t`                    | optional | Queues per slot. 0 = auto-split |
 | `pins`                       | `std::span<LcorePin const>`   | optional | Typed pin set (mutually exclusive with `lcores`) |
 | `lcores`                     | `std::vector<std::string>`    | optional | Raw `--lcores` spec (mutually exclusive with `pins`) |
 | `pin_policy`                 | `eph::utils::CpuPinPolicy`    | optional | NUMA / IRQ / duplicate-cpu policy (only consulted when `pins` is set) |
@@ -198,7 +198,7 @@ peer that wins the EAL race reads when bringing up the port.
 | `self_lcore_mask`            | `uint64_t`                    | optional | Lcores this process owns; published into the registry for cross-process conflict detection. 0 = opt out |
 
 `Platform::join_dynamic` also carries optional registry checks:
-when both peers explicitly set `primary_config.max_procs > 1`, the
+when both peers explicitly set `nic.max_procs > 1`, the
 secondary path validates that the value matches the primary's
 registry total_procs and refuses to attach if they disagree.
 

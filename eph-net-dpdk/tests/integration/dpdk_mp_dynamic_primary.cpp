@@ -60,13 +60,13 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
     ASSERT_GE(nb_rx_queues, 2u)
         << "autojoin test requires nb_rx_queues >= 2";
 
-    // V3 autojoin: primary peer fills `primary_config` (only consulted
+    // V3 autojoin: primary peer fills `nic` (only consulted
     // when this peer resolves to Primary). max_procs default 0 means
     // library auto-derives from nb_rx_queues / queues_per_proc.
     eph::dpdk::JoinDynamicConfig cfg{};
     cfg.pci                            = pci;
-    cfg.primary_config.nb_rx_queues    = nb_rx_queues;
-    cfg.primary_config.nb_tx_queues    = nb_rx_queues;
+    cfg.nic.nb_rx_queues               = nb_rx_queues;
+    cfg.nic.nb_tx_queues               = nb_rx_queues;
     cfg.lcores                         = {lcores};
 
     auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));

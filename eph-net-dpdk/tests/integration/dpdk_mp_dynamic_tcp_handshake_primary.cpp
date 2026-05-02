@@ -132,12 +132,12 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
     // ── 2. Platform::join_dynamic (v3) ─────────────────────────────────
     eph::dpdk::JoinDynamicConfig jd{};
     jd.pci                            = pci;
-    jd.primary_config.nb_rx_queues    = nb_rx_queues;
+    jd.nic.nb_rx_queues    = nb_rx_queues;
     // Match TX queues to RX so secondary's RSS-aware tx_queue_id
     // (= its owned target_qid) maps to a real TX ring. Default
     // nb_tx_queues=1 would leave secondary TX-ing into a nonexistent
     // queue 1 → SYN never leaves the NIC.
-    jd.primary_config.nb_tx_queues    = nb_rx_queues;
+    jd.nic.nb_tx_queues    = nb_rx_queues;
     jd.lcores                         = {lcores};
 
     auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(jd));

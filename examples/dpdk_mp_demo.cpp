@@ -177,15 +177,15 @@ int main(int argc, char** argv) {
 
     // ── Single autojoin entry point — no role flag ─────────────────────
     // Whoever wins the EAL race becomes primary; the other becomes
-    // secondary. Both peers populate primary_config.nb_rx_queues so the
+    // secondary. Both peers populate nic.nb_rx_queues so the
     // primary peer (whichever it ends up being) has the value it needs;
     // secondary peers ignore it post-resolution.
     const std::string& pci_bdf = args.eal.pci.front();
     ed::JoinDynamicConfig cfg{};
     cfg.pci                          = pci_bdf;
-    cfg.primary_config.port_id       = args.eal.port_id;
-    cfg.primary_config.nb_rx_queues  = args.nb_rx_queues;
-    cfg.primary_config.nb_tx_queues  = args.nb_rx_queues;
+    cfg.nic.port_id       = args.eal.port_id;
+    cfg.nic.nb_rx_queues  = args.nb_rx_queues;
+    cfg.nic.nb_tx_queues  = args.nb_rx_queues;
     cfg.pins                         = std::span<ed::LcorePin const>{args.eal.pins};
     cfg.lcores                       = args.eal.lcores_raw.empty()
                                            ? std::vector<std::string>{}

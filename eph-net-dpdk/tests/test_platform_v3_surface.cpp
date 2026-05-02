@@ -52,8 +52,8 @@ TEST(JoinDynamicConfig, NoTopLevelConsensusFields) {
     // that DO exist match the v3 design.
     JoinDynamicConfig cfg{};
     EXPECT_TRUE(cfg.pci.empty());
-    EXPECT_EQ(cfg.primary_config.max_procs, 1);
-    EXPECT_EQ(cfg.primary_config.queues_per_proc, 0);
+    EXPECT_EQ(cfg.nic.max_procs, 1);
+    EXPECT_EQ(cfg.nic.queues_per_proc, 0);
     EXPECT_EQ(cfg.self_lcore_mask, 0);
     EXPECT_TRUE(cfg.lcores.empty());
 }
@@ -194,8 +194,8 @@ TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
     // error must name the actual cfg.pci value the caller supplied.
     JoinDynamicConfig cfg{};
     cfg.pci = "not_a_bdf";  // valid string_view but not a BDF
-    cfg.primary_config.nb_rx_queues = 4;
-    cfg.primary_config.queues_per_proc = 1;
+    cfg.nic.nb_rx_queues = 4;
+    cfg.nic.queues_per_proc = 1;
 
     auto r = Platform::join_dynamic(cfg);
     ASSERT_FALSE(r.has_value());
@@ -206,15 +206,15 @@ TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
 }
 
 TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
-    // primary_config.max_procs > kMaxProcs (=64) → the OOR check fires.
+    // nic.max_procs > kMaxProcs (=64) → the OOR check fires.
     // Error must report the offending max_procs, the kMaxProcs cap, and
     // the inputs the auto-derive would have used (caller cfg.max_procs
     // / nb_rx_queues / queues_per_proc).
     JoinDynamicConfig cfg{};
     cfg.pci = "0000:28:00.0";
-    cfg.primary_config.nb_rx_queues = 4;
-    cfg.primary_config.queues_per_proc = 1;
-    cfg.primary_config.max_procs = 200;  // > kMaxProcs
+    cfg.nic.nb_rx_queues = 4;
+    cfg.nic.queues_per_proc = 1;
+    cfg.nic.max_procs = 200;  // > kMaxProcs
 
     auto r = Platform::join_dynamic(cfg);
     ASSERT_FALSE(r.has_value());
@@ -233,10 +233,10 @@ TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
     // report both sizes so the caller knows which side has stuff.
     JoinDynamicConfig cfg{};
     cfg.pci = "0000:28:00.0";
-    cfg.primary_config.nb_rx_queues = 2;
-    cfg.primary_config.queues_per_proc = 1;
-    cfg.primary_config.max_procs = 2;
-    cfg.primary_config.file_prefix = "demo";  // required by validate_config(PlatformConfig)
+    cfg.nic.nb_rx_queues = 2;
+    cfg.nic.queues_per_proc = 1;
+    cfg.nic.max_procs = 2;
+    cfg.nic.file_prefix = "demo";  // required by validate_config(PlatformConfig)
     static const std::vector<LcorePin> kPins(
         3, LcorePin{.lcore_id=0, .cpu_id=0, .role=""});
     cfg.pins   = std::span<const LcorePin>{kPins};

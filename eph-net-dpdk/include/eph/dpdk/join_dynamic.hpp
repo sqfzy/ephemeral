@@ -5,14 +5,14 @@
 /// MP factory (`Platform::join_dynamic`). Autojoin is the
 /// zero-coordination multi-process bring-up: two unrelated processes
 /// that share a NIC agree on nothing except the PCI BDF and
-/// `primary_config.nb_rx_queues`. Whoever `rte_eal_init`s first
+/// `nic.nb_rx_queues`. Whoever `rte_eal_init`s first
 /// becomes primary; later peers attach as secondaries and CAS-claim
 /// the next free process slot themselves.
 ///
 /// **Mental model**: `JoinDynamicConfig` only carries
 /// **autojoin-specific** inputs — everything `PlatformConfig` already
 /// has (per_lcore_pools / mbuf_pool_size / port_id / nb_rx_queues /
-/// every other field) flows through `primary_config`. Autojoin only
+/// every other field) flows through `nic`. Autojoin only
 /// overrides three fields it must own: process role (resolved at EAL
 /// init), MpTopology (synthesized from claimed slot), and `file_prefix`
 /// (auto-derived from BDF).
@@ -23,8 +23,8 @@
 ///   - file_prefix is auto-derived from the BDF (so two peers naming
 ///     the same NIC name the same hugepage segment without sharing
 ///     a string)
-///   - max_procs is auto-derived from `primary_config.nb_rx_queues /
-///     primary_config.queues_per_proc`
+///   - max_procs is auto-derived from `nic.nb_rx_queues /
+///     nic.queues_per_proc`
 ///   - self_index is auto-claimed at attach time (CAS-strong against
 ///     the registry's `procs[].claimed` flags)
 /// The result is *no protocol* between peers — both run the same
@@ -44,7 +44,7 @@
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin (typed pin spec)
 #include "eph/utils/cpu.hpp"        // CpuPinPolicy
 
-// This header references `eph::dpdk::PlatformConfig` (`primary_config`
+// This header references `eph::dpdk::PlatformConfig` (`nic`
 // is a value member) but cannot directly `#include
 // "eph/dpdk/platform.hpp"` without a circular include — platform.hpp
 // includes this header from inside its own body, after PlatformConfig
@@ -79,9 +79,9 @@ struct JoinDynamicConfig {
     /// live here, not at the top level, so secondary callers can't
     /// accidentally specify them.
     /// **Required when this peer resolves to primary**:
-    /// `primary_config.nb_rx_queues > 0`. (Secondary peers may leave
+    /// `nic.nb_rx_queues > 0`. (Secondary peers may leave
     /// at default — the autojoin path queries the live NIC.)
-    PlatformConfig primary_config{};
+    PlatformConfig nic{};
 
     // ─── EAL options ─────────────────────────────────────────────────────
     // Per-peer (not consensus-bearing).

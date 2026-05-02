@@ -329,7 +329,7 @@ struct DpdkBenchEnv {
     ///
     /// @param pci_bdf            NIC PCI BDF, e.g. "0000:28:00.0"
     /// @param max_procs          Autojoin slot count; written into
-    ///                            `JoinDynamicConfig::primary_config`
+    ///                            `JoinDynamicConfig::nic`
     ///                            as `max_procs` and as
     ///                            `nb_rx_queues` / `nb_tx_queues`
     /// @param lcores             EAL lcore CSV for this peer (e.g.
@@ -429,9 +429,9 @@ struct DpdkBenchEnv {
         // ── 1. Platform::join_dynamic (v3 zero-consensus shape) ────
         eph::dpdk::JoinDynamicConfig jd{};
         jd.pci                                 = pci_bdf;
-        jd.primary_config.nb_rx_queues         = static_cast<uint16_t>(max_procs);
-        jd.primary_config.nb_tx_queues         = static_cast<uint16_t>(max_procs);
-        jd.primary_config.max_procs            = static_cast<uint8_t>(max_procs);
+        jd.nic.nb_rx_queues         = static_cast<uint16_t>(max_procs);
+        jd.nic.nb_tx_queues         = static_cast<uint16_t>(max_procs);
+        jd.nic.max_procs            = static_cast<uint8_t>(max_procs);
         jd.lcores                              = {lcores};
         jd.self_lcore_mask                     = self_lcore_mask;
 

@@ -42,7 +42,7 @@
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
 // NOTE: `eph/dpdk/join_dynamic.hpp` is included AFTER `PlatformConfig`
-// is defined — `JoinDynamicConfig::primary_config` embeds it by value.
+// is defined — `JoinDynamicConfig::nic` embeds it by value.
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
@@ -440,7 +440,7 @@ struct BringupConfig {
 // ─────────────────────────────────────────────────────────────────────
 
 /// @brief Single-process Platform config (also embedded inside
-/// `JoinDynamicConfig::primary_config` for autojoin's primary path).
+/// `JoinDynamicConfig::nic` for autojoin's primary path).
 ///
 /// Carries every NIC-physical-state field (queue counts, descriptor
 /// counts, mempool, RSS, promiscuous, etc.). The `max_procs` /
@@ -2573,10 +2573,10 @@ Platform::create_with_eal(PlatformConfig                        cfg,
 // the rest of `Platform::*` for source compatibility.
 //
 // Zero-consensus contract: secondary peers may leave
-// `cfg.primary_config` at default — every field is ignored on the
+// `cfg.nic` at default — every field is ignored on the
 // secondary path; the library reads queue count / max_procs from the
 // primary's registry + live NIC (A1). Primary peers populate
-// `cfg.primary_config.nb_rx_queues` and (optionally) `max_procs` /
+// `cfg.nic.nb_rx_queues` and (optionally) `max_procs` /
 // `queues_per_proc` to drive the registry slot count.
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::join_dynamic(JoinDynamicConfig cfg) {
@@ -2587,9 +2587,9 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         return std::unexpected(std::string{
             "join_dynamic: pci must be non-empty (provide a PCI BDF "
             "such as '0000:28:00.0')"});
-    if (cfg.primary_config.nb_rx_queues == 0)
+    if (cfg.nic.nb_rx_queues == 0)
         return std::unexpected(std::string{
-            "join_dynamic: primary_config.nb_rx_queues must be > 0"});
+            "join_dynamic: nic.nb_rx_queues must be > 0"});
 
     // queues_per_proc default 0 = "auto" (== 1 effectively for the
     // max_procs auto-derive below). max_procs default 1 = "single-
@@ -2598,15 +2598,15 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     // hard 1, so secondary peers don't have to fill in primary's
     // value.
     const uint16_t queues_per_proc =
-        cfg.primary_config.queues_per_proc > 0
-            ? cfg.primary_config.queues_per_proc
+        cfg.nic.queues_per_proc > 0
+            ? cfg.nic.queues_per_proc
             : uint16_t{1};
     if (queues_per_proc == 0)
         return std::unexpected(std::string{
             "join_dynamic: queues_per_proc must be > 0"});
 
     // Mutable: secondary path may overwrite from live NIC (A1).
-    uint16_t nb_rx_queues = cfg.primary_config.nb_rx_queues;
+    uint16_t nb_rx_queues = cfg.nic.nb_rx_queues;
 
     // ── 2. derive file_prefix ─────────────────────────────────────────────
     // v3 zero-consensus: always auto-derive from pci. The escape hatch
@@ -2628,14 +2628,14 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     }
 
     // ── 3. derive max_procs ───────────────────────────────────────────────
-    // `primary_config.max_procs <= 1` is the autojoin "auto-derive"
+    // `nic.max_procs <= 1` is the autojoin "auto-derive"
     // sentinel — secondary peers default to 1 and must NOT lock the
     // library into max_procs=1 (which would forbid any secondary
     // attach). Track whether the caller explicitly set a value > 1
     // so the "max_procs disagreement" check below only fires on
     // explicit caller disagreement.
-    const bool max_procs_explicit = (cfg.primary_config.max_procs > 1);
-    uint8_t max_procs = max_procs_explicit ? cfg.primary_config.max_procs
+    const bool max_procs_explicit = (cfg.nic.max_procs > 1);
+    uint8_t max_procs = max_procs_explicit ? cfg.nic.max_procs
                                            : uint8_t{0};
     if (max_procs == 0) {
         const uint16_t auto_max = nb_rx_queues / queues_per_proc;
@@ -2657,7 +2657,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
             "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
             "queues_per_proc={})",
             max_procs, MpTopology::kMaxProcs,
-            cfg.primary_config.max_procs, nb_rx_queues, queues_per_proc));
+            cfg.nic.max_procs, nb_rx_queues, queues_per_proc));
 
     // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
     // Strings inside cfg are caller-owned; we copy them into a local
@@ -2728,11 +2728,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         file_prefix, max_procs, nb_rx_queues);
 
     // Build the role-specific BringupConfig from the user's
-    // primary_config template. Autojoin owns three fields: proc_type,
+    // nic template. Autojoin owns three fields: proc_type,
     // mp_topology, file_prefix. Other fields (mbuf pool, descriptor
     // counts, RSS / promiscuous flags, per_lcore_pools) flow through
     // the v3 PlatformConfig template.
-    detail::BringupConfig pcfg = detail::bringup_from_v3_(cfg.primary_config);
+    detail::BringupConfig pcfg = detail::bringup_from_v3_(cfg.nic);
     pcfg.file_prefix    = file_prefix;
     // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
     if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
@@ -2814,8 +2814,8 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         // primary did. (A1: rte_eth_dev_info_get returns
         // primary-configured queue count from secondary.)
         const uint16_t port_id_for_query =
-            (cfg.primary_config.port_id != 0)
-                ? cfg.primary_config.port_id
+            (cfg.nic.port_id != 0)
+                ? cfg.nic.port_id
                 : uint16_t{0};
         rte_eth_dev_info dev_info{};
         if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);

@@ -180,7 +180,7 @@ void log(const char* role, const char* fmt, ...) {
         allowed_dev, kSecondaryQueueId);
 
     // V3 secondary autojoin: zero-consensus — pci + lcores only.
-    // primary_config remains default; ignored when this peer
+    // nic remains default; ignored when this peer
     // resolves to Secondary.
     eph::dpdk::JoinDynamicConfig jcfg{};
     jcfg.pci    = allowed_dev;
@@ -285,14 +285,14 @@ int primary_main(char** argv) {
         }
         log("primary", "BENIGN MODE — Platform up, no I/O, idle %s seconds",
             env_or_null("EPH_REPRO_BENIGN_HOLD") ? env_or_null("EPH_REPRO_BENIGN_HOLD") : "30");
-        // V3 primary autojoin (benign-mode): primary_config carries
-        // NIC physical state; queues_per_proc moved into primary_config.
+        // V3 primary autojoin (benign-mode): nic carries
+        // NIC physical state; queues_per_proc moved into nic.
         eph::dpdk::JoinDynamicConfig jcfg{};
         jcfg.pci                              = allowed_dev;
-        jcfg.primary_config.port_id           = 0;
-        jcfg.primary_config.nb_rx_queues      = kNbRxQueues;
-        jcfg.primary_config.nb_tx_queues      = kNbRxQueues;
-        jcfg.primary_config.queues_per_proc   = 1;
+        jcfg.nic.port_id           = 0;
+        jcfg.nic.nb_rx_queues      = kNbRxQueues;
+        jcfg.nic.nb_tx_queues      = kNbRxQueues;
+        jcfg.nic.queues_per_proc   = 1;
         jcfg.lcores                           = {"0"};
         auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
         if (!plat_r) {
@@ -330,10 +330,10 @@ int primary_main(char** argv) {
 
     eph::dpdk::JoinDynamicConfig jcfg{};
     jcfg.pci                              = allowed_dev;
-    jcfg.primary_config.port_id           = 0;
-    jcfg.primary_config.nb_rx_queues      = kNbRxQueues;
-    jcfg.primary_config.nb_tx_queues      = kNbRxQueues;
-    jcfg.primary_config.queues_per_proc   = 1;
+    jcfg.nic.port_id           = 0;
+    jcfg.nic.nb_rx_queues      = kNbRxQueues;
+    jcfg.nic.nb_tx_queues      = kNbRxQueues;
+    jcfg.nic.queues_per_proc   = 1;
     jcfg.lcores                           = {"0"};
 
     auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
