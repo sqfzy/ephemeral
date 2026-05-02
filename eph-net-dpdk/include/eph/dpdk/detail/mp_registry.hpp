@@ -629,6 +629,18 @@ public:
                 wanted.port_lo,    wanted.port_hi,
                 declared.queue_lo, declared.queue_hi,
                 declared.port_lo,  declared.port_hi);
+            // Caller pre-claimed via try_claim_free_slot before reaching
+            // here (autojoin path). This early-return otherwise leaks the
+            // slot — claimed=1 with the failing process's PID. If the
+            // process exits, pass-2 reclaim self-heals it; but if the
+            // caller retries `Platform::create_or_join` from the same
+            // process, `is_pid_alive` returns true on the stale slot and
+            // every subsequent attach fails with "no free slots". Mirror
+            // the lcore_mask-overlap release pattern below.
+            if (already_claimed) {
+                hdr->procs[topo.self_index].claimed.store(
+                    0, std::memory_order_release);
+            }
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: secondary's self spec disagrees with primary"});
