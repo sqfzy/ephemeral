@@ -266,7 +266,13 @@ template <core::StreamCodec C, bool EnableTls = true>
 class DpdkTcpStream {
 public:
     using PacketView = detail::MbufView;   // mbuf-backed, in-place mutation
-    // ... same public surface as KernelTcpStream
+    // Same `send` / `close_gracefully` / `is_attached` / `state` / `fd`
+    // surface as KernelTcpStream. Factory differs: the kernel
+    // backend's `create(cfg)` opens the fd directly, whereas the DPDK
+    // backend requires a live `Platform` (queue selection, src_port
+    // allocation, ICMP / FlowDirector wiring), so the only factory is:
+    static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
+    create_and_attach(StreamConfig cfg, ::eph::dpdk::Platform& platform) noexcept;
 };
 
 template <class P = void>  // void = type-erased heterogeneous mode
