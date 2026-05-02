@@ -335,13 +335,17 @@ struct MpTopology {
     }
 };
 
-// Lock the MpTopology layout. Like ProcSpec above, MpTopology is the
-// user-facing input to `Platform::create_primary` / `create_secondary`
-// / `create_or_join` (via `PlatformConfig::mp_topology` and
-// `CreateOrJoinConfig::pcfg_template`). It travels by value through
-// every factory, so the compiler must keep emitting the cheap
-// memcpy-style copy. dump() returning std::string does not affect
-// the struct's data layout — it's a member function, not a member.
+// Lock the MpTopology layout. Like ProcSpec above, MpTopology is
+// internal to the autojoin bring-up path: the primary peer in
+// `Platform::create_or_join` synthesizes one from
+// `CreateOrJoinConfig::nic.{max_procs,queues_per_proc}` and writes it
+// into the shared hugepage registry; secondaries read it back. It also
+// surfaces on the deprecated `PlatformConfig::mp_topology` field for
+// internal helpers that still drive `secondary_bringup_` directly. It
+// travels by value through every factory, so the compiler must keep
+// emitting the cheap memcpy-style copy. dump() returning std::string
+// does not affect the struct's data layout — it's a member function,
+// not a member.
 static_assert(std::is_trivially_copyable_v<MpTopology>,
               "MpTopology must remain trivially copyable so callers "
               "can pass it through factory functions by value without "

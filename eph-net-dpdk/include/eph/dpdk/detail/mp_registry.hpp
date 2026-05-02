@@ -30,9 +30,11 @@
 /// ABI — which is guaranteed since they're built from the same
 /// `eph-net-dpdk` header by the same toolchain.
 ///
-/// Hot path: NONE. Every operation here is on the cold
-/// `Platform::create_*` path or the `~Platform` teardown path, called
-/// at most once per process lifecycle.
+/// Hot path: NONE. Every operation here is on the cold bring-up path
+/// (`Platform::primary_bringup_` / `secondary_bringup_`, invoked by
+/// `Platform::create` / `launch` / `create_or_join`) or the
+/// `~Platform` teardown path, called at most once per process
+/// lifecycle.
 
 #include <array>
 #include <atomic>
@@ -414,7 +416,9 @@ public:
 
     /// @brief Reserve (or replace) the registry memzone, write a fresh
     /// header from `topo`, and CAS-claim `procs[topo.self_index]`.
-    /// Called by `Platform::create_primary`.
+    /// Called by `Platform::primary_bringup_` (the internal helper
+    /// invoked by `Platform::create` / `launch` / `create_or_join`
+    /// when this peer resolves to primary).
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     create_primary(std::string_view file_prefix, MpTopology const& topo) {
         if (!topo.valid()) {
@@ -503,7 +507,9 @@ public:
 
     /// @brief Look up the primary's registry memzone, cross-validate
     /// magic / version / file_prefix / per-slot topology, and CAS-claim
-    /// `procs[topo.self_index]`. Called by `Platform::create_secondary`.
+    /// `procs[topo.self_index]`. Called by `Platform::secondary_bringup_`
+    /// (the internal helper invoked by `Platform::create_or_join` when
+    /// this peer resolves to secondary).
     ///
     /// @param already_claimed When `true` the CAS-claim step is
     /// skipped — the caller has already preclaimed the slot via
@@ -757,10 +763,12 @@ public:
     ///
     /// This is the entry point for `Platform::create_or_join` (the
     /// autojoin path) where the secondary doesn't know its own
-    /// `self_index` until it scans the registry. The declarative
-    /// path (`Platform::create_secondary`) goes through
-    /// `attach_secondary` instead because it already knows its
-    /// index from the topology.
+    /// `self_index` until it scans the registry. `attach_secondary`
+    /// (the slot-claim variant on the same handle) was the entry
+    /// point for the pre-v3 cooperative `Platform::create_secondary`
+    /// path; that public API was removed in 2026-05-01's reshape and
+    /// the helper is now used only by `secondary_bringup_` callers
+    /// that have already preclaimed via `try_claim_free_slot`.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary_readonly(std::string_view file_prefix) {
         auto name_r = build_mp_registry_name(file_prefix);
