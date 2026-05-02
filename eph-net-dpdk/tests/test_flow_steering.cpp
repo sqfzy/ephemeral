@@ -663,3 +663,26 @@ TEST(QueueForHash, NonPowerOfTwoRetaFallsBackToModulo) {
     EXPECT_EQ(queue_for_hash(0xFFFFFFFFu, std::span<const uint16_t>(reta)),
               reta[0xFFFFFFFFu % 12u]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFERRED COVERAGE: r2 commit 8ff7ebab — on_fd_install_thunk strict-validate
+// proto field (rejects anything outside {kIpProtoTcp, kIpProtoUdp}).
+//
+// Pre-fix any non-17 proto byte fell through to TCP, letting a corrupt
+// / forged / older-schema peer install a TCP 5-tuple flow rule for
+// SCTP / ICMP / 0 / garbage payloads.
+//
+// Testing this requires standing up a real DPDK IPC fixture:
+//   - Construct an `rte_mp_msg` with an FdInstallMsg payload (proto=99 etc)
+//   - Wire up the `g_active_remote_flow_rules` global so the handler
+//     enters its proto-validation branch (otherwise it bails earlier
+//     on rules == nullptr)
+//   - Verify `fd_send_reply_` was invoked with `reply.status = 1`
+//
+// Each of those needs DPDK runtime (rte_mp_msg layout, rte_mp_reply
+// path), which means EAL bring-up — a far heavier setup than the rest
+// of this file which exercises pure C++ helpers. Until a generic
+// eph-net-dpdk IPC fixture exists, the fix is covered only by
+// integration / end-to-end runs against a real secondary that
+// intentionally sends a bad proto.
+// ─────────────────────────────────────────────────────────────────────────────

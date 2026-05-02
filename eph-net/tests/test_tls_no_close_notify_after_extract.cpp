@@ -263,3 +263,23 @@ TEST(TlsCloseNotify, ExtractHotStateChangesSignatureToNonConst) {
         "extract_hot_state() must be non-const (sets suppress_close_notify_)");
     SUCCEED();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFERRED COVERAGE: r4 commit 51821eb5 — extract_hot_state mid-extract
+// failure path.
+//
+// The fix moved `suppress_close_notify_ = true` from the top of
+// extract_hot_state() to the success path, so a failure during cipher
+// lookup / traffic-secret derivation / HKDF expand leaves the flag at
+// false and the destructor still attempts an orderly close_notify.
+//
+// Testing this requires forcing one of the aws-lc internal calls to
+// fail mid-extract — either by mocking SSL_get_current_cipher /
+// SSL_get_traffic_secret / EVP_AEAD_CTX_init internals, or by feeding a
+// hand-crafted SSL handle whose cipher is "supported but not in our
+// AEAD switch". The existing fixture's full handshake produces only
+// AES-GCM cipher states, none of which can hit the failure branch
+// realistically. Until a generic aws-lc-mock test seam exists, the fix
+// is exercised only via the static_assert above (function is non-const)
+// and the TLS_TYPED_RECORD_HOT_PATH integration tests (success path).
+// ─────────────────────────────────────────────────────────────────────────────
