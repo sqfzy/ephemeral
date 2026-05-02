@@ -157,6 +157,46 @@ TEST(ParsePinSpec, NegativeLcoreRejected) {
     EXPECT_NE(r.error().find("non-negative"), std::string::npos) << r.error();
 }
 
+// Regression: parse_pin_spec used std::atoi which silently returned 0
+// for unparseable input. A typo like `core=4` parsed as
+// `lcore_id=0, cpu_id=4`, then registered cpu 4 under role "lcore-0(...)"
+// on the user's behalf — masking the typo and conflicting with a
+// legitimate later registration of lcore 0. The fix uses std::strtol
+// with full-token validation; these tests pin the new strict behaviour.
+TEST(ParsePinSpec, GarbageLcoreFieldRejected) {
+    auto r = parse_pin_spec("core=4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("not a valid integer"),
+              std::string::npos) << r.error();
+}
+
+TEST(ParsePinSpec, GarbageCpuFieldRejected) {
+    auto r = parse_pin_spec("0=cpu");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("not a valid integer"),
+              std::string::npos) << r.error();
+}
+
+TEST(ParsePinSpec, TrailingGarbageInLcoreRejected) {
+    // strtol stops at '_' but our validator demands the entire field
+    // parse as an integer — pre-fix atoi would have happily produced
+    // lcore_id=0 and silently dropped the trailing characters.
+    auto r = parse_pin_spec("0_x=4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("not a valid integer"),
+              std::string::npos) << r.error();
+}
+
+TEST(ParsePinSpec, OverflowLcoreRejected) {
+    // 99999 is representable in int but exceeds UINT16_MAX, which is
+    // the LcorePin::lcore_id capacity. Reject up front with a clear
+    // diagnostic instead of silently truncating.
+    auto r = parse_pin_spec("99999=4");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("UINT16_MAX"), std::string::npos)
+        << r.error();
+}
+
 TEST(ParsePinSpec, MultiDigitValuesParsed) {
     auto r = parse_pin_spec("128=63:tx-shaper");
     ASSERT_TRUE(r.has_value()) << (r ? "" : r.error());
