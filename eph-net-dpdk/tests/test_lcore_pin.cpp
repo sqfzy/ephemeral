@@ -6,7 +6,7 @@
 /// test_cpu_pin.cpp — vector<PinGuard> from pin_lcores inherits its
 /// move behaviour from stdlib and doesn't need separate coverage.
 ///
-/// EalGuard::init_with_pins integration (success path with real EAL init)
+/// EalGuard::init integration (success path with real EAL init)
 /// lives in tests/integration/test_eal_init_with_pins.cpp because it
 /// requires real DPDK runtime / hugepages / vfio.
 
@@ -176,7 +176,7 @@ TEST(ParsePinSpec, RoleWithColonsKeepsTrailingPart) {
 
 TEST(ParsePinSpec, ResultFeedsBuildLcoreArgv) {
     // End-to-end: the parser's output must round-trip through the same
-    // build_lcore_argv used by EalGuard::init_with_pins.
+    // build_lcore_argv used by EalGuard::init.
     auto r = parse_pin_spec("0=4:rx");
     ASSERT_TRUE(r.has_value());
     LcorePin pins[] = {*r};
@@ -328,7 +328,7 @@ TEST(PinLcores, ConflictWithExistingExternalPinDetected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// EalGuard::init_with_pins — pre-EAL paths only.
+// EalGuard::init (typed-pin overload) — pre-EAL paths only.
 //
 // The success path calls rte_eal_init() and therefore requires DPDK
 // runtime (hugepages / vfio). That lives in
@@ -345,7 +345,7 @@ TEST(InitWithPins, RejectsConflictingCfgLcoresAndPins) {
     cfg.lcores = {"0@4"};  // raw escape-hatch path
     std::array pins = { LcorePin{0, 4, "rx"} };  // typed path
 
-    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    auto r = EalGuard::init(cfg, std::span<LcorePin const>{pins});
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("mutually exclusive"), std::string::npos)
         << r.error();
@@ -357,7 +357,7 @@ TEST(InitWithPins, RejectsConflictingCfgLcoresAndPins) {
 // hand-writing "--lcores=..." into extra_args while also passing typed
 // pins would emit two `--lcores` tokens; DPDK silently keeps only the
 // last so the user's escape-hatch value would be discarded with no
-// diagnostic. init_with_pins must reject up front.
+// diagnostic. EalGuard::init must reject up front.
 TEST(InitWithPins, RejectsLcoresInExtraArgsWithTypedPins) {
     eph::utils::reset_pin_registry_for_tests();
 
@@ -365,7 +365,7 @@ TEST(InitWithPins, RejectsLcoresInExtraArgsWithTypedPins) {
     cfg.extra_args = {"--lcores=0@4"};  // raw escape-hatch via extra_args
     std::array pins = { LcorePin{0, 4, "rx"} };  // typed path
 
-    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    auto r = EalGuard::init(cfg, std::span<LcorePin const>{pins});
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("--lcores"), std::string::npos)
         << r.error();
@@ -383,7 +383,7 @@ TEST(InitWithPins, RejectsTwoTokenLcoresInExtraArgsWithTypedPins) {
     cfg.extra_args = {"--lcores", "0@4"};
     std::array pins = { LcorePin{0, 4, "rx"} };
 
-    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    auto r = EalGuard::init(cfg, std::span<LcorePin const>{pins});
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("--lcores"), std::string::npos)
         << r.error();
@@ -407,7 +407,7 @@ TEST(InitWithPins, ExtraArgsLcoresWithoutTypedPinsLeavesRegistryUntouched) {
 
     EalConfig cfg;
     cfg.extra_args = {"--lcores=0@4"};
-    // We deliberately do NOT call init_with_pins here — the unit-test
+    // We deliberately do NOT call EalGuard::init here — the unit-test
     // EAL global is owned by DpdkTestEnv and re-initing it via the
     // public factory would race with the test environment lifecycle.
     // The structural property the new gate documents — "raw-only path
@@ -426,9 +426,9 @@ TEST(InitWithPins, PinValidationFailureDoesNotTouchEAL) {
     EalConfig cfg;
     std::array pins = { LcorePin{0, 4, "rx"} };
 
-    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    auto r = EalGuard::init(cfg, std::span<LcorePin const>{pins});
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().find("init_with_pins"), std::string::npos);
+    EXPECT_NE(r.error().find("EalGuard::init"), std::string::npos);
     EXPECT_NE(r.error().find("already occupied"), std::string::npos);
     EXPECT_NE(r.error().find("occupant"), std::string::npos);
 
@@ -453,7 +453,7 @@ TEST(InitWithPins, MultiCpuConflictRollsBackEarlierStaged) {
         LcorePin{2, 6, "control"},
     };
 
-    auto r = EalGuard::init_with_pins(cfg, std::span<LcorePin const>{pins});
+    auto r = EalGuard::init(cfg, std::span<LcorePin const>{pins});
     ASSERT_FALSE(r.has_value());
 
     EXPECT_FALSE(eph::utils::is_cpu_externally_pinned(4));

@@ -218,7 +218,7 @@ init_eal(const std::string& pci_bdf) {
     std::vector<char*> argv;
     argv.reserve(args.size());
     for (auto& a : args) argv.push_back(a.data());
-    return eph::dpdk::EalGuard::init(static_cast<int>(argv.size()), argv.data());
+    return eph::dpdk::EalGuard::init_raw(static_cast<int>(argv.size()), argv.data());
 }
 
 /// One probe's recorded result.

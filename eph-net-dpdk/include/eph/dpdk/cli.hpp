@@ -137,7 +137,7 @@ consume_one(EalCliConfig& args, std::string_view flag, char const* next) {
 /// @brief Reject the typed-vs-raw lcore spec collision.
 ///
 /// `--pin` (typed, registry-aware) and `--lcores` (raw EAL spec) drive
-/// disjoint code paths inside `EalGuard::init_with_pins` /
+/// disjoint code paths inside `EalGuard::init` (typed-pin overload) /
 /// `Platform::launch`. Allowing both at once would silently
 /// drop one. Surface the conflict at parse time with the same diagnostic
 /// every example used to print by hand.
@@ -154,11 +154,11 @@ validate(EalCliConfig const& a) {
 }
 
 /// @brief Lower an `EalCliConfig` into an `EalConfig` ready for
-/// `Platform::launch` / `EalGuard::init_with_pins`.
+/// `Platform::launch` / `EalGuard::init` (typed-pin overload).
 ///
 /// `pci` -> `allowed_devs` (`-a` passthrough). `lcores_raw` -> single
 /// `lcores` entry (only when set; the typed-pin path leaves `lcores`
-/// empty so `init_with_pins` can emit `--lcores=...` itself).
+/// empty so `EalGuard::init` can emit `--lcores=...` itself).
 ///
 /// `pins` is **not** lowered: the typed pin span is passed alongside
 /// `EalConfig` into `Platform::launch(... , pins, policy)`.

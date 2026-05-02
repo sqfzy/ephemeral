@@ -165,17 +165,17 @@ int main(int argc, char** argv) {
 
     std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
-        spdlog::info("multi_port_platform_demo: EAL init via init_with_pins ({} pin(s))",
+        spdlog::info("multi_port_platform_demo: EAL init via typed pins ({} pin(s))",
                      pins_for_init.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, pins_for_init,
-                                           eph::utils::CpuPinPolicy{});
+        eal = ed::EalGuard::init(eal_cfg, pins_for_init,
+                                 eph::utils::CpuPinPolicy{});
     } else {
         spdlog::info("multi_port_platform_demo: EAL init via raw lcores");
         auto argv_owned = ed::build_eal_argv(eal_cfg);
         std::vector<char*> argv_ptrs;
         argv_ptrs.reserve(argv_owned.size());
         for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
+        eal = ed::EalGuard::init_raw(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
     }
     if (!eal) {
         spdlog::error("multi_port_platform_demo: EAL init failed: {}", eal.error());

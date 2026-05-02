@@ -14,12 +14,12 @@
 /// Full JSON payloads are emitted at spdlog DEBUG. The event-loop thread
 /// is the EAL main lcore (lcore 0); its CPU affinity is set by
 /// `rte_eal_init` based on `--pin 0=<cpu>`, and the cpu is registered into
-/// the process-wide pin registry by `init_with_pins` BEFORE EAL runs (so
+/// the process-wide pin registry by typed `EalGuard::init` BEFORE EAL runs (so
 /// any later `eph::utils::pin_thread` collision surfaces loudly). No
 /// separate application-thread pin is needed.
 ///
 /// EAL bring-up uses `lcore_pin.hpp`: `--pin lcore_id=cpu_id[:role]`
-/// (repeatable) goes through `EalGuard::init_with_pins`, which validates
+/// (repeatable) goes through typed `EalGuard::init`, which validates
 /// each pin against `CpuPinPolicy` (warn_irq_overlap is enabled here so
 /// IRQ-affinity overlap on the WS lcore is logged). `--lcores '<raw EAL
 /// spec>'` is the escape hatch for syntax `LcorePin` cannot express
@@ -91,7 +91,7 @@
 #include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / typed EalGuard::init
 #include "eph/dpdk/packet_core.hpp"  // net::parse_ipv4, net::format_ipv4, kDefaultMss
 #include "eph/dpdk/platform.hpp"
 

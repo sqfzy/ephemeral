@@ -167,7 +167,7 @@ parse_eal_cores_csv(std::string_view csv) {
 /// Read DPDK bootstrap fields from config.toml-backed `BenchConfig` and
 /// construct a fully-initialized `DpdkBenchEnv`.
 ///
-/// EAL init goes through `EalGuard::init_with_pins`: the CSV
+/// EAL init goes through typed `EalGuard::init`: the CSV
 /// `cpu.eal_cores` is parsed into typed `LcorePin` specs, validated against
 /// the process-wide pin registry (relaxed policy for shared dev hosts —
 /// `cpu_client` collisions surface loudly), then lowered to

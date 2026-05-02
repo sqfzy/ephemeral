@@ -97,16 +97,29 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
 /// Move-only RAII guard for EAL lifetime.
 ///
 /// Calls eal_cleanup() on destruction, ensuring cleanup even on error paths.
-/// Use the static factory `init()` instead of the constructor.
+/// Two factories:
+///   * `init(EalConfig, span<LcorePin>, CpuPinPolicy)` — recommended
+///     typed-pin path. Pre-validates lcore→cpu pins, registers them
+///     in the process-wide pin registry, builds EAL argv from the
+///     typed config, calls `rte_eal_init`, and transfers pin
+///     ownership into the returned guard. Failure is atomic (no
+///     dangling pin registrations, no half-initialized EAL).
+///   * `init_raw(int argc, char** argv)` — escape hatch for callers
+///     who already have a hand-assembled `argv` (e.g. they parsed
+///     `--lcores=...` themselves). Skips pin pre-validation; supplies
+///     no `PinGuard` rollback. Use only when the typed path doesn't
+///     fit; the typed path is the default-good.
 ///
-///   auto eal = EalGuard::init(argc, argv);
+///   auto eal = EalGuard::init(cfg, pins);
 ///   if (!eal) { SPDLOG_ERROR("{}", eal.error()); return 1; }
 ///   // ... use DPDK APIs ...
 ///   // eal_cleanup() called automatically when `eal` goes out of scope
 class EalGuard {
 public:
-    /// Initialize EAL and return a guard that cleans up on destruction.
-    [[nodiscard]] static std::expected<EalGuard, std::string> init(int argc, char** argv) {
+    /// Escape hatch: initialize EAL from a hand-assembled argv. Skips
+    /// pin pre-validation; the recommended `init(cfg, pins, policy)`
+    /// overload is the default-good path.
+    [[nodiscard]] static std::expected<EalGuard, std::string> init_raw(int argc, char** argv) {
         auto result = eal_init(argc, argv);
         if (!result) return std::unexpected(result.error());
         SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard created ({} args consumed)", *result);
@@ -154,7 +167,7 @@ public:
     /// Usage: if (eal) { /* EAL is initialized */ }
     [[nodiscard]] explicit operator bool() const noexcept { return initialized_; }
 
-    /// @brief Single-call factory: validate lcore pins, register them,
+    /// @brief Recommended factory: validate lcore pins, register them,
     ///        build EAL argv, call rte_eal_init, transfer pin ownership
     ///        into the returned EalGuard.
     ///
@@ -182,20 +195,20 @@ public:
     ///                @p pins is non-empty (escape-hatch / typed-path mutual
     ///                exclusion).
     /// @param pins    1:1 lcore→cpu spec. Empty span behaves identically
-    ///                to the legacy `init()` path.
+    ///                to the legacy `init_raw()` path.
     /// @param policy  validation strictness; default `CpuPinPolicy{}`
     ///                (relaxed) matches every existing in-repo pin_thread
     ///                caller's default.
     [[nodiscard]] static std::expected<EalGuard, std::string>
-    init_with_pins(struct EalConfig          cfg,
-                   std::span<LcorePin const> pins,
-                   eph::utils::CpuPinPolicy  policy = {});
+    init(struct EalConfig          cfg,
+         std::span<LcorePin const> pins,
+         eph::utils::CpuPinPolicy  policy = {});
 
 private:
     explicit EalGuard(int args_consumed) noexcept
         : initialized_{true}, args_consumed_{args_consumed} {}
 
-    /// Used by `init_with_pins` to transfer pin ownership into the guard.
+    /// Used by typed `init` to transfer pin ownership into the guard.
     EalGuard(int args_consumed,
              std::vector<eph::utils::PinGuard>&& pin_guards) noexcept
         : initialized_{true}
@@ -204,7 +217,7 @@ private:
 
     bool                  initialized_    = false;
     int                   args_consumed_  = 0;
-    /// Owns the cpus registered via `init_with_pins`. The
+    /// Owns the cpus registered via typed `init`. The
     /// EAL-cleanup-then-pin-release ordering is guaranteed by C++
     /// destruction rules: `~EalGuard()`'s body runs `eal_cleanup()`
     /// before any field destructor fires, then each `PinGuard` in the
@@ -239,7 +252,7 @@ struct EalConfig {
     /// syntax — e.g. `lcores = {"0-3"}` or `lcores = {"0,2,4,6"}`.
     /// Passing `lcores = {"0", "1", "2"}` produces `-l 0 -l 1 -l 2`
     /// which DPDK collapses to `-l 2` only — a silent footgun the
-    /// typed `init_with_pins` path avoids by emitting `--lcores=...`
+    /// typed `init` path avoids by emitting `--lcores=...`
     /// instead.
     std::vector<std::string> lcores      {};            ///< one per -l entry
     std::vector<std::string> allowed_devs{};            ///< one per -a entry
@@ -282,23 +295,23 @@ build_eal_argv(const EalConfig& cfg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EalGuard::init_with_pins out-of-line definition.
+// EalGuard::init (typed-pin overload) out-of-line definition.
 // EalConfig must be visible (declared above), so this lives after EalConfig
 // rather than inside the class body.
 // ─────────────────────────────────────────────────────────────────────────────
 inline std::expected<EalGuard, std::string>
-EalGuard::init_with_pins(EalConfig                 cfg,
-                         std::span<LcorePin const> pins,
-                         eph::utils::CpuPinPolicy  policy) {
+EalGuard::init(EalConfig                 cfg,
+               std::span<LcorePin const> pins,
+               eph::utils::CpuPinPolicy  policy) {
     [[maybe_unused]] auto* log = detail::eal_logger();
 
     if (!pins.empty() && !cfg.lcores.empty()) {
         SPDLOG_LOGGER_ERROR(log,
-            "init_with_pins: rejected — typed pins ({}) AND cfg.lcores "
+            "EalGuard::init: rejected — typed pins ({}) AND cfg.lcores "
             "({} entries) supplied simultaneously",
             pins.size(), cfg.lcores.size());
         return std::unexpected(
-            "init_with_pins: cfg.lcores must be empty when typed pins "
+            "EalGuard::init: cfg.lcores must be empty when typed pins "
             "are supplied (escape hatch and typed path are mutually "
             "exclusive in one call)");
     }
@@ -318,11 +331,11 @@ EalGuard::init_with_pins(EalConfig                 cfg,
             if (a == "--lcores" ||
                 a.rfind("--lcores=", 0) == 0) {
                 SPDLOG_LOGGER_ERROR(log,
-                    "init_with_pins: rejected — typed pins supplied "
+                    "EalGuard::init: rejected — typed pins supplied "
                     "({}) but cfg.extra_args already contains '{}'",
                     pins.size(), a);
                 return std::unexpected(
-                    "init_with_pins: cfg.extra_args already contains "
+                    "EalGuard::init: cfg.extra_args already contains "
                     "--lcores=...; cannot combine with typed pins (the "
                     "typed path would append a second --lcores token "
                     "which DPDK would silently override the raw one with)");
@@ -336,10 +349,10 @@ EalGuard::init_with_pins(EalConfig                 cfg,
     auto pin_guards = pin_lcores(pins, policy);
     if (!pin_guards) {
         SPDLOG_LOGGER_ERROR(log,
-            "init_with_pins: pin_lcores rejected ({} pins): {}",
+            "EalGuard::init: pin_lcores rejected ({} pins): {}",
             pins.size(), pin_guards.error());
         return std::unexpected(std::format(
-            "init_with_pins: {}", pin_guards.error()));
+            "EalGuard::init: {}", pin_guards.error()));
     }
 
     // Step 2: inject --lcores=... into argv (only if user supplied pins).
@@ -356,7 +369,7 @@ EalGuard::init_with_pins(EalConfig                 cfg,
     for (auto& s : argv_strings) argv_ptrs.push_back(s.data());
 
     SPDLOG_LOGGER_DEBUG(log,
-        "init_with_pins: calling rte_eal_init (argc={}, lcores={})",
+        "EalGuard::init: calling rte_eal_init (argc={}, lcores={})",
         argv_ptrs.size(), pins.size());
 
     auto eal_result = eal_init(static_cast<int>(argv_ptrs.size()),
@@ -365,10 +378,10 @@ EalGuard::init_with_pins(EalConfig                 cfg,
         // pin_guards destructor (here on stack) unregisters every cpu via
         // each PinGuard's dtor as we return. Caller sees a clean slate.
         SPDLOG_LOGGER_ERROR(log,
-            "init_with_pins: rte_eal_init failed (argc={}, lcores={}): {}",
+            "EalGuard::init: rte_eal_init failed (argc={}, lcores={}): {}",
             argv_ptrs.size(), pins.size(), eal_result.error());
         return std::unexpected(std::format(
-            "init_with_pins: {}", eal_result.error()));
+            "EalGuard::init: {}", eal_result.error()));
     }
 
     // Step 4: success — transfer pin ownership into the EalGuard.

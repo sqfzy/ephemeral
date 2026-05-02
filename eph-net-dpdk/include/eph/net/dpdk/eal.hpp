@@ -18,9 +18,11 @@ namespace eph::net::dpdk {
 
 /// @brief Move-only RAII guard for DPDK EAL lifetime.
 ///
-/// Same semantics as `eph::dpdk::EalGuard::init(argc, argv)`:
-/// returns `std::expected<Eal, std::string>` from the static factory and
-/// calls `eal_cleanup()` on destruction.
+/// Same semantics as `eph::dpdk::EalGuard`: returns
+/// `std::expected<Eal, std::string>` from the static factory and
+/// calls `eal_cleanup()` on destruction. Two factories:
+/// `Eal::init(EalConfig, span<LcorePin>)` (recommended typed-pin path)
+/// and `Eal::init_raw(argc, argv)` (escape hatch for hand-assembled argv).
 using Eal = ::eph::dpdk::EalGuard;
 
 /// @brief Free-function EAL initializer (stateless). Prefer `Eal::init`

@@ -151,7 +151,7 @@ build_lcore_argv(std::span<LcorePin const> pins) {
 ///
 /// Returns a `PinGuard` on success: destruction unregisters the cpu;
 /// `.release()` opts out of RAII (used by `pin_lcores` for transactional
-/// rollback handling and by `EalGuard::init_with_pins` to transfer
+/// rollback handling and by typed `EalGuard::init` to transfer
 /// ownership into the guard vector that lives as long as EAL).
 ///
 /// @param lcore_id  EAL-visible lcore id; only affects the registry role
@@ -205,7 +205,7 @@ pin_lcore(std::uint16_t lcore_id, int cpu, std::string_view label,
 ///     unregister) before returning `unexpected`. The error message names
 ///     the offending pin index and inherits the diagnostic from `pin_lcore`.
 ///
-/// Used by `EalGuard::init_with_pins`. Empty span returns an empty vector.
+/// Used by typed `EalGuard::init`. Empty span returns an empty vector.
 [[nodiscard]] inline std::expected<std::vector<eph::utils::PinGuard>, std::string>
 pin_lcores(std::span<LcorePin const> pins,
            eph::utils::CpuPinPolicy policy = {}) {

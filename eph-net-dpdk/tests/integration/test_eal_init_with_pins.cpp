@@ -1,6 +1,6 @@
 /// @file test_eal_init_with_pins.cpp
-/// Integration test for `EalGuard::init_with_pins` — exercises the full
-/// rte_eal_init path with typed lcore pins.
+/// Integration test for `EalGuard::init` (typed-pin overload) —
+/// exercises the full rte_eal_init path with typed lcore pins.
 ///
 /// Why a separate integration binary instead of expanding test_lcore_pin
 /// (the unit test file): rte_eal_init touches process-global DPDK state
@@ -53,7 +53,7 @@ namespace {
 /// and the test is meaningless. Note: EAL init can also fail with the
 /// same errno when run as a non-root user (no permission to mlock pages
 /// or write to /var/run/dpdk), so this check is necessary but not
-/// sufficient — `init_with_pins()` returning unexpected → SKIP covers
+/// sufficient — `EalGuard::init()` returning unexpected → SKIP covers
 /// the rest.
 bool hugepages_available() {
     std::ifstream f("/proc/meminfo");
@@ -103,7 +103,7 @@ TEST(InitWithPinsIntegration, SuccessPathRegistersAndCleansUp) {
     cfg.extra_args = {"--no-pci", "--no-shconf", "-m", "64"};
 
     {
-        auto eal = EalGuard::init_with_pins(
+        auto eal = EalGuard::init(
             cfg, std::span<LcorePin const>{pins});
         if (!eal) {
             GTEST_SKIP() << "rte_eal_init failed — most often this means the "

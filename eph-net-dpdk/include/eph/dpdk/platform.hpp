@@ -1160,7 +1160,7 @@ struct Platform::Impl {
     /// (and `create_or_join` via delegation). Empty when EAL was init'd
     /// externally (declarative-path `Platform::create` /
     /// `create_primary` / `create_secondary` callers manage pins
-    /// themselves via `EalGuard::init_with_pins`). Released via
+    /// themselves via typed `EalGuard::init`). Released via
     /// reverse-order field destruction AFTER `~Impl`'s explicit body
     /// finishes — pin release only touches the process-wide CPU
     /// registry global, EAL-independent, so timing relative to

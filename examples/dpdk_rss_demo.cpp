@@ -22,7 +22,7 @@
 ///   * **One `DpdkPoller` per RX queue, polled by a dedicated EAL lcore**
 ///     (`rte_eal_remote_launch` for workers; lcore 0 / main thread polls
 ///     queue 0). Each worker lcore was pinned to its cpu inside
-///     `rte_eal_init` via `EalGuard::init_with_pins(pins)` — the typed
+///     `rte_eal_init` via `EalGuard::init(cfg, pins)` — the typed
 ///     entry already routes through `pin_lcore` and the registry.
 ///     This is the multi-lcore production pattern; the previous version
 ///     of this example used main-thread round-robin and is now replaced.
@@ -117,7 +117,7 @@
 #include "eph/codec/raw_datagram_codec.hpp"
 #include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / typed EalGuard::init
 #include "eph/dpdk/platform.hpp"
 #include "eph/net/dpdk/flow_steering.hpp"  // RxDispatchMode / rx_dispatch_mode_name
 #include "eph/net/dpdk/poller.hpp"
@@ -400,7 +400,7 @@ int main(int argc, char** argv) {
     // via `rte_eal_remote_launch(lcore_id, worker_main, &ctxs[i])`.
     //
     // EAL has already pinned every worker thread to its declared cpu
-    // inside `rte_eal_init` (driven by `--pin` → `init_with_pins` →
+    // inside `rte_eal_init` (driven by `--pin` → typed `EalGuard::init` →
     // `--lcores=...` argv). That setaffinity is invisible from this
     // call site; what we control here is which work each lcore runs.
     //

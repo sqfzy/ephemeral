@@ -186,7 +186,7 @@ std::expected<::eph::dpdk::EalGuard, std::string> init_eal_for_nic_b() {
     std::vector<char*> argv;
     argv.reserve(args.size());
     for (auto& a : args) argv.push_back(a.data());
-    return ::eph::dpdk::EalGuard::init(
+    return ::eph::dpdk::EalGuard::init_raw(
         static_cast<int>(argv.size()), argv.data());
 }
 

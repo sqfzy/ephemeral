@@ -39,7 +39,7 @@
 /// real queries.
 ///
 /// EAL bring-up uses `lcore_pin.hpp`: `--pin lcore_id=cpu_id[:role]`
-/// (repeatable) goes through `EalGuard::init_with_pins`, registering the
+/// (repeatable) goes through typed `EalGuard::init`, registering the
 /// EAL lcore cpus into the process-wide pin registry. `--lcores '<raw>'`
 /// is the escape hatch for syntax `LcorePin` cannot express; mutually
 /// exclusive with `--pin`.
@@ -91,7 +91,7 @@
 #include "eph/dpdk/cli.hpp"
 #include "eph/dpdk/dns.hpp"
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / EalGuard::init_with_pins
+#include "eph/dpdk/lcore_pin.hpp"   // LcorePin / typed EalGuard::init
 #include "eph/dpdk/packet_core.hpp"  // net::format_ipv4, parse_ipv4
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/utils/cpu.hpp"        // CpuPinPolicy
@@ -221,20 +221,20 @@ int main(int argc, char** argv) {
 
     std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
     if (typed_pins) {
-        spdlog::info("async_dns_multi_resolve: EAL init via init_with_pins "
+        spdlog::info("async_dns_multi_resolve: EAL init via typed pins "
                      "({} pin(s))", pins_for_init.size());
-        eal = ed::EalGuard::init_with_pins(eal_cfg, pins_for_init,
-                                           eph::utils::CpuPinPolicy{});
+        eal = ed::EalGuard::init(eal_cfg, pins_for_init,
+                                 eph::utils::CpuPinPolicy{});
     } else {
         spdlog::info("async_dns_multi_resolve: EAL init via raw lcores='{}' "
-                     "(legacy path; consider --pin for typed validation)",
+                     "(escape hatch; consider --pin for typed validation)",
                      lcores_for_log);
         auto argv_owned = ed::build_eal_argv(eal_cfg);
         std::vector<char*> argv_ptrs;
         argv_ptrs.reserve(argv_owned.size());
         for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init(static_cast<int>(argv_ptrs.size()),
-                                 argv_ptrs.data());
+        eal = ed::EalGuard::init_raw(static_cast<int>(argv_ptrs.size()),
+                                     argv_ptrs.data());
     }
     if (!eal) {
         spdlog::error("async_dns_multi_resolve: EAL init failed: {}", eal.error());

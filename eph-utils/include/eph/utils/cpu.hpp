@@ -539,7 +539,7 @@ inline void cpu_relax() noexcept {
 // Scope: arbitrary user-spawned threads (mockex / latency client / app
 // worker / bench harness). For **DPDK EAL lcore threads** prefer the
 // purpose-built `eph::dpdk::pin_lcore` / `pin_lcores` /
-// `EalGuard::init_with_pins` API in `eph/dpdk/lcore_pin.hpp` — EAL itself
+// typed `EalGuard::init` API in `eph/dpdk/lcore_pin.hpp` — EAL itself
 // performs the `pthread_setaffinity_np` (the worker lcore thread doesn't
 // exist yet at the point you'd want to pin it), so the dpdk path is
 // "register the cpu pre-EAL, let `rte_eal_init` do the bind". Both paths
@@ -727,7 +727,7 @@ private:
 ///       can't call `pin_thread` on them from the control thread, and
 ///       calling it from inside the lcore body races EAL's own affinity
 ///       setup. Use `eph::dpdk::pin_lcore` / `pin_lcores` /
-///       `EalGuard::init_with_pins` instead — they validate against
+///       typed `EalGuard::init` instead — they validate against
 ///       this same registry pre-EAL and let `rte_eal_init` perform the
 ///       actual `setaffinity` from the `--lcores=N@cpu` argv. Mixing
 ///       the two paths still composes correctly: `pin_thread` on a

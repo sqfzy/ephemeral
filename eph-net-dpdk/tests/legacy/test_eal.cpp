@@ -20,7 +20,7 @@ TEST(EalGuard, InitSucceedsWithNetNull) {
     };
     for (auto& s : owned) args.push_back(s.data());
 
-    auto eal = EalGuard::init(
+    auto eal = EalGuard::init_raw(
         static_cast<int>(args.size()), args.data());
     ASSERT_TRUE(eal.has_value()) << eal.error();
     EXPECT_GT(eal->args_consumed(), 0);

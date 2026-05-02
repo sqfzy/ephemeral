@@ -25,7 +25,7 @@
 ///     DpdkPoller via `rte_eal_remote_launch` (canonical pattern, mirrors
 ///     `examples/dpdk_rss_demo.cpp`). Workers re-launched per cell;
 ///     setaffinity is done by EAL itself from `--lcores=N@cpu` (driven by
-///     `cpu.eal_cores` → `LcorePin` → `init_with_pins`). Socket i pinned
+///     `cpu.eal_cores` → `LcorePin` → typed `EalGuard::init`). Socket i pinned
 ///     to queue (i % nb_q). The previous `std::jthread` + `pin_thread`
 ///     path is gone — polling DPDK from a non-lcore thread fights EAL
 ///     for setaffinity and bypasses RTE_PER_LCORE state setup.
@@ -161,7 +161,7 @@ struct WorkerCtx {
 /// EAL worker entry point. `int(void*)` shape required by
 /// `rte_eal_remote_launch`. EAL has already pinned this thread to its
 /// declared cpu inside `rte_eal_init` (see `cpu.eal_cores` → `LcorePin`
-/// → `init_with_pins` in `load_dpdk_env`); we just poll until told to
+/// → typed `EalGuard::init` in `load_dpdk_env`); we just poll until told to
 /// stop. Returning 0 hands the lcore back to `eal_thread_loop` so the
 /// next cell can `rte_eal_remote_launch` it again.
 int worker_main(void* arg) noexcept {

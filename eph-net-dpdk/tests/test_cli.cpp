@@ -196,7 +196,7 @@ TEST(CliToEalConfig, LcoresRawFlowsToLcoresVec) {
 }
 
 TEST(CliToEalConfig, EmptyLcoresRawProducesEmptyLcoresVec) {
-    // Typed-pin path: caller leaves lcores_raw empty so init_with_pins
+    // Typed-pin path: caller leaves lcores_raw empty so EalGuard::init
     // can emit --lcores=... itself. EalConfig::lcores must be empty.
     EalCliConfig a{};
     a.pins.push_back(LcorePin{0, 4, ""});

@@ -6,7 +6,7 @@
 /// Real EAL-up coverage of the success path is provided by every
 /// e2e binary that boots DPDK via `Platform::launch` after
 /// stages 5/6 of this reshape, plus `tests/integration/
-/// test_eal_init_with_pins.cpp` for `EalGuard::init_with_pins` (the
+/// test_eal_init_with_pins.cpp` for typed `EalGuard::init` (the
 /// underlying primitive). Booting EAL inside a unit test would
 /// conflict with concurrent test runs and require vfio/hugepages,
 /// neither of which is present in the unit-test environment.
