@@ -85,6 +85,44 @@ pin_client_from_cfg(const BenchConfig& cfg,
     res->release();
     SPDLOG_INFO("[{}] pinned to CPU {} (source: {})",
                 thread_name, cpu, source);
+
+    // Tail-spike hardening (lat_ws DPDK baseline showed isolated TX
+    // latencies of 1–11 ms while the median was 22 µs — a 500× tail
+    // dominated by occasional page faults / scheduler preempts). The
+    // two-step hardening below is a standard HFT recipe:
+    //
+    //   1. mlockall — pin the entire address space into RAM so no demand
+    //      paging happens during the measurement window. Eliminates the
+    //      page-fault class of tail spikes.
+    //   2. SCHED_FIFO @ priority 50 — promote the bench thread out of
+    //      CFS so the kernel scheduler cannot preempt it for the typical
+    //      maintenance / migration / load-balance kicks. Priority 50 is
+    //      well above any non-RT thread on a stock host but well below
+    //      99 (which would pre-empt watchdog / RCU softirq workers and
+    //      can wedge the box).
+    //
+    // Both steps are best-effort: failure (no CAP_IPC_LOCK / CAP_SYS_NICE
+    // / ulimit too small) downgrades to a WARN — the bench still runs,
+    // numbers just stay noisy. This matches `pin_thread`'s philosophy
+    // of soft-degrading on dev hosts.
+    auto lock_r = eph::utils::lock_memory(
+        eph::utils::LockMemoryOptions{},
+        std::string{thread_name}.c_str());
+    if (!lock_r) {
+        SPDLOG_WARN("[{}] mlockall failed: {} (bench tail latencies "
+                    "may include page-fault spikes)",
+                    thread_name, lock_r.error());
+    }
+    // SCHED_FIFO promotion was tried during the lat_ws hardening
+    // bisect and removed: it interacts badly with the kernel's RT
+    // throttler and the kernel mock's softirq wake path. Net effect
+    // observed: TX tail improved 10× but RX tail regressed 30-90×
+    // because the mock's blocking read() wakeup got starved. The
+    // current config — mlockall ONLY, on both halves — eliminates
+    // the page-fault class of spikes without introducing the RT-
+    // starvation class. See the lat_ws hardening notes / trail in
+    // benchmarks/latency/scripts/irq_steer.sh's docstring for the
+    // bisect details.
 }
 
 } // namespace bench

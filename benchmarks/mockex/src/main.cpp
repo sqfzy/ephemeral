@@ -82,6 +82,22 @@ void pin_to_cpu(int cpu_id) noexcept {
     // exits — permanent pin, detach guard.
     res->release();
     SPDLOG_INFO("[mockex] pinned to CPU {}", cpu_id);
+
+    // Mock-side hardening: mlockall ONLY. SCHED_FIFO was tried during
+    // the lat_ws hardening bisect and rejected — even with rt_runtime
+    // breathing room, RT promotion of mockex starved the kernel
+    // softirq workers needed to wake the mock's blocking read(),
+    // moving the bench tail spike from TX (page faults, ~10ms) to
+    // RX (wake starvation, ~25-50ms). The mlockall-only config
+    // eliminates page faults on both halves without that side
+    // effect.
+    auto lock_r = eph::utils::lock_memory(
+        eph::utils::LockMemoryOptions{}, "mockex");
+    if (!lock_r) {
+        SPDLOG_WARN("[mockex] mlockall failed: {} (bench tail latencies "
+                    "may include mock-side page-fault spikes)",
+                    lock_r.error());
+    }
 }
 
 } // namespace

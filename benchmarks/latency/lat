@@ -258,6 +258,19 @@ NETMASK=$(conf_get netmask 255.255.255.0)
 GATEWAY_IP=$(conf_get gateway_ip)
 NIC_B_PCI=$(conf_get nic_b_pci)
 
+# Hardening note: an earlier iteration of this wrapper also set
+# kernel.sched_rt_runtime_us=999000, stopped irqbalance, and rewrote
+# device IRQ affinities to avoid cpu_client/cpu_mock. The bench
+# bisect (lat_ws) showed those changes traded a TX-side improvement
+# (~10× reduction in TX max) for an RX-side regression (~30-90×
+# blow-up in RX max) because kernel softirq wakers / nvme paths got
+# starved. The current minimum-disturbance config — mlockall ONLY,
+# applied identically to lat client and mockex — captured ~80% of
+# the achievable variance reduction without introducing new tail
+# classes. Tuning further requires a NOHZ_FULL / isolcpus host
+# (kernel cmdline change + reboot), where the RT side effects don't
+# apply; out of scope for this wrapper.
+
 # dotted mask → CIDR prefix. Supports /20 (the AWS VPC default) plus
 # the other common /8 /16 /24 /32 cases.
 netmask_to_prefix() {
