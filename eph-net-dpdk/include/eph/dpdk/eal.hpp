@@ -62,6 +62,9 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
         // Roll back the flag so a subsequent attempt can retry after
         // the caller fixes the EAL arguments.
         eal_initialized_flag().store(false, std::memory_order_release);
+        SPDLOG_LOGGER_ERROR(log,
+            "rte_eal_init failed (argc={}, ret={}, rte_errno={}): {}",
+            argc, ret, rte_errno, rte_strerror(rte_errno));
         return std::unexpected(std::format(
             "rte_eal_init failed (ret={}, rte_errno={}): {}",
             ret, rte_errno, rte_strerror(rte_errno)));
