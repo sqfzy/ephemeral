@@ -896,13 +896,31 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
         fd_send_reply_(kFdInstallActionName, reply, peer);
         return 0;
     }
+    // Strict proto validation. The wire format documents proto∈{6,17}; a
+    // ternary `(proto == 17) ? Udp : Tcp` would silently install a TCP
+    // 5-tuple match for any non-17 byte (a corrupt / forged / older-schema
+    // sender could land an SCTP / ICMP / 0 byte and we'd happily program
+    // the NIC for the wrong protocol). Reject anything outside the two
+    // sanctioned values up front.
+    if (parsed->proto != ::eph::dpdk::net::kIpProtoTcp &&
+        parsed->proto != ::eph::dpdk::net::kIpProtoUdp) {
+        SPDLOG_LOGGER_WARN(flow_logger(),
+            "on_fd_install_thunk: rejecting unsupported proto={} "
+            "(expected {} TCP or {} UDP) — possible schema drift or "
+            "corrupt msg from peer",
+            parsed->proto,
+            static_cast<int>(::eph::dpdk::net::kIpProtoTcp),
+            static_cast<int>(::eph::dpdk::net::kIpProtoUdp));
+        fd_send_reply_(kFdInstallActionName, reply, peer);
+        return 0;
+    }
 
     ::eph::dpdk::net::ConnectionTuple t{};
     t.src_ip   = parsed->src_ip;
     t.dst_ip   = parsed->dst_ip;
     t.src_port = parsed->src_port;
     t.dst_port = parsed->dst_port;
-    const auto proto = (parsed->proto == 17)
+    const auto proto = (parsed->proto == ::eph::dpdk::net::kIpProtoUdp)
         ? FlowProtocol::Udp
         : FlowProtocol::Tcp;
 
