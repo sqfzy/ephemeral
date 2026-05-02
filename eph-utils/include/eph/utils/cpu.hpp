@@ -37,11 +37,14 @@
 #if defined(__linux__)
 #include <pthread.h>
 #include <sched.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #endif
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -448,6 +451,131 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
       "Realtime scheduling not supported on this platform for {}", tag);
   SPDLOG_LOGGER_WARN(log, "{}", msg);
   return std::unexpected(std::move(msg));
+#endif
+}
+
+/// @brief Options for lock_memory().
+struct LockMemoryOptions {
+    /// Lock pages already mapped (MCL_CURRENT). Default true.
+    bool current = true;
+    /// Lock pages mapped by future allocations (MCL_FUTURE). Default true.
+    /// Combined with current, this is the canonical HFT setting: every
+    /// page touched by the process — heap, stack, mmap'd region — stays
+    /// resident for the process lifetime, eliminating page-fault tail
+    /// spikes during measurement / production hot loops.
+    bool future = true;
+    /// Lock pages lazily on fault (MCL_ONFAULT, Linux ≥ 4.4). Reduces
+    /// the up-front RSS cost (don't pre-fault unused regions) at the
+    /// price of a one-time fault on first access. Most HFT users want
+    /// the eager behaviour (default false). Ignored on platforms
+    /// without MCL_ONFAULT.
+    bool on_fault = false;
+};
+
+/// @brief Lock the calling process's address space into RAM.
+///
+/// Wraps `mlockall` with structured options + actionable error
+/// diagnostics. Intended use: the bench / production hot path calls
+/// this **after** thread pinning so subsequent allocations on the
+/// pinned core are immune to page-fault preemption.
+///
+/// @param opts Bitset of mlockall flags. See LockMemoryOptions.
+/// @param tag  Optional label for log messages (e.g. "lat_ws_client").
+/// @return ok() on success; otherwise an actionable error message
+///         identifying the likely cause (`EPERM` → root / CAP_IPC_LOCK
+///         missing; `ENOMEM` → ulimit -l too small; `EINVAL` → bad flag
+///         combination).
+///
+/// @note Linux: `mlockall(MCL_CURRENT | MCL_FUTURE [| MCL_ONFAULT])`.
+/// @note macOS: `mlockall` with same MCL_CURRENT / MCL_FUTURE semantics
+///       (no MCL_ONFAULT — silently dropped).
+/// @note Other platforms: returns an error.
+///
+/// @warning A process with `MCL_FUTURE` that exhausts `RLIMIT_MEMLOCK`
+///          will start to hit `ENOMEM` on subsequent `mmap` / heap
+///          growth. Set `ulimit -l unlimited` for HFT workloads, or
+///          size the limit comfortably above peak RSS.
+[[nodiscard]] inline std::expected<void, std::string>
+lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
+    [[maybe_unused]] auto log = detail::cpu_logger();
+    [[maybe_unused]] const char* label = tag ? tag : "process";
+
+#if defined(__linux__) || defined(__APPLE__)
+    int flags = 0;
+    if (opts.current) flags |= MCL_CURRENT;
+    if (opts.future)  flags |= MCL_FUTURE;
+#  if defined(MCL_ONFAULT)
+    if (opts.on_fault) flags |= MCL_ONFAULT;
+#  else
+    if (opts.on_fault) {
+        SPDLOG_LOGGER_DEBUG(log,
+            "[{}] lock_memory: MCL_ONFAULT not available on this platform; "
+            "ignoring on_fault=true", label);
+    }
+#  endif
+
+    if (flags == 0) {
+        // Caller passed all-false options; treat as a no-op rather than
+        // an error — easier to wire `lock_memory({.current=cfg.lock})`
+        // style without conditionals.
+        SPDLOG_LOGGER_INFO(log,
+            "[{}] lock_memory: no flags requested, no-op", label);
+        return {};
+    }
+
+    if (::mlockall(flags) == 0) {
+        SPDLOG_LOGGER_INFO(log,
+            "[{}] lock_memory: ok (current={} future={} on_fault={})",
+            label, opts.current, opts.future, opts.on_fault);
+        return {};
+    }
+
+    const int err = errno;
+    // Pull the current RLIMIT_MEMLOCK so the diagnostic is actionable
+    // without the user having to chase ulimit -l themselves.
+    [[maybe_unused]] rlim_t mlock_max = 0;
+#  if defined(__linux__)
+    rlimit rl{};
+    if (::getrlimit(RLIMIT_MEMLOCK, &rl) == 0) {
+        mlock_max = rl.rlim_cur;
+    }
+#  endif
+
+    std::string hint;
+    switch (err) {
+        case EPERM:
+            hint = "run as root, or grant CAP_IPC_LOCK: "
+                   "setcap cap_ipc_lock+ep <binary>";
+            break;
+        case ENOMEM:
+            hint = std::format(
+                "RLIMIT_MEMLOCK ({} bytes) is too small for working set; "
+                "set ulimit -l unlimited or raise the limit",
+                static_cast<unsigned long long>(mlock_max));
+            break;
+        case EINVAL:
+            hint = "invalid mlockall flag combination "
+                   "(check on_fault on older kernels)";
+            break;
+        case EAGAIN:
+            hint = "kernel could not lock all pages "
+                   "(RLIMIT_MEMLOCK partial fail); retry or relax options";
+            break;
+        default:
+            hint = std::generic_category().message(err);
+            break;
+    }
+    auto msg = std::format(
+        "[{}] lock_memory: mlockall(flags={:#x}) failed: {} ({})",
+        label, flags, std::generic_category().message(err), hint);
+    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    return std::unexpected(std::move(msg));
+
+#else
+    auto msg = std::format(
+        "[{}] lock_memory: not supported on this platform", label);
+    SPDLOG_LOGGER_WARN(log, "{}", msg);
+    return std::unexpected(std::move(msg));
 #endif
 }
 

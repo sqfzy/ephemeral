@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- `core/pin_client.hpp::pin_client_from_cfg` now calls
+  `eph::utils::lock_memory` after pinning, immunizing the bench
+  client's address space against page-fault tail spikes during the
+  measurement window. Mockex (`benchmarks/mockex/src/main.cpp`) does
+  the same. The pair cuts lat_ws DPDK RTT max from ~7M ns
+  (1-11M ns cross-run) to ~3M ns (2.4-4.0M ns cross-run, ~4× tighter
+  TX stddev) with no change to p50 / p99. Both calls are best-effort
+  (WARN + continue on failure). `ulimit -l unlimited` is the
+  recommended host setting; sudo is already a hard requirement for
+  DPDK runs so the typical bench operator already has the privileges.
 ### Changed
 - Subproject now owns its own `xmake.lua` and `scripts/` (the `lat`
   runner lives next to its binaries, not at the repo root).
