@@ -136,7 +136,7 @@ TEST(MpTopologyUniform, PortWindowOverflow_ReturnsInvalid) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(MpTopologyValid, CustomNonOverlapping_Accepted) {
-    auto t = MpTopology::custom(/*self_index=*/1, {
+    auto t = MpTopology::from_specs(/*self_index=*/1, {
         ProcSpec{.tag="trader",  .queue_lo=0, .queue_hi=6, .port_lo=32768, .port_hi=50000},
         ProcSpec{.tag="monitor", .queue_lo=6, .queue_hi=7, .port_lo=50000, .port_hi=55000},
         ProcSpec{.tag="auditor", .queue_lo=7, .queue_hi=8, .port_lo=55000, .port_hi=60000},
@@ -161,18 +161,18 @@ TEST(MpTopologyValid, OverMaxProcs_RejectedByValid) {
 }
 
 TEST(MpTopologyValid, SelfIndexOOB_Rejected) {
-    auto t = MpTopology::custom(/*self_index=*/5, {
+    auto t = MpTopology::from_specs(/*self_index=*/5, {
         ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=40000},
         ProcSpec{.queue_lo=2, .queue_hi=4, .port_lo=40000, .port_hi=50000},
     });
-    // custom() faithfully sets self_index=5, total_procs=2 → valid()
+    // from_specs() faithfully sets self_index=5, total_procs=2 → valid()
     // catches the OOB.
     EXPECT_EQ(t.total_procs, 2);
     EXPECT_FALSE(t.valid());
 }
 
 TEST(MpTopologyValid, EmptyQueueRange_Rejected) {
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         // queue_lo == queue_hi → empty range, rejected
         ProcSpec{.queue_lo=2, .queue_hi=2, .port_lo=32768, .port_hi=40000},
     });
@@ -180,14 +180,14 @@ TEST(MpTopologyValid, EmptyQueueRange_Rejected) {
 }
 
 TEST(MpTopologyValid, InvertedPortRange_Rejected) {
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=40000, .port_hi=32768},
     });
     EXPECT_FALSE(t.valid());
 }
 
 TEST(MpTopologyValid, OverlappingQueues_Rejected) {
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=4, .port_lo=32768, .port_hi=40000},
         // [3,5) overlaps [0,4) at queue id 3
         ProcSpec{.queue_lo=3, .queue_hi=5, .port_lo=40000, .port_hi=50000},
@@ -196,7 +196,7 @@ TEST(MpTopologyValid, OverlappingQueues_Rejected) {
 }
 
 TEST(MpTopologyValid, OverlappingPorts_Rejected) {
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=40000},
         // disjoint queues but ports overlap at 35000..40000
         ProcSpec{.queue_lo=2, .queue_hi=4, .port_lo=35000, .port_hi=50000},
@@ -206,7 +206,7 @@ TEST(MpTopologyValid, OverlappingPorts_Rejected) {
 
 TEST(MpTopologyValid, AdjacentRangesNotOverlap_Accepted) {
     // [0,4) and [4,8) share boundary 4 but don't overlap (half-open).
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=4, .port_lo=32768, .port_hi=49152},
         ProcSpec{.queue_lo=4, .queue_hi=8, .port_lo=49152, .port_hi=65536},
     });
@@ -217,19 +217,19 @@ TEST(MpTopologyValid, PortHiAtBoundary_Accepted) {
     // port_hi=65536 is the documented inclusive upper bound (the half-
     // open `port_hi` may equal 65536 to express the full ephemeral
     // window without uint16_t wrap).
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=65536},
     });
     EXPECT_TRUE(t.valid());
 }
 
 TEST(MpTopologyValid, PortHiOverflow_Rejected) {
-    // ProcSpec stores port_hi as uint32_t, so a `custom()` caller can
+    // ProcSpec stores port_hi as uint32_t, so a `from_specs()` caller can
     // technically set port_hi=200000 and silently corrupt downstream
     // src_port allocation when it casts to uint16_t. valid() must
     // reject this — see mp_topology.hpp doc claim "constrained to
     // [0, 65536] by valid()".
-    auto t = MpTopology::custom(0, {
+    auto t = MpTopology::from_specs(0, {
         ProcSpec{.queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=200000u},
     });
     EXPECT_FALSE(t.valid());
@@ -254,7 +254,7 @@ TEST(MpTopologyEquality, FieldwiseStrict) {
 }
 
 TEST(MpTopologyDump, ContainsTagAndStarMarksSelf) {
-    auto t = MpTopology::custom(/*self_index=*/1, {
+    auto t = MpTopology::from_specs(/*self_index=*/1, {
         ProcSpec{.tag="trader",  .queue_lo=0, .queue_hi=2, .port_lo=32768, .port_hi=40000},
         ProcSpec{.tag="monitor", .queue_lo=2, .queue_hi=4, .port_lo=40000, .port_hi=50000},
     });
@@ -272,7 +272,7 @@ TEST(MpTopologyDump, ContainsTagAndStarMarksSelf) {
 // underlying procs[] array is fixed-capacity (kMaxProcs). The cap at
 // the loop bound is what keeps dump() from reading past procs.end().
 //
-// The two factories (uniform / custom) reject total_procs > kMaxProcs
+// The two factories (uniform / from_specs) reject total_procs > kMaxProcs
 // up-front, so we mutate the field directly here — exactly the
 // out-of-band misuse pattern the cap exists to guard against.
 TEST(MpTopologyDump, TotalProcsExceedsMax_TruncatesWithWarning) {
@@ -400,7 +400,7 @@ TEST(MpTopologyLcoreValid, HighBitMasks_Valid) {
 TEST(MpTopologyLcoreValid, ThreeProcs_TwoOverlap_Rejected) {
     // Custom 3-proc topology: proc 0 and proc 2 both declare bit 5 —
     // valid() must catch this even though procs 0,1 and 1,2 are clean.
-    auto t = MpTopology::custom(/*self_index=*/1, {
+    auto t = MpTopology::from_specs(/*self_index=*/1, {
         ProcSpec{.tag="A", .queue_lo=0, .queue_hi=1, .port_lo=32768, .port_hi=40000,
                  .lcore_mask=uint64_t{1} << 5},
         ProcSpec{.tag="B", .queue_lo=1, .queue_hi=2, .port_lo=40000, .port_hi=50000,
@@ -412,7 +412,7 @@ TEST(MpTopologyLcoreValid, ThreeProcs_TwoOverlap_Rejected) {
 }
 
 TEST(MpTopologyLcoreValid, ThreeProcs_AllDisjoint_Valid) {
-    auto t = MpTopology::custom(/*self_index=*/0, {
+    auto t = MpTopology::from_specs(/*self_index=*/0, {
         ProcSpec{.tag="A", .queue_lo=0, .queue_hi=1, .port_lo=32768, .port_hi=40000,
                  .lcore_mask=uint64_t{1} << 0},
         ProcSpec{.tag="B", .queue_lo=1, .queue_hi=2, .port_lo=40000, .port_hi=50000,

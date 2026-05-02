@@ -88,7 +88,7 @@ struct ProcSpec {
 };
 
 // Lock the ProcSpec layout. The struct is the user-facing input to
-// `MpTopology::custom()` and `Platform::create_*`'s `mp_topology` field;
+// `MpTopology::from_specs()` and `Platform::create_*`'s `mp_topology` field;
 // it is not stored in shared hugepage memory itself (the registry layer
 // uses the lower-level `ProcSlot` for that), but the contract that
 // callers build a `ProcSpec` array on the stack and copy it into a
@@ -115,7 +115,7 @@ static_assert(std::is_trivially_copyable_v<ProcSpec>,
 ///     total_procs, nb_rx_queues)` — equal-share queue split + 32 KiB
 ///     ephemeral port range divided evenly. Two numbers per process,
 ///     no other config.
-///   - **Custom (power-user case)**: `MpTopology::custom(self_index,
+///   - **Custom (power-user case)**: `MpTopology::from_specs(self_index,
 ///     {ProcSpec{...}, ProcSpec{...}})` for non-uniform layouts (e.g.
 ///     one trader gets 6 queues, monitors get 1 each).
 struct MpTopology {
@@ -140,7 +140,7 @@ struct MpTopology {
     /// @brief Fixed-capacity slot array. Exposed for direct write
     /// access in advanced cases (`t.procs[i] = ProcSpec{...}; t.
     /// total_procs = N;`); most callers should prefer the `uniform`
-    /// or `custom` factories which set both fields atomically.
+    /// or `from_specs` factories which set both fields atomically.
     std::array<ProcSpec, kMaxProcs> procs {};
 
     [[nodiscard]] friend constexpr bool
@@ -177,7 +177,7 @@ struct MpTopology {
             // Enforce the documented [0, 65536] port range. ProcSpec
             // holds port_hi as uint32_t so the half-open `port_hi=65536`
             // can express the full ephemeral window without uint16_t
-            // wrap, but a `custom()` caller passing e.g. port_hi=200000
+            // wrap, but a `from_specs()` caller passing e.g. port_hi=200000
             // would otherwise sail through valid() and later silently
             // wrap when src_port allocation casts to uint16_t.
             if (p.port_hi > 65536u)       return false;
@@ -284,7 +284,7 @@ struct MpTopology {
     /// On `list.size() > kMaxProcs` the result has `total_procs == 0`
     /// (invalid).
     [[nodiscard]] static MpTopology
-    custom(uint8_t self_index, std::initializer_list<ProcSpec> list) noexcept {
+    from_specs(uint8_t self_index, std::initializer_list<ProcSpec> list) noexcept {
         MpTopology t;
         if (list.size() == 0 || list.size() > kMaxProcs) return t;
         t.self_index  = self_index;
