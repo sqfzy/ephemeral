@@ -7,6 +7,20 @@ on the `dev` branch touching `eph-utils/`.
 
 ## [Unreleased]
 
+### Added
+
+- `eph::utils::lock_memory(LockMemoryOptions, tag)` — `mlockall`
+  wrapper with structured options (`current` / `future` / `on_fault`)
+  and actionable error diagnostics (EPERM hint for missing
+  `CAP_IPC_LOCK`; ENOMEM hint citing the current `RLIMIT_MEMLOCK`).
+  Used by the latency bench client + mockex to immunize the
+  measurement window against page-fault tail spikes — applying it
+  to both halves of the lat_ws DPDK bench cut RTT max from ~7M ns
+  (1-11M ns cross-run spread) to ~3M ns (2.4-4.0M ns cross-run,
+  ~4× tighter variance) with no change to p50 / p99. Tested via
+  `eph-utils/tests/test_lock_memory.cpp` (success path +
+  EPERM-actionable-error path + no-op-flags path).
+
 ### Phase 9 Recovery (2026-04-10)
 
 ### Added
