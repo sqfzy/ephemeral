@@ -1230,6 +1230,15 @@ public:
                     std::min(mss, app_payload.size() - off);
                 auto sr = sess_.send(app_payload.data() + off, chunk);
                 if (!sr) {
+                    // Account the bytes that DID make it to the wire before
+                    // failure, so kBytesSent matches the kernel backend's
+                    // semantic — telemetry must not under-report a partial
+                    // multi-MSS send. Return value still surfaces the error
+                    // (the public Stream contract is all-or-nothing on
+                    // success, unchanged).
+                    if (off > 0) {
+                        inc_<::eph::net::StreamMetric::kBytesSent>(off);
+                    }
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: {} "
                         "(off={}/{}, chunk={}, mss={})",
@@ -1237,6 +1246,9 @@ public:
                     return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
+                    if (off > 0) {
+                        inc_<::eph::net::StreamMetric::kBytesSent>(off);
+                    }
                     SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: TcpSession::send returned 0 "
                         "bytes (off={}/{}, chunk={})",
