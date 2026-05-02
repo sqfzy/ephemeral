@@ -302,6 +302,92 @@ TEST(WsCodec, OrphanContinuationAfterFragmentedMessageIsRejected) {
     EXPECT_EQ(r3.error().code, Error::WsFrameBad);
 }
 
+// Regression: the single-frame fast path (FIN=1, !continuation, frag_buf_
+// empty) used to leak frag_opcode_ across calls — every subsequent
+// non-continuation frame would then trip the `frag_opcode_ != 0` guard
+// and produce a spurious "previous fragment pending, discarding" WARN
+// even though no fragment was in flight. On a typical bookTicker stream
+// (every message is a single FIN=1 text frame) this caused 1:1 WARN-to-
+// frame spam. We can't probe frag_opcode_ directly (private field), so
+// we verify the invariant indirectly: an orphan continuation arriving
+// AFTER a clean single-frame delivery must still be rejected — that is
+// only true when frag_opcode_ was reset to 0.
+TEST(WsCodec, ConsecutiveSingleFrameMessagesLeaveNoFragOpcodeLeak) {
+    auto m1 = mk_frame(kOpText, /*fin=*/true, {'A', 'B'});
+    auto m2 = mk_frame(kOpText, /*fin=*/true, {'C', 'D'});
+    auto m3 = mk_frame(kOpText, /*fin=*/true, {'E', 'F'});
+
+    std::vector<uint8_t> wire;
+    wire.insert(wire.end(), m1.begin(), m1.end());
+    wire.insert(wire.end(), m2.begin(), m2.end());
+    wire.insert(wire.end(), m3.begin(), m3.end());
+
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[32]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    WsCodec codec;
+
+    // Three back-to-back single-frame messages — all must decode cleanly,
+    // none must error out. Pre-fix code would still deliver each payload
+    // (the WARN is non-fatal) but would also fire the warn path.
+    auto r1 = codec.decode(view, out);
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r1->has_value());
+    EXPECT_EQ((**r1).size(), 2u);
+
+    auto r2 = codec.decode(view, out);
+    ASSERT_TRUE(r2.has_value());
+    ASSERT_TRUE(r2->has_value());
+    EXPECT_EQ((**r2).size(), 2u);
+
+    auto r3 = codec.decode(view, out);
+    ASSERT_TRUE(r3.has_value());
+    ASSERT_TRUE(r3->has_value());
+    EXPECT_EQ((**r3).size(), 2u);
+
+    // Now the real invariant check: an orphan continuation must be
+    // rejected. This passes iff frag_opcode_ was reset to 0 by m3's
+    // fast-path delivery. Pre-fix: frag_opcode_ leaked as kOpText (0x1),
+    // so the orphan-continuation guard at line 345 silently fell through
+    // and the orphan would be reassembled as a corrupted "message".
+    auto orphan = mk_frame(kOpContinuation, /*fin=*/true, {'X', 'Y'});
+    SpanPacketView orphan_view{orphan.data(), orphan.size()};
+    auto r4 = codec.decode(orphan_view, out);
+    ASSERT_FALSE(r4.has_value());
+    EXPECT_EQ(r4.error().code, Error::WsFrameBad);
+}
+
+// Regression (companion to the above): same root cause, isolated path.
+// A single FIN=1 frame followed by a stray continuation must reject the
+// continuation. Pre-fix this silently delivered the orphan's payload as
+// a "message" because the fast path did not reset frag_opcode_.
+TEST(WsCodec, OrphanContinuationAfterSingleFrameIsRejected) {
+    auto first = mk_frame(kOpBinary, /*fin=*/true, {'A', 'B'});
+    auto orphan = mk_frame(kOpContinuation, /*fin=*/true, {'X', 'Y'});
+
+    std::vector<uint8_t> wire;
+    wire.insert(wire.end(), first.begin(), first.end());
+    wire.insert(wire.end(), orphan.begin(), orphan.end());
+
+    SpanPacketView view{wire.data(), wire.size()};
+    uint8_t out_storage[16]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    WsCodec codec;
+
+    // First single-frame delivers cleanly.
+    auto r1 = codec.decode(view, out);
+    ASSERT_TRUE(r1.has_value());
+    ASSERT_TRUE(r1->has_value());
+    EXPECT_EQ((**r1).size(), 2u);
+
+    // Stray continuation must be rejected as a protocol violation.
+    auto r2 = codec.decode(view, out);
+    ASSERT_FALSE(r2.has_value());
+    EXPECT_EQ(r2.error().code, Error::WsFrameBad);
+}
+
 // ---------------------------------------------------------------------------
 // Malformed / protocol violations
 // ---------------------------------------------------------------------------
