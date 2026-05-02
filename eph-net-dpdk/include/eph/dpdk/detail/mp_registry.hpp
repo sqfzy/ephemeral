@@ -98,7 +98,7 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///       via kill(pid, 0) detects stale slots from kill-9'd peers
 ///       and CAS-preempts them. Same v2 schema, no further bump.
 ///   v3: API reshape — cooperative-MP entry points removed; multi-
-///       process is reached only via `Platform::join_dynamic`. Wire
+///       process is reached only via `Platform::create_or_join`. Wire
 ///       layout unchanged; bump signals API generation. v3 processes
 ///       hard-reject v2 hugepages and vice-versa: a primary running
 ///       v2 + secondary launched at v3 is an environment mismatch
@@ -507,7 +507,7 @@ public:
     ///
     /// @param already_claimed When `true` the CAS-claim step is
     /// skipped — the caller has already preclaimed the slot via
-    /// `try_claim_free_slot()` (autojoin / `Platform::join_dynamic`
+    /// `try_claim_free_slot()` (autojoin / `Platform::create_or_join`
     /// path). The returned handle still takes ownership of the slot
     /// and will release it on destruction, so the caller MUST drop
     /// the original preclaim handle (or transfer it via move) before
@@ -755,7 +755,7 @@ public:
     /// `header()->total_procs` and per-slot specs before the caller
     /// decides which free slot to claim via `try_claim_free_slot()`.
     ///
-    /// This is the entry point for `Platform::join_dynamic` (the
+    /// This is the entry point for `Platform::create_or_join` (the
     /// autojoin path) where the secondary doesn't know its own
     /// `self_index` until it scans the registry. The declarative
     /// path (`Platform::create_secondary`) goes through
@@ -826,7 +826,7 @@ public:
         // future-schema primary that bumped layout fields BEFORE bumping
         // version, or a corrupted hugepage segment, could let an extreme
         // value slip through. Without this guard the value silently
-        // truncates to uint8_t in `join_dynamic[secondary]` and
+        // truncates to uint8_t in `create_or_join[secondary]` and
         // surfaces as an opaque
         // "MpTopology::valid() failed" three layers up.
         if (hdr->total_procs == 0

@@ -33,7 +33,7 @@ namespace eph::dpdk {
 ///       `--file-prefix` lockfile becomes primary, every later
 ///       peer auto-attaches as secondary. The actual role is
 ///       reported by `rte_eal_process_type()` after init.
-///       Used exclusively by `Platform::join_dynamic` (the
+///       Used exclusively by `Platform::create_or_join` (the
 ///       autojoin path); declarative-path callers must pass
 ///       Primary or Secondary explicitly.
 ///

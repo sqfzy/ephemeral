@@ -88,16 +88,16 @@ TEST(DpdkMpDynamicTcpHandshakeSecondary, ConnectsAndEchoes) {
         static_cast<uint16_t>(std::stoul(nb_rx_queues_s));
     ASSERT_GE(nb_rx_queues, 2u);
 
-    // ── 1. Platform::join_dynamic (v3 zero-consensus) ──────────────────
+    // ── 1. Platform::create_or_join (v3 zero-consensus) ──────────────────
     // Secondary peer needs only `pci` + `lcores`. nb_rx_queues env
     // var is preserved for post-attach assertions only.
     (void)nb_rx_queues;
-    eph::dpdk::JoinDynamicConfig jd{};
+    eph::dpdk::CreateOrJoinConfig jd{};
     jd.pci    = pci;
     jd.lcores = {lcores};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(jd));
-    ASSERT_TRUE(plat_r) << "join_dynamic: " << plat_r.error();
+    auto plat_r = eph::dpdk::Platform::create_or_join(std::move(jd));
+    ASSERT_TRUE(plat_r) << "create_or_join: " << plat_r.error();
     auto platform = std::move(*plat_r);
     ASSERT_TRUE(platform.is_secondary()) << "second peer must be secondary";
 

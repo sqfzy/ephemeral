@@ -6,7 +6,7 @@
 /// Strictly additive over `eph::dpdk::Platform`. Owns N independent
 /// `Platform` instances (one per physical NIC port) and exposes them
 /// by index. The aggregator does NOT change any single-port semantics
-/// — `Platform::create` / `join_dynamic` remain the canonical entry
+/// — `Platform::create` / `create_or_join` remain the canonical entry
 /// points for the dominant 1:1 deployment.
 ///
 /// Why a thin wrapper, not a generalized `Platform` with N port_ids:
@@ -78,7 +78,7 @@ inline spdlog::logger* multi_port_logger() {
 /// and then delegates each port's bringup to `Platform::create` (the
 /// dominant single-process role; multi-process is orthogonal to "I
 /// have N physical NICs in one process" and is reached via
-/// `Platform::join_dynamic`). Per-config structural validation
+/// `Platform::create_or_join`). Per-config structural validation
 /// happens inside `Platform::create`.
 ///
 /// Per-port access is by index `[0, num_ports())`. The index is the

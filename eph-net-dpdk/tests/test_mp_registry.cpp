@@ -167,7 +167,7 @@ TEST(MpRegistrySchema, TotalProcsExceedsKMaxProcs_ReadOnlyAttachRejected) {
     // total_procs > kMaxProcs (corruption, schema skew where layout
     // changed before version bumped, or a hand-mangled hugepage segment)
     // would otherwise silently truncate to uint8_t at the upper-layer
-    // cast in `join_dynamic[secondary]` and surface as an opaque
+    // cast in `create_or_join[secondary]` and surface as an opaque
     // "MpTopology::valid() failed" three layers up. Pin
     // the guard down so a future refactor can't quietly remove it.
     auto p = MpRegistryHandle::create_primary("rgtpoom", make_topo(0));

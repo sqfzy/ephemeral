@@ -110,7 +110,7 @@
 #include <rte_mempool.h>
 
 #include "eph/dpdk/eal.hpp"
-#include "eph/dpdk/platform.hpp"  // pulls in join_dynamic.hpp internally
+#include "eph/dpdk/platform.hpp"  // pulls in create_or_join.hpp internally
 
 namespace {
 
@@ -176,20 +176,20 @@ void log(const char* role, const char* fmt, ...) {
         log("secondary", "missing EPH_REPRO_DEV (parent should have set it)");
         std::_Exit(2);
     }
-    log("secondary", "join_dynamic-attaching: pci=%s queue=%u",
+    log("secondary", "create_or_join-attaching: pci=%s queue=%u",
         allowed_dev, kSecondaryQueueId);
 
     // V3 secondary autojoin: zero-consensus — pci + lcores only.
     // nic remains default; ignored when this peer
     // resolves to Secondary.
-    eph::dpdk::JoinDynamicConfig jcfg{};
+    eph::dpdk::CreateOrJoinConfig jcfg{};
     jcfg.pci    = allowed_dev;
     const char* lc = env_or_null("EPH_REPRO_LCORES");
     jcfg.lcores = {std::string{lc ? lc : "1"}};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
+    auto plat_r = eph::dpdk::Platform::create_or_join(jcfg);
     if (!plat_r) {
-        log("secondary", "join_dynamic failed: %s", plat_r.error().c_str());
+        log("secondary", "create_or_join failed: %s", plat_r.error().c_str());
         std::_Exit(3);
     }
     auto platform = std::move(*plat_r);
@@ -267,7 +267,7 @@ int primary_main(char** argv) {
         return kSkipExitCode;
     }
 
-    // Benign-primary mode: bring up Platform via join_dynamic and idle
+    // Benign-primary mode: bring up Platform via create_or_join and idle
     // for N seconds. Used by /tmp/ena_mp_diag_benign_primary.sh to
     // test whether lat_udp_dpdk crashes with an idle primary (A/B leg
     // 3 of the two-condition isolation; result: NO CRASH, 753k samples).
@@ -287,16 +287,16 @@ int primary_main(char** argv) {
             env_or_null("EPH_REPRO_BENIGN_HOLD") ? env_or_null("EPH_REPRO_BENIGN_HOLD") : "30");
         // V3 primary autojoin (benign-mode): nic carries
         // NIC physical state; queues_per_proc moved into nic.
-        eph::dpdk::JoinDynamicConfig jcfg{};
+        eph::dpdk::CreateOrJoinConfig jcfg{};
         jcfg.pci                              = allowed_dev;
         jcfg.nic.port_id           = 0;
         jcfg.nic.nb_rx_queues      = kNbRxQueues;
         jcfg.nic.nb_tx_queues      = kNbRxQueues;
         jcfg.nic.queues_per_proc   = 1;
         jcfg.lcores                           = {"0"};
-        auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
+        auto plat_r = eph::dpdk::Platform::create_or_join(jcfg);
         if (!plat_r) {
-            log("primary", "BENIGN: join_dynamic failed: %s", plat_r.error().c_str());
+            log("primary", "BENIGN: create_or_join failed: %s", plat_r.error().c_str());
             return 4;
         }
         const char* hold_s = env_or_null("EPH_REPRO_BENIGN_HOLD");
@@ -325,10 +325,10 @@ int primary_main(char** argv) {
         return kSkipExitCode;
     }
 
-    log("primary", "bringing up Platform via join_dynamic: pci=%s nb_rx_queues=%u",
+    log("primary", "bringing up Platform via create_or_join: pci=%s nb_rx_queues=%u",
         allowed_dev.c_str(), kNbRxQueues);
 
-    eph::dpdk::JoinDynamicConfig jcfg{};
+    eph::dpdk::CreateOrJoinConfig jcfg{};
     jcfg.pci                              = allowed_dev;
     jcfg.nic.port_id           = 0;
     jcfg.nic.nb_rx_queues      = kNbRxQueues;
@@ -336,9 +336,9 @@ int primary_main(char** argv) {
     jcfg.nic.queues_per_proc   = 1;
     jcfg.lcores                           = {"0"};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(jcfg);
+    auto plat_r = eph::dpdk::Platform::create_or_join(jcfg);
     if (!plat_r) {
-        log("primary", "join_dynamic (primary) failed: %s", plat_r.error().c_str());
+        log("primary", "create_or_join (primary) failed: %s", plat_r.error().c_str());
         return 4;
     }
     auto platform = std::move(*plat_r);

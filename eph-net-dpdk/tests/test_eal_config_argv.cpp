@@ -88,7 +88,7 @@ TEST(BuildEalArgv, ProcTypeSecondaryEmitted) {
 }
 
 TEST(BuildEalArgv, ProcTypeAutoEmitted) {
-    // The autojoin path (`Platform::join_dynamic`) requires
+    // The autojoin path (`Platform::create_or_join`) requires
     // `--proc-type=auto`; DPDK then resolves the role at
     // `rte_eal_init` time. A regression that dropped Auto from
     // the to_eal_string switch (returning "primary" via the

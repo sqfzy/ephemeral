@@ -1,11 +1,11 @@
 /// @file dpdk_mp_dynamic_secondary.cpp
 /// Secondary-role integration binary for the autojoin path
-/// (`Platform::join_dynamic`). Started by
+/// (`Platform::create_or_join`). Started by
 /// `tests/integration/dpdk_mp_dynamic_e2e.sh` after the primary
 /// has touched its ready-file.
 ///
 /// What this binary asserts:
-///   1. `Platform::join_dynamic` returns a valid Platform that has
+///   1. `Platform::create_or_join` returns a valid Platform that has
 ///      auto-resolved this process to SECONDARY (DPDK lockfile
 ///      semantics: the primary already owns the file_prefix).
 ///   2. `is_secondary()` is true.
@@ -55,13 +55,13 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
     // peer resolves to Secondary). nb_rx_queues env var preserved for
     // post-attach assertions only.
     (void)nb_rx_queues;
-    eph::dpdk::JoinDynamicConfig cfg{};
+    eph::dpdk::CreateOrJoinConfig cfg{};
     cfg.pci    = pci;
     cfg.lcores = {lcores};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
+    auto plat_r = eph::dpdk::Platform::create_or_join(std::move(cfg));
     ASSERT_TRUE(plat_r)
-        << "join_dynamic failed: " << plat_r.error();
+        << "create_or_join failed: " << plat_r.error();
     auto platform = std::move(*plat_r);
 
     EXPECT_TRUE(platform.is_secondary())

@@ -337,8 +337,8 @@ struct MpTopology {
 
 // Lock the MpTopology layout. Like ProcSpec above, MpTopology is the
 // user-facing input to `Platform::create_primary` / `create_secondary`
-// / `join_dynamic` (via `PlatformConfig::mp_topology` and
-// `JoinDynamicConfig::pcfg_template`). It travels by value through
+// / `create_or_join` (via `PlatformConfig::mp_topology` and
+// `CreateOrJoinConfig::pcfg_template`). It travels by value through
 // every factory, so the compiler must keep emitting the cheap
 // memcpy-style copy. dump() returning std::string does not affect
 // the struct's data layout — it's a member function, not a member.

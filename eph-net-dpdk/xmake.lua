@@ -171,8 +171,8 @@ target("test_dpdk_rss_fanout")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
--- Autojoin (Platform::join_dynamic) e2e (reshape mp-mode2-dynamic
--- stage 3). Both peers call join_dynamic with the SAME pci /
+-- Autojoin (Platform::create_or_join) e2e (reshape mp-mode2-dynamic
+-- stage 3). Both peers call create_or_join with the SAME pci /
 -- nb_rx_queues; the first to start is auto-resolved as primary,
 -- the second auto-attaches as secondary and CAS-claims slot 1.
 -- Coordinated by tests/integration/dpdk_mp_dynamic_e2e.sh; same

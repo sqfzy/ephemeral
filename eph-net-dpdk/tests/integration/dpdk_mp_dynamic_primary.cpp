@@ -1,12 +1,12 @@
 /// @file dpdk_mp_dynamic_primary.cpp
 /// Primary-role integration binary for the **autojoin** path
-/// (`Platform::join_dynamic`) — the recommended factory where the
+/// (`Platform::create_or_join`) — the recommended factory where the
 /// caller passes only the PCI BDF and `nb_rx_queues`, and DPDK +
 /// the eph registry decide who is primary, who is secondary, and
 /// which queue / port slots each peer owns.
 ///
 /// What this binary asserts:
-///   1. `Platform::join_dynamic` returns a valid Platform with the
+///   1. `Platform::create_or_join` returns a valid Platform with the
 ///      EAL having auto-resolved this process to PRIMARY (because
 ///      this binary is started first by the orchestrator shell).
 ///   2. `is_secondary()` is false.
@@ -63,14 +63,14 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
     // V3 autojoin: primary peer fills `nic` (only consulted
     // when this peer resolves to Primary). max_procs default 0 means
     // library auto-derives from nb_rx_queues / queues_per_proc.
-    eph::dpdk::JoinDynamicConfig cfg{};
+    eph::dpdk::CreateOrJoinConfig cfg{};
     cfg.pci                            = pci;
     cfg.nic.nb_rx_queues               = nb_rx_queues;
     cfg.nic.nb_tx_queues               = nb_rx_queues;
     cfg.lcores                         = {lcores};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(cfg));
-    ASSERT_TRUE(plat_r) << "join_dynamic failed: " << plat_r.error();
+    auto plat_r = eph::dpdk::Platform::create_or_join(std::move(cfg));
+    ASSERT_TRUE(plat_r) << "create_or_join failed: " << plat_r.error();
     auto platform = std::move(*plat_r);
 
     EXPECT_FALSE(platform.is_secondary())

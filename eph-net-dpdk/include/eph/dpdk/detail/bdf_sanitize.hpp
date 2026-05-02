@@ -3,7 +3,7 @@
 /// @file detail/bdf_sanitize.hpp
 /// PCI BDF → MP file_prefix derivation helper.
 ///
-/// The autojoin path (`Platform::join_dynamic`) auto-derives a DPDK
+/// The autojoin path (`Platform::create_or_join`) auto-derives a DPDK
 /// `--file-prefix` from the user-supplied PCI BDF so two processes
 /// sharing one NIC naturally agree on the prefix without any explicit
 /// coordination string. The derivation is `"eph_" + sanitize(bdf)`
@@ -32,7 +32,7 @@
 /// in `test_bdf_sanitize.cpp::HexCaseInsensitive_Accepted`.
 ///
 /// Hot path: NONE. This is invoked exactly once per process during
-/// `Platform::join_dynamic`'s cold setup.
+/// `Platform::create_or_join`'s cold setup.
 
 #include <cstddef>
 #include <expected>
@@ -58,7 +58,7 @@ inline constexpr size_t kBdfMaxLen = 12;  // "DDDD:BB:DD.F"
 [[nodiscard]] inline std::expected<std::string, core::ErrorInfo>
 sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
     // Cold-path validation: each rule logs the offending input alongside the
-    // typed error so a misconfigured `Platform::join_dynamic` surfaces in the
+    // typed error so a misconfigured `Platform::create_or_join` surfaces in the
     // logs even if the caller wraps san.error().detail and never logs the
     // string form (see platform.hpp line ~2421 — autojoin forwards the detail
     // back as a `std::string` without a SPDLOG_ call on the failure path).

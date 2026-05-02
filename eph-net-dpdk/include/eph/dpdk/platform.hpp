@@ -41,8 +41,8 @@
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
-// NOTE: `eph/dpdk/join_dynamic.hpp` is included AFTER `PlatformConfig`
-// is defined — `JoinDynamicConfig::nic` embeds it by value.
+// NOTE: `eph/dpdk/create_or_join.hpp` is included AFTER `PlatformConfig`
+// is defined — `CreateOrJoinConfig::nic` embeds it by value.
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
@@ -180,7 +180,7 @@ namespace detail {
 /// Mirror of the v3 `PlatformConfig` user-facing shape, plus the
 /// role-and-topology fields the bring-up body needs at runtime
 /// (`proc_type`, `mp_topology`, `rx_queue_range`). Public callers see
-/// only `PlatformConfig` (single-process) and `JoinDynamicConfig`
+/// only `PlatformConfig` (single-process) and `CreateOrJoinConfig`
 /// (autojoin); `BringupConfig` is synthesized internally by the v3
 /// entry points and the `primary_bringup_` / `secondary_bringup_`
 /// helpers.
@@ -440,11 +440,11 @@ struct BringupConfig {
 // ─────────────────────────────────────────────────────────────────────
 
 /// @brief Single-process Platform config (also embedded inside
-/// `JoinDynamicConfig::nic` for autojoin's primary path).
+/// `CreateOrJoinConfig::nic` for autojoin's primary path).
 ///
 /// Carries every NIC-physical-state field (queue counts, descriptor
 /// counts, mempool, RSS, promiscuous, etc.). The `max_procs` /
-/// `queues_per_proc` fields are read by `Platform::join_dynamic`
+/// `queues_per_proc` fields are read by `Platform::create_or_join`
 /// when this peer auto-resolves to primary; `Platform::create` and
 /// `Platform::create_with_eal` reject any value other than 1 since
 /// the cooperative-MP path was removed.
@@ -453,7 +453,7 @@ struct PlatformConfig {
     /// DPDK port enumeration index.
     uint16_t         port_id      = 0;
     /// Hugepage namespace (matches EAL `--file-prefix`). Used by
-    /// `Platform::join_dynamic` when this peer resolves to primary —
+    /// `Platform::create_or_join` when this peer resolves to primary —
     /// passed through into the registry memzone name. Empty value is
     /// the single-process default; the `Platform::create` /
     /// `create_with_eal` paths do not consult it (they are
@@ -502,12 +502,12 @@ struct PlatformConfig {
 
 } // namespace eph::dpdk
 
-// JoinDynamicConfig embeds a PlatformConfig as a value member, so it
+// CreateOrJoinConfig embeds a PlatformConfig as a value member, so it
 // must be parsed after PlatformConfig is fully defined. We signal that
 // PlatformConfig is now in scope via the sentinel macro that
-// join_dynamic.hpp checks at the top.
+// create_or_join.hpp checks at the top.
 #define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
-#include "eph/dpdk/join_dynamic.hpp"
+#include "eph/dpdk/create_or_join.hpp"
 
 namespace eph::dpdk {
 
@@ -702,7 +702,7 @@ public:
 
     /// @brief Single-process factory. `cfg.max_procs` MUST be 1 (the
     /// default); `max_procs > 1` is rejected — multi-process is reached
-    /// exclusively through `Platform::join_dynamic`. EAL must be
+    /// exclusively through `Platform::create_or_join`. EAL must be
     /// initialized before this call (use `create_with_eal` for the
     /// one-shot path).
     [[nodiscard]] static std::expected<Platform, std::string>
@@ -723,7 +723,7 @@ public:
     /// BDF; primary/secondary role auto-resolved post `eal_init`;
     /// secondary needs no NIC physical knowledge.
     [[nodiscard]] static std::expected<Platform, std::string>
-    join_dynamic(JoinDynamicConfig cfg);
+    create_or_join(CreateOrJoinConfig cfg);
 
     ~Platform();
 
@@ -1009,7 +1009,7 @@ private:
     primary_bringup_(detail::BringupConfig config);
 
     /// @brief Internal secondary bring-up. After the cooperative-MP
-    /// removal the only entry path is `Platform::join_dynamic`'s
+    /// removal the only entry path is `Platform::create_or_join`'s
     /// secondary branch, which always pre-claims a slot via
     /// `try_claim_free_slot` before dispatch — so `registry_preclaimed`
     /// is always `true` in production. The flag is retained as a
@@ -1157,7 +1157,7 @@ struct Platform::Impl {
         std::make_shared<::eph::dpdk::detail::IcmpRegistry>()};
 
     /// @brief Typed-pin session guards owned by `Platform::create_with_eal`
-    /// (and `join_dynamic` via delegation). Empty when EAL was init'd
+    /// (and `create_or_join` via delegation). Empty when EAL was init'd
     /// externally (declarative-path `Platform::create` /
     /// `create_primary` / `create_secondary` callers manage pins
     /// themselves via `EalGuard::init_with_pins`). Released via
@@ -1168,7 +1168,7 @@ struct Platform::Impl {
     std::vector<eph::utils::PinGuard> pin_session_guards;
 
     /// @brief Set to `true` when `Platform::create_with_eal` (or
-    /// `join_dynamic`) called `eal_init` itself. `~Impl`'s body reads
+    /// `create_or_join`) called `eal_init` itself. `~Impl`'s body reads
     /// this to decide whether to invoke `eal_cleanup` after DPDK
     /// resource teardown. Single Source of Truth: only one Platform
     /// per process can have `owns_eal_init=true`; multiple Platforms
@@ -2405,7 +2405,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 
 // ─────────────────────────────────────────────────────────────────────
 // Public entry-point implementations (PlatformConfig single-process,
-// JoinDynamicConfig autojoin) — they synthesize an internal
+// CreateOrJoinConfig autojoin) — they synthesize an internal
 // `BringupConfig` and delegate to `primary_bringup_` /
 // `secondary_bringup_`.
 // ─────────────────────────────────────────────────────────────────────
@@ -2447,12 +2447,12 @@ inline BringupConfig bringup_from_v3_(const PlatformConfig& v3) {
 Platform::create(PlatformConfig cfg) {
     // Single-process only. The cooperative MP path (declarative primary
     // with secondaries calling Platform::attach) was deleted — autojoin
-    // via Platform::join_dynamic is the only supported MP entry point.
+    // via Platform::create_or_join is the only supported MP entry point.
     if (cfg.max_procs > 1) {
         return std::unexpected(std::format(
             "Platform::create: cfg.max_procs={} but cooperative MP "
             "(declarative primary + Platform::attach secondaries) was "
-            "removed. Use Platform::join_dynamic(JoinDynamicConfig) for "
+            "removed. Use Platform::create_or_join(CreateOrJoinConfig) for "
             "multi-process — peers race on EAL init and the registry "
             "auto-resolves primary/secondary roles. Set max_procs=1 (the "
             "default) for single-process",
@@ -2471,12 +2471,12 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     [[maybe_unused]] auto log = detail::platform_logger();
 
     // Single-process only — same contract as Platform::create. The
-    // cooperative MP path was removed; use Platform::join_dynamic for MP.
+    // cooperative MP path was removed; use Platform::create_or_join for MP.
     if (cfg.max_procs > 1) {
         return std::unexpected(std::format(
             "Platform::create_with_eal: cfg.max_procs={} but cooperative MP "
             "(declarative primary + Platform::attach_with_eal secondaries) "
-            "was removed. Use Platform::join_dynamic(JoinDynamicConfig) "
+            "was removed. Use Platform::create_or_join(CreateOrJoinConfig) "
             "for multi-process. Set max_procs=1 (the default) for "
             "single-process",
             cfg.max_procs));
@@ -2559,7 +2559,7 @@ Platform::create_with_eal(PlatformConfig                        cfg,
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Autojoin — Platform::join_dynamic(JoinDynamicConfig)
+// Autojoin — Platform::create_or_join(CreateOrJoinConfig)
 // ─────────────────────────────────────────────────────────────────────
 //
 // Cold-path orchestrator over EAL init + role detection + registry
@@ -2579,17 +2579,17 @@ Platform::create_with_eal(PlatformConfig                        cfg,
 // `cfg.nic.nb_rx_queues` and (optionally) `max_procs` /
 // `queues_per_proc` to drive the registry slot count.
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::join_dynamic(JoinDynamicConfig cfg) {
+Platform::create_or_join(CreateOrJoinConfig cfg) {
     [[maybe_unused]] auto log = detail::platform_logger();
 
     // ── 1. validate ────────────────────────────────────────────────────────
     if (cfg.pci.empty())
         return std::unexpected(std::string{
-            "join_dynamic: pci must be non-empty (provide a PCI BDF "
+            "create_or_join: pci must be non-empty (provide a PCI BDF "
             "such as '0000:28:00.0')"});
     if (cfg.nic.nb_rx_queues == 0)
         return std::unexpected(std::string{
-            "join_dynamic: nic.nb_rx_queues must be > 0"});
+            "create_or_join: nic.nb_rx_queues must be > 0"});
 
     // queues_per_proc default 0 = "auto" (== 1 effectively for the
     // max_procs auto-derive below). max_procs default 1 = "single-
@@ -2603,7 +2603,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
             : uint16_t{1};
     if (queues_per_proc == 0)
         return std::unexpected(std::string{
-            "join_dynamic: queues_per_proc must be > 0"});
+            "create_or_join: queues_per_proc must be > 0"});
 
     // Mutable: secondary path may overwrite from live NIC (A1).
     uint16_t nb_rx_queues = cfg.nic.nb_rx_queues;
@@ -2618,12 +2618,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
         if (!san)
             return std::unexpected(std::format(
-                "join_dynamic: cannot derive file_prefix from pci='{}': {}",
+                "create_or_join: cannot derive file_prefix from pci='{}': {}",
                 cfg.pci, san.error().detail));
         derived_prefix = std::string{"eph_"} + *san;
         file_prefix    = derived_prefix;
         SPDLOG_LOGGER_INFO(log,
-            "join_dynamic: derived file_prefix='{}' from pci='{}'",
+            "create_or_join: derived file_prefix='{}' from pci='{}'",
             derived_prefix, cfg.pci);
     }
 
@@ -2653,7 +2653,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     }
     if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
         return std::unexpected(std::format(
-            "join_dynamic: max_procs={} out of range [1, kMaxProcs={}] "
+            "create_or_join: max_procs={} out of range [1, kMaxProcs={}] "
             "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
             "queues_per_proc={})",
             max_procs, MpTopology::kMaxProcs,
@@ -2664,7 +2664,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     // EalConfig so the argv assembly below is decoupled from cfg's
     // lifetime.
     EalConfig eal_cfg{};
-    eal_cfg.program_name  = "eph_join_dynamic";
+    eal_cfg.program_name  = "eph_create_or_join";
     // DPDK's default is `--proc-type=primary`, NOT auto. We emit
     // `--proc-type=auto` explicitly so the second peer joins as
     // secondary instead of dying on a lockfile collision.
@@ -2685,7 +2685,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     //                manually transfer EAL ownership into Impl).
     if (!cfg.pins.empty() && !cfg.lcores.empty())
         return std::unexpected(std::format(
-            "join_dynamic: cfg.pins (size={}) and cfg.lcores (size={}) are "
+            "create_or_join: cfg.pins (size={}) and cfg.lcores (size={}) are "
             "mutually exclusive (pick the typed-pin path or the raw-lcores "
             "path, not both)",
             cfg.pins.size(), cfg.lcores.size()));
@@ -2695,9 +2695,9 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
         if (!pg) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic: pin_lcores rejected: {}", pg.error());
+                "create_or_join: pin_lcores rejected: {}", pg.error());
             return std::unexpected(std::string{
-                "join_dynamic: pin_lcores: "} + pg.error());
+                "create_or_join: pin_lcores: "} + pg.error());
         }
         pin_guards = std::move(*pg);
         eal_cfg.extra_args.push_back(build_lcore_argv(cfg.pins));
@@ -2711,16 +2711,16 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
     auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
     if (!eal_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "join_dynamic: eal_init failed: {}", eal_r.error());
+            "create_or_join: eal_init failed: {}", eal_r.error());
         // pin_guards local-destruct rolls back CPU registry on return.
         return std::unexpected(std::string{
-            "join_dynamic: eal_init failed: "} + eal_r.error());
+            "create_or_join: eal_init failed: "} + eal_r.error());
     }
 
     // ── 6. role detection ─────────────────────────────────────────────────
     const enum rte_proc_type_t role = rte_eal_process_type();
     SPDLOG_LOGGER_INFO(log,
-        "join_dynamic: rte_eal_process_type() resolved to {} "
+        "create_or_join: rte_eal_process_type() resolved to {} "
         "(file_prefix='{}', max_procs={}, nb_rx_queues={})",
         role == RTE_PROC_PRIMARY   ? "primary"
         : role == RTE_PROC_SECONDARY ? "secondary"
@@ -2765,7 +2765,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
             /*self_index=*/0, max_procs, nb_rx_queues);
         // Inject this peer's lcore_mask into its own slot so registry
         // cross-process conflict check fires on overlap. Default 0 =
-        // opt out. See `JoinDynamicConfig::self_lcore_mask`.
+        // opt out. See `CreateOrJoinConfig::self_lcore_mask`.
         if (cfg.self_lcore_mask != 0) {
             pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
         }
@@ -2780,12 +2780,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
             attach_secondary_readonly(file_prefix);
         if (!ro) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: attach_secondary_readonly "
+                "create_or_join[secondary]: attach_secondary_readonly "
                 "failed (file_prefix='{}'): {}",
                 file_prefix, ro.error().detail);
             std::expected<Platform, std::string> err{
                 std::unexpected(std::format(
-                    "join_dynamic[secondary]: attach_secondary_readonly "
+                    "create_or_join[secondary]: attach_secondary_readonly "
                     "failed (file_prefix='{}'): {}",
                     file_prefix, ro.error().detail))};
             return rollback_eal_on_error(std::move(err));
@@ -2794,12 +2794,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         const uint32_t primary_total = ro->header()->total_procs;
         if (max_procs_explicit && primary_total != max_procs) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: caller explicitly set "
+                "create_or_join[secondary]: caller explicitly set "
                 "max_procs={} but primary's registry reports total_procs={} "
                 "— explicit caller value disagreed with primary",
                 max_procs, primary_total);
             std::expected<Platform, std::string> err{std::unexpected(std::format(
-                "join_dynamic[secondary]: caller-supplied max_procs={} "
+                "create_or_join[secondary]: caller-supplied max_procs={} "
                 "disagrees with primary's registry value (total_procs={}); "
                 "leave max_procs at default to inherit from primary",
                 max_procs, primary_total))};
@@ -2833,12 +2833,12 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
         auto idx_r = ro->try_claim_free_slot();
         if (!idx_r) {
             SPDLOG_LOGGER_ERROR(log,
-                "join_dynamic[secondary]: try_claim_free_slot failed "
+                "create_or_join[secondary]: try_claim_free_slot failed "
                 "(file_prefix='{}', primary_total_procs={}): {}",
                 file_prefix, primary_total, idx_r.error().detail);
             std::expected<Platform, std::string> err{
                 std::unexpected(std::format(
-                    "join_dynamic[secondary]: try_claim_free_slot failed "
+                    "create_or_join[secondary]: try_claim_free_slot failed "
                     "(file_prefix='{}', primary_total_procs={}): {}",
                     file_prefix, primary_total, idx_r.error().detail))};
             return rollback_eal_on_error(std::move(err));
@@ -2863,11 +2863,11 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
 
     // RTE_PROC_INVALID or future enum values.
     SPDLOG_LOGGER_ERROR(log,
-        "join_dynamic: rte_eal_process_type returned invalid role={}",
+        "create_or_join: rte_eal_process_type returned invalid role={}",
         static_cast<int>(role));
     [[maybe_unused]] bool ok = eal_cleanup();
     return std::unexpected(std::format(
-        "join_dynamic: rte_eal_process_type returned invalid role={} "
+        "create_or_join: rte_eal_process_type returned invalid role={} "
         "(expected RTE_PROC_PRIMARY={} or RTE_PROC_SECONDARY={}; EAL "
         "not properly initialized)",
         static_cast<int>(role),

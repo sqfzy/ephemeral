@@ -2,7 +2,7 @@
 ///
 /// DPDK single-NIC multi-process (primary + secondary) **autojoin**
 /// path skeleton. Both peers run THIS SAME BINARY with the same
-/// arguments — `Platform::join_dynamic` races on `eal_init` to decide
+/// arguments — `Platform::create_or_join` races on `eal_init` to decide
 /// which process becomes primary and which becomes secondary, then
 /// CAS-claims a registry slot for each peer. There is no `--role`
 /// flag and no shared `--file-prefix` (it is auto-derived from the
@@ -48,7 +48,7 @@
 ///   sudo ./dpdk_mp_demo --pci 0000:28:00.0 --pin 0=2:rx --pin 1=3:tx
 ///
 /// `--pin lcore_id=cpu_id[:role]` (repeatable) is the typed entry
-/// point — goes through `Platform::join_dynamic`'s typed-pin path,
+/// point — goes through `Platform::create_or_join`'s typed-pin path,
 /// which validates each pin (cpu >= 0, no SMT/NUMA conflict per
 /// policy) and registers the cpus into the process-wide pin registry
 /// BEFORE `rte_eal_init` fires. Any later `eph::utils::pin_thread`
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     // primary peer (whichever it ends up being) has the value it needs;
     // secondary peers ignore it post-resolution.
     const std::string& pci_bdf = args.eal.pci.front();
-    ed::JoinDynamicConfig cfg{};
+    ed::CreateOrJoinConfig cfg{};
     cfg.pci                          = pci_bdf;
     cfg.nic.port_id       = args.eal.port_id;
     cfg.nic.nb_rx_queues  = args.nb_rx_queues;
@@ -193,18 +193,18 @@ int main(int argc, char** argv) {
     cfg.pin_policy                   = eph::utils::CpuPinPolicy{};
 
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_mp_demo: bring-up via Platform::join_dynamic "
+        spdlog::info("dpdk_mp_demo: bring-up via Platform::create_or_join "
                      "(typed pins, {} pin(s); pci={})",
                      args.eal.pins.size(), pci_bdf);
     } else {
-        spdlog::info("dpdk_mp_demo: bring-up via Platform::join_dynamic "
+        spdlog::info("dpdk_mp_demo: bring-up via Platform::create_or_join "
                      "(raw lcores='{}'; pci={})",
                      args.eal.lcores_raw, pci_bdf);
     }
 
-    auto plat_r = ed::Platform::join_dynamic(std::move(cfg));
+    auto plat_r = ed::Platform::create_or_join(std::move(cfg));
     if (!plat_r) {
-        spdlog::error("dpdk_mp_demo: Platform::join_dynamic failed: {}",
+        spdlog::error("dpdk_mp_demo: Platform::create_or_join failed: {}",
                       plat_r.error());
         return 2;
     }

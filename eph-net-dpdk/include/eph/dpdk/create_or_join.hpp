@@ -1,15 +1,15 @@
 #pragma once
 
-/// @file join_dynamic.hpp
-/// `JoinDynamicConfig` — the user-facing config for the **autojoin**
-/// MP factory (`Platform::join_dynamic`). Autojoin is the
+/// @file create_or_join.hpp
+/// `CreateOrJoinConfig` — the user-facing config for the **autojoin**
+/// MP factory (`Platform::create_or_join`). Autojoin is the
 /// zero-coordination multi-process bring-up: two unrelated processes
 /// that share a NIC agree on nothing except the PCI BDF and
 /// `nic.nb_rx_queues`. Whoever `rte_eal_init`s first
 /// becomes primary; later peers attach as secondaries and CAS-claim
 /// the next free process slot themselves.
 ///
-/// **Mental model**: `JoinDynamicConfig` only carries
+/// **Mental model**: `CreateOrJoinConfig` only carries
 /// **autojoin-specific** inputs — everything `PlatformConfig` already
 /// has (per_lcore_pools / mbuf_pool_size / port_id / nb_rx_queues /
 /// every other field) flows through `nic`. Autojoin only
@@ -31,7 +31,7 @@
 /// binary with the same args; whoever wins the EAL race becomes
 /// primary.
 ///
-/// Hot path: NONE. `Platform::join_dynamic` is the cold setup factory;
+/// Hot path: NONE. `Platform::create_or_join` is the cold setup factory;
 /// once the Platform is up, the runtime path is byte-for-byte
 /// identical to a declarative-path Platform with the same self_index.
 
@@ -49,12 +49,12 @@
 // "eph/dpdk/platform.hpp"` without a circular include — platform.hpp
 // includes this header from inside its own body, after PlatformConfig
 // is fully parsed. The contract: include `eph/dpdk/platform.hpp` to
-// get `JoinDynamicConfig`. Users who try to include this header
+// get `CreateOrJoinConfig`. Users who try to include this header
 // standalone get a loud diagnostic instead of a confusing
 // "PlatformConfig has not been declared".
 #ifndef EPH_DPDK_PLATFORM_CONFIG_DEFINED
-#  error "Include eph/dpdk/platform.hpp instead of join_dynamic.hpp directly: " \
-         "JoinDynamicConfig embeds a PlatformConfig and must be parsed " \
+#  error "Include eph/dpdk/platform.hpp instead of create_or_join.hpp directly: " \
+         "CreateOrJoinConfig embeds a PlatformConfig and must be parsed " \
          "after PlatformConfig is fully defined."
 #endif
 
@@ -64,7 +64,7 @@ namespace eph::dpdk {
 ///
 /// Required: `pci`. Everything else has a sensible default.
 /// **Secondary peers only need `pci` (and per-peer EAL args).**
-struct JoinDynamicConfig {
+struct CreateOrJoinConfig {
     /// PCI BDF of the NIC to attach. Drives BOTH the EAL `-a` allowlist
     /// AND the auto-derived `file_prefix` (`"eph_" + sanitize(pci)`).
     /// Two peers naming the same BDF naturally agree on hugepage

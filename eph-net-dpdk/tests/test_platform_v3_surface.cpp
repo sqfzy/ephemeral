@@ -2,7 +2,7 @@
 /// Stage-1 surface tests for the v3 Platform API.
 ///
 /// **Scope**: type / signature / translation logic only. Runtime
-/// behavior of `Platform::create / *_with_eal / join_dynamic` is
+/// behavior of `Platform::create / *_with_eal / create_or_join` is
 /// verified by:
 ///   - integration tests under `tests/integration/dpdk_mp_dynamic_*`
 ///   - examples (`examples/dpdk_mp_demo.cpp`)
@@ -11,13 +11,13 @@
 /// unit-test environment.
 ///
 /// What this file pins down:
-///   - v3 types (`PlatformConfig`, `JoinDynamicConfig`) compile and
+///   - v3 types (`PlatformConfig`, `CreateOrJoinConfig`) compile and
 ///     have expected fields.
 ///   - v3 entry-point function pointers have the documented signatures.
 ///   - The v3 `validate_config(PlatformConfig)` rejection set
 ///     (max_procs / file_prefix / queues-per-proc invariants).
 ///   - `Platform::create` / `create_with_eal` reject `max_procs > 1`
-///     (cooperative-MP path was removed; use `join_dynamic` for MP).
+///     (cooperative-MP path was removed; use `create_or_join` for MP).
 
 #include <span>
 #include <string>
@@ -45,12 +45,12 @@ TEST(PlatformConfig, DefaultsAreSingleProcess) {
     EXPECT_TRUE(cfg.file_prefix.empty());
 }
 
-TEST(JoinDynamicConfig, NoTopLevelConsensusFields) {
+TEST(CreateOrJoinConfig, NoTopLevelConsensusFields) {
     // v3 zero-consensus: queues_per_proc / max_procs are NOT top-level
     // (compile-time enforcement: the names don't exist on the struct).
     // We can't test absence directly in C++; instead verify the fields
     // that DO exist match the v3 design.
-    JoinDynamicConfig cfg{};
+    CreateOrJoinConfig cfg{};
     EXPECT_TRUE(cfg.pci.empty());
     EXPECT_EQ(cfg.nic.max_procs, 1);
     EXPECT_EQ(cfg.nic.queues_per_proc, 0);
@@ -67,20 +67,20 @@ TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
     using CreateWithEalFn = std::expected<Platform, std::string> (*)(
         PlatformConfig, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
-    using JoinDynV3Fn = std::expected<Platform, std::string> (*)(
-        JoinDynamicConfig);
+    using CreateOrJoinFn = std::expected<Platform, std::string> (*)(
+        CreateOrJoinConfig);
 
     [[maybe_unused]] CreateFn        f1 = &Platform::create;
     [[maybe_unused]] CreateWithEalFn f2 = static_cast<CreateWithEalFn>(
         &Platform::create_with_eal);
-    [[maybe_unused]] JoinDynV3Fn     f3 = static_cast<JoinDynV3Fn>(
-        &Platform::join_dynamic);
+    [[maybe_unused]] CreateOrJoinFn     f3 = static_cast<CreateOrJoinFn>(
+        &Platform::create_or_join);
     SUCCEED();
 }
 
 // `Platform::create` / `create_with_eal` are single-process only after
 // the cooperative-MP removal. `cfg.max_procs > 1` must be rejected with
-// a clear message pointing the caller at `Platform::join_dynamic`.
+// a clear message pointing the caller at `Platform::create_or_join`.
 
 TEST(PlatformCreate, RejectsMaxProcsGreaterThanOne) {
     PlatformConfig cfg{};
@@ -93,7 +93,7 @@ TEST(PlatformCreate, RejectsMaxProcsGreaterThanOne) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("max_procs"), std::string::npos)
         << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("join_dynamic"), std::string::npos)
+    EXPECT_NE(r.error().find("create_or_join"), std::string::npos)
         << "actual error: " << r.error();
 }
 
@@ -111,7 +111,7 @@ TEST(PlatformCreateWithEal, RejectsMaxProcsGreaterThanOne) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("max_procs"), std::string::npos)
         << "actual error: " << r.error();
-    EXPECT_NE(r.error().find("join_dynamic"), std::string::npos)
+    EXPECT_NE(r.error().find("create_or_join"), std::string::npos)
         << "actual error: " << r.error();
 }
 
@@ -178,7 +178,7 @@ TEST(PlatformConfigValidator, ZeroMaxProcsRejected) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Pre-EAL validation in Platform::join_dynamic
+// Pre-EAL validation in Platform::create_or_join
 //
 // Pin down the error-context contract added in commit 620f429e — the
 // user-visible error std::string for each pre-EAL fail path must
@@ -188,16 +188,16 @@ TEST(PlatformConfigValidator, ZeroMaxProcsRejected) {
 // argv assembly).
 // ──────────────────────────────────────────────────────────────────────
 
-TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
+TEST(CreateOrJoinPreEal, MalformedPciIncludesValueInError) {
     // file_prefix is always auto-derived from pci in v3 — a malformed
     // BDF makes `sanitize_bdf_for_file_prefix` fail, and the wrapped
     // error must name the actual cfg.pci value the caller supplied.
-    JoinDynamicConfig cfg{};
+    CreateOrJoinConfig cfg{};
     cfg.pci = "not_a_bdf";  // valid string_view but not a BDF
     cfg.nic.nb_rx_queues = 4;
     cfg.nic.queues_per_proc = 1;
 
-    auto r = Platform::join_dynamic(cfg);
+    auto r = Platform::create_or_join(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("pci='not_a_bdf'"), std::string::npos)
         << "actual error: " << r.error();
@@ -205,18 +205,18 @@ TEST(JoinDynamicPreEal, MalformedPciIncludesValueInError) {
         << "actual error: " << r.error();
 }
 
-TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
+TEST(CreateOrJoinPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
     // nic.max_procs > kMaxProcs (=64) → the OOR check fires.
     // Error must report the offending max_procs, the kMaxProcs cap, and
     // the inputs the auto-derive would have used (caller cfg.max_procs
     // / nb_rx_queues / queues_per_proc).
-    JoinDynamicConfig cfg{};
+    CreateOrJoinConfig cfg{};
     cfg.pci = "0000:28:00.0";
     cfg.nic.nb_rx_queues = 4;
     cfg.nic.queues_per_proc = 1;
     cfg.nic.max_procs = 200;  // > kMaxProcs
 
-    auto r = Platform::join_dynamic(cfg);
+    auto r = Platform::create_or_join(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("max_procs=200"), std::string::npos)
         << "actual error: " << r.error();
@@ -228,10 +228,10 @@ TEST(JoinDynamicPreEal, MaxProcsOutOfRangeIncludesAllInputs) {
         << "actual error: " << r.error();
 }
 
-TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
+TEST(CreateOrJoinPreEal, PinsAndLcoresMutexIncludesSizes) {
     // cfg.pins and cfg.lcores are mutually exclusive — error must
     // report both sizes so the caller knows which side has stuff.
-    JoinDynamicConfig cfg{};
+    CreateOrJoinConfig cfg{};
     cfg.pci = "0000:28:00.0";
     cfg.nic.nb_rx_queues = 2;
     cfg.nic.queues_per_proc = 1;
@@ -242,7 +242,7 @@ TEST(JoinDynamicPreEal, PinsAndLcoresMutexIncludesSizes) {
     cfg.pins   = std::span<const LcorePin>{kPins};
     cfg.lcores = {"0", "1"};
 
-    auto r = Platform::join_dynamic(cfg);
+    auto r = Platform::create_or_join(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().find("cfg.pins"), std::string::npos)
         << "actual error: " << r.error();

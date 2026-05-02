@@ -131,7 +131,7 @@ bool is_all_zero(const std::array<uint8_t, 6>& m) noexcept {
 
 TEST(AutojoinGwMacGuard, EmptyPath_RejectedUpFront) {
     // create_via_autojoin checks the empty-path guard BEFORE Platform::
-    // join_dynamic / EAL / parse_lcores_csv_to_mask, so this call returns
+    // create_or_join / EAL / parse_lcores_csv_to_mask, so this call returns
     // a clean std::unexpected without ever touching DPDK. A non-empty
     // pci_bdf is supplied so we don't trip the max_procs guard first.
     auto r = DpdkBenchEnv::create_via_autojoin(

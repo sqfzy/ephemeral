@@ -24,7 +24,7 @@ Last verified: 2026-04-30 (none completed at this revision).
 ## P2 — medium reshapes (1-3 days)
 
 - [ ] **Extract `PlatformConfig` to its own header**. Resolves the
-  circular include between `platform.hpp` ↔ `join_dynamic.hpp`
+  circular include between `platform.hpp` ↔ `create_or_join.hpp`
   currently bridged by `EPH_DPDK_PLATFORM_CONFIG_DEFINED` sentinel
   macro. 1-2 hour task; eliminates fragile inclusion-order
   requirement.

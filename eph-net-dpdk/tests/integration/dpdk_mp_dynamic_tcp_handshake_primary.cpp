@@ -7,7 +7,7 @@
 ///      thread. NIC_A is the host's kernel-side NIC; the DPDK side
 ///      (this same process) talks to it via NIC_B vfio-pci over the
 ///      VPC fabric — same wire path lat_tcp_dpdk uses.
-///   2. `Platform::join_dynamic` with NIC_B's PCI BDF; assert primary.
+///   2. `Platform::create_or_join` with NIC_B's PCI BDF; assert primary.
 ///   3. ARP-resolve the gateway MAC. Only primary does this — secondary
 ///      doesn't own queue 0 (where ARP replies typically land under
 ///      the NIC's default RSS), so we publish gw_mac to a shared file
@@ -129,8 +129,8 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
         if (mock_thread.joinable()) mock_thread.join();
     };
 
-    // ── 2. Platform::join_dynamic (v3) ─────────────────────────────────
-    eph::dpdk::JoinDynamicConfig jd{};
+    // ── 2. Platform::create_or_join (v3) ─────────────────────────────────
+    eph::dpdk::CreateOrJoinConfig jd{};
     jd.pci                            = pci;
     jd.nic.nb_rx_queues    = nb_rx_queues;
     // Match TX queues to RX so secondary's RSS-aware tx_queue_id
@@ -140,10 +140,10 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
     jd.nic.nb_tx_queues    = nb_rx_queues;
     jd.lcores                         = {lcores};
 
-    auto plat_r = eph::dpdk::Platform::join_dynamic(std::move(jd));
+    auto plat_r = eph::dpdk::Platform::create_or_join(std::move(jd));
     if (!plat_r) {
         cleanup_mock();
-        FAIL() << "join_dynamic: " << plat_r.error();
+        FAIL() << "create_or_join: " << plat_r.error();
     }
     auto platform = std::move(*plat_r);
     ASSERT_FALSE(platform.is_secondary()) << "first peer must be primary";

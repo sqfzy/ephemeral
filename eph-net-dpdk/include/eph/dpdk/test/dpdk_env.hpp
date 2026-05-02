@@ -48,7 +48,7 @@
 #include "eph/dpdk/lcore_pin.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/platform.hpp"
-// JoinDynamicConfig comes in transitively via platform.hpp (post-api-unify
+// CreateOrJoinConfig comes in transitively via platform.hpp (post-api-unify
 // reshape — sentinel guard EPH_DPDK_PLATFORM_CONFIG_DEFINED requires
 // platform.hpp first).
 #include "eph/dpdk/tcp.hpp"
@@ -300,7 +300,7 @@ struct DpdkBenchEnv {
     }
 
     /// Autojoin variant of `create()`: brings up Platform via
-    /// `Platform::join_dynamic` instead of `create_with_eal`.
+    /// `Platform::create_or_join` instead of `create_with_eal`.
     /// Use this when running multiple bench-client processes on the
     /// same NIC simultaneously (e.g. each `lat_<sc>_dpdk` binary as
     /// its own MP process, sharing the NIC via RSS-partitioned
@@ -329,7 +329,7 @@ struct DpdkBenchEnv {
     ///
     /// @param pci_bdf            NIC PCI BDF, e.g. "0000:28:00.0"
     /// @param max_procs          Autojoin slot count; written into
-    ///                            `JoinDynamicConfig::nic`
+    ///                            `CreateOrJoinConfig::nic`
     ///                            as `max_procs` and as
     ///                            `nb_rx_queues` / `nb_tx_queues`
     /// @param lcores             EAL lcore CSV for this peer (e.g.
@@ -426,8 +426,8 @@ struct DpdkBenchEnv {
                 + "' parsed to mask=0 (CSV resolved to no lcore IDs)");
         }
 
-        // ── 1. Platform::join_dynamic (v3 zero-consensus shape) ────
-        eph::dpdk::JoinDynamicConfig jd{};
+        // ── 1. Platform::create_or_join (v3 zero-consensus shape) ────
+        eph::dpdk::CreateOrJoinConfig jd{};
         jd.pci                                 = pci_bdf;
         jd.nic.nb_rx_queues         = static_cast<uint16_t>(max_procs);
         jd.nic.nb_tx_queues         = static_cast<uint16_t>(max_procs);
@@ -435,7 +435,7 @@ struct DpdkBenchEnv {
         jd.lcores                              = {lcores};
         jd.self_lcore_mask                     = self_lcore_mask;
 
-        auto plat = eph::dpdk::Platform::join_dynamic(std::move(jd));
+        auto plat = eph::dpdk::Platform::create_or_join(std::move(jd));
         if (!plat) {
             return std::unexpected(
                 "DpdkBenchEnv::create_via_autojoin: " + plat.error());

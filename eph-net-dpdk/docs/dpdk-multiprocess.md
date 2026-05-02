@@ -10,7 +10,7 @@ This document is the operational contract. For the design rationale see
 `eph-net-dpdk/CHANGELOG.md`.
 
 > **API note**: the only multi-process entry point is
-> `Platform::join_dynamic(JoinDynamicConfig)` (autojoin). The
+> `Platform::create_or_join(CreateOrJoinConfig)` (autojoin). The
 > cooperative path (`Platform::attach(PlatformAttachConfig)` plus
 > a declarative-primary `Platform::create(PlatformConfig)` with
 > `max_procs > 1`) was removed; both `Platform::create` and
@@ -20,7 +20,7 @@ This document is the operational contract. For the design rationale see
 >
 > Sections below that reference `primary_bringup_` /
 > `secondary_bringup_` describe the **internal lifecycle helpers**
-> that `Platform::join_dynamic` delegates to. They are not part
+> that `Platform::create_or_join` delegates to. They are not part
 > of the public API.
 
 ---
@@ -37,7 +37,7 @@ auto-attaches as secondary and CAS-claims the lowest free slot.
 #include "eph/dpdk/platform.hpp"
 
 // Same code in BOTH binaries. Run them in any order.
-auto platform = eph::dpdk::Platform::join_dynamic({
+auto platform = eph::dpdk::Platform::create_or_join({
     .pci    = "0000:28:00.0",
     .nic    = {
         .nb_rx_queues    = 4,
@@ -62,7 +62,7 @@ auto platform = eph::dpdk::Platform::join_dynamic({
 // rr_counter, ICMP / FlowDirector / Poller state are all per-process.
 ```
 
-**Mental model**: `JoinDynamicConfig` carries only the autojoin-
+**Mental model**: `CreateOrJoinConfig` carries only the autojoin-
 specific inputs (pci, lcores, pin policy). NIC-physical-state and
 multi-process layout (`per_lcore_pools`, `mbuf_pool_size`,
 `enable_promiscuous`, `port_id`, `max_procs`, `queues_per_proc`)
@@ -81,14 +81,14 @@ For a runnable single-binary skeleton, see
 
 DPDK shared-hugepage multi-process imposes a strict ordering contract.
 With autojoin both peers run the same code; the table below describes
-the steps each process performs once `Platform::join_dynamic` has
+the steps each process performs once `Platform::create_or_join` has
 resolved its role:
 
 | Step | Primary peer | Secondary peer |
 |------|--------------|----------------|
-| 1 | `Platform::join_dynamic` → eal_init wins primary lock; primary_bringup_ creates mempool, configures+starts port | — |
+| 1 | `Platform::create_or_join` → eal_init wins primary lock; primary_bringup_ creates mempool, configures+starts port | — |
 | 2 | start streams / Poller loops | — |
-| 3 | — | `Platform::join_dynamic` → eal_init resolves to secondary; secondary_bringup_ does `rte_mempool_lookup`, skips port bringup, CAS-claims a registry slot |
+| 3 | — | `Platform::create_or_join` → eal_init resolves to secondary; secondary_bringup_ does `rte_mempool_lookup`, skips port bringup, CAS-claims a registry slot |
 | 4 | — | start streams / Poller loops |
 | 5 | — | teardown streams / Poller / `~Platform` (releases EAL via owned session) |
 | 6 | teardown streams / Poller / `~Platform` | — |
@@ -179,9 +179,9 @@ v2 candidate (IPC heartbeat reaper) is parked in `TODO.md`.
 Full root-cause and acceptance evidence:
 `eph-net-dpdk/docs/dpdk-mp-teardown-protocol.md`.
 
-## `JoinDynamicConfig` knobs
+## `CreateOrJoinConfig` knobs
 
-`JoinDynamicConfig` carries the autojoin-specific inputs; everything
+`CreateOrJoinConfig` carries the autojoin-specific inputs; everything
 else flows through `nic` (a `PlatformConfig`) which the
 peer that wins the EAL race reads when bringing up the port.
 
@@ -197,7 +197,7 @@ peer that wins the EAL race reads when bringing up the port.
 | `eal_extras`                 | `std::vector<std::string>`    | optional | Additional EAL argv tokens |
 | `self_lcore_mask`            | `uint64_t`                    | optional | Lcores this process owns; published into the registry for cross-process conflict detection. 0 = opt out |
 
-`Platform::join_dynamic` also carries optional registry checks:
+`Platform::create_or_join` also carries optional registry checks:
 when both peers explicitly set `nic.max_procs > 1`, the
 secondary path validates that the value matches the primary's
 registry total_procs and refuses to attach if they disagree.
@@ -206,7 +206,7 @@ registry total_procs and refuses to attach if they disagree.
 
 ## EAL argv: `EalConfig` / `build_eal_argv`
 
-`Platform::join_dynamic` builds the EAL argv internally — callers
+`Platform::create_or_join` builds the EAL argv internally — callers
 typically don't have to think about this layer. For escape hatches
 (e.g. a unit-test harness that needs to drive `eal_init` itself),
 the typed helper is:
@@ -230,7 +230,7 @@ Leaving `proc_type_set = false` suppresses the `--proc-type` flag entirely.
 DPDK's default is `primary` (NOT `auto`), so for the autojoin race
 to resolve the second peer to secondary, callers building EAL argv
 manually must use `--proc-type=auto` — that is what
-`Platform::join_dynamic` emits internally.
+`Platform::create_or_join` emits internally.
 
 ---
 
@@ -251,7 +251,7 @@ Re-using the same `(src_ip, src_port)` across processes makes
 exchange-grade peers see duplicate connection 4-tuples and trigger
 anti-abuse disconnects.
 
-With `Platform::join_dynamic`, `MpTopology::uniform` synthesizes
+With `Platform::create_or_join`, `MpTopology::uniform` synthesizes
 disjoint `[port_lo, port_hi)` windows automatically from
 `(self_index, total_procs)` and `find_src_port_for_queue`
 narrows its candidate space to each peer's window. Callers that
@@ -323,7 +323,7 @@ detail.
 For a single-file, runnable skeleton that you can adapt directly, see
 [`examples/dpdk_mp_demo.cpp`](../../examples/dpdk_mp_demo.cpp). One
 binary, no `--role` flag — both peers run with the same args and
-`Platform::join_dynamic` decides the role. Demonstrates `EalConfig`
+`Platform::create_or_join` decides the role. Demonstrates `EalConfig`
 + `build_eal_argv` flowing through the autojoin path, queue-range
 partitioning, and the secondary cleanup branch. Run from two
 terminals on the same host (the first to launch becomes primary);
@@ -346,9 +346,9 @@ The script:
 1. Preflight-checks binaries / vfio-pci / hugepages / DPDK idle (retries
    once after a 3-minute wait if another DPDK process is active).
 2. Launches `dpdk_mp_dynamic_primary` (which calls
-   `Platform::join_dynamic` and asserts it auto-resolved as primary)
+   `Platform::create_or_join` and asserts it auto-resolved as primary)
    in the background; waits up to 10 s for its ready-file.
-3. Launches `dpdk_mp_dynamic_secondary` (same `join_dynamic` call,
+3. Launches `dpdk_mp_dynamic_secondary` (same `create_or_join` call,
    asserts it resolved as secondary) in the foreground.
 4. Waits for both to exit, reports pass/fail, dumps the per-role logs on
    failure.
@@ -379,7 +379,7 @@ churn. Hard to diagnose in production.
 
 The library's solution is automatic and transparent to user code:
 
-1. **Cross-process directory**: `Platform::join_dynamic` reserves an
+1. **Cross-process directory**: `Platform::create_or_join` reserves an
    extra hugepage memzone `eph_mp_icmp/<file_prefix>`, parallel to
    `eph_mp/<file_prefix>` (the existing MpRegistry). It holds a
    1024-slot POD table mapping `(4-tuple, proto) →
@@ -396,7 +396,7 @@ The library's solution is automatic and transparent to user code:
    `local IcmpRegistry::dispatch_returns_hit(parsed) ? done :
    directory.lookup → mp_ipc_send_oneway("eph_icmp_dispatch", ...)`.
    Fire-and-forget — does not block the secondary's RX poll loop.
-4. **Owner-side dispatch**: `Platform::join_dynamic` registers an
+4. **Owner-side dispatch**: `Platform::create_or_join` registers an
    `eph_icmp_dispatch` rte_mp action handler. On incoming msg it
    validates magic / version / generation, rebuilds enough of the
    `ParsedIcmp` struct to feed `IcmpRegistry::dispatch`, and the
@@ -408,7 +408,7 @@ is a cold-path RPC, and the receiving thunk runs on DPDK's IPC
 thread (not your RX poll lcore).
 
 Degrade-on-failure: if `rte_mp_action_register` returns an error
-(e.g. an EAL `--no-shconf` mode), `Platform::join_dynamic` logs ERROR
+(e.g. an EAL `--no-shconf` mode), `Platform::create_or_join` logs ERROR
 and continues. Cross-proc forwarding then falls back to silent drop
 — equivalent to pre-reshape behavior, the rest of the eph stack
 keeps working.
