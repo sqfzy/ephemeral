@@ -312,37 +312,50 @@ int main(int argc, char** argv) {
         .warn_irq_overlap            = true,
     };
 
-    // ── 2) EAL + Platform via the unified launch factory ────────
-    // Single binary, single peer, real-server probe ⇒ Platform owns EAL
-    // and runs eal_cleanup atomically on destruction.
+    // ── 2) Platform::create — application secondary attach ────────
+    // Operator must already have started the daemon for this NIC:
+    //
+    //   sudo systemctl start eph-nicd@<pci>.service
+    //
+    // The mbuf pool size lives on the daemon's NicServiceConfig now;
+    // application-side PlatformConfig only carries `pci`, `queues`, and
+    // EAL knobs. ~Platform releases the secondary attach atomically.
+    //
+    // TODO(daemon-reshape): wire `dev::ensure_local_daemon` (S6) so
+    // ad-hoc dev-host runs can fork a daemon transparently.
+    if (app_cfg.eal.pci.empty()) {
+        spdlog::error("binance_latency: --pci is required");
+        return 1;
+    }
     eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id        = app_cfg.eal.port_id;
-    pcfg.nb_rx_queues   = 1;
-    pcfg.nb_tx_queues   = 1;
-    pcfg.mbuf_pool_size = 8191;  // 2^n-1; generous for a single session
-    // max_procs default 1 = single-process.
+    pcfg.pci          = app_cfg.eal.pci.front();
+    pcfg.queues       = 1;
+    pcfg.pins         = std::span<ed::LcorePin const>{app_cfg.eal.pins};
+    pcfg.pin_policy   = pin_policy;
+    pcfg.lcores       = app_cfg.eal.lcores_raw.empty()
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{app_cfg.eal.lcores_raw};
+    pcfg.program_name = "binance_latency";
 
     if (!app_cfg.eal.pins.empty()) {
-        spdlog::info("binance_latency: bring-up via launch "
+        spdlog::info("binance_latency: Platform::create "
                      "(typed pins, {} pin(s))", app_cfg.eal.pins.size());
     } else {
-        spdlog::info("binance_latency: bring-up via launch "
+        spdlog::info("binance_latency: Platform::create "
                      "(raw lcores='{}')", app_cfg.eal.lcores_raw);
     }
 
-    auto plat = eph::dpdk::Platform::launch(
-        std::move(pcfg),
-        ed::cli::to_eal_config(app_cfg.eal, "binance_latency"),
-        std::span<ed::LcorePin const>{app_cfg.eal.pins},
-        pin_policy);
+    auto plat = eph::dpdk::Platform::create(std::move(pcfg));
     if (!plat) {
-        spdlog::error("Platform::launch failed: {}", plat.error());
+        spdlog::error("Platform::create failed: {} "
+                      "(is `eph-nicd@{}.service` running?)",
+                      plat.error(), app_cfg.eal.pci.front());
         return 2;
     }
 
     // ── 3) Thread name + TSC bring-up ─────────────────────────────────────
     // The main thread's CPU affinity is set by `rte_eal_init` to the EAL
-    // main lcore's cpu (via the typed-pin path inside launch).
+    // main lcore's cpu (via the typed-pin path inside Platform::create).
     // No separate pin call needed.
     pthread_setname_np(pthread_self(), "ws-latency");
     if (!eph::utils::TSC::is_initialized() && !eph::utils::TSC::init()) {

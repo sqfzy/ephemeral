@@ -29,7 +29,6 @@
 #include <rte_mempool.h>
 
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
-#include "eph/dpdk/platform.hpp"
 #include "eph/dpdk/tcp.hpp"
 
 using namespace eph::dpdk;
@@ -37,31 +36,54 @@ using eph::net::TcpState;
 
 namespace {
 
-/// Shared Platform fixture — net_null on port 0 with default mempool.
+/// Shared mempool fixture — net_null on port 0.
+///
+/// Daemon-reshape (post-b4fc8969): the previous fixture wrapped a
+/// `Platform::create(PlatformConfig{ .port_id = 0 })` that worked
+/// purely in-process. The new daemon-led `Platform::create` requires
+/// a running `eph-nicd` primary, which the unit-test EAL bring-up
+/// (`--no-pci --vdev=net_null0` in `dpdk_test_env.hpp`) cannot
+/// provide. We therefore bypass `Platform` here and create a pktmbuf
+/// pool directly: this test only ever uses Platform for `mempool()`
+/// and `port_id()`, both of which are trivially provided by the
+/// already-initialized EAL + the well-known net_null port id.
 class TcpCloseResetTest : public ::testing::Test {
 protected:
+    static constexpr uint16_t kPortId = 0;     // net_null0 from DpdkTestEnv
+    static rte_mempool*       pool_;
+    static std::string        skip_reason_;
+
     static void SetUpTestSuite() {
-        PlatformConfig pcfg{};
-        pcfg.port_id = 0;
-        auto plat = Platform::create(pcfg);
-        if (!plat.has_value()) {
-            // Some test binaries in the same run may have already
-            // grabbed the only available net_null port.  Skip rather
-            // than fail in that case.
-            skip_reason_ = plat.error();
-            return;
+        // Single shared pool for every test in this binary. Cache name
+        // includes pid to avoid clashes across re-runs in the same
+        // hugepage-less process group.
+        char name[64];
+        std::snprintf(name, sizeof(name),
+                      "tcp_close_reset_pool_%d",
+                      static_cast<int>(::getpid()));
+        pool_ = rte_pktmbuf_pool_create(
+            name,
+            /*n=*/1023,
+            /*cache_size=*/32,
+            /*priv_size=*/0,
+            /*data_room_size=*/RTE_MBUF_DEFAULT_BUF_SIZE,
+            /*socket_id=*/SOCKET_ID_ANY);
+        if (pool_ == nullptr) {
+            skip_reason_ = "rte_pktmbuf_pool_create failed (rte_errno=" +
+                           std::to_string(rte_errno) + ")";
         }
-        platform_ = new Platform(std::move(*plat));
     }
 
     static void TearDownTestSuite() {
-        delete platform_;
-        platform_ = nullptr;
+        if (pool_ != nullptr) {
+            rte_mempool_free(pool_);
+            pool_ = nullptr;
+        }
     }
 
     void SetUp() override {
-        if (!platform_) {
-            GTEST_SKIP() << "Platform unavailable: " << skip_reason_;
+        if (pool_ == nullptr) {
+            GTEST_SKIP() << "mempool unavailable: " << skip_reason_;
         }
     }
 
@@ -74,20 +96,17 @@ protected:
         cfg.tuple.dst_port = 443;
         cfg.mss            = 1460;
         cfg.recv_window    = 65535;
-        cfg.port_id        = platform_->port_id();
+        cfg.port_id        = kPortId;
         cfg.tx_queue_id    = 0;
         cfg.rx_queue_id    = 0;
         // src_mac / dst_mac left zero — packet_template still builds,
         // and net_null doesn't care about Ethernet.
         return cfg;
     }
-
-    static Platform* platform_;
-    static std::string skip_reason_;
 };
 
-Platform* TcpCloseResetTest::platform_ = nullptr;
-std::string TcpCloseResetTest::skip_reason_;
+rte_mempool* TcpCloseResetTest::pool_      = nullptr;
+std::string  TcpCloseResetTest::skip_reason_;
 
 } // namespace
 
@@ -97,7 +116,7 @@ std::string TcpCloseResetTest::skip_reason_;
 
 TEST_F(TcpCloseResetTest, CloseInEstablishedTransitionsToFinWait1) {
     auto cfg = make_config(45000);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(/*snd_nxt=*/1000, /*snd_una=*/1000);
     s.inject_recv_seq_for_testing(/*rcv_nxt=*/2000, /*rcv_wnd=*/8192);
@@ -109,7 +128,7 @@ TEST_F(TcpCloseResetTest, CloseInEstablishedTransitionsToFinWait1) {
 
 TEST_F(TcpCloseResetTest, CloseInEstablishedAdvancesSndNxt) {
     auto cfg = make_config(45001);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(1000, 1000);
     s.inject_recv_seq_for_testing(2000, 8192);
@@ -123,7 +142,7 @@ TEST_F(TcpCloseResetTest, CloseInEstablishedAdvancesSndNxt) {
 
 TEST_F(TcpCloseResetTest, CloseIncrementsTxPackets) {
     auto cfg = make_config(45002);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(1, 1);
     s.inject_recv_seq_for_testing(1, 100);
@@ -140,7 +159,7 @@ TEST_F(TcpCloseResetTest, CloseIncrementsTxPackets) {
 
 TEST_F(TcpCloseResetTest, CloseInCloseWaitTransitionsToLastAck) {
     auto cfg = make_config(45003);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::CloseWait);
     s.inject_send_seq_for_testing(5000, 5000);
     s.inject_recv_seq_for_testing(6000, 8192);
@@ -157,7 +176,7 @@ TEST_F(TcpCloseResetTest, CloseInCloseWaitTransitionsToLastAck) {
 
 TEST_F(TcpCloseResetTest, CloseInClosedRejected) {
     auto cfg = make_config(45004);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     // State is Closed by default.
     EXPECT_EQ(s.state(), TcpState::Closed);
 
@@ -168,7 +187,7 @@ TEST_F(TcpCloseResetTest, CloseInClosedRejected) {
 
 TEST_F(TcpCloseResetTest, CloseInSynSentRejected) {
     auto cfg = make_config(45005);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::SynSent);
 
     auto r = s.close();
@@ -179,7 +198,7 @@ TEST_F(TcpCloseResetTest, CloseInSynSentRejected) {
 TEST_F(TcpCloseResetTest, CloseInFinWait1Rejected) {
     // Already closing — second close() must be rejected, no double-FIN.
     auto cfg = make_config(45006);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::FinWait1);
     s.inject_send_seq_for_testing(1000, 999);
 
@@ -192,7 +211,7 @@ TEST_F(TcpCloseResetTest, CloseInFinWait1Rejected) {
 
 TEST_F(TcpCloseResetTest, CloseInTimeWaitRejected) {
     auto cfg = make_config(45007);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::TimeWait);
 
     auto r = s.close();
@@ -206,7 +225,7 @@ TEST_F(TcpCloseResetTest, CloseInTimeWaitRejected) {
 
 TEST_F(TcpCloseResetTest, ResetFromEstablishedGoesToClosed) {
     auto cfg = make_config(45010);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(1000, 1000);
     s.inject_recv_seq_for_testing(2000, 8192);
@@ -217,7 +236,7 @@ TEST_F(TcpCloseResetTest, ResetFromEstablishedGoesToClosed) {
 
 TEST_F(TcpCloseResetTest, ResetFromFinWait1GoesToClosed) {
     auto cfg = make_config(45011);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::FinWait1);
 
     s.reset();
@@ -226,7 +245,7 @@ TEST_F(TcpCloseResetTest, ResetFromFinWait1GoesToClosed) {
 
 TEST_F(TcpCloseResetTest, ResetFromAlreadyClosedIsNoOp) {
     auto cfg = make_config(45012);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     EXPECT_EQ(s.state(), TcpState::Closed);
 
     // reset() on Closed must be safe — no double-RST or crash.
@@ -239,7 +258,7 @@ TEST_F(TcpCloseResetTest, ResetIncrementsTxPacketsOnSuccess) {
     // RST must be counted in tx_packets so operators tracking TX volume
     // don't see reset-heavy workloads silently under-report throughput.
     auto cfg = make_config(45013);
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(1, 1);
     s.inject_recv_seq_for_testing(1, 100);
@@ -281,7 +300,7 @@ TEST_F(TcpCloseResetTest, KeepaliveProbeExhaustionTransitionsToClosed) {
     cfg.keepalive_interval = std::chrono::milliseconds{10};
     cfg.keepalive_probes   = 3;
 
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     // Seqs picked out of the way of other tests sharing the fixture's
     // platform_ — any value works since net_null drops the wire bytes.
@@ -341,7 +360,7 @@ TEST_F(TcpCloseResetTest, KeepaliveWithSingleProbeExhaustsOnTwoTicks) {
     cfg.keepalive_interval = std::chrono::milliseconds{10};
     cfg.keepalive_probes   = 1;
 
-    TcpSession<> s(cfg, platform_->mempool());
+    TcpSession<> s(cfg, pool_);
     s.inject_state_for_testing(TcpState::Established);
     s.inject_send_seq_for_testing(5100, 5100);
     s.inject_recv_seq_for_testing(6100, 65535);

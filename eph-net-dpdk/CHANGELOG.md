@@ -2,6 +2,174 @@
 
 ## [Unreleased]
 
+### BREAKING — daemon-led Platform reshape (2026-05-02)
+
+The public `Platform` factory surface has been replaced with a daemon-led
+model. Old code using `Platform::launch`, `Platform::create_or_join`, or
+the kitchen-sink `PlatformConfig` will not compile.
+
+#### Why
+
+Eliminates point-to-point consensus between independent applications
+sharing a NIC. NIC physical state lives in `/etc/eph/<bdf>.toml`,
+managed by ops via the `eph-nicd` daemon. Applications just attach;
+they no longer carry any "I am the primary" / `max_procs` / `file_prefix`
+mental burden, and crashes are isolated (only the daemon ever runs as
+DPDK primary, never a tenant application).
+
+See `docs/dpdk-daemon-deployment.md` for the deployment story and
+`docs/dpdk-reconnect-pattern.md` for the daemon-restart pattern.
+
+#### Removed
+
+- `Platform::launch(PlatformConfig, EalConfig, pins, policy)` — one-shot
+  EAL+Platform factory.
+- `Platform::create_or_join(CreateOrJoinConfig)` — autojoin MP entry.
+- `eph::dpdk::CreateOrJoinConfig` (entire `eph/dpdk/create_or_join.hpp`
+  header).
+- The kitchen-sink fields on the old `PlatformConfig`: `port_id`,
+  `file_prefix`, `nb_rx_queues`, `nb_tx_queues`, `nb_rx_desc`,
+  `nb_tx_desc`, `mbuf_pool_size`, `mbuf_cache_size`,
+  `enable_promiscuous`, `enable_rx_checksum_offload`,
+  `enable_strict_rx_checksum`, `link_timeout_ms`, `per_lcore_pools`,
+  `max_procs`, `queues_per_proc`.
+- `eph::dpdk::detail::bringup_from_v3_` v2→v3 projector — replaced by
+  `bringup_from_platform_` / `bringup_from_nic_service_`.
+- `EalConfig` as a public factory parameter. The struct still exists in
+  `eph/dpdk/eal.hpp` as an internal helper for `build_eal_argv`; it is
+  no longer accepted by any `Platform` factory.
+- `eph::dpdk::MultiPortPlatform` (entire `eph/dpdk/multi_port_platform.hpp`
+  header), the `examples/multi_port_platform_demo.cpp` demo, and the
+  `tests/test_dpdk_multi_port_platform.cpp` test. Rationale: under the
+  daemon-led model each NIC has its own independent `eph-nicd` daemon
+  and its own per-process `Platform` instance; there is no shared
+  resource for an aggregator to orchestrate. Multi-port deployments
+  (separate MD vs OE NICs, AWS multi-ENI, redundant feeds) now call
+  `Platform::create({.pci="A", .queues=N})` and
+  `Platform::create({.pci="B", .queues=M})` directly — same number of
+  lines as the wrapper, no abstraction overhead, and the "one Platform
+  per NIC" mental model becomes explicit at the call site. ICMP
+  registries and Pollers were already per-port under the old wrapper;
+  that property is unchanged. The xmake target
+  `multi_port_platform_demo` and the `test_dpdk_multi_port_platform`
+  README index entry were removed alongside.
+
+#### Added
+
+- `eph::dpdk::PlatformConfig` (lean, application-side; consumed by
+  `Platform::create`):
+
+  | Field            | Type                                | Notes                                                          |
+  |------------------|-------------------------------------|----------------------------------------------------------------|
+  | `pci`            | `std::string_view`                  | NIC PCI BDF; drives both EAL `-a` and the auto-derived prefix. |
+  | `queues`         | `uint16_t`                          | Bidirectional queue pairs requested. RX/TX 1:1.                |
+  | `pins`           | `std::span<LcorePin const>`         | Typed lcore→cpu pins. Mutex w/ `lcores`.                       |
+  | `pin_policy`     | `eph::utils::CpuPinPolicy`          | NUMA / SMT / IRQ strictness.                                   |
+  | `lcores`         | `std::vector<std::string>`          | Raw `--lcores` spec. Mutex w/ `pins`.                          |
+  | `extra_eal_args` | `std::vector<std::string>`          | Passthrough EAL argv tokens.                                   |
+  | `program_name`   | `std::string_view`                  | EAL `argv[0]` for log identification.                          |
+
+  `proc_type=Secondary`, `file_prefix`, and `allowed_devs={pci}` are
+  derived internally — applications never set them.
+
+- `eph::dpdk::NicServiceConfig` (daemon-side; consumed by
+  `Platform::serve_nic` and the `eph-nicd` binary):
+
+  | Field             | Type                            | Default            | Notes                                          |
+  |-------------------|---------------------------------|--------------------|------------------------------------------------|
+  | `pci`             | `std::string_view`              | (required)         | NIC PCI BDF.                                   |
+  | `total_queues`    | `uint16_t`                      | `16`               | Pool capacity = max sum of attached `queues`.  |
+  | `rss_key`         | `std::array<uint8_t, 40>`       | `kDefaultRssKey`   | Symmetric Toeplitz key.                        |
+  | `promiscuous`     | `bool`                          | `false`            | HFT default off.                               |
+  | `nb_rx_desc`      | `uint16_t`                      | `1024`             | Per-queue RX ring depth.                       |
+  | `nb_tx_desc`      | `uint16_t`                      | `1024`             | Per-queue TX ring depth.                       |
+  | `mbuf_pool_size`  | `uint32_t`                      | `8191`             | Must be `2^n - 1`.                             |
+  | `mbuf_cache_size` | `uint16_t`                      | `256`              | Per-lcore cache; `< mbuf_pool_size`.           |
+  | `daemon_lcore`    | `uint16_t`                      | `0`                | Lcore the daemon's primary process runs on.    |
+
+- `Platform::create(PlatformConfig)` — application secondary-attach
+  factory. Calls `rte_eal_init` with `proc_type=secondary` and the
+  derived file_prefix.
+- `Platform::serve_nic(NicServiceConfig)` — daemon primary factory.
+  Owned by the `eph-nicd` binary; applications must not call this.
+- `Platform::join()` — blocks until `SIGTERM` / `SIGINT`. Used by the
+  daemon binary to keep the NIC primary alive while secondaries attach.
+
+#### Migration before / after
+
+| Old                                                                              | New                                                                                                       |
+|----------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `Platform::launch(cfg, eal_cfg, pins, policy)` (single-process app that owns EAL)| `Platform::create(PlatformConfig{ .pci=..., .queues=N, .pins=pins, .pin_policy=policy })` (assumes daemon up) |
+| `Platform::create_or_join(CreateOrJoinConfig{ .pci="X", .nic={...} })` (autojoin MP primary) | `Platform::serve_nic(NicServiceConfig{ .pci="X", .total_queues=N })` (daemon process)         |
+| `Platform::create_or_join(CreateOrJoinConfig{ .pci="X" })` (autojoin MP secondary)| `Platform::create(PlatformConfig{ .pci="X", .queues=N })` (assumes daemon up)                            |
+| `cfg.max_procs = 4; cfg.nb_rx_queues = 4`                                        | toml: `total_queues = 4` (operator-managed via `/etc/eph/<bdf>.toml`)                                    |
+| `cfg.file_prefix = "eph_X"`                                                      | derived from pci automatically (`eph_<sanitize_bdf(pci)>`)                                               |
+
+#### Added (S6 — 2026-05-02 reshape close-out)
+
+S6 ties off the daemon-restart reconnect contract and adds the ops
+tooling for inspecting daemon state.
+
+- `eph::core::Error::DaemonDisconnected` — typed error code surfaced
+  when the `eph-nicd` daemon's IPC stops responding (rte_* returns
+  `-EIO`, port becomes invalid). Application code branches the
+  reconnect loop on `r.error().code == Error::DaemonDisconnected`
+  instead of string-matching. Distinct from `Disconnected` (TCP peer
+  close) and `Timeout` (per-request RTT exceeded) — this is a
+  whole-Platform condition that signals "drop the handle and call
+  `Platform::create` again once the daemon is back".
+- `Platform::owned_queues()` — `std::span<uint16_t const>` of the
+  queue indices this Platform owns (granted by the daemon's
+  QueueAllocator at create time). Apps use `.size()` to decide how
+  many RX worker threads to spawn (one per queue is the recommended
+  pattern). Empty span on moved-from / single-process / daemon-side
+  Platforms. Lazy-filled on first call (cold path); subsequent
+  calls return a span over the cached array.
+- `Platform::is_alive()` — atomic bool getter; `false` once any path
+  has marked daemon-disconnect. App reconnect loops poll this to
+  short-circuit no-op rx_burst calls when the port is already known
+  dead. Stays `true` for daemon-side / single-process Platforms.
+- `Platform::create` reconnect-safety preamble — when called repeatedly
+  in the same process (the standard reconnect template; see
+  `docs/dpdk-reconnect-pattern.md`), the preamble detects a stuck
+  `eal_initialized_flag` (typically left over from a daemon-died-
+  mid-flight cleanup that returned non-zero from `rte_eal_cleanup`),
+  forces a flag reset, and re-runs `rte_eal_init`. Resources the
+  dead Platform leaked stay leaked until process exit; the reconnect
+  attempt itself proceeds.
+- `eph::dpdk::dev::ensure_local_daemon(pci)` — dev-mode helper that
+  probes `/var/run/dpdk/eph_<sanitize(pci)>/config` for an active
+  primary and `fork`+`exec`s `eph-nicd --no-config-file --pci=<pci>`
+  if absent. Lives in a separate header `eph/dpdk/dev_helpers.hpp`
+  (NOT pulled in by `platform.hpp`) so production code never auto-
+  spawns by accident. Requires `geteuid() == 0`. Returns
+  `InvalidConfig` with a clear "needs sudo" detail when called as a
+  non-root user.
+- `eph-nicctl` — operator tool (`tools/eph-nicctl.cpp`, target
+  `eph_nicctl`) for inspecting daemon state. Subcommands `stats` /
+  `peers` attach as a DPDK secondary, send a single
+  `eph_nicctl_query` `rte_mp_request_sync` to the daemon, print the
+  `QueueAllocator::PoolState` snapshot (total / free / generation /
+  stale_releases / claimed bitmap), and exit. Read-only — never
+  mutates daemon state. Companion IPC handler
+  `on_nicctl_query_thunk` (registered by `Platform::serve_nic`
+  alongside the queue claim/release handlers).
+- New IPC types in `detail/queue_allocator.hpp`:
+  `kNicctlQueryActionName`, `NicctlQueryRequest`, `NicctlQueryReply`,
+  `NicctlQueryKind` (Stats / Reserved discriminator).
+
+S6 staging — what's NOT yet in this commit:
+
+- Per-call daemon-loss detection inside `rx_burst` / `tx_burst`.
+  The `Platform::mark_daemon_disconnected_()` hook is in place; the
+  burst paths invoke nothing today. Until those wire-ups land,
+  applications that need pre-emptive disconnect detection should
+  also poll `Platform::is_alive()` (or the kernel control-plane
+  path) on their own cadence.
+- Per-peer slot tracking (`nicctl peers` reply currently carries the
+  aggregated bitmap snapshot only — per-peer PID / uid / attach-time
+  needs a small `Header` extension in `queue_allocator.hpp`).
+
 ### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
 
 Defence-in-depth fixes uncovered by `/pax --loop --auto review eph-net-dpdk`

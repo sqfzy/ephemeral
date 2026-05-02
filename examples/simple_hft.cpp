@@ -2,10 +2,12 @@
 ///
 /// Canonical "simple HFT client" — DPDK datapath, single-lcore burst loop,
 /// `WsCodec` + TLS 1.3 over a real WebSocket endpoint. Demonstrates the
-/// shortest path from `Platform` bring-up to streaming application frames
+/// shortest path from `Platform` attach to streaming application frames
 /// using the turnkey `DpdkTcpStream::create_and_attach` factory:
 ///
-///   1. `Platform::launch`     — EAL + port + mempool, single-process
+///   1. `Platform::create(PlatformConfig{.pci, .queues, ...})` — secondary
+///      attach to a daemon-managed NIC (the `eph-nicd` binary must already
+///      be running for this PCI).
 ///   2. `arp::resolve` + `dns::resolve` — DPDK-native L2/L3 control plane
 ///   3. `DpdkPoller<>::create`          — single-queue burst-poll loop driver
 ///   4. `DpdkTcpStream<WsCodec, true>::create_and_attach`
@@ -19,8 +21,16 @@
 /// control-plane mechanics (multi-process, RSS multi-queue), see
 /// `examples/dpdk_mp_demo.cpp` and `examples/dpdk_rss_demo.cpp`.
 ///
-/// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
-/// See `eph-net-dpdk/scripts/dpdk-setup.sh`.
+/// Required environment:
+///   - NIC bound to vfio-pci, ≥ 256 hugepages free
+///     (see `eph-net-dpdk/scripts/dpdk-setup.sh`)
+///   - `eph-nicd@<pci>.service` running for the target PCI BDF (the daemon
+///     owns the NIC primary; this example attaches as secondary). Until
+///     the eph-nicd binary lands (S4 of the daemon reshape), operators can
+///     bring up the daemon equivalent in a sibling process via
+///     `Platform::serve_nic(NicServiceConfig{.pci=...})`. EAL forbids
+///     primary+secondary in the same process, so this single-binary demo
+///     is application-only.
 ///
 /// Usage:
 ///   sudo ./simple_hft --
@@ -206,23 +216,40 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 3) Platform::launch — single-process, single queue ───────
-    // V3 API: PlatformConfig has no proc_type (always primary in
-    // create()) and no file_prefix here (single-process default empty).
+    // ── 3) Platform::create — application secondary attach ───────
+    //
+    // The daemon-led model (post-2026-05-02) requires `eph-nicd` to already
+    // own the NIC primary for `cfg.eal.pci[0]` before we attach as secondary.
+    // PlatformConfig now carries only `pci` + `queues` + EAL knobs; the NIC
+    // physical state (descriptor depth, RSS key, mempool size, promiscuous,
+    // …) lives in `NicServiceConfig` and is the daemon's job.
+    //
+    // TODO(daemon-reshape): once `eph-nicd` ships (S4) and `eph::dpdk::dev::
+    // ensure_local_daemon(pci)` lands (S6), this example can call the dev
+    // helper to fork the daemon when running ad-hoc on a dev box. Today
+    // operators must `sudo systemctl start eph-nicd@<pci>.service` (or run
+    // the daemon binary by hand in another terminal) before invoking this.
+    if (cfg.eal.pci.empty()) {
+        spdlog::error("simple_hft: --pci is required (the daemon model "
+                      "needs an explicit BDF until default-NIC selection "
+                      "from /etc/eph/*.toml lands in S6)");
+        return 1;
+    }
     ed::PlatformConfig pcfg{};
-    pcfg.port_id        = cfg.eal.port_id;
-    pcfg.nb_rx_queues   = 1;
-    pcfg.nb_tx_queues   = 1;
-    pcfg.mbuf_pool_size = 8191;
-    // max_procs left at default 1 = single-process (no MP registry).
+    pcfg.pci            = cfg.eal.pci.front();
+    pcfg.queues         = 1;
+    pcfg.pins           = std::span<ed::LcorePin const>{cfg.eal.pins};
+    pcfg.pin_policy     = eph::utils::CpuPinPolicy{};
+    pcfg.lcores         = cfg.eal.lcores_raw.empty()
+                              ? std::vector<std::string>{}
+                              : std::vector<std::string>{cfg.eal.lcores_raw};
+    pcfg.program_name   = "simple_hft";
 
-    auto plat_r = ed::Platform::launch(
-        std::move(pcfg),
-        ed::cli::to_eal_config(cfg.eal, "simple_hft"),
-        std::span<ed::LcorePin const>{cfg.eal.pins},
-        eph::utils::CpuPinPolicy{});
+    auto plat_r = ed::Platform::create(std::move(pcfg));
     if (!plat_r) {
-        spdlog::error("Platform::launch failed: {}", plat_r.error());
+        spdlog::error("Platform::create failed: {} "
+                      "(is `eph-nicd@{}.service` running?)",
+                      plat_r.error(), cfg.eal.pci.front());
         return 2;
     }
     auto platform = std::move(*plat_r);

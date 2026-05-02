@@ -34,21 +34,30 @@ Read the code in this order:
    with `writable_data()` support for in-place mutation.
 7. `include/eph/dpdk/*` — internal detail only if you're debugging the TCP
    state machine or adding ARP / DNS / flow steering support.
-8. `include/eph/dpdk/platform.hpp` — bottom of the file has the
-   multi-process section. The only public MP entry point is
-   `Platform::create_or_join(CreateOrJoinConfig)` (see
-   `include/eph/dpdk/create_or_join.hpp`): peers race on EAL init,
-   the winner becomes primary and runs the internal
-   `primary_bringup_()` helper (configure / start the port, build
-   the mempool, write the registry), losers attach as secondaries
-   via `secondary_bringup_()` (CAS-claim a registry slot, look up
-   the primary's mempool by name, skip configure/start/stop/close).
-   Single-process callers use `Platform::create(PlatformConfig)`
-   (rejects `max_procs > 1`) or the one-shot
-   `Platform::launch(PlatformConfig, EalConfig, …)` that owns EAL
-   too. `ProcType` and its `to_eal_string` serializer live in
-   `include/eph/dpdk/proc_type.hpp` so `platform.hpp` and `eal.hpp`
-   share one source of truth.
+8. `include/eph/dpdk/platform.hpp` — daemon-led Platform factory.
+   Two configs and two factory entries cover the full surface:
+   - **Tenants** call `Platform::create(PlatformConfig)` with
+     `cfg.pci` + `cfg.queues` + per-process EAL knobs. Internally
+     this runs `secondary_bringup_()` (CAS-claim a registry slot,
+     look up the daemon's mempool by name, skip
+     configure/start/stop/close).
+   - **The `eph-nicd` daemon** calls
+     `Platform::serve_nic(NicServiceConfig)` followed by
+     `Platform::join()`. Internally this runs `primary_bringup_()`
+     (configure / start the port, build the mempool, write the
+     registry).
+   `ProcType` and its `to_eal_string` serializer live in
+   `include/eph/dpdk/proc_type.hpp` as an internal helper so
+   `platform.hpp` and `eal.hpp` share one source of truth.
+
+   For the runtime model — `eph-nicd` deployment, toml schema,
+   tenant reconnect on daemon restart — read
+   [`dpdk-daemon-deployment.md`](dpdk-daemon-deployment.md) and
+   [`dpdk-multiprocess.md`](dpdk-multiprocess.md) before touching
+   the factory code. The daemon-led model replaced the older
+   autojoin shape (`Platform::create_or_join` /
+   `Platform::launch`) in 2026-05-02; see `CHANGELOG.md` BREAKING
+   entry for the migration table.
 
 ## Getting DPDK running on the host
 
@@ -115,52 +124,42 @@ member so teardown is automatic. Poller::add() does NOT touch flow rules —
 the stream owns the rule's lifetime. Unit tests are in
 `tests/test_flow_steering.cpp`.
 
-### Running as a DPDK secondary process
+### Running as a DPDK tenant under `eph-nicd`
 
-Single-NIC multi-process setups let N processes share one port's mempool
-via the DPDK `--proc-type=secondary` mechanism. The only public entry
-point is `Platform::create_or_join(CreateOrJoinConfig)` — peers race
-on EAL init, the winner runs the primary bring-up and writes a shared
-hugepage registry, the rest attach as secondaries by reading that
-registry:
+Multi-process setups (one NIC, many independent applications) use
+the daemon-led model. A long-lived `eph-nicd` daemon owns the NIC
+as the DPDK primary; tenants attach as DPDK secondaries via the
+standard `--proc-type=secondary` mechanism. NIC physical state lives
+in `/etc/eph/<bdf>.toml`, declared by ops.
 
 ```cpp
-// Zero-coordination path: every peer issues the SAME call. The library
-// resolves primary-vs-secondary post-EAL via rte_eal_process_type().
-eph::dpdk::CreateOrJoinConfig cfg{
-    .nic = eph::dpdk::PlatformConfig{
-        .port_id      = 0,
-        .nb_rx_queues = 4,
-        .file_prefix  = "hft_app",
-        // max_procs / queues_per_proc / file_prefix are read by the
-        // autojoin race when this peer resolves to primary.
-        .max_procs        = 2,
-        .queues_per_proc  = 2,
-    },
-    .extra_eal_args = {},   // optional: passthrough EAL flags
-};
-auto plat = eph::dpdk::Platform::create_or_join(std::move(cfg));
+// Tenant code: lean PlatformConfig, daemon assumed running.
+auto plat = eph::dpdk::Platform::create({
+    .pci    = "0000:01:00.1",
+    .queues = 4,            // claim 4 RX/TX queue pairs from the pool
+    .lcores = {"0-3"},      // tenant's own EAL lcore set
+});
 ```
 
-The winner runs `primary_bringup_()` internally (validate config,
-`rte_eth_dev_configure / rx_queue_setup / configure_rss / dev_start`,
-build the mempool named `eph_mbuf_p<port>`, publish to the registry).
-Losers run `secondary_bringup_()` (CAS-claim a registry slot, read NIC
-state from primary's hugepage registry / live device, skip
-configure/start/stop/close, attach via `rte_mempool_lookup`).
+Internally `Platform::create` runs `secondary_bringup_()`: derive
+`file_prefix = "eph_" + sanitize_bdf(pci)`, call `rte_eal_init` with
+`--proc-type=secondary --file-prefix=... -a <pci>`, CAS-claim a
+registry slot, attach via `rte_mempool_lookup`. The tenant never
+configures or starts the port — the daemon already did that via
+`primary_bringup_()` when it called `serve_nic`.
 
-Source-port partitioning across MP processes is the **caller's**
-responsibility — `eph-net-dpdk` does not auto-allocate src_port and has
-no global view to enforce disjointness. Allocate disjoint sub-ranges
-per process via `cfg.dpdk.wire.tuple.src_port` (TCP) or
-`cfg.dpdk.wire.src_port` (UDP — UDP mirrors TCP's `dpdk` substruct
-shape post Tier-1 audit follow-up). Read your peer's port window from
-`Platform::port_range()` and use it to clamp your application-side
-allocator.
+Source-port partitioning across tenants is the **operator's**
+responsibility — `eph-net-dpdk` does not auto-allocate src_port and
+has no global view to enforce disjointness. Allocate disjoint
+sub-ranges per tenant via `cfg.dpdk.wire.tuple.src_port` (TCP) or
+`cfg.dpdk.wire.src_port` (UDP). Document the partition alongside
+the per-NIC CPU layout outside eph (typically next to the toml).
 
-See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
-1+N partitioning table, PMD caveats, and the orchestrator script;
-`examples/dpdk_mp_demo.cpp` for a runnable single-file skeleton.
+See also: [`dpdk-daemon-deployment.md`](dpdk-daemon-deployment.md)
+for the operator side (toml schema, systemd unit, upgrade
+procedure, security notes); [`dpdk-multiprocess.md`](dpdk-multiprocess.md)
+for the architecture; [`dpdk-reconnect-pattern.md`](dpdk-reconnect-pattern.md)
+for the tenant reconnect template on daemon restart.
 
 ### Debugging TLS handshake failures
 

@@ -18,40 +18,43 @@ as their `PacketView` associated type — backed by an `rte_mbuf` with pool-mana
 headroom so TLS decrypt can run in place via aws-lc's
 `EVP_AEAD_CTX_open_scatter`.
 
-For single-NIC multi-process deployments (one primary + N secondaries
-sharing the mempool), the only public entry point is
-`Platform::create_or_join(CreateOrJoinConfig)` — peers race on
-`rte_eal_init`, the winner runs primary bring-up and writes a shared
-hugepage registry, the rest attach as secondaries by reading it. No
-explicit role declaration, no `proc_type` / `mp_topology` field, no
-restated NIC parameters:
+For multi-process deployments (one or many tenants sharing one NIC),
+`eph-net-dpdk` runs a **daemon-led** model. A long-lived `eph-nicd`
+daemon owns the NIC as the DPDK primary; tenants attach as DPDK
+secondaries. NIC physical state lives in `/etc/eph/<bdf>.toml` —
+operator-managed, declarative.
 
 | Role | Public surface | Notes |
 |---|---|---|
-| Single-process | `Platform::create(PlatformConfig)` | Rejects `max_procs > 1` with a recovery hint pointing at `create_or_join`. |
-| Single-process, one-shot EAL+Platform | `Platform::launch(PlatformConfig, EalConfig, …)` | Owns EAL lifecycle too. Single-process only. |
-| Multi-process (any role, autojoin) | `Platform::create_or_join(CreateOrJoinConfig{.nic=…})` | Zero-coordination: every peer issues the SAME call. The library resolves primary-vs-secondary post-EAL via `rte_eal_process_type()`. `CreateOrJoinConfig::nic` carries NIC physical state (PCI BDF, `nb_rx_queues`, `max_procs`, optional `queues_per_proc`, `file_prefix`); only the primary reads it. |
+| Tenant (application) | `Platform::create(PlatformConfig)` | `cfg.pci` + `cfg.queues` + per-process EAL knobs. Attaches as DPDK secondary; assumes daemon already running. |
+| Daemon (`eph-nicd`)  | `Platform::serve_nic(NicServiceConfig)` + `Platform::join()` | NIC physical state (`total_queues`, `rss_key`, descriptor depths, mempool sizing). Tenants must not call this. |
 
-The pre-v3 cooperative path (`Platform::attach(PlatformAttachConfig)`,
-declarative `Platform::create` with `max_procs > 1`, separate
-`Platform::create_primary` / `create_secondary` factories) was removed
-in 2026-05-01's reshape — `create_or_join` is the only multi-process
-surface now.
+Tenants carry no notion of `max_procs` / `file_prefix` /
+`primary_vs_secondary` — `proc_type=Secondary` and
+`file_prefix=eph_<sanitize_bdf(pci)>` are derived internally. The
+old autojoin shape (`Platform::create_or_join` /
+`Platform::launch` / `CreateOrJoinConfig`, kitchen-sink
+`PlatformConfig` with `max_procs` / `queues_per_proc` / `file_prefix`)
+was removed in 2026-05-02's reshape — see `CHANGELOG.md` BREAKING
+entry for the migration table.
 
-`eph::dpdk::EalConfig` + `build_eal_argv` is the typed helper for
-assembling `--proc-type` / `--file-prefix` / `-l` / `-a` argv when you
-drive EAL directly; `launch` and `create_or_join` invoke it under the
-hood (and inject `--proc-type` / `--file-prefix` automatically). Full
-operational contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
+`eph::dpdk::EalConfig` + `build_eal_argv` remain in `eal.hpp` as an
+internal helper for assembling `--proc-type` / `--file-prefix` /
+`-l` / `-a` argv; `Platform::create` and `serve_nic` invoke it under
+the hood. They are no longer accepted as public factory parameters.
+Full operational contract: [`docs/dpdk-daemon-deployment.md`](docs/dpdk-daemon-deployment.md)
+(toml schema, systemd, upgrades), [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md)
+(architecture), [`docs/dpdk-reconnect-pattern.md`](docs/dpdk-reconnect-pattern.md)
+(tenant reconnect on daemon restart).
 
 For **multi-port** deployments inside a single process (separate MD vs
-OE NICs, AWS multi-ENI, redundant feeds), `eph::dpdk::MultiPortPlatform`
-in `eph/dpdk/multi_port_platform.hpp` owns N independent `Platform`
-instances and exposes them by index. Strictly additive — single-port
-semantics are unchanged. ICMP registries and Pollers stay per-port
-(cross-port routing would be a bug, not a feature). See the header
-docstring and `tests/test_dpdk_multi_port_platform.cpp` for the full
-contract.
+OE NICs, AWS multi-ENI, redundant feeds), call `Platform::create` once
+per NIC — each PCI BDF has its own independent `eph-nicd` daemon, so
+there is no shared resource for an aggregator to orchestrate. ICMP
+registries and Pollers are per-NIC by construction (cross-port routing
+would be a bug, not a feature). The previous `MultiPortPlatform`
+wrapper was removed in the daemon-led reshape (2026-05-02) — under the
+new model it added no value over two direct `Platform::create` calls.
 
 For lcore × application-thread cpu pinning (so `pin_thread` can detect
 SMT / NUMA conflicts against running EAL lcores), use the typed
@@ -79,14 +82,13 @@ that only the Stream/Datagram types should call directly.
 User-facing — call directly from your application:
 
 - `platform.hpp` — `Platform` (port bring-up, RSS configure / probe,
-  ICMP registry, primary / secondary process roles), `PlatformConfig`,
-  `ProcType` re-export.
+  ICMP registry), `PlatformConfig` (tenant-side: `pci` + `queues` +
+  per-process EAL knobs), `NicServiceConfig` (daemon-side: NIC
+  physical state), `Platform::create` / `serve_nic` / `join`.
 - `eal.hpp` — `Eal` RAII guard, `EalGuard::init` (typed-pin overload)
-  / `EalGuard::init_raw` (raw argv escape hatch), `EalConfig` +
-  `build_eal_argv` typed argv builder.
-- `multi_port_platform.hpp` — `MultiPortPlatform` aggregates N
-  independent `Platform`s (one per NIC port). Strictly additive over
-  single-port semantics.
+  / `EalGuard::init_raw` (raw argv escape hatch). `EalConfig` +
+  `build_eal_argv` are internal helpers used by `Platform::create` /
+  `serve_nic` to assemble argv; not a public factory parameter.
 - `lcore_pin.hpp` — `LcorePin` declarative spec + pure-function
   `--lcores` argv builder; integrates with the `eph::utils` pin
   registry so application threads see the same SMT / NUMA conflict
@@ -94,11 +96,8 @@ User-facing — call directly from your application:
 - `mp_topology.hpp` — high-level multi-process resource topology;
   auto-derives `rx_queue_range` and per-process src_port segments
   instead of hand-partitioning.
-- `create_or_join.hpp` — `CreateOrJoinConfig` + `Platform::create_or_join`
-  zero-coordination MP bring-up. Caller supplies `pci` only; primary-vs-
-  secondary role is decided post-EAL by `rte_eal_process_type()`.
 - `proc_type.hpp` — `ProcType` enum (`Primary` / `Secondary`) shared
-  by `platform.hpp` and `eal.hpp`.
+  by `platform.hpp` and `eal.hpp` as an internal helper.
 
 Internal wrappers — `eph::net::dpdk::*` Stream/Datagram types compose
 these. User code does not normally need them but they are public
@@ -191,8 +190,8 @@ target TCP session).
                 │   Control thread     │
                 │ (app main / setup)   │
                 │                      │
-                │  - Eal construction  │
                 │  - Platform::create  │
+                │    (tenant attach)   │
                 │  - ARP resolve       │
                 │  - DNS lookups       │
                 │  - Stream::create()  │
@@ -309,9 +308,8 @@ the preserved internal-primitive tests under `tests/legacy/`.
 | `test_dpdk_poller_timeout`         | `DpdkPoller` no-blocking-poll contract + idle deadline behaviour        |
 | `test_dpdk_poller_scale`           | Poller scaling: many streams, ICMP cross-queue dispatch                 |
 | `test_dpdk_udp_multicast_rss`      | UDP multicast under RSS — fail-fast on multi-queue, allow single-queue  |
-| `test_dpdk_multi_port_platform`    | `MultiPortPlatform` aggregator: per-port isolation, ICMP scoping        |
 | `test_dpdk_platform_mempool`       | Platform mempool naming / lookup across primary+secondary processes     |
-| `test_platform_launch`             | `Platform::launch` (one-shot EAL+Platform factory) + RSS configure / probe fallback |
+| `test_platform_config_validate`    | `validate(PlatformConfig)` / `validate(NicServiceConfig)` — config rejection set + happy paths + constexpr-evaluability |
 | `test_arp_api` / `test_arp_resolve`| `eph::dpdk::arp::resolve` (sync + RSS-safe reply routing)               |
 | `test_dns_async` / `test_dns_rss_aware` | `eph::dpdk::dns::resolve` (async + reverse-pick src_port for RSS) |
 | `test_icmp_directory` / `test_icmp_dispatch` | ICMP target registry + Type 3 Code 4 PMTU dispatch routing    |
@@ -420,7 +418,9 @@ vfio-pci flow).
 - [`../docs/dpdk-tcp-implementation.md`](../docs/dpdk-tcp-implementation.md) — TCP state machine, reorder buffer, delayed-ACK, no-retransmit contract
 - [`../docs/dpdk-udp-design.md`](../docs/dpdk-udp-design.md) — UDP design deltas vs kernel backend (fixed-peer, no broadcast, multicast + connect_to interaction)
 - [`../docs/dpdk-setup.md`](../docs/dpdk-setup.md)
-- [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md) — single-NIC primary+secondary attach, `EalConfig` argv assembly, queue/src-port partitioning rules, PMD caveats
+- [`docs/dpdk-daemon-deployment.md`](docs/dpdk-daemon-deployment.md) — `eph-nicd` daemon model, `/etc/eph/<bdf>.toml` schema, systemd, upgrade procedure, security notes
+- [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md) — daemon-led multi-process architecture: discovery via file-prefix, queue / src-port partitioning, PMD caveats, ICMP cross-process forwarding
+- [`docs/dpdk-reconnect-pattern.md`](docs/dpdk-reconnect-pattern.md) — tenant reconnect template for daemon restarts
 - [`../docs/poller-guide.md`](../docs/poller-guide.md)
 - [`../docs/architecture.md`](../docs/architecture.md)
 - `.artifacts/design-eph-v3.3-architecture-20260410.md` — design spec

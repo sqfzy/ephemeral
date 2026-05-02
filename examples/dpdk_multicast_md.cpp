@@ -6,11 +6,12 @@
 ///
 /// What's demonstrated:
 ///
-///   * `Platform::launch(PlatformConfig, EalConfig, …)` (one-shot
-///     EAL+Platform factory) with single queue (`nb_rx_queues=1`,
-///     `enable_rss=false`) — the canonical safe shape for multicast
-///     RX. For RSS multi-queue + multicast, see the FlowDirector
-///     caveat in the second config block.
+///   * `Platform::create(PlatformConfig{...})` — application-side
+///     secondary attach to a daemon-managed NIC. The example assumes
+///     `eph-nicd@<pci>.service` is already running. The single-queue
+///     shape is set on the daemon side (`NicServiceConfig::total_queues=1`)
+///     — the canonical safe shape for multicast RX. For RSS multi-queue
+///     + multicast, see the FlowDirector caveat in the second config block.
 ///   * `MulticastReceiver::join_group` — RFC 1112 multicast MAC
 ///     derivation (`01:00:5e:XX:XX:XX`) is internal; caller passes the
 ///     IPv4 group + UDP port. Up to `kMaxMulticastGroups` (8) joins per
@@ -185,30 +186,41 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via the unified launch factory ────────
-    // Single queue, RSS off (the safe shape for multicast). Platform owns
-    // EAL — ~Platform handles eal_cleanup atomically.
+    // ── 1) Platform::create — application secondary attach ────────
+    // Single queue, RSS off (the safe shape for multicast); the daemon
+    // owns NIC physical state, this process just attaches and uses it.
+    // ~Platform releases the secondary attach atomically.
     //
-    // For RSS+multicast: bring the Platform up with nb_rx_queues > 1 AND
-    // install a FlowDirector rule pinning each multicast 5-tuple to one
-    // queue, THEN clear `MulticastConfig::rss_active_multi_queue` to
-    // acknowledge the explicit pin. The receiver cannot reverse-pick a
-    // src_port (it doesn't control the sender) so RSS without FD is unsafe.
+    // For RSS+multicast: configure the daemon's NicServiceConfig with
+    // total_queues > 1 AND install a FlowDirector rule pinning each
+    // multicast 5-tuple to one queue, THEN clear
+    // `MulticastConfig::rss_active_multi_queue` to acknowledge the
+    // explicit pin. The receiver cannot reverse-pick a src_port (it
+    // doesn't control the sender) so RSS without FD is unsafe.
+    //
+    // TODO(daemon-reshape): operator must `sudo systemctl start
+    // eph-nicd@<pci>.service` before this runs. Until S6 lands the
+    // `dev::ensure_local_daemon` helper, ad-hoc dev-host runs need the
+    // daemon spawned manually.
+    if (args.eal.pci.empty()) {
+        spdlog::error("dpdk_multicast_md: --pci is required");
+        return 1;
+    }
     ed::PlatformConfig pcfg{};
-    pcfg.port_id            = args.eal.port_id;
-    pcfg.nb_rx_queues       = 1;
-    pcfg.nb_tx_queues       = 1;
-    pcfg.enable_promiscuous = false;
-    // max_procs default 1 = single-process.
+    pcfg.pci          = args.eal.pci.front();
+    pcfg.queues       = 1;
+    pcfg.pins         = std::span<ed::LcorePin const>{args.eal.pins};
+    pcfg.pin_policy   = eph::utils::CpuPinPolicy{};
+    pcfg.lcores       = args.eal.lcores_raw.empty()
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{args.eal.lcores_raw};
+    pcfg.program_name = "dpdk_multicast_md";
 
-    auto plat_r = ed::Platform::launch(
-        std::move(pcfg),
-        ed::cli::to_eal_config(args.eal, "dpdk_multicast_md"),
-        std::span<ed::LcorePin const>{args.eal.pins},
-        eph::utils::CpuPinPolicy{});
+    auto plat_r = ed::Platform::create(std::move(pcfg));
     if (!plat_r) {
-        spdlog::error("dpdk_multicast_md: Platform::launch failed: {}",
-                      plat_r.error());
+        spdlog::error("dpdk_multicast_md: Platform::create failed: {} "
+                      "(is `eph-nicd@{}.service` running?)",
+                      plat_r.error(), args.eal.pci.front());
         return 2;
     }
     auto platform = std::move(*plat_r);

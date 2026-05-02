@@ -48,6 +48,38 @@ target("eph-net-dpdk")
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 
+-- ============================================================================
+-- eph_nicd — the DPDK NIC daemon binary (S4 of the daemon-reshape).
+--
+-- One daemon per NIC. ops side: `eph-nicd@<bdf>.service` reads
+-- `/etc/eph/<bdf>.toml` → `Platform::serve_nic(NicServiceConfig)` → blocks
+-- on `Platform::join()` until SIGTERM/SIGINT. Application processes attach
+-- as DPDK secondaries against the same `pci` via `Platform::create`.
+-- ============================================================================
+target("eph_nicd")
+    set_kind("binary")
+    set_default(true)
+    add_files("tools/eph-nicd.cpp")
+    add_deps("eph-net-dpdk")
+    add_packages("tomlplusplus")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
+-- ============================================================================
+-- eph_nicctl — operator tool for inspecting eph-nicd daemon state (S6).
+--
+-- Attaches as a DPDK secondary to the daemon's EAL session, sends a single
+-- `eph_nicctl_query` IPC, prints the reply, exits. See tools/eph-nicctl.cpp
+-- header comment for subcommand reference.
+-- ============================================================================
+target("eph_nicctl")
+    set_kind("binary")
+    set_default(true)
+    add_files("tools/eph-nicctl.cpp")
+    add_deps("eph-net-dpdk")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module unit tests (v3 API tests). Every test target needs PMD
 -- whole-archive linking. Tests use --no-pci mode (see dpdk_test_env.hpp)
 -- so they run on any host without a vfio-pci NIC.
@@ -173,70 +205,17 @@ target("test_dpdk_rss_fanout")
         path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
--- Autojoin (Platform::create_or_join) e2e (reshape mp-mode2-dynamic
--- stage 3). Both peers call create_or_join with the SAME pci /
--- nb_rx_queues; the first to start is auto-resolved as primary,
--- the second auto-attaches as secondary and CAS-claims slot 1.
--- Coordinated by tests/integration/dpdk_mp_dynamic_e2e.sh; same
--- SKIP-on-missing-env behaviour as the declarative-path MP
--- binaries above.
-target("dpdk_mp_dynamic_primary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_dynamic_primary.cpp")
-    add_deps("eph-net-dpdk")
-    apply_dpdk_pmd_linkgroups()
-
-target("dpdk_mp_dynamic_secondary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_dynamic_secondary.cpp")
-    add_deps("eph-net-dpdk")
-    apply_dpdk_pmd_linkgroups()
-
--- Acceptance gate for reshape/rss-aware-connect: two autojoin peers
--- both DPDK-TCP-connect to a kernel echo mock spawned inside primary.
--- Pre-fix the secondary's connect hung silently because RSS hashed
--- SYN-ACK to a queue secondary did not own. Coordinated by
--- tests/integration/dpdk_mp_dynamic_tcp_handshake_e2e.sh.
-target("dpdk_mp_dynamic_tcp_handshake_primary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_dynamic_tcp_handshake_primary.cpp")
-    add_includedirs("tests/integration")
-    -- eph-net for posix_listener / posix_io helpers used by echo_mocks.hpp;
-    -- eph-codec for RawStreamCodec used in the connect+echo round-trip.
-    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
-    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
-    add_packages("tomlplusplus")
-    add_defines("EPH_USE_DPDK=1")
-    apply_dpdk_pmd_linkgroups()
-
-target("dpdk_mp_dynamic_tcp_handshake_secondary")
-    add_rules("eph-test")
-    add_files("tests/integration/dpdk_mp_dynamic_tcp_handshake_secondary.cpp")
-    add_includedirs("tests/integration")
-    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
-    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
-    add_packages("tomlplusplus")
-    add_defines("EPH_USE_DPDK=1")
-    apply_dpdk_pmd_linkgroups()
-
--- Vendor-PMD limitation reproducers. NOT in the "tests" group because
--- the program is *expected* to observe a SIGSEGV in a forked child (it
--- exits 0 when the limitation reproduces, non-zero if the limitation
--- has been lifted) — mixing it into batch test runs is misleading.
--- Build via: `xmake build -g repros`.
---
---   repro_ena_mp_secondary_rxburst — AWS ENA PMD: secondary-process
---     rte_eth_rx_burst() segfaults inside ena_com_get_next_rx_cdesc.
---     See file header for backtrace and DPDK / PMD / kernel / instance
---     metadata. Documented in docs/dpdk-mp-teardown-protocol.md.
-target("repro_ena_mp_secondary_rxburst")
-    set_kind("binary")
-    set_group("repros")
-    set_default(false)
-    add_files("tests/integration/repro_ena_mp_secondary_rxburst.cpp")
-    add_deps("eph-net-dpdk")
-    add_defines("SPDLOG_NO_EXCEPTIONS")
-    apply_dpdk_pmd_linkgroups()
+-- The autojoin e2e binaries (dpdk_mp_dynamic_primary / _secondary,
+-- dpdk_mp_dynamic_tcp_handshake_primary / _secondary) and the
+-- repro_ena_mp_secondary_rxburst sentinel were removed in the
+-- daemon-led Platform reshape (calm-roaming-sedgewick). They depended
+-- on Platform::create_or_join (deleted) and the autojoin race
+-- semantics it implemented. The new daemon-led model removes the race
+-- entirely — peer-to-peer consensus is replaced by a single eph-nicd
+-- daemon that owns NIC bring-up; applications only attach via
+-- Platform::create. The MP teardown gate sentinel is now covered by
+-- the daemon's own startup/shutdown protocol (S2). See
+-- eph-net-dpdk/CHANGELOG.md "BREAKING: daemon-led Platform reshape".
 
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.

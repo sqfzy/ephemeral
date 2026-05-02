@@ -96,35 +96,45 @@ The scope decisions for the current feature set are archived in
 - `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
   noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
   registered entry — used by TCP keepalive; UDP implements as no-op.
-- `eph::dpdk::PlatformConfig` (single-process shape: NIC physical
-  state + optional `max_procs` / `queues_per_proc` / `file_prefix`
-  consumed only by autojoin) — bring-up the DPDK platform.
-  `Platform::create(PlatformConfig)` is single-process only (rejects
-  `max_procs > 1` with a recovery hint pointing at `create_or_join`).
-  `Platform::launch(PlatformConfig, EalConfig, …)` is the one-shot
-  variant that owns EAL too. Multi-process is only via
-  `Platform::create_or_join(CreateOrJoinConfig)`: peers race on
-  `eal_init`, the winner becomes primary and calls the same bring-up
-  internally; losers attach as secondaries (CAS-claim a registry slot,
-  read NIC state from primary's hugepage registry / live device, skip
-  configure/start/stop/close). Hot path is zero-cost: `inc_<M>` /
-  `rr_counter` / `poll` are per-instance/per-process and don't change.
-  `rr_counter` algorithm is `lo + fetch_add % (hi - lo)` reading
-  `Platform::effective_rx_queue_range()` (cold path, single-process
-  default `{0, 0}` resolves to `[0, nb_rx_queues)` — byte-for-byte
-  identical to the pre-MP `% nb_q`). Source-port partitioning across
-  MP processes is the **caller's** responsibility — `eph-net-dpdk`
-  does not auto-allocate src_port and has no global view to enforce
-  disjointness. `eph::dpdk::EalConfig` + `build_eal_argv` is the
-  typed helper for assembling `--proc-type` / `--file-prefix` /
-  `-l` / `-a` argv (the `launch` / `create_or_join` factories inject
-  proc_type and file_prefix automatically). See
-  `eph-net-dpdk/docs/dpdk-multiprocess.md` for startup ordering,
-  partitioning rules, PMD caveats and the orchestrator script. The
-  pre-v3 cooperative path (`Platform::attach` /
-  `PlatformAttachConfig` / declarative-MP `Platform::create` with
-  `max_procs > 1`) was removed in 2026-05-01's reshape — autojoin is
-  the only multi-process surface.
+- DPDK Platform — daemon-led model. Two configs and three factory
+  entries cover every deployment shape:
+  - `eph::dpdk::PlatformConfig` (lean, application-side): `pci` +
+    `queues` + per-process EAL knobs (`pins` / `pin_policy` /
+    `lcores` / `extra_eal_args` / `program_name`). `proc_type=Secondary`,
+    `file_prefix=eph_<sanitize_bdf(pci)>`, and `allowed_devs={pci}` are
+    derived internally — applications never set them. Consumed by
+    `Platform::create(PlatformConfig)`, which attaches as a DPDK
+    secondary to an already-running `eph-nicd` daemon.
+  - `eph::dpdk::NicServiceConfig` (daemon-side): `pci` +
+    `total_queues` + `rss_key` + descriptor / mempool / promiscuous
+    fields + `daemon_lcore`. Consumed by
+    `Platform::serve_nic(NicServiceConfig)` from the `eph-nicd` binary
+    only; tenants must not call `serve_nic`.
+  - `Platform::join()` blocks until SIGTERM/SIGINT — used by the
+    daemon binary to keep the NIC primary alive while secondaries
+    attach.
+  Tenants share the daemon's hugepage segment via DPDK's standard
+  `--proc-type=secondary` mechanism and own a disjoint queue
+  sub-range. Hot path is unchanged: `inc_<M>` / `rr_counter` / `poll`
+  are per-process and never cross the daemon boundary. Source-port
+  partitioning across tenants is the **operator's** responsibility —
+  `eph-net-dpdk` does not auto-allocate src_port and has no global
+  view to enforce disjointness; coordinate via configuration files
+  outside eph. Cross-tenant CPU pinning is also an OS-level concern
+  (systemd Slice / cgroups / taskset) — eph sees only its own
+  process's pin registry. `eph::dpdk::EalConfig` + `build_eal_argv`
+  remain in `eal.hpp` as an internal helper for assembling argv;
+  they are no longer accepted as public factory parameters
+  (`Platform::create` / `serve_nic` derive everything from the lean
+  configs above). The previous autojoin shape
+  (`Platform::create_or_join` / `Platform::launch` /
+  `CreateOrJoinConfig` / kitchen-sink `PlatformConfig` with
+  `max_procs` / `queues_per_proc` / `file_prefix`) was removed in
+  2026-05-02's reshape — see `eph-net-dpdk/CHANGELOG.md` BREAKING
+  entry for the migration table, and
+  `eph-net-dpdk/docs/dpdk-daemon-deployment.md` /
+  `dpdk-multiprocess.md` / `dpdk-reconnect-pattern.md` for the
+  ops / architecture / reconnect stories.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
@@ -411,6 +421,9 @@ DPDK environment setup is via `eph-net-dpdk/scripts/dpdk-setup.sh` and
   multi-connection patterns, heterogeneous `TcpStream + UdpSocket` on one poller
 - `docs/custom-codec.md` — writing a new `StreamCodec` or `DatagramCodec`
 - `docs/dpdk-setup.md` — DPDK hugepages, vfio-pci binding, `eph-net-dpdk` environment
+- `eph-net-dpdk/docs/dpdk-daemon-deployment.md` — `eph-nicd` daemon model: toml schema, systemd, upgrades, security notes
+- `eph-net-dpdk/docs/dpdk-multiprocess.md` — daemon-led multi-process architecture
+- `eph-net-dpdk/docs/dpdk-reconnect-pattern.md` — tenant reconnect template for daemon restarts
 - `docs/latency-benchmark-fairness.md` — why the kernel-vs-DPDK comparison is structured
   the way it is
 - `docs/operations-runbook.md`, `docs/troubleshooting.md`, `docs/production-config.md`
