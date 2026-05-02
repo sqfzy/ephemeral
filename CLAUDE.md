@@ -225,7 +225,11 @@ Two distinct benchmark systems:
    `benchmarks/mockex/mockex` binary (`mockex --scenario <name>` dispatches to
    the handler for `[lat_<name>]`). The mock is **always kernel**, only the
    client side differs between kernel and DPDK, which is what makes the
-   comparison fair. The bench writes no files.
+   comparison fair. Each scenario's run-loop (in
+   `benchmarks/latency/scenarios/lat_<name>_loop.hpp`) writes one (1-leg push:
+   `lat_ex_market`, `lat_ex_market_2p`) or three (echo-RTT scenarios — `rtt`,
+   `tx`, `rx` legs) uniquely-prefixed `Recorder::export_json` files to
+   `benchmarks/latency/outputs/`.
 
    The seven scenarios:
 
