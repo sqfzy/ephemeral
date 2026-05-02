@@ -194,7 +194,7 @@ peer that wins the EAL race reads when bringing up the port.
 | `pins`                       | `std::span<LcorePin const>`   | optional | Typed pin set (mutually exclusive with `lcores`) |
 | `lcores`                     | `std::vector<std::string>`    | optional | Raw `--lcores` spec (mutually exclusive with `pins`) |
 | `pin_policy`                 | `eph::utils::CpuPinPolicy`    | optional | NUMA / IRQ / duplicate-cpu policy (only consulted when `pins` is set) |
-| `eal_extras`                 | `std::vector<std::string>`    | optional | Additional EAL argv tokens |
+| `extra_eal_args`             | `std::vector<std::string>`    | optional | Additional EAL argv tokens |
 | `self_lcore_mask`            | `uint64_t`                    | optional | Lcores this process owns; published into the registry for cross-process conflict detection. 0 = opt out |
 
 `Platform::create_or_join` also carries optional registry checks:

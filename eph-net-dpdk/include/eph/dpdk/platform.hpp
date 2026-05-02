@@ -2673,7 +2673,7 @@ Platform::create_or_join(CreateOrJoinConfig cfg) {
     eal_cfg.file_prefix   = file_prefix;
     eal_cfg.allowed_devs  = {std::string{cfg.pci}};
     eal_cfg.lcores        = cfg.lcores;
-    eal_cfg.extra_args    = cfg.eal_extras;
+    eal_cfg.extra_args    = cfg.extra_eal_args;
 
     // ── 5. EAL init (we do this directly here, not via create_with_eal,
     //                because we need to inspect rte_eal_process_type

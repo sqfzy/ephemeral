@@ -121,7 +121,7 @@ struct CreateOrJoinConfig {
     /// Extra raw EAL argv tokens (e.g. `--log-level=lib.eal:warning`).
     /// Appended verbatim to the assembled argv after the typed
     /// transformations.
-    std::vector<std::string> eal_extras{};
+    std::vector<std::string> extra_eal_args{};
 
     /// Bitmask of EAL lcores **this process** owns (i.e. the lcores
     /// passed via `lcores` / `pins`). Default 0 = opt out of cross-
