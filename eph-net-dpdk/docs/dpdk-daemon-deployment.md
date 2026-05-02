@@ -71,7 +71,14 @@ matches verbatim.
 | `mbuf_pool_size`  | int      | `8191`             | Mempool size; must be `2^n - 1` (e.g. 1023, 4095, 8191, 16383).      |
 | `mbuf_cache_size` | int      | `256`              | Per-lcore cache; must be `< mbuf_pool_size`.                         |
 | `daemon_lcore`    | int      | `0`                | Lcore the daemon's primary process pins to. Pick disjoint from tenant lcore allocations. |
-| `default`         | bool     | `false`            | When `true`, tenants with `cfg.pci=""` resolve here. At most one toml per host should set this. |
+
+**Default-NIC resolution** is scan-based, not toml-driven. When an
+application calls `Platform::create({.pci = ""})`, the library scans
+`/var/run/dpdk/eph_*/eph-pci.txt` for live `eph-nicd` daemons and picks
+the unique one. Single-NIC hosts get a zero-config call site
+(`Platform::create({})`); multi-NIC hosts get a clear error telling the
+operator to specify `.pci` explicitly. The legacy `default = true/false`
+toml flag is rejected by the parser.
 
 > **Note (S4)**: the toml parser is part of S4 of the daemon-led
 > reshape (the `eph-nicd` binary itself). Until S4 lands, the schema

@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added — default-NIC resolution (2026-05-02)
+
+Empty `cfg.pci` in `Platform::create({.pci = ""})` now auto-resolves
+to the unique running `eph-nicd` daemon. Single-NIC hosts get a
+zero-config call site:
+
+```cpp
+auto plat = Platform::create({});  // single NIC + single queue
+```
+
+Mechanism (no new IPC, no toml flag):
+- Daemon writes its BDF to `/var/run/dpdk/<file_prefix>/eph-pci.txt`
+  during `Platform::serve_nic`.
+- `Platform::create` with empty pci scans `/var/run/dpdk/eph_*/eph-pci.txt`,
+  picks the unique entry, derives `file_prefix` from it, attaches.
+- Zero daemons → typed error pointing at `systemctl start eph-nicd@…`.
+- Multiple daemons → typed error listing all BDFs, telling user to
+  specify `.pci` explicitly.
+
+The legacy `default = true/false` toml field is **rejected** by the
+parser with a migration message — single-source-of-truth shifts from a
+declarative flag (which had stale-marker / two-defaults issues) to
+runtime scan (which is automatic and conflict-free).
+
+New header: `eph/dpdk/detail/default_nic_scan.hpp`. New test:
+`tests/test_default_nic_scan.cpp` (12 cases, no DPDK dependency).
+
 ### BREAKING — daemon-led Platform reshape (2026-05-02)
 
 The public `Platform` factory surface has been replaced with a daemon-led

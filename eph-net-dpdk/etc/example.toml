@@ -67,11 +67,12 @@ mbuf_cache_size = 256
 # settings so they don't collide.
 daemon_lcore = 0
 
-# ── Default-NIC marker. ────────────────────────────────────────────────────
-# Default: false. When `true`, this NIC is the implicit default for apps
-# that pass an empty `PlatformConfig::pci`. Only S6 will consume this; S4
-# only parses it (no behavioral effect yet).
+# ── Default-NIC resolution (no toml flag). ────────────────────────────────
+# When an application calls `Platform::create({.pci = ""})` (empty pci),
+# the library scans /var/run/dpdk/eph_*/eph-pci.txt for live eph-nicd
+# daemons and picks the unique one. Single-NIC hosts get a zero-config
+# call site; multi-NIC hosts get a clear error telling the user to
+# specify `.pci` explicitly.
 #
-# At most one toml per host should set `default = true`; the resolver
-# behavior on multiple defaults is unspecified.
-default = false
+# There is no toml flag for this — it's purely runtime-scan based. The
+# legacy `default = true/false` field is now rejected by the parser.

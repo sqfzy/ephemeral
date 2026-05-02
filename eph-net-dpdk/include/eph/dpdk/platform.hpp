@@ -39,6 +39,7 @@
 
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
 #include "eph/dpdk/detail/bdf_sanitize.hpp"     // detail::sanitize_bdf_for_file_prefix
+#include "eph/dpdk/detail/default_nic_scan.hpp"  // default-NIC resolver
 #include "eph/dpdk/detail/icmp_directory.hpp"  // detail::IcmpDirectoryHandle, IPC thunk
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
@@ -2733,19 +2734,30 @@ Platform::create(PlatformConfig cfg) {
             "Platform::create: invalid PlatformConfig: {}", err);
         return std::unexpected(std::string{err});
     }
-    if (cfg.pci.empty()) {
-        // S6 will resolve "default = true" toml automatically; today
-        // the empty path is a hard error so users see a clear signal.
-        SPDLOG_LOGGER_ERROR(log,
-            "Platform::create: pci is empty — automatic default-NIC "
-            "selection from /etc/eph/*.toml is not yet wired (S6); "
-            "supply cfg.pci explicitly for now");
-        return std::unexpected(std::string{
-            "Platform::create: pci must be non-empty (default-NIC "
-            "selection from toml is not yet wired)"});
+    // Resolve default NIC: empty `cfg.pci` means "the only running
+    // eph-nicd daemon on this host". Single-NIC HFT machines get a
+    // zero-config call site (`Platform::create({})`); multi-NIC hosts
+    // get a clear error pointing at the conflict. The lookup is a
+    // pure-IO scan of /var/run/dpdk/eph_*/eph-pci.txt — no IPC, no
+    // DPDK dependency, no toml `default = true` flag.
+    std::string resolved_pci;  // owns the buffer when scan returns one
+    std::string_view effective_pci = cfg.pci;
+    if (effective_pci.empty()) {
+        auto scan_r = detail::find_default_nic_pci();
+        if (!scan_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::create: default-NIC resolution failed: {}",
+                scan_r.error());
+            return std::unexpected(std::move(scan_r.error()));
+        }
+        resolved_pci  = std::move(*scan_r);
+        effective_pci = resolved_pci;
+        SPDLOG_LOGGER_INFO(log,
+            "Platform::create: pci empty — resolved to default NIC "
+            "'{}' (only running eph-nicd daemon)", effective_pci);
     }
 
-    auto fp_r = detail::derive_file_prefix_(cfg.pci);
+    auto fp_r = detail::derive_file_prefix_(effective_pci);
     if (!fp_r) {
         SPDLOG_LOGGER_ERROR(log,
             "Platform::create: {}", fp_r.error());
@@ -2754,7 +2766,7 @@ Platform::create(PlatformConfig cfg) {
     const std::string derived_prefix = std::move(*fp_r);
     SPDLOG_LOGGER_INFO(log,
         "Platform::create: derived file_prefix='{}' from pci='{}', "
-        "queues={}", derived_prefix, cfg.pci, cfg.queues);
+        "queues={}", derived_prefix, effective_pci, cfg.queues);
 
     // ── S6: reconnect-safety preamble ────────────────────────────────
     //
@@ -2787,7 +2799,7 @@ Platform::create(PlatformConfig cfg) {
             "Forcing flag reset to allow this retry to proceed; any "
             "resources the dead Platform leaked stay leaked until process "
             "exit. (file_prefix='{}', pci='{}')",
-            derived_prefix, cfg.pci);
+            derived_prefix, effective_pci);
         eal_initialized_flag().store(false, std::memory_order_release);
         // Best-effort actual cleanup. The contract here is "we must
         // not crash"; rte_eal_cleanup may return non-zero but we
@@ -2819,7 +2831,7 @@ Platform::create(PlatformConfig cfg) {
     eal_cfg.proc_type     = ProcType::Secondary;
     eal_cfg.proc_type_set = true;
     eal_cfg.file_prefix   = derived_prefix;
-    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
+    eal_cfg.allowed_devs  = {std::string{effective_pci}};
     eal_cfg.lcores        = cfg.lcores;
     eal_cfg.extra_args    = cfg.extra_eal_args;
     if (!cfg.pins.empty()) {
@@ -2867,7 +2879,7 @@ Platform::create(PlatformConfig cfg) {
         SPDLOG_LOGGER_ERROR(log,
             "Platform::create: queue claim IPC failed: {} — is the "
             "eph-nicd daemon running on pci='{}'? (file_prefix='{}')",
-            reply_r.error().detail, cfg.pci, derived_prefix);
+            reply_r.error().detail, effective_pci, derived_prefix);
         [[maybe_unused]] bool ok = eal_cleanup();
         return std::unexpected(std::format(
             "Platform::create: queue claim IPC failed: {}",
@@ -2889,7 +2901,7 @@ Platform::create(PlatformConfig cfg) {
     SPDLOG_LOGGER_INFO(log,
         "Platform::create: daemon granted queue range=[{},{}) gen={} "
         "for pci='{}' (requested count={})",
-        granted.lo, granted.hi, granted.generation, cfg.pci, cfg.queues);
+        granted.lo, granted.hi, granted.generation, effective_pci, cfg.queues);
 
     // ── 4. Bring up secondary with the daemon-granted range ─────────
     detail::BringupConfig bcfg = detail::bringup_from_platform_(
@@ -2939,7 +2951,7 @@ Platform::create(PlatformConfig cfg) {
     SPDLOG_LOGGER_INFO(log,
         "Platform::create: ready (pci='{}', file_prefix='{}', "
         "queues=[{},{}) gen={})",
-        cfg.pci, derived_prefix, granted.lo, granted.hi, granted.generation);
+        effective_pci, derived_prefix, granted.lo, granted.hi, granted.generation);
     return plat;
 }
 
@@ -3070,6 +3082,24 @@ Platform::serve_nic(NicServiceConfig cfg) {
             bool(*plat.impl_->queue_claim_action) ? "registered" : "DEGRADED",
             bool(*plat.impl_->queue_release_action) ? "registered" : "DEGRADED",
             bool(*plat.impl_->nicctl_query_action) ? "registered" : "DEGRADED");
+    }
+
+    // ── 4. Announce PCI for default-NIC resolution ──────────────────
+    //
+    // Apps that call Platform::create({.pci=""}) auto-resolve the
+    // default daemon by scanning /var/run/dpdk/eph_*/eph-pci.txt.
+    // Best-effort: write fail just degrades to "must specify .pci
+    // explicitly", not a hard daemon failure.
+    if (auto r = ::eph::dpdk::detail::write_pci_announce_file(
+            derived_prefix, cfg.pci); !r) {
+        SPDLOG_LOGGER_WARN(log,
+            "Platform::serve_nic: pci announce file write failed: {} — "
+            "default-NIC resolution will skip this daemon; apps must "
+            "specify .pci='{}' explicitly", r.error(), cfg.pci);
+    } else {
+        SPDLOG_LOGGER_DEBUG(log,
+            "Platform::serve_nic: pci announce file written "
+            "(file_prefix='{}', pci='{}')", derived_prefix, cfg.pci);
     }
 
     SPDLOG_LOGGER_INFO(log,

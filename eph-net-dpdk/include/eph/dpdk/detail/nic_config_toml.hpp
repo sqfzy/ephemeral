@@ -7,7 +7,7 @@
 ///
 /// @code{.toml}
 /// pci             = "0000:01:00.1"   # required
-/// total_queues    = 16                # default 16
+/// total_queues    = 16                # pool size (default 16)
 /// rss_key         = "auto"            # "auto" = kDefaultRssKey,
 ///                                     #   else 80-hex-char string (40 bytes)
 /// promiscuous     = false             # default false
@@ -16,8 +16,12 @@
 /// mbuf_pool_size  = 8191              # default 8191 (must be 2^n - 1)
 /// mbuf_cache_size = 256               # default 256 (must be < mbuf_pool_size)
 /// daemon_lcore    = 0                 # default 0
-/// default         = false             # marks this NIC as the implicit
-///                                     #   default for apps that omit pci
+///
+/// "Default NIC" resolution (apps calling `Platform::create({})` with empty
+/// pci) does NOT use a toml flag — it works by scanning live daemons at
+/// runtime: the unique running `eph-nicd` is automatically the default.
+/// Multi-NIC hosts must specify `.pci` explicitly. See
+/// `detail/default_nic_scan.hpp`.
 ///                                     #   (S6 wires this in; S4 only parses it)
 /// @endcode
 ///
@@ -87,7 +91,6 @@ parse_rss_key_hex(std::string_view hex) noexcept {
 struct ParsedNicConfig {
     std::string      pci_owned;
     NicServiceConfig cfg;
-    bool             is_default = false;  // toml `default = true` flag
 
     /// Make the view in `cfg.pci` point at our owned buffer. Must be called
     /// after every move/copy that would invalidate the previous string_view.
@@ -247,13 +250,16 @@ parse_nic_toml(std::string_view toml_path) {
         out.cfg.daemon_lcore = static_cast<std::uint16_t>(*v);
     }
 
-    // default — bool, default false. Parsed but not enforced here; S6 wires
-    // the resolution when an app passes empty cfg.pci.
-    if (auto* node = tbl.get("default")) {
-        auto v = node->value<bool>();
-        if (!v) return std::unexpected(
-            std::string{"nic_config_toml: default: expected bool"});
-        out.is_default = *v;
+    // Reject the legacy `default` field so old config files surface a
+    // clear migration error rather than silently taking no effect.
+    // Default-NIC resolution is now scan-based (single live daemon =
+    // default); no toml flag.
+    if (tbl.get("default")) {
+        return std::unexpected(std::string{
+            "nic_config_toml: 'default' field is no longer supported "
+            "— default-NIC resolution is now scan-based (the unique "
+            "running eph-nicd is automatically the default). Remove "
+            "the `default = ...` line from this toml file."});
     }
 
     out.rebind();
@@ -269,9 +275,9 @@ parse_nic_toml(std::string_view toml_path) {
 
     SPDLOG_INFO(
         "nic_config_toml: parsed '{}' → pci='{}', total_queues={}, "
-        "promiscuous={}, daemon_lcore={}, default={}",
+        "promiscuous={}, daemon_lcore={}",
         toml_path, out.pci_owned, out.cfg.total_queues, out.cfg.promiscuous,
-        out.cfg.daemon_lcore, out.is_default);
+        out.cfg.daemon_lcore);
     return out;
 }
 
