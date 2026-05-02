@@ -774,9 +774,20 @@ public:
     /// @return Port ID, or 0 if moved-from.
     [[nodiscard]] uint16_t     port_id()          const noexcept;
 
-    /// @brief Check if the port has been successfully started.
+    /// @brief True iff `rte_eth_dev_start` has been called and not yet
+    /// undone — the underlying NIC port is currently up and processing
+    /// bursts. Cold getter; safe on moved-from instances (returns
+    /// false). The flag is set by `primary_bringup_` after a successful
+    /// `rte_eth_dev_start` and cleared by `~Impl` on `rte_eth_dev_stop`.
+    /// Secondaries inherit the primary's running state without
+    /// re-issuing `dev_start` themselves.
     [[nodiscard]] bool         is_running()       const noexcept;
-    /// Returns true if promiscuous mode was requested AND successfully enabled.
+    /// @brief True iff promiscuous mode was requested
+    /// (`PlatformConfig::enable_promiscuous == true`) AND
+    /// `rte_eth_promiscuous_enable` returned success during bring-up.
+    /// The two-step contract avoids reporting "promiscuous" on PMDs
+    /// that silently no-op the request. Cold getter; safe on moved-from
+    /// instances (returns false).
     [[nodiscard]] bool         is_promiscuous()   const noexcept;
 
     /// @brief Effective strict-RX-checksum mode (TD-2). Returns true
