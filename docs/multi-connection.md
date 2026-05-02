@@ -171,7 +171,7 @@ directly.
 | Role | Where | Typical core |
 |---|---|---|
 | OS / housekeeping | any | 0 |
-| Poller thread(s) | `std::thread` for kernel; an EAL lcore (`rte_eal_remote_launch` / `EalGuard::init_with_pins`) for DPDK | isolated cores (e.g. 2–3) |
+| Poller thread(s) | `std::thread` for kernel; an EAL lcore (`rte_eal_remote_launch` / `EalGuard::init` typed-pin overload) for DPDK | isolated cores (e.g. 2–3) |
 | Application logic | `std::thread` consuming from queue | isolated cores (e.g. 4–5) |
 
 Use `isolcpus=2-5` at boot and `eph::utils::pin_thread(cpu, name, policy)`
@@ -203,4 +203,5 @@ user type with `push_counter` / `push_gauge` / `push_histogram` /
 - `eph-utils/benchmarks/bench_cpu.cpp` — measured cost of `pin_thread`
   + the registry's collision-detection fast path
 - `eph-net-dpdk/docs/lcore-pin-integration.md` — the typed lcore→cpu
-  pin path (`LcorePin` / `EalGuard::init_with_pins`) for DPDK builds
+  pin path (`LcorePin` / `EalGuard::init` typed-pin overload) for
+  DPDK builds

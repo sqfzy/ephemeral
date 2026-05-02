@@ -8,11 +8,10 @@
 /// runtime side-effects. Running them safely coexists with another DPDK
 /// process holding hugepages on the host.
 ///
-/// The pre-existing tests for the EAL plumbing (`test_platform_create_
-/// with_eal`, `test_eal_init_with_pins`) all require a real EAL bring-up
-/// and so are gated behind hugepage / vfio-pci availability. This file
-/// fills the gap by pinning the argv-shape contract that those tests
-/// depend on.
+/// The pre-existing tests for the EAL plumbing (`test_platform_launch`,
+/// `test_eal_init_with_pins`) all require a real EAL bring-up and so are
+/// gated behind hugepage / vfio-pci availability. This file fills the
+/// gap by pinning the argv-shape contract that those tests depend on.
 
 #include <algorithm>
 #include <string>
@@ -246,4 +245,80 @@ TEST(BuildEalArgv, FullCompositionOrderingPreserved) {
     EXPECT_LT(i_fp,   i_l);
     EXPECT_LT(i_l,    i_a);
     EXPECT_LT(i_a,    i_ex);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boundary / negative cases.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(BuildEalArgv, EmptyLcoresAndAllowedDevsEmitNoPrefixes) {
+    // Empty containers must not emit dangling `-l` / `-a` flags.
+    // build_eal_argv loops `for (... : cfg.lcores)` and the same for
+    // allowed_devs, so a stray default-constructed entry would surface
+    // as a `-l ""` (a literal empty value EAL would reject as bad
+    // syntax). This pins that the default container is genuinely empty.
+    EalConfig cfg{};
+    cfg.program_name = "x";
+    auto argv = build_eal_argv(cfg);
+
+    EXPECT_FALSE(contains(argv, "-l"));
+    EXPECT_FALSE(contains(argv, "-a"));
+    EXPECT_FALSE(contains(argv, ""));
+}
+
+TEST(BuildEalArgv, FilePrefixPreservesSpecialCharactersVerbatim) {
+    // EAL --file-prefix is an opaque memzone-name fragment from DPDK's
+    // POV; the typed config layer must not normalize / sanitize it.
+    // Verify three classes of "special" content survive untouched:
+    //   1) embedded '/' (path-like) — DPDK rejects, but it's the user's
+    //      responsibility to provide a valid prefix; build_eal_argv
+    //      isn't a validator.
+    //   2) embedded space — DPDK's argv splitter tokenizes on argv
+    //      boundaries (NOT internal whitespace) so this round-trips.
+    //   3) embedded '=' — distinct from `--file-prefix=foo` because
+    //      build_eal_argv emits the two-token form unconditionally.
+    for (const std::string fp : {"path/with/slash",
+                                  "name with space",
+                                  "k=v=k"}) {
+        EalConfig cfg{};
+        cfg.program_name = "x";
+        cfg.file_prefix  = fp;
+        auto argv = build_eal_argv(cfg);
+
+        int idx = index_of(argv, "--file-prefix");
+        ASSERT_GE(idx, 0) << "fp='" << fp << "' missing --file-prefix flag";
+        ASSERT_LT(idx + 1, static_cast<int>(argv.size()));
+        EXPECT_EQ(argv[idx + 1], fp)
+            << "fp='" << fp << "' was not preserved verbatim";
+    }
+}
+
+TEST(BuildEalArgv, ExtraArgsAppendedInGivenOrderAfterAllStructuredFlags) {
+    // Multiple extra_args entries must appear in user-supplied order
+    // (a downstream EAL parser may treat first-wins or last-wins for
+    // duplicate flags; either way, the typed layer's contract is to
+    // not silently reorder).
+    EalConfig cfg{};
+    cfg.program_name = "x";
+    cfg.lcores       = {"0"};
+    cfg.allowed_devs = {"00:01.0"};
+    cfg.extra_args   = {"--first", "--second", "--third"};
+    auto argv = build_eal_argv(cfg);
+
+    int i_first  = index_of(argv, "--first");
+    int i_second = index_of(argv, "--second");
+    int i_third  = index_of(argv, "--third");
+    ASSERT_GE(i_first,  0);
+    ASSERT_GE(i_second, 0);
+    ASSERT_GE(i_third,  0);
+    EXPECT_LT(i_first, i_second);
+    EXPECT_LT(i_second, i_third);
+
+    // And every extra_arg must be after the structured `-l` / `-a` block.
+    int i_l = index_of(argv, "-l");
+    int i_a = index_of(argv, "-a");
+    ASSERT_GE(i_l, 0);
+    ASSERT_GE(i_a, 0);
+    EXPECT_LT(i_l, i_first);
+    EXPECT_LT(i_a, i_first);
 }

@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Tests — symmetric concept conformance for WS / Mold64 codecs
+
+Mirrors a parallel commit on the DPDK backend. The kernel-side
+test files only compile-asserted concept conformance for the
+`RawStreamCodec` / `RawDatagramCodec` instantiations, leaving
+the production-canonical WS variant (binance / okx / coinbase
+WS feeds, per CLAUDE.md) and the multi-frame Mold64Codec
+example (Nasdaq ITCH over MoldUDP64) without compile-time
+contract pins.
+
+  * `tests/test_kernel_tcp_stream.cpp` adds `static_assert`s for
+    `KernelTcpStream<WsCodec, false/true>` on Pollable / Stream /
+    KernelPollable, plus the `CodecType` associated-type echo.
+  * `tests/test_kernel_udp_socket.cpp` adds the same set of
+    asserts for `KernelUdpSocket<Mold64Codec>`.
+
+Pure additive — runtime tests are unchanged (8/8 + 12/12 PASS).
+No public surface motion.
+
 ### Fixed — silent-error-log audit (batches 14-20)
 
 Cold-path / control-plane functions previously returned typed errors

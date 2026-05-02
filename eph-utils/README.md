@@ -179,7 +179,7 @@ cpu doesn't have active IRQs in `/proc/interrupts`. Relaxed with
 policy" case.
 
 **For DPDK EAL lcore threads, use `eph::dpdk::pin_lcore` /
-`pin_lcores` / `EalGuard::init_with_pins` (in `eph-net-dpdk/include/
+`pin_lcores` / `EalGuard::init` (in `eph-net-dpdk/include/
 eph/dpdk/lcore_pin.hpp`) instead** — worker lcores are spawned *inside*
 `rte_eal_init`, so the right pattern is "register the cpu pre-EAL, let
 EAL do the actual setaffinity from `--lcores=N@cpu`". The dpdk path

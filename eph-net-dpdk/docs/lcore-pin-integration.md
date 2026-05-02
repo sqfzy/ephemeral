@@ -1,7 +1,7 @@
 # EAL lcore × `pin_thread` integration
 
 Why DPDK lcore pinning needs to talk to `eph::utils::pin_thread`, and how the
-new `LcorePin` / `register_lcore_pins` / `EalGuard::init_with_pins` API
+new `LcorePin` / `register_lcore_pins` / `EalGuard::init` API
 makes that conversation safe.
 
 ## The problem
@@ -39,7 +39,7 @@ std::array pins = {
     eph::dpdk::LcorePin{0, 4, "rx-worker"},
     eph::dpdk::LcorePin{1, 5, "tx-worker"},
 };
-auto eal = eph::dpdk::EalGuard::init_with_pins(cfg, pins, strict_policy());
+auto eal = eph::dpdk::EalGuard::init(cfg, pins, strict_policy());
 if (!eal) { SPDLOG_ERROR("{}", eal.error()); return 1; }
 
 // Anywhere later — pin_thread now sees lcore-0 / lcore-1's cpus.
@@ -48,7 +48,7 @@ eph::utils::pin_thread(6, "trader", strict_policy());
 ```
 
 `LcorePin` is the typed replacement for the raw `EalConfig::lcores`
-strings. `init_with_pins` runs four steps in order:
+strings. `init` runs four steps in order:
 
 ```
 register_lcore_pins(pins, policy)   ← pre-EAL: SMT/NUMA/IRQ check +
@@ -64,7 +64,7 @@ pre-EAL validation rejects.
 
 ## Destruction order
 
-`EalGuard` from `init_with_pins` owns a `RegisteredLcoreGuard` field.
+`EalGuard` from `init` owns a `RegisteredLcoreGuard` field.
 When the guard goes out of scope:
 
 ```
@@ -87,7 +87,8 @@ destroyed.
 | `build_lcore_argv` | `eph/dpdk/lcore_pin.hpp` | pure: span of pins → `--lcores=0@4,1@5` |
 | `register_lcore_pins` | `eph/dpdk/lcore_pin.hpp` | pre-EAL validate + register; returns RAII guard |
 | `RegisteredLcoreGuard` | `eph/dpdk/lcore_pin.hpp` | move-only RAII; destructor unregisters owned cpus |
-| `EalGuard::init_with_pins` | `eph/dpdk/eal.hpp` | one-call: register → build argv → eal_init |
+| `EalGuard::init` | `eph/dpdk/eal.hpp` | one-call: register → build argv → eal_init (typed-pin overload) |
+| `EalGuard::init_raw` | `eph/dpdk/eal.hpp` | escape hatch: raw `(int argc, char** argv)` for `EalConfig::lcores` etc. |
 | `register_external_pin` | `eph/utils/cpu.hpp` | low-level: any non-`pin_thread` mechanism declares a cpu occupation |
 | `unregister_external_pin` | `eph/utils/cpu.hpp` | release a cpu from the registry |
 | `is_cpu_externally_pinned` | `eph/utils/cpu.hpp` | query |
@@ -103,9 +104,9 @@ The legacy raw paths still work for cases the typed API can't express:
 
 Rules:
 
-* `EalConfig::lcores` and `init_with_pins(pins=...)` are **mutually
+* `EalConfig::lcores` and `init(pins=...)` are **mutually
   exclusive** in a single call. If both are non-empty,
-  `init_with_pins` returns `unexpected` with a configuration-error
+  `init` returns `unexpected` with a configuration-error
   message and does not touch DPDK.
 * Cpus claimed via the raw escape hatch are **invisible** to
   `g_pinned_cpus`. `pin_thread` cannot detect SMT / NUMA conflicts

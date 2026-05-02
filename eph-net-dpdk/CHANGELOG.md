@@ -2,6 +2,122 @@
 
 ## [Unreleased]
 
+### Tests / Observability — post-rename audit follow-ups (non-BREAKING)
+
+Second-pass cleanup after the Tier-3 naming audit and the
+post-rename docs sweep:
+
+  * `eph/dpdk/platform.hpp` Doxygen + log-string scrub: 4
+    Doxygen field comments and 11 SPDLOG strings inside
+    `primary_bringup_` / `secondary_bringup_` referenced the
+    deleted public symbols `Platform::create_primary` /
+    `Platform::create_secondary` (so log output users grepped
+    for them found a function that no longer exists). Comments
+    now point at `Platform::create_or_join` + the impl_ helpers;
+    log strings are tagged with the actual function name.
+  * `eph/net/dpdk/flow_steering.hpp` — same scrub on the two
+    Doxygen comments documenting `g_active_remote_flow_rules`
+    setter (now `Platform::primary_bringup_`).
+  * `eph/dpdk/eal.hpp` — `eal_init` now emits `SPDLOG_LOGGER_ERROR`
+    with argc / ret / rte_errno / rte_strerror context before
+    returning `unexpected`. Operators reading test-harness output
+    that drops the returned `expected` on the floor previously had
+    no diagnostic on EAL init failure. Cold path; only fires once
+    per process at most.
+  * `examples/dpdk_multicast_md.cpp` / `dpdk_rss_demo.cpp` /
+    `multi_port_platform_demo.cpp` — log labels still said
+    `is_rss_active=...` even though the printed value was
+    `dispatch_mode() == RxDispatchMode::RssPartitioned`. Renamed
+    the labels to `dispatch_mode==RssPartitioned=...` so log
+    output matches the actual API surface.
+  * `benchmarks/latency/config.toml` / `eph-utils/README.md` —
+    two stragglers from the `init_with_pins → init` rename now
+    spell `EalGuard::init`.
+
+Test additions (concept conformance and boundary coverage):
+
+  * `tests/test_dpdk_tcp_stream.cpp` —
+    `static_assert`s for `DpdkTcpStream<WsCodec, false/true>` on
+    Pollable / Stream / DpdkPollable. WS-over-TCP (with optional
+    TLS) is the production-canonical shape for HFT exchange WS
+    feeds (binance / okx / coinbase) and previously was only
+    exercised via `tests/integration/test_dpdk_e2e` (NIC-bound,
+    SKIPs without vfio-pci).
+  * `tests/test_dpdk_udp_socket.cpp` —
+    `static_assert`s for `DpdkUdpSocket<Mold64Codec>`. Mold64Codec
+    is the canonical multi-frame DatagramCodec; pinning concept
+    conformance prevents a future tweak from breaking the
+    `template<class PacketView> decode(...)` template instantiation
+    path silently.
+  * `tests/test_eal_config_argv.cpp` — three boundary cases for
+    `build_eal_argv`: empty `lcores` / `allowed_devs` don't emit
+    dangling prefixes; `file_prefix` round-trips embedded `/`
+    space `=` verbatim (the typed layer is not a sanitizer);
+    multiple `extra_args` preserve user-supplied order and stay
+    after the structured -l / -a block.
+  * `tests/test_lcore_pin.cpp` — two empty-input boundary cases
+    for `parse_pin_spec` (`""` and `"="`).
+
+Symmetric coverage on the kernel backend (post-rename audit was
+DPDK-only, but `eph::net::Stream<KernelTcpStream<WsCodec, …>>`
+deserves the same compile-time pin):
+
+  * `eph-net-kernel/tests/test_kernel_tcp_stream.cpp` —
+    `static_assert`s for `KernelTcpStream<WsCodec, false/true>`.
+  * `eph-net-kernel/tests/test_kernel_udp_socket.cpp` —
+    `static_assert`s for `KernelUdpSocket<Mold64Codec>`.
+
+No code, signatures, or behaviour changed (other than the new
+ERROR-level log line on EAL init failure).
+
+### Docs — post-rename audit sweep (non-BREAKING)
+
+After the Tier-1 / Tier-2 / Tier-3 naming-audit renames landed, a
+sweep of the prose / Doxygen / example / xmake-comment surface
+caught references to symbols that no longer exist. None affect
+build behaviour; following the stale paragraphs verbatim was the
+problem (e.g. README's MP table named `Platform::attach`,
+`PlatformAttachConfig`, `PlatformConfigV3` — all deleted, all
+producing compile errors). Migrated:
+
+  * README.md / summary.md / docs/ONBOARDING.md — replaced the v2/v3
+    MP factory table with the actual `create` / `launch` /
+    `create_or_join` triple; rewrote the `PlatformConfig` schema
+    listing to match the current header (drops `proc_type` /
+    `rx_queue_range`, adds `max_procs` / `queues_per_proc`).
+  * docs/lcore-pin-integration.md / docs/dpdk-multiprocess.md —
+    `EalGuard::init_with_pins` → `init`; added an
+    `EalGuard::init_raw` row to the API-at-a-glance table.
+  * docs/multi-connection.md (root) — same `init` rename in the
+    "thread layout" + "see also" sections.
+  * Doxygen on `Platform::is_secondary` / `is_multi_process` /
+    `port_range` — replaced "created via `Platform::create_secondary`"
+    framings with "resolved to secondary role via autojoin"
+    framings, and similar for the other two getters.
+  * Internal `detail::MpRegistryHandle::create_primary` /
+    `attach_secondary` Doxygen — point "Called by ..." at the actual
+    callers (`Platform::primary_bringup_` / `secondary_bringup_`)
+    rather than the removed public factories.
+  * `eph-net-dpdk/include/eph/dpdk/mp_topology.hpp` end-of-struct
+    comment — describes MpTopology's actual current role (autojoin
+    bring-up + deprecated `PlatformConfig::mp_topology` field) instead
+    of the deleted `pcfg_template` / `create_primary` /
+    `create_secondary` triple.
+  * `eph-net-dpdk/xmake.lua` — comment above the
+    `test_eal_init_with_pins` target now explicitly notes the file
+    name was retained for git-history continuity.
+  * `examples/dpdk_mp_demo.cpp` / `dpdk_multicast_md.cpp` /
+    `dpdk_rss_demo.cpp` file headers — example bodies were already
+    correct; only the descriptive prose mentioned the removed
+    factories. `dpdk_mp_demo.cpp` had a particularly misleading
+    sentence that conflated `Platform::launch` (which still exists
+    for single-process) with the removed cooperative `attach_with_eal`.
+
+No code, signatures, or behaviour changed. The remaining rename
+references in the tree are intentional history pointers (CHANGELOG,
+the file `tests/integration/test_eal_init_with_pins.cpp` and its
+matching xmake target name).
+
 ### Changed — Tier-3 naming audit follow-ups (BREAKING)
 
 Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 3 (nits),

@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "eph/codec/raw_stream_codec.hpp"
@@ -37,6 +38,12 @@ namespace en = eph::net;
 
 using PlainRawStream = ek::KernelTcpStream<eph::codec::RawStreamCodec, false>;
 using TlsRawStream   = ek::KernelTcpStream<eph::codec::RawStreamCodec, true>;
+// WS variants are the production-canonical shape for HFT exchange WS feeds
+// (binance / okx / coinbase per CLAUDE.md). Mirror the Raw concept asserts
+// so the kernel backend's WsCodec template instantiation is also locked
+// to the public Stream contract at compile time.
+using PlainWsStream  = ek::KernelTcpStream<eph::codec::WsCodec, false>;
+using TlsWsStream    = ek::KernelTcpStream<eph::codec::WsCodec, true>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -54,6 +61,20 @@ static_assert(eph::net::Stream<TlsRawStream>,
               "KernelTcpStream<RawStreamCodec,true> must be Stream");
 static_assert(eph::net::kernel::KernelPollable<TlsRawStream>,
               "KernelTcpStream<RawStreamCodec,true> must be KernelPollable");
+static_assert(eph::net::Pollable<PlainWsStream>,
+              "KernelTcpStream<WsCodec,false> must be Pollable");
+static_assert(eph::net::Stream<PlainWsStream>,
+              "KernelTcpStream<WsCodec,false> must be Stream");
+static_assert(eph::net::kernel::KernelPollable<PlainWsStream>,
+              "KernelTcpStream<WsCodec,false> must be KernelPollable");
+static_assert(eph::net::Pollable<TlsWsStream>,
+              "KernelTcpStream<WsCodec,true> must be Pollable");
+static_assert(eph::net::Stream<TlsWsStream>,
+              "KernelTcpStream<WsCodec,true> must be Stream");
+static_assert(eph::net::kernel::KernelPollable<TlsWsStream>,
+              "KernelTcpStream<WsCodec,true> must be KernelPollable");
+static_assert(std::is_same_v<PlainWsStream::CodecType, eph::codec::WsCodec>);
+static_assert(std::is_same_v<TlsWsStream::CodecType,   eph::codec::WsCodec>);
 
 // ---------------------------------------------------------------------------
 // In-process TCP echo helper (same idea as test_byte_socket.cpp)

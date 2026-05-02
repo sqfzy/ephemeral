@@ -184,6 +184,26 @@ TEST(ParsePinSpec, ResultFeedsBuildLcoreArgv) {
               "--lcores=0@4");
 }
 
+TEST(ParsePinSpec, EmptyStringRejected) {
+    // The first guard in parse_pin_spec is `eq == npos` — an empty
+    // input has no '=' so it falls through that branch with the
+    // generic "expected 'lcore=cpu[:role]'" diagnostic. Pin this so a
+    // future refactor that special-cases empty (e.g. returning a
+    // default-constructed LcorePin) doesn't slip past unnoticed.
+    auto r = parse_pin_spec("");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().find("expected 'lcore=cpu[:role]'"), std::string::npos)
+        << r.error();
+}
+
+TEST(ParsePinSpec, EqualsOnlyRejected) {
+    // "=" alone — the first guard checks `eq == 0` (lcore half empty).
+    // Distinct from "" because the search succeeds.
+    auto r = parse_pin_spec("=");
+    ASSERT_FALSE(r.has_value());
+}
+
+
 // ──────────────────────────────────────────────────────────────────────
 // pin_lcore (single) / pin_lcores (batch)
 // ──────────────────────────────────────────────────────────────────────

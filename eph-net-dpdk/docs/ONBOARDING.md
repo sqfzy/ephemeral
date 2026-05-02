@@ -35,13 +35,18 @@ Read the code in this order:
 7. `include/eph/dpdk/*` — internal detail only if you're debugging the TCP
    state machine or adding ARP / DNS / flow steering support.
 8. `include/eph/dpdk/platform.hpp` — bottom of the file has the
-   multi-process section (`ProcType`, `PlatformConfig::proc_type /
-   file_prefix / rx_queue_range`, and the `create_primary` /
-   `create_secondary` factories). `create_secondary` runs
-   `validate_config` plus the secondary-only contract (non-empty
-   `file_prefix`, `rte_eth_dev_is_valid_port`), then attaches via
-   `rte_mempool_lookup` and skips the primary-only port-bringup path.
-   `ProcType` and its `to_eal_string` serializer live in
+   multi-process section. The only public MP entry point is
+   `Platform::create_or_join(CreateOrJoinConfig)` (see
+   `include/eph/dpdk/create_or_join.hpp`): peers race on EAL init,
+   the winner becomes primary and runs the internal
+   `primary_bringup_()` helper (configure / start the port, build
+   the mempool, write the registry), losers attach as secondaries
+   via `secondary_bringup_()` (CAS-claim a registry slot, look up
+   the primary's mempool by name, skip configure/start/stop/close).
+   Single-process callers use `Platform::create(PlatformConfig)`
+   (rejects `max_procs > 1`) or the one-shot
+   `Platform::launch(PlatformConfig, EalConfig, …)` that owns EAL
+   too. `ProcType` and its `to_eal_string` serializer live in
    `include/eph/dpdk/proc_type.hpp` so `platform.hpp` and `eal.hpp`
    share one source of truth.
 
@@ -112,55 +117,46 @@ the stream owns the rule's lifetime. Unit tests are in
 
 ### Running as a DPDK secondary process
 
-Single-NIC multi-process setups let two processes share one port's mempool
-via the DPDK `--proc-type=secondary` mechanism. `Platform::create_secondary`
-enforces the secondary contract synchronously and then performs the real
-shared-mempool attach:
+Single-NIC multi-process setups let N processes share one port's mempool
+via the DPDK `--proc-type=secondary` mechanism. The only public entry
+point is `Platform::create_or_join(CreateOrJoinConfig)` — peers race
+on EAL init, the winner runs the primary bring-up and writes a shared
+hugepage registry, the rest attach as secondaries by reading that
+registry:
 
 ```cpp
-// Recommended path: declare an MpTopology, let the library derive
-// rx_queue_range / src_port windows and cross-validate via the shared
-// hugepage registry. Two numbers per process — no other coordination.
-eph::dpdk::PlatformConfig cfg{
-    .port_id      = 0,
-    .nb_rx_queues = 4,
-    .proc_type    = eph::dpdk::ProcType::Secondary,   // or use create_secondary
-    .file_prefix  = "hft_app",                         // must match primary's EAL --file-prefix
-    .mp_topology  = eph::dpdk::MpTopology::uniform(
-                        /*self_index=*/1, /*total_procs=*/2,
-                        /*nb_rx_queues=*/4),
+// Zero-coordination path: every peer issues the SAME call. The library
+// resolves primary-vs-secondary post-EAL via rte_eal_process_type().
+eph::dpdk::CreateOrJoinConfig cfg{
+    .nic = eph::dpdk::PlatformConfig{
+        .port_id      = 0,
+        .nb_rx_queues = 4,
+        .file_prefix  = "hft_app",
+        // max_procs / queues_per_proc / file_prefix are read by the
+        // autojoin race when this peer resolves to primary.
+        .max_procs        = 2,
+        .queues_per_proc  = 2,
+    },
+    .extra_eal_args = {},   // optional: passthrough EAL flags
 };
-auto plat = eph::dpdk::Platform::create_secondary(std::move(cfg));
-
-// Legacy hand-partitioned alternative (mp_topology empty, manual
-// rx_queue_range — see "Advanced usage" in dpdk-multiprocess.md):
-//   .rx_queue_range = {2, 4},   // disjoint from primary's [0, 2)
+auto plat = eph::dpdk::Platform::create_or_join(std::move(cfg));
 ```
 
-`create_secondary` runs `validate_config` (which polices
-`rx_queue_range`: either the `{0,0}` full-range sentinel or a non-empty
-sub-range bounded by `nb_rx_queues`) and the secondary-only checks
-(non-empty `file_prefix`, `rte_eth_dev_is_valid_port`). It then calls
-`rte_mempool_lookup("eph_mbuf_p<port>")` and skips
-`rte_eth_dev_configure / rx_queue_setup / configure_rss / dev_start`
-entirely — those are primary-only. Primary callers should use
-`create_primary` for symmetry and call-site clarity.
+The winner runs `primary_bringup_()` internally (validate config,
+`rte_eth_dev_configure / rx_queue_setup / configure_rss / dev_start`,
+build the mempool named `eph_mbuf_p<port>`, publish to the registry).
+Losers run `secondary_bringup_()` (CAS-claim a registry slot, read NIC
+state from primary's hugepage registry / live device, skip
+configure/start/stop/close, attach via `rte_mempool_lookup`).
 
-Source-port partitioning across MP processes:
-
-  * **With `mp_topology` set + `Stream::create_and_attach` /
-    `Socket::create_and_attach`** — the library auto-narrows
-    `find_src_port_for_queue`'s search to this process's
-    `MpTopology::self().port_lo / port_hi` window via
-    `Platform::self_port_range()`. Primary and secondary draw from
-    disjoint segments without manual coordination.
-  * **Without `mp_topology` (legacy / manual partition path)** — the
-    caller is responsible: allocate disjoint sub-ranges per process
-    via `cfg.dpdk.wire.tuple.src_port` (TCP) or
-    `cfg.dpdk.wire.src_port` (UDP — UDP now mirrors TCP's
-    `dpdk` substruct shape post Tier-1 audit follow-up).
-    `eph-net-dpdk` has no global view to enforce disjointness on this
-    path.
+Source-port partitioning across MP processes is the **caller's**
+responsibility — `eph-net-dpdk` does not auto-allocate src_port and has
+no global view to enforce disjointness. Allocate disjoint sub-ranges
+per process via `cfg.dpdk.wire.tuple.src_port` (TCP) or
+`cfg.dpdk.wire.src_port` (UDP — UDP mirrors TCP's `dpdk` substruct
+shape post Tier-1 audit follow-up). Read your peer's port window from
+`Platform::port_range()` and use it to clamp your application-side
+allocator.
 
 See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
 1+N partitioning table, PMD caveats, and the orchestrator script;

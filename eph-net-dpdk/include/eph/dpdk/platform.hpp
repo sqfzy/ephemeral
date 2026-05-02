@@ -323,15 +323,17 @@ struct BringupConfig {
     // `pool_lcore_hint` keep using the shared pool.
     uint16_t per_lcore_pools = 0;
 
-    // ── Auto-derived MP layout (recommended path) ───────────────────────
+    // ── Auto-derived MP layout (internal autojoin path) ─────────────────
     //
     // When set, the library treats this as the source of truth for
-    // multi-process resource allocation: `Platform::create_primary` /
-    // `create_secondary` derive the effective `rx_queue_range` from
-    // `mp_topology->self()`, register the topology in a shared hugepage
-    // memzone (`detail::MpRegistry`) so cross-process disjointness is
-    // enforced rather than trusted, and constrain the stream creators'
-    // src_port search range to the self spec's `[port_lo, port_hi)`.
+    // multi-process resource allocation: the internal bring-up helpers
+    // `Platform::primary_bringup_` / `secondary_bringup_` (invoked by
+    // `Platform::create_or_join` once the EAL race resolves the role)
+    // derive the effective `rx_queue_range` from `mp_topology->self()`,
+    // register the topology in a shared hugepage memzone
+    // (`detail::MpRegistry`) so cross-process disjointness is enforced
+    // rather than trusted, and constrain the stream creators' src_port
+    // search range to the self spec's `[port_lo, port_hi)`.
     //
     // Mutually exclusive with a hand-set `rx_queue_range != {0,0}`:
     // `validate_config` rejects the combination so the caller can't
@@ -772,9 +774,20 @@ public:
     /// @return Port ID, or 0 if moved-from.
     [[nodiscard]] uint16_t     port_id()          const noexcept;
 
-    /// @brief Check if the port has been successfully started.
+    /// @brief True iff `rte_eth_dev_start` has been called and not yet
+    /// undone — the underlying NIC port is currently up and processing
+    /// bursts. Cold getter; safe on moved-from instances (returns
+    /// false). The flag is set by `primary_bringup_` after a successful
+    /// `rte_eth_dev_start` and cleared by `~Impl` on `rte_eth_dev_stop`.
+    /// Secondaries inherit the primary's running state without
+    /// re-issuing `dev_start` themselves.
     [[nodiscard]] bool         is_running()       const noexcept;
-    /// Returns true if promiscuous mode was requested AND successfully enabled.
+    /// @brief True iff promiscuous mode was requested
+    /// (`PlatformConfig::enable_promiscuous == true`) AND
+    /// `rte_eth_promiscuous_enable` returned success during bring-up.
+    /// The two-step contract avoids reporting "promiscuous" on PMDs
+    /// that silently no-op the request. Cold getter; safe on moved-from
+    /// instances (returns false).
     [[nodiscard]] bool         is_promiscuous()   const noexcept;
 
     /// @brief Effective strict-RX-checksum mode (TD-2). Returns true
@@ -822,16 +835,21 @@ public:
     [[nodiscard]] std::pair<uint16_t, uint16_t>
     effective_rx_queue_range() const noexcept;
 
-    // ── Auto-derived MP layout (mp_topology-driven) ──────────────────────
+    // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
-    /// @brief True iff this Platform was created with a populated
-    /// `cfg.mp_topology` and successfully attached to (primary) /
-    /// looked up (secondary) the cross-process registry. Cold getter,
-    /// safe on moved-from instances (returns false).
+    /// @brief True iff this Platform participates in an active
+    /// multi-process group — typically because it was created via
+    /// `Platform::create_or_join` (autojoin) and the registry now has
+    /// at least one peer slot, or because the internal `mp_topology`
+    /// machinery was driven directly by an internal helper. Cold
+    /// getter, safe on moved-from instances (returns false). Returns
+    /// false on single-process Platforms produced by
+    /// `Platform::create` / `launch`.
     [[nodiscard]] bool is_multi_process() const noexcept;
 
     /// @brief This process's `[port_lo, port_hi)` src_port window when
-    /// `mp_topology` is in effect; `std::nullopt` otherwise. Stream
+    /// the multi-process topology has been resolved (autojoin or the
+    /// internal `mp_topology` path); `std::nullopt` otherwise. Stream
     /// `create_and_attach` consults this to constrain
     /// `find_src_port_for_queue`'s search range — letting the library
     /// auto-pick a non-colliding ephemeral src_port instead of asking
@@ -840,12 +858,16 @@ public:
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
     port_range() const noexcept;
 
-    /// @brief True iff this Platform was created via
-    /// `Platform::create_secondary` (i.e. `cfg.proc_type ==
-    /// ProcType::Secondary`). Cold getter consumed by
-    /// `Stream::create_and_attach` to gate the FlowDir IPC-fallback
-    /// path: only secondaries hit `eph_fd_install` after a local
-    /// `rte_flow_create` rejection. Returns false on moved-from.
+    /// @brief True iff this Platform resolved to the secondary role —
+    /// either because `Platform::create_or_join` lost the EAL race
+    /// (autojoin path), or because the internal `secondary_bringup_`
+    /// helper was invoked directly. Equivalent to
+    /// `rte_eal_process_type() == RTE_PROC_SECONDARY` for live
+    /// Platforms. Cold getter consumed by `Stream::create_and_attach`
+    /// to gate the FlowDir IPC-fallback path: only secondaries hit
+    /// `eph_fd_install` after a local `rte_flow_create` rejection.
+    /// Returns false on single-process Platforms and on moved-from
+    /// instances.
     [[nodiscard]] bool is_secondary() const noexcept;
 
     /// @brief Register a per-queue Poller. Intended to be called once per
@@ -1035,8 +1057,10 @@ struct Platform::Impl {
     static constexpr std::size_t kMaxPools = 256;
 
     /// @brief Cross-process MP registry attachment, populated by
-    /// `Platform::create_primary` / `create_secondary` when the caller
-    /// supplied `cfg.mp_topology`. Held in `std::optional` so the
+    /// `Platform::create_or_join` (which dispatches to
+    /// `primary_bringup_` / `secondary_bringup_` internally) when the
+    /// resolved `BringupConfig` carries an `mp_topology`. Held in
+    /// `std::optional` so the
     /// non-MP path leaves it empty without paying the (still small)
     /// cost of a default-constructed handle. **Declared before every
     /// other DPDK-resource-owning field** so it outlives them on
@@ -1080,9 +1104,11 @@ struct Platform::Impl {
     ::eph::net::dpdk::detail::RemoteFlowRulesMap remote_flow_rules;
 
     /// @brief RAII handle for the `eph_fd_install` action. Registered
-    /// only on primary (via `Platform::create_primary` when
-    /// mp_topology + IPC handler bring-up both succeed). Secondary
-    /// never registers this — it is only the requester side.
+    /// only on primary (via `primary_bringup_`, the impl_ method that
+    /// `Platform::create_or_join` dispatches to when the EAL race
+    /// resolves this peer as primary, and only when mp_topology + IPC
+    /// handler bring-up both succeed). Secondary never registers this
+    /// — it is only the requester side.
     std::optional<::eph::dpdk::detail::MpIpcAction> fd_install_action;
 
     /// @brief RAII handle for `eph_fd_destroy`. Same primary-only
@@ -1158,9 +1184,9 @@ struct Platform::Impl {
 
     /// @brief Typed-pin session guards owned by `Platform::launch`
     /// (and `create_or_join` via delegation). Empty when EAL was init'd
-    /// externally (declarative-path `Platform::create` /
-    /// `create_primary` / `create_secondary` callers manage pins
-    /// themselves via typed `EalGuard::init`). Released via
+    /// externally — i.e. the caller used the bare `Platform::create`
+    /// path and is responsible for managing its own pins via typed
+    /// `EalGuard::init`. Released via
     /// reverse-order field destruction AFTER `~Impl`'s explicit body
     /// finishes — pin release only touches the process-wide CPU
     /// registry global, EAL-independent, so timing relative to
@@ -1880,8 +1906,10 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     impl->config.per_lcore_pools            = config.per_lcore_pools;
     // v3-only fields stay at default (single-process / auto). The v2
     // dispatcher does not synthesize MP topology — that happens in
-    // create_primary / create_secondary_impl_, and the resolved
-    // proc_type / rx_queue_range below capture the outcome.
+    // `primary_bringup_` / `secondary_bringup_` (dispatched from
+    // `Platform::create_or_join` once the EAL race resolves the role),
+    // and the resolved proc_type / rx_queue_range below capture the
+    // outcome.
     impl->resolved_proc_type        = config.proc_type;
     impl->resolved_rx_queue_range   = config.rx_queue_range;
 
@@ -2097,7 +2125,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
             config.file_prefix, *config.mp_topology);
         if (!r) {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_primary: registry reserve failed: {}",
+                "primary_bringup_: registry reserve failed: {}",
                 r.error().detail);
             return std::unexpected(std::string{r.error().detail});
         }
@@ -2119,7 +2147,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
             icmp_dir = std::move(*icmp_r);
         } else {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_primary: IcmpDirectory reserve failed: {} "
+                "primary_bringup_: IcmpDirectory reserve failed: {} "
                 "— ICMP cross-process forwarding degraded to per-process drop",
                 icmp_r.error().detail);
         }
@@ -2129,7 +2157,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
         config.mp_topology.reset();
 
         SPDLOG_LOGGER_INFO(log,
-            "Platform::create_primary: mp_topology derived "
+            "primary_bringup_: mp_topology derived "
             "rx_queue_range=[{},{}) self_index={} (registry attached, "
             "icmp_directory={})",
             config.rx_queue_range.first, config.rx_queue_range.second,
@@ -2208,17 +2236,17 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 
     if (config.file_prefix.empty()) {
         SPDLOG_LOGGER_ERROR(log,
-            "Platform::create_secondary: file_prefix is empty "
+            "secondary_bringup_: file_prefix is empty "
             "(must match the primary's EAL --file-prefix)");
         return std::unexpected(std::string{
-            "create_secondary: file_prefix must be non-empty and match "
+            "secondary_bringup_: file_prefix must be non-empty and match "
             "the primary's EAL --file-prefix (otherwise rte_mempool_lookup "
             "cannot find the primary's shared mempool)"});
     }
 
     // ── mp_topology attach (cold path) ──────────────────────────────────
     //
-    // Mirror of create_primary's auto-derivation, but in lookup mode:
+    // Mirror of primary_bringup_'s auto-derivation, but in lookup mode:
     // the primary already wrote the registry header; we attach, cross-
     // validate that our declared spec matches the primary's view of
     // this self_index, derive cfg.rx_queue_range from `self()`, and
@@ -2234,7 +2262,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
             config.file_prefix, *config.mp_topology, registry_preclaimed);
         if (!r) {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_secondary{}: registry attach failed: {}",
+                "secondary_bringup_{}: registry attach failed: {}",
                 registry_preclaimed ? " (preclaimed)" : "",
                 r.error().detail);
             return std::unexpected(std::string{r.error().detail});
@@ -2253,14 +2281,14 @@ Platform::secondary_bringup_(detail::BringupConfig config,
             icmp_dir = std::move(*icmp_r);
         } else {
             SPDLOG_LOGGER_ERROR(log,
-                "Platform::create_secondary: IcmpDirectory attach failed: {} "
+                "secondary_bringup_: IcmpDirectory attach failed: {} "
                 "— ICMP cross-process forwarding degraded to per-process drop",
                 icmp_r.error().detail);
         }
 
         config.mp_topology.reset();
         SPDLOG_LOGGER_INFO(log,
-            "Platform::create_secondary: mp_topology derived "
+            "secondary_bringup_: mp_topology derived "
             "rx_queue_range=[{},{}) self_index={} (registry attached, "
             "icmp_directory={})",
             config.rx_queue_range.first, config.rx_queue_range.second,
@@ -2293,12 +2321,12 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 
     if (!rte_eth_dev_is_valid_port(config.port_id)) {
         SPDLOG_LOGGER_ERROR(log,
-            "Platform::create_secondary: port_id={} not valid from "
+            "secondary_bringup_: port_id={} not valid from "
             "secondary — primary may not have started this port yet, "
             "or file_prefix may not match",
             config.port_id);
         return std::unexpected(std::format(
-            "create_secondary: port_id {} not visible from secondary "
+            "secondary_bringup_: port_id {} not visible from secondary "
             "(is the primary running with the same --file-prefix, "
             "and did it start this port?)",
             config.port_id));
@@ -2341,7 +2369,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
             if (dev_info.max_rx_queues > 0 &&
                 config.nb_rx_queues > dev_info.max_rx_queues) {
                 SPDLOG_LOGGER_WARN(log,
-                    "create_secondary: caller nb_rx_queues={} exceeds live "
+                    "secondary_bringup_: caller nb_rx_queues={} exceeds live "
                     "max_rx_queues={} on port {} — rr_counter may hand out "
                     "queue ids the NIC has no rings for; check that the "
                     "secondary's BringupConfig matches the primary's",
@@ -2350,7 +2378,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
             }
         } else {
             SPDLOG_LOGGER_DEBUG(log,
-                "create_secondary: rte_eth_dev_info_get probe rejected "
+                "secondary_bringup_: rte_eth_dev_info_get probe rejected "
                 "(ret={}, rte_errno={}: {}) — PMD does not support it from "
                 "secondary; skipping nb_rx_queues cross-check (advisory)",
                 probe_ret, rte_errno, rte_strerror(rte_errno));
@@ -2379,7 +2407,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         if (icmp_dir.has_value()) {
             impl->icmp_directory = std::move(icmp_dir);
             // Wire process-level globals before installing the IPC
-            // handler — same race-free ordering as create_primary.
+            // handler — same race-free ordering as primary_bringup_.
             ::eph::dpdk::detail::g_active_icmp_directory.store(
                 &*impl->icmp_directory, std::memory_order_release);
             ::eph::dpdk::detail::g_active_icmp_registry.store(
@@ -2394,7 +2422,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
     }
 
     SPDLOG_LOGGER_INFO(log,
-        "Platform::create_secondary ready (port={}, file_prefix='{}', "
+        "secondary_bringup_ ready (port={}, file_prefix='{}', "
         "rx_queue_range=[{},{}), dispatch_mode={})",
         config.port_id, config.file_prefix,
         config.rx_queue_range.first, config.rx_queue_range.second,

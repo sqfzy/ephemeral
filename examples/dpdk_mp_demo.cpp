@@ -8,9 +8,13 @@
 /// flag and no shared `--file-prefix` (it is auto-derived from the
 /// PCI BDF inside the library).
 ///
-/// The cooperative MP path (`Platform::launch` /
-/// `attach_with_eal` with explicit role + shared file_prefix) was
-/// deleted in favor of this single autojoin entry point. See
+/// The cooperative MP path (`Platform::create_primary` /
+/// `Platform::create_secondary` / `Platform::attach` /
+/// `Platform::attach_with_eal`, all with explicit role +
+/// hand-shared `file_prefix`) was deleted in favor of this single
+/// autojoin entry point. `Platform::launch` survives as the
+/// **single-process** one-shot EAL+Platform factory — it rejects
+/// `cfg.max_procs > 1` with a recovery hint pointing here. See
 /// `eph-net-dpdk/docs/dpdk-multiprocess.md` for the full ordering /
 /// teardown protocol; for the single-process counterpart with full
 /// TLS+WS handshake via `create_and_attach`, see

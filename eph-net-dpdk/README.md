@@ -19,25 +19,29 @@ headroom so TLS decrypt can run in place via aws-lc's
 `EVP_AEAD_CTX_open_scatter`.
 
 For single-NIC multi-process deployments (one primary + N secondaries
-sharing the mempool), use the v3 zero-consensus surface in
-`eph/dpdk/platform.hpp` — secondaries don't restate values primary
-already chose:
+sharing the mempool), the only public entry point is
+`Platform::create_or_join(CreateOrJoinConfig)` — peers race on
+`rte_eal_init`, the winner runs primary bring-up and writes a shared
+hugepage registry, the rest attach as secondaries by reading it. No
+explicit role declaration, no `proc_type` / `mp_topology` field, no
+restated NIC parameters:
 
-| Role | New code | Notes |
+| Role | Public surface | Notes |
 |---|---|---|
-| Single-process or MP primary | `Platform::create(PlatformConfigV3)` | `PlatformConfigV3` has no `proc_type` / `mp_topology` — the MP shape is two numbers (`max_procs`, optional `queues_per_proc`). |
-| MP secondary | `Platform::attach(PlatformAttachConfig)` | The smallest "how to find primary" surface — `file_prefix` is the only required input; `nb_rx_queues` etc. are read live from primary's published registry / NIC. |
-| One-shot EAL+Platform | `Platform::launch` / `attach_with_eal` | v3 factories inject `--proc-type` / `--file-prefix` internally so callers don't restate them. |
-| Auto primary-or-secondary | `Platform::create_or_join(CreateOrJoinConfig{.pci=...})` | Zero-coordination MP: whoever runs `rte_eal_init` first becomes primary; the next peer auto-attaches as secondary. Only `pci` is required. |
+| Single-process | `Platform::create(PlatformConfig)` | Rejects `max_procs > 1` with a recovery hint pointing at `create_or_join`. |
+| Single-process, one-shot EAL+Platform | `Platform::launch(PlatformConfig, EalConfig, …)` | Owns EAL lifecycle too. Single-process only. |
+| Multi-process (any role, autojoin) | `Platform::create_or_join(CreateOrJoinConfig{.nic=…})` | Zero-coordination: every peer issues the SAME call. The library resolves primary-vs-secondary post-EAL via `rte_eal_process_type()`. `CreateOrJoinConfig::nic` carries NIC physical state (PCI BDF, `nb_rx_queues`, `max_procs`, optional `queues_per_proc`, `file_prefix`); only the primary reads it. |
 
-The legacy v2 surface (`Platform::create_primary` / `create_secondary` +
-`PlatformConfig::proc_type` / `file_prefix` / `rx_queue_range` + the v2
-`CreateOrJoinConfig`) remains functional during the transition — every
-existing caller still compiles. New code should target v3.
+The pre-v3 cooperative path (`Platform::attach(PlatformAttachConfig)`,
+declarative `Platform::create` with `max_procs > 1`, separate
+`Platform::create_primary` / `create_secondary` factories) was removed
+in 2026-05-01's reshape — `create_or_join` is the only multi-process
+surface now.
 
 `eph::dpdk::EalConfig` + `build_eal_argv` is the typed helper for
 assembling `--proc-type` / `--file-prefix` / `-l` / `-a` argv when you
-drive EAL directly; the v3 factories invoke it under the hood. Full
+drive EAL directly; `launch` and `create_or_join` invoke it under the
+hood (and inject `--proc-type` / `--file-prefix` automatically). Full
 operational contract and PMD caveats: [`docs/dpdk-multiprocess.md`](docs/dpdk-multiprocess.md).
 
 For **multi-port** deployments inside a single process (separate MD vs
@@ -51,16 +55,18 @@ contract.
 
 For lcore × application-thread cpu pinning (so `pin_thread` can detect
 SMT / NUMA conflicts against running EAL lcores), use the typed
-`eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
+`eph::dpdk::LcorePin` + `EalGuard::init` API in
 `eph/dpdk/lcore_pin.hpp` and `eph/dpdk/eal.hpp`. Full rationale and
 escape-hatch rules: [`docs/lcore-pin-integration.md`](docs/lcore-pin-integration.md).
 
-When running with RSS multi-queue dispatch (`Platform::is_rss_active() == true`),
-the blocking control-plane APIs (`dns::resolve`, `arp::resolve`,
-`MulticastReceiver`) need a small contract to route their replies back
-to the caller's queue. DNS reverse-picks a hashed src_port, ARP hardcodes
-queue 0, Multicast fail-fasts unless single-queued or FlowDirector-pinned.
-Full integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
+When running with RSS multi-queue dispatch
+(`Platform::dispatch_mode() == eph::net::dpdk::RxDispatchMode::RssPartitioned`
+&& `Platform::nb_rx_queues() > 1`), the blocking control-plane APIs
+(`dns::resolve`, `arp::resolve`, `MulticastReceiver`) need a small
+contract to route their replies back to the caller's queue. DNS
+reverse-picks a hashed src_port, ARP hardcodes queue 0, Multicast
+fail-fasts unless single-queued or FlowDirector-pinned. Full
+integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
 
 ## Lower-level DPDK primitives (`eph/dpdk/*`)
 
@@ -75,8 +81,9 @@ User-facing — call directly from your application:
 - `platform.hpp` — `Platform` (port bring-up, RSS configure / probe,
   ICMP registry, primary / secondary process roles), `PlatformConfig`,
   `ProcType` re-export.
-- `eal.hpp` — `Eal` RAII guard, `EalGuard::init_with_pins`, `EalConfig`
-  + `build_eal_argv` typed argv builder.
+- `eal.hpp` — `Eal` RAII guard, `EalGuard::init` (typed-pin overload)
+  / `EalGuard::init_raw` (raw argv escape hatch), `EalConfig` +
+  `build_eal_argv` typed argv builder.
 - `multi_port_platform.hpp` — `MultiPortPlatform` aggregates N
   independent `Platform`s (one per NIC port). Strictly additive over
   single-port semantics.
