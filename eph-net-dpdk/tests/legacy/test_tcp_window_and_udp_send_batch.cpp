@@ -16,6 +16,7 @@
 
 using namespace eph::dpdk;
 using namespace eph::dpdk::net;
+using namespace eph::dpdk::wire;  // UdpConfig moved here in commit 245a936d
 
 // ═══════════════════════════════════════════════════════════════════════
 // TCP Window Management — TcpSession::snd_wnd() accessor
