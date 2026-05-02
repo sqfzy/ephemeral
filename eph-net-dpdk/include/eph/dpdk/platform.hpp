@@ -828,7 +828,7 @@ public:
     /// `cfg.mp_topology` and successfully attached to (primary) /
     /// looked up (secondary) the cross-process registry. Cold getter,
     /// safe on moved-from instances (returns false).
-    [[nodiscard]] bool has_mp_topology() const noexcept;
+    [[nodiscard]] bool is_multi_process() const noexcept;
 
     /// @brief This process's `[port_lo, port_hi)` src_port window when
     /// `mp_topology` is in effect; `std::nullopt` otherwise. Stream
@@ -2074,7 +2074,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
     //      the memzone if `create()` fails).
     //
     // The original topology survives via `Impl::mp_registry` —
-    // `has_mp_topology()` and `self_port_range()` consult it for the
+    // `is_multi_process()` and `self_port_range()` consult it for the
     // stream-attach src_port narrowing path.
     std::optional<::eph::dpdk::detail::MpRegistryHandle> reg;
     std::optional<::eph::dpdk::detail::IcmpDirectoryHandle> icmp_dir;
@@ -2937,7 +2937,7 @@ Platform::effective_rx_queue_range() const noexcept {
     return r;
 }
 
-inline bool Platform::has_mp_topology() const noexcept {
+inline bool Platform::is_multi_process() const noexcept {
     return impl_ && impl_->mp_registry.has_value();
 }
 

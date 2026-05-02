@@ -66,7 +66,7 @@ TEST(DpdkMpDynamicSecondary, AutojoinResolvesAsSecondaryClaimsSlotOne) {
 
     EXPECT_TRUE(platform.is_secondary())
         << "second peer must resolve as secondary";
-    EXPECT_TRUE(platform.has_mp_topology());
+    EXPECT_TRUE(platform.is_multi_process());
 
     // queues_per_proc=1 default → secondary should land on slot 1
     // (lowest free), owning queue range [1, 2).

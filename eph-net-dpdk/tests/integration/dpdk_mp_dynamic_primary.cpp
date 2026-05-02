@@ -12,7 +12,7 @@
 ///   2. `is_secondary()` is false.
 ///   3. The auto-derived `rx_queue_range` is `[0, queues_per_proc)`
 ///      since the primary always claims slot 0.
-///   4. `has_mp_topology()` is true (autojoin always populates one).
+///   4. `is_multi_process()` is true (autojoin always populates one).
 ///
 /// Started by `tests/integration/dpdk_mp_dynamic_e2e.sh`. Uses the
 /// same env-var shape as the declarative-path MP integration
@@ -75,7 +75,7 @@ TEST(DpdkMpDynamicPrimary, AutojoinResolvesAsPrimary) {
 
     EXPECT_FALSE(platform.is_secondary())
         << "first peer should resolve as primary";
-    EXPECT_TRUE(platform.has_mp_topology());
+    EXPECT_TRUE(platform.is_multi_process());
 
     // queues_per_proc=1 default + nb_rx_queues queues → max_procs =
     // nb_rx_queues. Primary owns slot 0 → queue range [0, 1).

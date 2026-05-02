@@ -365,7 +365,7 @@ public:
             // Same try-secondary-then-fallback as DpdkTcpStream — see
             // tcp_stream.hpp for the full rationale.
             if (!rule && platform.is_secondary() &&
-                platform.has_mp_topology()) {
+                platform.is_multi_process()) {
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: local rte_flow_create rejected "
                     "({}); trying eph_fd_install IPC fallback",

@@ -942,7 +942,7 @@ public:
             // with no IPC available, fall through to the original
             // unexpected return.
             if (!rule && platform.is_secondary() &&
-                platform.has_mp_topology()) {
+                platform.is_multi_process()) {
                 SPDLOG_LOGGER_WARN(log,
                     "create_and_attach: local rte_flow_create rejected "
                     "({}); trying eph_fd_install IPC fallback to primary",

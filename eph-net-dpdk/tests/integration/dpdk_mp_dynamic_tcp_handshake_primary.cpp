@@ -147,7 +147,7 @@ TEST(DpdkMpDynamicTcpHandshakePrimary, ConnectsAndEchoes) {
     }
     auto platform = std::move(*plat_r);
     ASSERT_FALSE(platform.is_secondary()) << "first peer must be primary";
-    ASSERT_TRUE(platform.has_mp_topology());
+    ASSERT_TRUE(platform.is_multi_process());
 
     const uint16_t port_id = platform.port_id();
     rte_mempool* const pool = platform.mempool();
