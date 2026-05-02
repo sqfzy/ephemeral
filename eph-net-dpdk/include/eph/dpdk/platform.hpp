@@ -482,9 +482,6 @@ struct PlatformConfig {
     /// (`nb_rx_queues / max_procs`). Only consulted when `max_procs > 1`.
     uint16_t queues_per_proc = 0;
 
-    /// Optional cross-process lcore-conflict bitmap published by primary.
-    uint64_t self_lcore_mask = 0;
-
     [[nodiscard]] friend bool operator==(const PlatformConfig&,
                                          const PlatformConfig&) = default;
 
@@ -494,13 +491,12 @@ struct PlatformConfig {
             "queues={}rx/{}tx, descs={}rx/{}tx, "
             "pool={} cache={} promisc={} link_to={}ms, "
             "rx_cksum={} strict={}, "
-            "max_procs={} queues_per_proc={} per_lcore_pools={} "
-            "self_lcore_mask=0x{:x}}}",
+            "max_procs={} queues_per_proc={} per_lcore_pools={}}}",
             port_id, file_prefix, nb_rx_queues, nb_tx_queues,
             nb_rx_desc, nb_tx_desc, mbuf_pool_size, mbuf_cache_size,
             enable_promiscuous, link_timeout_ms,
             enable_rx_checksum_offload, enable_strict_rx_checksum,
-            max_procs, queues_per_proc, per_lcore_pools, self_lcore_mask);
+            max_procs, queues_per_proc, per_lcore_pools);
     }
 };
 
@@ -2441,9 +2437,6 @@ inline BringupConfig bringup_from_v3_(const PlatformConfig& v3) {
     if (v3.max_procs > 1) {
         bcfg.mp_topology = MpTopology::uniform(
             /*self_index=*/0, v3.max_procs, v3.nb_rx_queues);
-        if (v3.self_lcore_mask != 0) {
-            bcfg.mp_topology->procs[0].lcore_mask = v3.self_lcore_mask;
-        }
     }
     return bcfg;
 }
@@ -2772,7 +2765,7 @@ Platform::join_dynamic(JoinDynamicConfig cfg) {
             /*self_index=*/0, max_procs, nb_rx_queues);
         // Inject this peer's lcore_mask into its own slot so registry
         // cross-process conflict check fires on overlap. Default 0 =
-        // opt out (back-compat). See `JoinDynamicConfig::self_lcore_mask`.
+        // opt out. See `JoinDynamicConfig::self_lcore_mask`.
         if (cfg.self_lcore_mask != 0) {
             pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
         }

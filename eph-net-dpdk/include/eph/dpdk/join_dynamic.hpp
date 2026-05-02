@@ -125,14 +125,15 @@ struct JoinDynamicConfig {
 
     /// Bitmask of EAL lcores **this process** owns (i.e. the lcores
     /// passed via `lcores` / `pins`). Default 0 = opt out of cross-
-    /// process lcore conflict detection (back-compat for callers
-    /// that haven't migrated). When non-zero, the synthesized
+    /// process lcore conflict detection. When non-zero, the synthesized
     /// `MpTopology::procs[self_index].lcore_mask` is set to this
     /// value, and `MpRegistryHandle::attach_secondary` rejects any
     /// peer whose mask overlaps with currently-claimed peers.
     /// Catches "two procs accidentally pinned to the same lcore →
     /// silent OS-scheduler CPU theft → p99 noise" mental-model gap.
     /// Capped at 64 bits (matches `MpTopology::kMaxProcs`).
+    /// Single source of truth: this is the only `self_lcore_mask` —
+    /// `PlatformConfig` deliberately does not carry a duplicate.
     uint64_t self_lcore_mask{0};
 };
 
