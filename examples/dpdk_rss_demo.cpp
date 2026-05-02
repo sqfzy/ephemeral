@@ -10,9 +10,10 @@
 ///
 /// What's demonstrated:
 ///
-///   * `Platform::create_primary` with `enable_rss=true` + `nb_rx_queues=N`,
-///     hard-failing on RSS bring-up (no silent collapse to queue 0 — see
-///     `eph-net-dpdk/CHANGELOG.md`).
+///   * `Platform::launch(PlatformConfig, EalConfig, …)` (one-shot
+///     EAL+Platform factory, single-process) with `enable_rss=true` +
+///     `nb_rx_queues=N`, hard-failing on RSS bring-up (no silent
+///     collapse to queue 0 — see `eph-net-dpdk/CHANGELOG.md`).
 ///   * The three diagnostic getters that tell you what RSS path resolved:
 ///         `dispatch_mode()` /
 ///         `rss_using_probed_key()` / `effective_rx_queue_range()`.

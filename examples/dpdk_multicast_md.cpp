@@ -6,10 +6,11 @@
 ///
 /// What's demonstrated:
 ///
-///   * `Platform::create_primary` with single queue (`nb_rx_queues=1`,
-///     `enable_rss=false`) — the canonical safe shape for multicast RX.
-///     For RSS multi-queue + multicast, see the FlowDirector caveat
-///     in the second config block.
+///   * `Platform::launch(PlatformConfig, EalConfig, …)` (one-shot
+///     EAL+Platform factory) with single queue (`nb_rx_queues=1`,
+///     `enable_rss=false`) — the canonical safe shape for multicast
+///     RX. For RSS multi-queue + multicast, see the FlowDirector
+///     caveat in the second config block.
 ///   * `MulticastReceiver::join_group` — RFC 1112 multicast MAC
 ///     derivation (`01:00:5e:XX:XX:XX`) is internal; caller passes the
 ///     IPv4 group + UDP port. Up to `kMaxMulticastGroups` (8) joins per
