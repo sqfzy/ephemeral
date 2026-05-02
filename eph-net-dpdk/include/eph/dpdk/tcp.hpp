@@ -1881,6 +1881,17 @@ public:
         last_rx_tsc_ = 0;
         last_keepalive_tsc_ = 0;
         keepalive_misses_ = 0;
+        // Symmetrize MSS state with connect()'s reset block (lines
+        // 710-712). connect() already restores these at the next
+        // reconnect, but between reset() and that next connect()
+        // any caller of effective_mss() / peer_mss_negotiated() /
+        // peer_mss() observes the dead session's negotiated values
+        // (e.g. shrunk by ICMP Frag Needed), which is misleading
+        // telemetry. Same defense-in-depth rationale as snd_wnd_ /
+        // keepalive_misses_ above.
+        effective_mss_       = config_.mss;
+        peer_mss_            = 0;
+        peer_mss_negotiated_ = false;
         SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
     }
 
