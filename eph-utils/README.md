@@ -299,7 +299,7 @@ integration fixtures that need namespace isolation. Requires
 
 ## Tests
 
-22 GoogleTest files under `tests/`, covering every public module plus
+23 GoogleTest files under `tests/`, covering every public module plus
 `test_version`. All tests are `[nodiscard]`-clean and exercise boundary
 conditions:
 
@@ -321,6 +321,7 @@ conditions:
 | `test_record.cpp`               | Stats dump/json, operator-                                  |
 | `test_recorder.cpp`             | record, export_json/csv, overflow saturation                |
 | `test_recorder_runtime.cpp`     | `ConcurrentRecorder` thread-local + retired-thread merge    |
+| `test_scope_guard.cpp`          | RAII arm/disarm, idempotent disarm, LIFO multi-guard order  |
 | `test_shutdown_signal.cpp`      | handler installation, flag flip on SIGTERM                  |
 | `test_spin_for_ns.cpp`          | busy-wait accuracy at 1 us / 10 us / 100 us                 |
 | `test_system_stats.cpp`         | delta, move semantics, format                               |
