@@ -19,7 +19,10 @@
 /// understanding that the raw path does not participate in registry-aware
 /// validation.
 
+#include <cerrno>    // errno, ERANGE
+#include <climits>   // INT_MIN, INT_MAX, UINT16_MAX
 #include <cstdint>
+#include <cstdlib>   // std::strtol
 #include <expected>
 #include <format>
 #include <span>
@@ -80,12 +83,45 @@ parse_pin_spec(std::string_view s) {
     }
     auto col = s.find(':', eq + 1);
     auto cpu_end = (col == std::string_view::npos) ? s.size() : col;
-    int  lcore = std::atoi(std::string(s.substr(0, eq)).c_str());
-    int  cpu   = std::atoi(std::string(s.substr(eq + 1, cpu_end - eq - 1)).c_str());
+    // Strict integer parse: std::atoi silently returns 0 for unparseable
+    // input, so a typo like `--pin core=4` would land in the registry as
+    // lcore-0 on cpu 4 rather than surfacing the malformed token. Use
+    // std::strtol with full-token validation (same idiom as
+    // cli.hpp::consume_one --port-id) so unparseable / trailing-garbage /
+    // out-of-range inputs return std::unexpected with an actionable
+    // diagnostic before any registry side effects can occur.
+    auto parse_int_field =
+        [&](std::string_view field, std::string_view name)
+            -> std::expected<int, std::string> {
+        if (field.empty()) {
+            return std::unexpected(std::string{"--pin: "} + std::string{name}
+                + " is empty in '" + std::string{s} + "'");
+        }
+        std::string copy{field};
+        char* end = nullptr;
+        errno = 0;
+        long n = std::strtol(copy.c_str(), &end, 10);
+        if (end == copy.c_str() || end == nullptr || *end != '\0' ||
+            errno == ERANGE || n < INT_MIN || n > INT_MAX) {
+            return std::unexpected(std::string{"--pin: "} + std::string{name}
+                + " is not a valid integer in '" + std::string{s} + "'");
+        }
+        return static_cast<int>(n);
+    };
+    auto lcore_r = parse_int_field(s.substr(0, eq), "lcore_id");
+    if (!lcore_r) return std::unexpected(lcore_r.error());
+    auto cpu_r = parse_int_field(s.substr(eq + 1, cpu_end - eq - 1), "cpu_id");
+    if (!cpu_r) return std::unexpected(cpu_r.error());
+    int lcore = *lcore_r;
+    int cpu   = *cpu_r;
     if (lcore < 0 || cpu < 0) {
         return std::unexpected(std::string{
             "--pin: lcore_id and cpu_id must be non-negative, got '"}
             + std::string{s} + "'");
+    }
+    if (lcore > UINT16_MAX) {
+        return std::unexpected(std::string{
+            "--pin: lcore_id exceeds UINT16_MAX in '"} + std::string{s} + "'");
     }
     std::string role = (col == std::string_view::npos)
                            ? std::string{}
