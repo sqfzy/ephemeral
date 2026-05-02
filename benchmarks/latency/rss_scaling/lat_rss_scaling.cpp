@@ -404,16 +404,16 @@ int main(int argc, char** argv) {
 #if defined(EPH_USE_DPDK)
             const uint16_t target_q = i % nb_rx_queues;
             ed::UdpConfig scfg{};
-            scfg.legacy.src_ip       = env.src_ip;
-            scfg.legacy.dst_ip       = env.dst_ip;
-            scfg.legacy.src_port     = 0;
-            scfg.legacy.dst_port     = port;
-            scfg.legacy.src_mac      = env.src_mac;
-            scfg.legacy.dst_mac      = env.gw_mac;
-            scfg.legacy.port_id      = env.port_id;
-            scfg.legacy.tx_queue_id  = target_q;
-            scfg.legacy.pool         = env.pool;
-            scfg.pin_to_queue        = target_q;
+            scfg.dpdk.udp_low_level.src_ip       = env.src_ip;
+            scfg.dpdk.udp_low_level.dst_ip       = env.dst_ip;
+            scfg.dpdk.udp_low_level.src_port     = 0;
+            scfg.dpdk.udp_low_level.dst_port     = port;
+            scfg.dpdk.udp_low_level.src_mac      = env.src_mac;
+            scfg.dpdk.udp_low_level.dst_mac      = env.gw_mac;
+            scfg.dpdk.udp_low_level.port_id      = env.port_id;
+            scfg.dpdk.udp_low_level.tx_queue_id  = target_q;
+            scfg.dpdk.udp_low_level.pool         = env.pool;
+            scfg.dpdk.pin_to_queue               = target_q;
 
             auto sock_r = Socket::create_and_attach(std::move(scfg),
                                                      env.platform);

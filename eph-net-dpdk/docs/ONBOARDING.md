@@ -157,10 +157,10 @@ Source-port partitioning across MP processes:
   * **Without `mp_topology` (legacy / manual partition path)** — the
     caller is responsible: allocate disjoint sub-ranges per process
     via `cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or
-    `cfg.legacy.src_port` (UDP — the `legacy` substruct is
-    intentionally retained on `eph::net::dpdk::UdpConfig` per T3.19's
-    TCP-only reshape scope). `eph-net-dpdk` has no global view to
-    enforce disjointness on this path.
+    `cfg.dpdk.udp_low_level.src_port` (UDP — UDP now mirrors TCP's
+    `dpdk` substruct shape post Tier-1 audit follow-up).
+    `eph-net-dpdk` has no global view to enforce disjointness on this
+    path.
 
 See also: `../docs/dpdk-multiprocess.md` for startup ordering, the
 1+N partitioning table, PMD caveats, and the orchestrator script;

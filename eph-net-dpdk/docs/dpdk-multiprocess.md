@@ -238,13 +238,12 @@ manually must use `--proc-type=auto` — that is what
 
 `eph-net-dpdk` does **not** auto-allocate source ports. The TCP/UDP
 `create_and_attach` paths take the source port from the caller-supplied
-`cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or `cfg.legacy.src_port`
-(UDP — the `legacy` substruct is intentionally retained on
-`eph::net::dpdk::UdpConfig` per T3.19's TCP-only reshape scope) in
-Software / FlowDirector mode, or rebind it to one that hashes to the
-desired queue (RSS-pinned mode via `find_src_port_for_queue`). The
-library has no global view across processes and cannot enforce
-src_port disjointness.
+`cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or
+`cfg.dpdk.udp_low_level.src_port` (UDP — UDP now mirrors TCP's `dpdk`
+substruct shape post Tier-1 audit follow-up) in Software / FlowDirector
+mode, or rebind it to one that hashes to the desired queue (RSS-pinned
+mode via `find_src_port_for_queue`). The library has no global view
+across processes and cannot enforce src_port disjointness.
 
 In multi-process setups the caller MUST allocate src_port from a
 sub-range that is disjoint from every other process sharing the NIC.

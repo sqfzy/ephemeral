@@ -346,12 +346,12 @@ struct DpdkBenchView {
         return tcfg;
     }
 
-    /// Build a UdpConfig (the legacy wire-level fields). Caller fills
-    /// in `src_port` / `dst_port` and any pool override. Mirrors the
-    /// UdpConfig population in `DpdkBenchEnv::make_udp_sender`.
-    [[nodiscard]] eph::dpdk::UdpConfig
+    /// Build a wire::UdpConfig. Caller fills in `src_port` / `dst_port`
+    /// and any pool override. Mirrors the population in
+    /// `DpdkBenchEnv::make_udp_sender`.
+    [[nodiscard]] eph::dpdk::wire::UdpConfig
     make_udp_config(uint16_t local_port, uint16_t remote_port) const {
-        eph::dpdk::UdpConfig ucfg{};
+        eph::dpdk::wire::UdpConfig ucfg{};
         ucfg.src_ip = src_ip;
         ucfg.dst_ip = dst_ip;
         ucfg.src_port = local_port;

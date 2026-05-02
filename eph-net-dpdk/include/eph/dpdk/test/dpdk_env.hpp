@@ -649,7 +649,7 @@ struct DpdkBenchEnv {
     /// Create a UdpSender configured for this environment.
     [[nodiscard]] std::expected<eph::dpdk::UdpSender, std::string>
     make_udp_sender(uint16_t local_port, uint16_t remote_port) const {
-        eph::dpdk::UdpConfig ucfg{};
+        eph::dpdk::wire::UdpConfig ucfg{};
         ucfg.src_ip = src_ip;
         ucfg.dst_ip = dst_ip;
         ucfg.src_port = local_port;

@@ -16,9 +16,11 @@
 #include <optional>
 
 #include "eph/dpdk/tcp.hpp"       // TcpConfig (the wire-level type)
-#include "eph/dpdk/udp.hpp"       // UdpConfig (legacy naming collides with our
-                                  // eph::net::dpdk::UdpConfig below — we keep
-                                  // the legacy type in eph::dpdk::UdpConfig).
+#include "eph/dpdk/udp.hpp"       // wire::UdpConfig (wire-level UDP TX cfg;
+                                  // moved under `eph::dpdk::wire::` post
+                                  // Tier-1 rename to avoid the prior name
+                                  // collision with the outer
+                                  // `eph::net::dpdk::UdpConfig` below).
 #include "eph/net/keepalive_config.hpp"      // KeepaliveConfig
 #include "eph/net/detail/tls_constants.hpp"  // TlsConfig
 #include "eph/net/ws_config.hpp"             // WsConfig
@@ -81,9 +83,9 @@ struct StreamConfig {
     ///        (`TcpSession::tick_keepalive`) honours it.
     ///
     ///        Previously this knob was reachable only via
-    ///        `cfg.legacy.keepalive_interval`; it has been promoted to
-    ///        the top level (T3.19 reshape) so the surface is symmetric
-    ///        with the kernel backend.
+    ///        `cfg.dpdk.tcp_low_level.keepalive_interval`; it has been
+    ///        promoted to the top level (T3.19 reshape) so the surface
+    ///        is symmetric with the kernel backend.
     ::eph::net::KeepaliveConfig keepalive{};
 
     // ── DPDK-only knobs ──────────────────────────────────────────────────
@@ -138,26 +140,39 @@ struct StreamConfig {
 
 /// @brief Configuration for `DpdkUdpSocket::create`.
 ///
-/// Out of scope for T3.19 reshape — UDP has no WS / TLS / proxy fields and
-/// no real duplication with the kernel UdpConfig, so we leave the legacy
-/// shape (`legacy / pin_to_queue / pool_lcore_hint`) for now. A future
-/// reshape can align it with the new TCP layout if symmetry becomes
-/// useful.
+/// Mirrors `StreamConfig`'s post-T3.19 shape: the DPDK-only knobs
+/// (wire-level UdpConfig + pin / per-lcore hints) live inside a `Dpdk`
+/// substruct. Top-level fields are reserved for future backend-shared
+/// concerns (UDP has none today).
 struct UdpConfig {
-    /// @brief Underlying DPDK UdpSender configuration.
-    ::eph::dpdk::UdpConfig legacy{};
+    // ── DPDK-only knobs ──────────────────────────────────────────────────
 
-    /// @brief See `StreamConfig::Dpdk::pin_to_queue`. UDP has no connect
-    /// handshake, so the pin is honoured at attach time — the user is
-    /// expected to have already set `legacy.src_port` such that the
-    /// (src/dst) tuple hashes to the desired queue under RSS, or the
-    /// helper installs an rte_flow rule under FlowDirector. nullopt =
-    /// auto.
-    std::optional<uint16_t> pin_to_queue{};
+    /// @brief Knobs only meaningful to the userspace PMD backend. Shape
+    ///        mirrors `StreamConfig::Dpdk` so TCP and UDP have the same
+    ///        post-T3.19 layout.
+    struct Dpdk {
+        /// @brief Underlying wire-level DPDK UdpSender configuration:
+        ///        4-tuple, MACs, port/queue IDs, mempool, hw_cksum flag.
+        ///        Validated via `udp_low_level.validate()` at factory
+        ///        time. (Renamed from `legacy` in the Tier-1 audit
+        ///        follow-up — same rationale as TCP's `tcp_low_level`:
+        ///        the old name was non-semantic; this is the wire-level
+        ///        UdpConfig the PMD ingests.)
+        ::eph::dpdk::wire::UdpConfig udp_low_level{};
 
-    /// @brief Per-lcore mempool hint for `create_and_attach`.
-    ///        Default `-1` keeps `legacy.pool` as the caller populated it.
-    int pool_lcore_hint{-1};
+        /// @brief See `StreamConfig::Dpdk::pin_to_queue`. UDP has no connect
+        /// handshake, so the pin is honoured at attach time — the user is
+        /// expected to have already set `udp_low_level.src_port` such
+        /// that the (src/dst) tuple hashes to the desired queue under
+        /// RSS, or the helper installs an rte_flow rule under
+        /// FlowDirector. nullopt = auto.
+        std::optional<uint16_t> pin_to_queue{};
+
+        /// @brief Per-lcore mempool hint for `create_and_attach`.
+        ///        Default `-1` keeps `udp_low_level.pool` as the caller
+        ///        populated it.
+        int pool_lcore_hint{-1};
+    } dpdk;
 };
 
 // ---------------------------------------------------------------------------

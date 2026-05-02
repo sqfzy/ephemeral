@@ -343,9 +343,9 @@ int main(int argc, char** argv) {
     // 5-tuple on `queue = qr.first + (i % nb_owned_queues)`. The helper
     // walks `[32768, 60999]` looking for an ephemeral src_port whose
     // Toeplitz hash matches that queue under the NIC's RSS key, rebinds
-    // `cfg.legacy.src_port` to the picked value, and constructs the
-    // sender. The library logs the picked port at INFO — watch for
-    // "RSS pin → src_port=… hashes to queue=…".
+    // `cfg.dpdk.udp_low_level.src_port` to the picked value, and
+    // constructs the sender. The library logs the picked port at INFO —
+    // watch for "RSS pin → src_port=… hashes to queue=…".
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
     std::vector<std::unique_ptr<UdpSock>> sockets;
     sockets.reserve(args.connections);
@@ -355,27 +355,27 @@ int main(int argc, char** argv) {
         const uint16_t want_q = qr.first + (i % nb_owned);
 
         edpdk::UdpConfig ucfg{};
-        ucfg.legacy.src_ip   = args.src_ip;
-        ucfg.legacy.dst_ip   = args.dst_ip;
+        ucfg.dpdk.udp_low_level.src_ip   = args.src_ip;
+        ucfg.dpdk.udp_low_level.dst_ip   = args.dst_ip;
         // src_port populated as a placeholder: validate() requires non-zero.
         // The RSS-pin path overwrites it with the reverse-picked ephemeral.
-        ucfg.legacy.src_port = static_cast<uint16_t>(32768 + i);
-        ucfg.legacy.dst_port = args.dst_port;
-        ucfg.legacy.port_id  = platform.port_id();
-        ucfg.legacy.pool     = platform.mempool();
+        ucfg.dpdk.udp_low_level.src_port = static_cast<uint16_t>(32768 + i);
+        ucfg.dpdk.udp_low_level.dst_port = args.dst_port;
+        ucfg.dpdk.udp_low_level.port_id  = platform.port_id();
+        ucfg.dpdk.udp_low_level.pool     = platform.mempool();
         // dst_mac left zero — would need ARP resolution to drive real
         // traffic. See eph::dpdk::arp::resolve / examples/binance_latency.cpp.
 
-        ucfg.pin_to_queue = want_q;
+        ucfg.dpdk.pin_to_queue = want_q;
 
         // Per-lcore mempool hint (T2.9, NUMA-aware alloc). When
         // `per_lcore_pools > 0`, each socket gets a pool local to its
         // own lcore — Platform clamps `hint` against the pool count, so
         // `i % per_lcore_pools` is safe.  When `per_lcore_pools == 0`,
-        // leave the hint at -1 so the helper uses `legacy.pool` as set
-        // (the single shared pool, byte-for-byte the pre-T2.9 path).
+        // leave the hint at -1 so the helper uses `udp_low_level.pool`
+        // as set (the single shared pool, byte-for-byte the pre-T2.9 path).
         if (args.per_lcore_pools > 0) {
-            ucfg.pool_lcore_hint =
+            ucfg.dpdk.pool_lcore_hint =
                 static_cast<int>(i % args.per_lcore_pools);
         }
 

@@ -42,10 +42,15 @@ inline spdlog::logger* udp_logger() { return get_logger<LoggerName{"dpdk.udp"}>(
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace wire {
+
 /// @brief Configuration for UdpSender — fixed-peer UDP TX parameters.
 ///
 /// All IP/port fields are in host byte order. Conversion to network byte
 /// order happens internally in UdpPacketTemplate::init().
+///
+/// Lives under `eph::dpdk::wire::` to avoid the prior name collision with
+/// the outer `eph::net::dpdk::UdpConfig` (the user-facing socket config).
 struct UdpConfig {
     uint32_t src_ip{};              ///< Source IPv4 address (host byte order)
     uint32_t dst_ip{};              ///< Destination IPv4 address (host byte order)
@@ -152,6 +157,8 @@ struct UdpConfig {
     }
 };
 
+} // namespace wire
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Batch send types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,7 +222,7 @@ public:
     /// @param cfg UDP sender configuration (all fields in host byte order)
     /// @return UdpSender on success, error string on validation failure
     [[nodiscard]] static std::expected<UdpSender, std::string>
-    create(const UdpConfig& cfg) noexcept {
+    create(const wire::UdpConfig& cfg) noexcept {
         [[maybe_unused]] auto* log = detail::udp_logger();
 
         auto err = cfg.validate();
@@ -229,7 +236,7 @@ public:
         // block construction. Parallel to Platform::create emitting
         // PlatformConfig::warnings() at WARN.
         for (const auto& w : cfg.warnings()) {
-            SPDLOG_LOGGER_WARN(log, "UdpConfig advisory: {}", w);
+            SPDLOG_LOGGER_WARN(log, "wire::UdpConfig advisory: {}", w);
         }
 
         // Verify NIC supports UDP checksum offload if requested
@@ -427,10 +434,10 @@ public:
 // std::formatter specialization
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// @brief std::formatter for UdpConfig — uses dump() for human-readable output.
+/// @brief std::formatter for wire::UdpConfig — uses dump() for human-readable output.
 template <>
-struct std::formatter<eph::dpdk::UdpConfig> : std::formatter<std::string> {
-    auto format(const eph::dpdk::UdpConfig& c, auto& ctx) const {
+struct std::formatter<eph::dpdk::wire::UdpConfig> : std::formatter<std::string> {
+    auto format(const eph::dpdk::wire::UdpConfig& c, auto& ctx) const {
         return std::formatter<std::string>::format(c.dump(), ctx);
     }
 };

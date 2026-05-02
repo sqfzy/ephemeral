@@ -105,8 +105,8 @@ inline int run_lat_udp_loop(::bench::BenchCtx& ctx) noexcept {
 
     const uint16_t local_src_port = ::bench::random_src_port();
     ed::UdpConfig sock_cfg{};
-    sock_cfg.legacy = view.make_udp_config(local_src_port, port);
-    sock_cfg.pin_to_queue = ctx.queue_id;
+    sock_cfg.dpdk.udp_low_level = view.make_udp_config(local_src_port, port);
+    sock_cfg.dpdk.pin_to_queue = ctx.queue_id;
 
     auto sock_r = Socket::create_and_attach(std::move(sock_cfg), view.platform);
 #else

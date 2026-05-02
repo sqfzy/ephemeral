@@ -249,12 +249,12 @@ int main(int argc, char** argv) {
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
-    ucfg.legacy.src_ip   = 0x0A000010;   // 10.0.0.16
-    ucfg.legacy.dst_ip   = 0x0A000020;   // 10.0.0.32
-    ucfg.legacy.src_port = is_secondary ? 49152 : 32768;
-    ucfg.legacy.dst_port = 30000;
-    ucfg.legacy.port_id  = platform.port_id();
-    ucfg.legacy.pool     = platform.mempool();
+    ucfg.dpdk.udp_low_level.src_ip   = 0x0A000010;   // 10.0.0.16
+    ucfg.dpdk.udp_low_level.dst_ip   = 0x0A000020;   // 10.0.0.32
+    ucfg.dpdk.udp_low_level.src_port = is_secondary ? 49152 : 32768;
+    ucfg.dpdk.udp_low_level.dst_port = 30000;
+    ucfg.dpdk.udp_low_level.port_id  = platform.port_id();
+    ucfg.dpdk.udp_low_level.pool     = platform.mempool();
 
     auto sock_r = UdpSock::create_and_attach(std::move(ucfg), platform);
     if (!sock_r) {

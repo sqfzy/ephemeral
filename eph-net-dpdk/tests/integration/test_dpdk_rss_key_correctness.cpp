@@ -366,7 +366,7 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
                 state.key(), server_ip_h, kUdpEchoPort, client_ip_h, p.src_port);
 
             // TX a 4-byte cookie ("PROB") via UdpSender bound to this src_port.
-            eph::dpdk::UdpConfig ucfg{};
+            eph::dpdk::wire::UdpConfig ucfg{};
             ucfg.src_ip      = client_ip_h;
             ucfg.dst_ip      = server_ip_h;
             ucfg.src_port    = p.src_port;
@@ -571,7 +571,7 @@ TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
                 << sp_r.error();
             pins[q].found_src_port = *sp_r;
 
-            eph::dpdk::UdpConfig ucfg{};
+            eph::dpdk::wire::UdpConfig ucfg{};
             ucfg.src_ip      = client_ip_h;
             ucfg.dst_ip      = server_ip_h;
             ucfg.src_port    = *sp_r;
