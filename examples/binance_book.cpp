@@ -5,7 +5,7 @@
 ///     KernelTcpStream<WsCodec, /*Tls=*/false>   (network + WS framing)
 ///         │
 ///         v
-///     on_message(payload)                       (frame counter — TODO)
+///     on_message(payload)                       (frame counter)
 ///
 /// The example is intentionally a *thin* skeleton: it stands up the
 /// network + WS-codec stack and counts decoded frames so the wiring
