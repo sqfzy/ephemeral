@@ -671,6 +671,49 @@ TEST(PacketParseAdv, IcmpAcceptsConsistentIpTotalLength) {
     EXPECT_TRUE(parsed.embedded_valid);
 }
 
+TEST(PacketParseAdv, IcmpRefusesEmbeddedPastIpTotalEvenWhenPktLenAllows) {
+    // Regression for r2 commit 804a2a9e (fix(dpdk/packet_parse): bound ICMP
+    // embedded reads by ip_total). The bug shape: NIC delivers Ethernet
+    // padding past the IP-declared end (802.3 minimum frame is 64 bytes).
+    // pre-fix, parse_icmp's bound was `pkt_len` only — an attacker who
+    // controlled the trailer bytes could craft them to look like a valid
+    // embedded IP+L4 and have parse_icmp surface the forged 4-tuple.
+    //
+    // Distinct from IcmpRejectsWhenIpTotalLengthSmallerThanIcmpFooter
+    // (the d8cb1b0d/fd6f68ce regression test) which sets ip_total < ICMP
+    // footer and expects whole-packet rejection. Here ip_total is large
+    // enough to cover the legitimate ICMP T3C4 body (header + unused + MTU)
+    // but stops BEFORE the embedded IP+L4 — those bytes are now padding,
+    // and parse_icmp must NOT surface them as a 4-tuple.
+    uint8_t buf[256];
+    const size_t pkt_len = build_icmp_frag_needed(buf, /*mtu=*/1400);
+    auto* ip = reinterpret_cast<rte_ipv4_hdr*>(buf + kEtherHeaderLen);
+
+    // Trim ip->total_length so it covers OUTER ip header + ICMP-T3C4 8-byte
+    // header but EXCLUDES the embedded IP+L4 (which is now NIC-padding).
+    // Embedded fields in the packet still carry build_icmp_frag_needed's
+    // crafted ports/IPs (12345 → 443 over 10.0.0.1 → 10.0.0.2) — exactly
+    // the kind of forged 4-tuple a hostile L2 peer could plant.
+    constexpr uint16_t kIcmpHeaderLen = 8;
+    ip->total_length = hton16(static_cast<uint16_t>(kIpv4HeaderLen + kIcmpHeaderLen));
+
+    auto mbuf = make_mbuf(buf, pkt_len);
+    auto parsed = parse_icmp(&mbuf);
+
+    // Whole-packet acceptance is fine here — the IP+ICMP header are
+    // legitimate. The crucial guarantee is that the *embedded* fields
+    // are NOT surfaced because they sit past ip_total.
+    ASSERT_TRUE(static_cast<bool>(parsed))
+        << "parse_icmp rejected an otherwise-well-formed ICMP T3C4 whose "
+           "ip_total only covers the ICMP header (NIC-padding shape)";
+    EXPECT_TRUE(parsed.is_frag_needed());
+    EXPECT_EQ(parsed.next_hop_mtu, 1400);
+    EXPECT_FALSE(parsed.embedded_valid)
+        << "parse_icmp surfaced an embedded 4-tuple that lay PAST "
+           "ip_total — regression of r2 commit 804a2a9e (forged-padding "
+           "4-tuple injection)";
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // IP fragmentation — our L4 parsers assume the TCP/UDP/ICMP header sits
 // immediately after the IP header, which is only true for the *first*
