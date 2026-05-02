@@ -96,17 +96,20 @@ The scope decisions for the current feature set are archived in
 - `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
   noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
   registered entry — used by TCP keepalive; UDP implements as no-op.
-- `eph::dpdk::PlatformConfig` (zero-consensus shape: `max_procs` /
-  `queues_per_proc` + `file_prefix`) + `Platform::create` /
-  `Platform::attach(PlatformAttachConfig)` — single-NIC DPDK
-  multi-process (primary+secondary). Primary calls `create()`, does
-  the full port bringup, and publishes a hugepage registry whose
-  size is determined by `max_procs`. Secondary calls `attach()` with
-  only `file_prefix` (+ `port_id` if multi-NIC), reads NIC state from
-  the registry / live device, and skips configure/start/stop/close.
-  Hot path is zero-cost: `inc_<M>` / `rr_counter` / `poll` are
-  per-instance/per-process and don't change. `rr_counter` algorithm
-  is `lo + fetch_add % (hi - lo)` reading
+- `eph::dpdk::PlatformConfig` (single-process shape: NIC physical
+  state + optional `max_procs` / `queues_per_proc` / `file_prefix`
+  consumed only by autojoin) — bring-up the DPDK platform.
+  `Platform::create(PlatformConfig)` is single-process only (rejects
+  `max_procs > 1` with a recovery hint pointing at `create_or_join`).
+  `Platform::launch(PlatformConfig, EalConfig, …)` is the one-shot
+  variant that owns EAL too. Multi-process is only via
+  `Platform::create_or_join(CreateOrJoinConfig)`: peers race on
+  `eal_init`, the winner becomes primary and calls the same bring-up
+  internally; losers attach as secondaries (CAS-claim a registry slot,
+  read NIC state from primary's hugepage registry / live device, skip
+  configure/start/stop/close). Hot path is zero-cost: `inc_<M>` /
+  `rr_counter` / `poll` are per-instance/per-process and don't change.
+  `rr_counter` algorithm is `lo + fetch_add % (hi - lo)` reading
   `Platform::effective_rx_queue_range()` (cold path, single-process
   default `{0, 0}` resolves to `[0, nb_rx_queues)` — byte-for-byte
   identical to the pre-MP `% nb_q`). Source-port partitioning across
@@ -114,13 +117,14 @@ The scope decisions for the current feature set are archived in
   does not auto-allocate src_port and has no global view to enforce
   disjointness. `eph::dpdk::EalConfig` + `build_eal_argv` is the
   typed helper for assembling `--proc-type` / `--file-prefix` /
-  `-l` / `-a` argv (the v3 `*_with_eal` factories inject proc_type
-  and file_prefix automatically). See `eph-net-dpdk/docs/dpdk-multi
-  process.md` for the startup ordering, partitioning rules, PMD
-  caveats and orchestrator script. The pre-v3 v2 shape (with
-  `proc_type` / `mp_topology` / `rx_queue_range`) lives on as
-  `LegacyPlatformConfig` for internal lifecycle delegation only and
-  is **not** part of the supported public API.
+  `-l` / `-a` argv (the `launch` / `create_or_join` factories inject
+  proc_type and file_prefix automatically). See
+  `eph-net-dpdk/docs/dpdk-multiprocess.md` for startup ordering,
+  partitioning rules, PMD caveats and the orchestrator script. The
+  pre-v3 cooperative path (`Platform::attach` /
+  `PlatformAttachConfig` / declarative-MP `Platform::create` with
+  `max_procs > 1`) was removed in 2026-05-01's reshape — autojoin is
+  the only multi-process surface.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
