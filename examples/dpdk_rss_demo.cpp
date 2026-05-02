@@ -136,7 +136,7 @@ namespace {
 
 struct AppArgs {
     /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
-    ed::cli::EalArgs        eal{};
+    ed::cli::EalCliConfig        eal{};
     uint16_t                nb_rx_queues = 4;
     uint16_t                connections  = 4;    // # of UDP sockets to spawn
     uint32_t                src_ip       = 0x0A000010;  // 10.0.0.16
@@ -169,7 +169,7 @@ AppArgs parse_args(int argc, char** argv) {
         char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
         // EAL flags first.
-        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        auto consumed = ed::cli::consume_one(out.eal, a, next);
         if (!consumed) {
             spdlog::error("dpdk_rss_demo: {}", consumed.error());
             std::exit(1);

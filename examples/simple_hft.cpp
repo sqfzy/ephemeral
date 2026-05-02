@@ -80,7 +80,7 @@ static void on_signal(int) { g_running.store(false, std::memory_order_release); 
 namespace {
 
 struct AppConfig {
-    ed::cli::EalArgs eal{};        // --pci / --pin / --lcores / --port-id / --dpdk-port
+    ed::cli::EalCliConfig eal{};        // --pci / --pin / --lcores / --port-id / --dpdk-port
 
     std::string  host = "stream.binance.com";
     std::string  ws_path = "/ws/btcusdt@aggTrade";
@@ -113,7 +113,7 @@ std::optional<AppConfig> parse_args(int argc, char** argv) {
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
         // EAL flags first — try_consume returns 2 if it ate the token + value.
-        auto consumed = ed::cli::try_consume(cfg.eal, a, next);
+        auto consumed = ed::cli::consume_one(cfg.eal, a, next);
         if (!consumed) {
             spdlog::error("{}", consumed.error());
             return std::nullopt;

@@ -7,7 +7,7 @@
 /// Scope: parsing, validating, and lowering the small set of EAL-related
 /// flags that every DPDK-backed program needs (`--pci`, `--pin`, `--lcores`,
 /// `--port-id`/`--dpdk-port`). The helper is **opt-in**: examples are free
-/// to keep their own argv loop and call `try_consume` per token, OR keep
+/// to keep their own argv loop and call `consume_one` per token, OR keep
 /// hand-written parsing entirely. Application-specific flags (`--host`,
 /// `--duration`, etc.) are always the caller's job — this header has no
 /// opinion about them.
@@ -21,9 +21,9 @@
 /// Typical use:
 ///
 /// @code
-///     eph::dpdk::cli::EalArgs eal;
+///     eph::dpdk::cli::EalCliConfig eal;
 ///     for (int i = 1; i < argc; ++i) {
-///         auto consumed = eph::dpdk::cli::try_consume(
+///         auto consumed = eph::dpdk::cli::consume_one(
 ///             eal, argv[i], (i + 1 < argc) ? argv[i + 1] : nullptr);
 ///         if (!consumed) { spdlog::error("{}", consumed.error()); return 1; }
 ///         if (*consumed > 0) { i += *consumed - 1; continue; }
@@ -57,8 +57,8 @@ namespace eph::dpdk::cli {
 /// `port_id` value (which is per-Platform, not per-EAL, but is so
 /// universally needed alongside the EAL flags that it earns a slot
 /// here). `program_name` is supplied at lowering time, not parse time,
-/// so the same `EalArgs` could in principle drive two Platforms.
-struct EalArgs {
+/// so the same `EalCliConfig` could in principle drive two Platforms.
+struct EalCliConfig {
     /// One entry per `--pci` token (passed through to `EalConfig::allowed_devs`).
     std::vector<std::string>  pci;
     /// Typed pins from `--pin lcore=cpu[:role]`. Mutually exclusive with
@@ -90,7 +90,7 @@ struct EalArgs {
 /// changing the signature. Callers should advance their loop index by
 /// `*consumed - 1` after a successful match (or 0 if no match).
 [[nodiscard]] inline std::expected<int, std::string>
-try_consume(EalArgs& args, std::string_view flag, char const* next) {
+consume_one(EalCliConfig& args, std::string_view flag, char const* next) {
     auto need_value = [&](std::string_view f) -> std::expected<char const*, std::string> {
         if (next == nullptr) {
             return std::unexpected(std::string{f} + " requires a value");
@@ -142,7 +142,7 @@ try_consume(EalArgs& args, std::string_view flag, char const* next) {
 /// drop one. Surface the conflict at parse time with the same diagnostic
 /// every example used to print by hand.
 [[nodiscard]] inline std::expected<void, std::string>
-validate(EalArgs const& a) {
+validate(EalCliConfig const& a) {
     const bool typed = !a.pins.empty();
     const bool raw   = !a.lcores_raw.empty();
     if (typed && raw) {
@@ -153,7 +153,7 @@ validate(EalArgs const& a) {
     return {};
 }
 
-/// @brief Lower an `EalArgs` into an `EalConfig` ready for
+/// @brief Lower an `EalCliConfig` into an `EalConfig` ready for
 /// `Platform::create_with_eal` / `EalGuard::init_with_pins`.
 ///
 /// `pci` -> `allowed_devs` (`-a` passthrough). `lcores_raw` -> single
@@ -168,7 +168,7 @@ validate(EalArgs const& a) {
 /// `PlatformConfig`, not the EAL session. Read `args.port_id` directly
 /// when filling `PlatformConfig::port_id`.
 [[nodiscard]] inline EalConfig
-to_eal_config(EalArgs args, std::string program_name) {
+to_eal_config(EalCliConfig args, std::string program_name) {
     EalConfig cfg{};
     cfg.program_name = std::move(program_name);
     cfg.allowed_devs = std::move(args.pci);

@@ -103,7 +103,7 @@ namespace {
 
 struct AppArgs {
     /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
-    ed::cli::EalArgs          eal{};
+    ed::cli::EalCliConfig          eal{};
     std::string               group_str  = "233.54.12.111";  // Nasdaq TVITCH-like
     uint16_t                  group_port = 26477;
     int                       seconds    = 5;
@@ -134,7 +134,7 @@ AppArgs parse_args(int argc, char** argv) {
         char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
         // EAL flags first.
-        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        auto consumed = ed::cli::consume_one(out.eal, a, next);
         if (!consumed) { spdlog::error("dpdk_multicast_md: {}", consumed.error()); std::exit(1); }
         if (*consumed > 0) { i += *consumed - 1; continue; }
 

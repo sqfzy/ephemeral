@@ -106,7 +106,7 @@ namespace {
 
 struct AppArgs {
     /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
-    ed::cli::EalArgs        eal{};
+    ed::cli::EalCliConfig        eal{};
     uint16_t                nb_rx_queues = 4;    // total queues primary configures
     std::chrono::seconds    run_seconds  = 5s;   // how long to drive poll()
 };
@@ -125,7 +125,7 @@ AppArgs parse_args(int argc, char** argv) {
         char const* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
         // EAL flags first.
-        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        auto consumed = ed::cli::consume_one(out.eal, a, next);
         if (!consumed) {
             spdlog::error("dpdk_mp_demo: {}", consumed.error());
             std::exit(1);

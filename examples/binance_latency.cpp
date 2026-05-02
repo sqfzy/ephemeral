@@ -168,7 +168,7 @@ struct AppConfig {
 
     // EAL bring-up — --pci / --pin / --lcores / --dpdk-port (or --port-id
     // alias) routed through the shared cli helper.
-    ed::cli::EalArgs eal{};
+    ed::cli::EalCliConfig eal{};
 };
 
 [[nodiscard]] static std::optional<AppConfig>
@@ -186,7 +186,7 @@ parse_app_args(int argc, char** argv) {
         const char* next = (i + 1 < argc) ? argv[i + 1] : nullptr;
 
         // EAL flags first (--pci / --pin / --lcores / --dpdk-port / --port-id).
-        auto consumed = ed::cli::try_consume(cfg.eal, a, next);
+        auto consumed = ed::cli::consume_one(cfg.eal, a, next);
         if (!consumed) {
             spdlog::error("{}", consumed.error());
             return std::nullopt;

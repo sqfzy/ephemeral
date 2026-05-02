@@ -101,7 +101,7 @@ namespace {
 struct AppArgs {
     /// EAL flags. `eal.pci` is the repeatable `--pci` accumulator —
     /// MultiPortPlatform brings up one Platform per entry, in order.
-    ed::cli::EalArgs          eal{};
+    ed::cli::EalCliConfig          eal{};
     std::chrono::seconds      run_seconds = 3s;
 };
 
@@ -120,7 +120,7 @@ AppArgs parse_args(int argc, char** argv) {
 
         // EAL flags first. --pci accumulates because the helper always pushes
         // back; this is the multi-NIC entry point.
-        auto consumed = ed::cli::try_consume(out.eal, a, next);
+        auto consumed = ed::cli::consume_one(out.eal, a, next);
         if (!consumed) { spdlog::error("multi_port_platform_demo: {}", consumed.error()); std::exit(1); }
         if (*consumed > 0) { i += *consumed - 1; continue; }
 

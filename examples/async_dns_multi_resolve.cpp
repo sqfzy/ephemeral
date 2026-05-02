@@ -167,14 +167,14 @@ int main(int argc, char** argv) {
     rte_ether_addr gw_mac{};                   // zero — must be set via flag
     bool smoke = false;
 
-    ed::cli::EalArgs eal_args{};
+    ed::cli::EalCliConfig eal_args{};
 
     for (int i = 0; i < app_argc; ++i) {
         std::string_view a = app_argv[i];
         char const* next = (i + 1 < app_argc) ? app_argv[i + 1] : nullptr;
 
         // EAL flags first (--pci / --pin / --lcores / --dpdk-port / --port-id).
-        auto consumed = ed::cli::try_consume(eal_args, a, next);
+        auto consumed = ed::cli::consume_one(eal_args, a, next);
         if (!consumed) {
             spdlog::error("async_dns_multi_resolve: {}", consumed.error());
             return 1;
