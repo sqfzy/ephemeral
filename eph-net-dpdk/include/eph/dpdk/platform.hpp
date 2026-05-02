@@ -21,32 +21,36 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <csignal>
 #include <expected>
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <pthread.h>
+
 #include <spdlog/spdlog.h>
 
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
-#include "eph/dpdk/detail/bdf_sanitize.hpp"     // detail::sanitize_bdf_for_file_prefix (autojoin)
+#include "eph/dpdk/detail/bdf_sanitize.hpp"     // detail::sanitize_bdf_for_file_prefix
 #include "eph/dpdk/detail/icmp_directory.hpp"  // detail::IcmpDirectoryHandle, IPC thunk
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
-#include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (autojoin)
-// NOTE: `eph/dpdk/create_or_join.hpp` is included AFTER `PlatformConfig`
-// is defined — `CreateOrJoinConfig::nic` embeds it by value.
+#include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (internal helper)
+#include "eph/dpdk/lcore_pin.hpp"              // LcorePin (typed pin spec for PlatformConfig)
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
 #include "eph/dpdk/packet_parse.hpp"           // ParsedIcmp for dispatch_icmp_
 #include "eph/dpdk/proc_type.hpp"              // ProcType enum + to_eal_string
 #include "eph/net/dpdk/flow_steering.hpp"
+#include "eph/utils/cpu.hpp"                   // CpuPinPolicy
 
 // Forward-declare DpdkPoller so register_poller / poller_for_queue can name
 // it without pulling in the entire poller.hpp.  The full template lives at
@@ -438,92 +442,198 @@ struct BringupConfig {
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────
-// PlatformConfig (public, primary or single-process)
+// Public Config types — daemon-led model (post-reshape)
 // ─────────────────────────────────────────────────────────────────────
+//
+// Two configs replace the old kitchen-sink PlatformConfig +
+// CreateOrJoinConfig + EalConfig public surface:
+//
+//   1. PlatformConfig — application-side, consumed by Platform::create
+//      to attach as a DPDK secondary. Just NIC selection (`pci`),
+//      resource ask (`queues`), and per-process EAL knobs.
+//
+//   2. NicServiceConfig — daemon-side, consumed by Platform::serve_nic.
+//      All NIC physical state (descriptors, RSS key, mempool, …) lives
+//      here. Apps never see it.
+//
+// EalConfig (eal.hpp) stays as an internal helper type; it is no longer
+// passed by callers.
 
-/// @brief Single-process Platform config (also embedded inside
-/// `CreateOrJoinConfig::nic` for autojoin's primary path).
+/// @brief Default 40-byte symmetric Toeplitz RSS key.
 ///
-/// Carries every NIC-physical-state field (queue counts, descriptor
-/// counts, mempool, RSS, promiscuous, etc.). The `max_procs` /
-/// `queues_per_proc` fields are read by `Platform::create_or_join`
-/// when this peer auto-resolves to primary; `Platform::create` and
-/// `Platform::launch` reject any value other than 1 since
-/// the cooperative-MP path was removed.
-struct PlatformConfig {
-    // ── Identity ────────────────────────────────────────────────────
-    /// DPDK port enumeration index.
-    uint16_t         port_id      = 0;
-    /// Hugepage namespace (matches EAL `--file-prefix`). Used by
-    /// `Platform::create_or_join` when this peer resolves to primary —
-    /// passed through into the registry memzone name. Empty value is
-    /// the single-process default; the `Platform::create` /
-    /// `launch` paths do not consult it (they are
-    /// single-process only).
-    std::string_view file_prefix  = {};
-
-    // ── NIC physical state (mirror v2) ─────────────────────────────
-    uint16_t nb_rx_queues    = 1;
-    uint16_t nb_tx_queues    = 1;
-    uint16_t nb_rx_desc      = 256;
-    uint16_t nb_tx_desc      = 512;
-    uint32_t mbuf_pool_size  = 4095;
-    uint16_t mbuf_cache_size = 256;
-    bool     enable_promiscuous          = false;
-    bool     enable_rx_checksum_offload  = false;
-    bool     enable_strict_rx_checksum   = false;
-    int      link_timeout_ms             = 2000;
-    uint16_t per_lcore_pools             = 0;
-
-    // ── MP knobs (caller-friendly; replace mp_topology) ────────────
-    /// @brief Total process slots primary opens. 1 = single-process
-    /// (no registry); >= 2 = MP primary, registry has this many slots
-    /// available for secondaries.
-    uint8_t  max_procs       = 1;
-    /// @brief How many RX queues each process slot owns. 0 = auto
-    /// (`nb_rx_queues / max_procs`). Only consulted when `max_procs > 1`.
-    uint16_t queues_per_proc = 0;
-
-    [[nodiscard]] friend bool operator==(const PlatformConfig&,
-                                         const PlatformConfig&) = default;
-
-    [[nodiscard]] std::string dump() const {
-        return std::format(
-            "PlatformConfig{{port_id={}, file_prefix='{}', "
-            "queues={}rx/{}tx, descs={}rx/{}tx, "
-            "pool={} cache={} promisc={} link_to={}ms, "
-            "rx_cksum={} strict={}, "
-            "max_procs={} queues_per_proc={} per_lcore_pools={}}}",
-            port_id, file_prefix, nb_rx_queues, nb_tx_queues,
-            nb_rx_desc, nb_tx_desc, mbuf_pool_size, mbuf_cache_size,
-            enable_promiscuous, link_timeout_ms,
-            enable_rx_checksum_offload, enable_strict_rx_checksum,
-            max_procs, queues_per_proc, per_lcore_pools);
-    }
+/// `0x6d, 0x5a` repeated — matches the well-known "Toeplitz default"
+/// used by most PMDs and recommended by Microsoft for symmetric RX/TX
+/// hashing. Ops can override per-NIC via `NicServiceConfig::rss_key`.
+inline constexpr std::array<std::uint8_t, 40> kDefaultRssKey{
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
+    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
 };
 
-} // namespace eph::dpdk
+/// @brief Application-facing Platform config — what an app passes to
+/// `Platform::create` to attach to an already-running NIC daemon.
+///
+/// Lean by design: the only NIC-related field is the PCI BDF (which
+/// also derives the EAL `--file-prefix` deterministically) and the
+/// per-app queue ask. Every other physical NIC knob lives on
+/// `NicServiceConfig` and is owned by the daemon.
+///
+/// Internally derived (caller never sets these):
+///   * `proc_type = Secondary` — apps are always DPDK secondaries
+///   * `file_prefix = "eph_" + sanitize_bdf(pci)`
+///   * `allowed_devs = {pci}`
+struct PlatformConfig {
+    // ── NIC selection ────────────────────────────────────────────────
+    /// PCI BDF of the NIC to attach (e.g. `"0000:01:00.1"`). Drives
+    /// both the EAL `-a` allowlist AND the auto-derived `file_prefix`.
+    /// Empty = resolved at create time from the daemon's
+    /// `default = true` toml (S6 wires this in; today the empty path
+    /// still requires daemon registry to exist for the derived prefix).
+    std::string_view pci{};
 
-// CreateOrJoinConfig embeds a PlatformConfig as a value member, so it
-// must be parsed after PlatformConfig is fully defined. We signal that
-// PlatformConfig is now in scope via the sentinel macro that
-// create_or_join.hpp checks at the top.
-#define EPH_DPDK_PLATFORM_CONFIG_DEFINED 1
-#include "eph/dpdk/create_or_join.hpp"
+    // ── Resource ask ────────────────────────────────────────────────
+    /// @brief Bidirectional queue pairs requested. Each queue pair
+    /// is one RX + one TX queue, bound 1:1 (the assumption table in
+    /// the design plan calls this out — the library does not support
+    /// asymmetric RX-heavy / TX-light layouts).
+    ///
+    /// Pool exhausted ⇒ `Platform::create` returns
+    /// `ErrorInfo{QueuePoolExhausted}`. Today (foundation commit) the
+    /// queue allocation is a static placeholder: the secondary just
+    /// claims queues `0..(queues-1)`. The proper QueueAllocator + RETA
+    /// dynamics arrive in S5.
+    std::uint16_t queues = 1;
 
-namespace eph::dpdk {
+    // ── Per-process EAL knobs (the old `EalConfig` minus the bits
+    //    the library auto-derives) ────────────────────────────────────
+    /// Typed lcore→cpu pin spec. When non-empty, the library validates
+    /// each pin against the process-wide pin registry BEFORE
+    /// `rte_eal_init` fires, so a misconfigured topology surfaces as a
+    /// loud cold-path error. Mutually exclusive with `lcores`.
+    std::span<eph::dpdk::LcorePin const> pins{};
+
+    /// Strictness of the typed-pin validator. Has no effect when
+    /// `pins` is empty.
+    eph::utils::CpuPinPolicy pin_policy{};
+
+    /// Raw lcore list (one entry per `-l` argument, or one entry using
+    /// DPDK list/range syntax like `"0-3"`). Mutually exclusive with
+    /// `pins`. The same DPDK footgun that bit `EalConfig::lcores` still
+    /// applies — multiple entries collapse to the LAST `-l` value;
+    /// prefer the typed `pins` path.
+    std::vector<std::string> lcores{};
+
+    /// Extra raw EAL argv tokens (e.g. `--log-level=lib.eal:warning`).
+    /// Appended verbatim to the assembled argv after the typed
+    /// transformations.
+    std::vector<std::string> extra_eal_args{};
+
+    /// EAL `argv[0]`. Useful for log identification when multiple apps
+    /// share one host.
+    std::string_view program_name{"eph_app"};
+};
+
+/// @brief Structural validator for `PlatformConfig`. Empty string_view
+/// on success; non-empty rejection reason on failure.
+///
+/// constexpr-evaluable: use in `static_assert(config_ok(cfg))` for
+/// compile-time configs.
+[[nodiscard]] constexpr std::string_view
+validate(const PlatformConfig& cfg) noexcept {
+    if (cfg.queues == 0)
+        return "queues must be >= 1";
+    if (!cfg.pins.empty() && !cfg.lcores.empty())
+        return "pins and lcores are mutually exclusive";
+    if (cfg.program_name.empty())
+        return "program_name must be non-empty";
+    // Empty `pci` is ALLOWED here — resolved at create time against
+    // the daemon registry. Validate-only checks that the call shape is
+    // structurally sane; live-NIC reachability is a separate runtime
+    // concern.
+    return {};
+}
+
+/// For use in `static_assert` with constexpr configs:
+///   constexpr PlatformConfig cfg{ .queues = 4 };
+///   static_assert(config_ok(cfg), "bad PlatformConfig");
+[[nodiscard]] constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
+    return validate(cfg).empty();
+}
+
+/// @brief Daemon-facing config — consumed by `Platform::serve_nic` and
+/// the `eph-nicd` binary. Carries the NIC physical state ops cares
+/// about (descriptors, RSS, mempool, promiscuous mode, …); apps never
+/// see this struct.
+///
+/// `total_queues` sets the queue pool capacity = max number of peer
+/// secondaries that can attach simultaneously. RX/TX 1:1 paired (same
+/// assumption as the application side).
+struct NicServiceConfig {
+    /// PCI BDF of the NIC to bring up. Required.
+    std::string_view pci{};
+
+    /// @brief Total queue pairs the daemon configures on the NIC.
+    /// = pool capacity = upper bound on the sum of `cfg.queues` across
+    /// all attached secondaries. Must be >= 1.
+    std::uint16_t total_queues = 16;
+
+    /// 40-byte symmetric Toeplitz RSS key. Defaults to
+    /// `kDefaultRssKey`. Override per-NIC if the deployment requires a
+    /// site-specific key.
+    std::array<std::uint8_t, 40> rss_key = kDefaultRssKey;
+
+    /// True = enable promiscuous mode on the port. HFT default false.
+    bool          promiscuous     = false;
+
+    /// RX descriptor ring depth per queue. Clamped to NIC limits at
+    /// bring-up time.
+    std::uint16_t nb_rx_desc      = 1024;
+
+    /// TX descriptor ring depth per queue. Clamped to NIC limits at
+    /// bring-up time.
+    std::uint16_t nb_tx_desc      = 1024;
+
+    /// Mempool size. Must be `2^n - 1` (e.g. 1023, 4095, 8191).
+    std::uint32_t mbuf_pool_size  = 8191;
+
+    /// Per-lcore mempool cache size. Must be < `mbuf_pool_size`.
+    std::uint16_t mbuf_cache_size = 256;
+
+    /// EAL lcore the daemon's primary process runs on. Single-lcore
+    /// daemon today; future versions may take a list.
+    std::uint16_t daemon_lcore = 0;
+};
+
+/// @brief Structural validator for `NicServiceConfig`. Empty
+/// `string_view` on success; non-empty rejection reason on failure.
+[[nodiscard]] constexpr std::string_view
+validate(const NicServiceConfig& cfg) noexcept {
+    if (cfg.pci.empty())
+        return "pci must be non-empty";
+    if (cfg.total_queues == 0)
+        return "total_queues must be >= 1";
+    if (cfg.nb_rx_desc == 0)
+        return "nb_rx_desc must be >= 1";
+    if (cfg.nb_tx_desc == 0)
+        return "nb_tx_desc must be >= 1";
+    if (!detail::is_power_of_two_minus_one(cfg.mbuf_pool_size))
+        return "mbuf_pool_size must be 2^n - 1 (e.g. 1023, 4095, 8191)";
+    if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
+        return "mbuf_cache_size must be less than mbuf_pool_size";
+    return {};
+}
+
+[[nodiscard]] constexpr bool config_ok(const NicServiceConfig& cfg) noexcept {
+    return validate(cfg).empty();
+}
 
 namespace detail {
 
-/// @brief Internal bring-up validator. Mirror of the public v3
-/// `validate_config(PlatformConfig)` rejection set, plus checks for
-/// the v2-only fields that only the bring-up pipeline carries
-/// (`rx_queue_range` half-set protection; `mp_topology` validity).
-///
-/// Used by `primary_bringup_` / `secondary_bringup_` and the bring-up
-/// body — each runs this validator at the start to surface a
-/// structural problem before any DPDK syscall fires. Empty
-/// string_view on success.
+/// @brief Internal bring-up validator for `BringupConfig`. Used by
+/// `primary_bringup_` / `secondary_bringup_` to surface a structural
+/// problem before any DPDK syscall fires. Empty string_view on success.
 [[nodiscard]] constexpr std::string_view
 validate_bringup_(const BringupConfig& cfg) noexcept {
     if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
@@ -566,66 +676,6 @@ validate_bringup_(const BringupConfig& cfg) noexcept {
 }
 
 } // namespace detail
-
-/// @brief v3 PlatformConfig structural validator. Mirrors the v2 validator's
-/// rejection set for fields that exist on both shapes (queue counts,
-/// descriptors, mbuf pool, per_lcore_pools, link_timeout) and adds
-/// v3-specific checks for `max_procs` / `queues_per_proc`. The v2-only
-/// fields (`proc_type`, `mp_topology`, `rx_queue_range`) do not exist on
-/// v3 and so are not validated here — primary's MP topology is
-/// synthesized from `max_procs` / `queues_per_proc` at bring-up time and
-/// must satisfy the same `MpTopology::valid()` invariant.
-///
-/// constexpr-evaluable: use in `static_assert(config_ok(cfg))` for
-/// compile-time configs, or call at runtime for dynamic configs.
-[[nodiscard]] constexpr std::string_view validate_config(const PlatformConfig& cfg) noexcept {
-    if (cfg.nb_rx_queues  == 0) return "nb_rx_queues must be > 0";
-    if (cfg.nb_tx_queues  == 0) return "nb_tx_queues must be > 0";
-    // Same RSS-aware multi-queue rejection as the v2 path. See the v2
-    // validator above for the full rationale.
-    if (cfg.nb_rx_queues > 1 && cfg.nb_tx_queues == 1)
-        return "nb_tx_queues must be >= nb_rx_queues when nb_rx_queues > 1 "
-               "(RSS-aware connect pins tx_queue_id = rx_queue_id)";
-    if (cfg.nb_rx_desc    == 0) return "nb_rx_desc must be > 0";
-    if (cfg.nb_tx_desc    == 0) return "nb_tx_desc must be > 0";
-    if (cfg.link_timeout_ms < 0) return "link_timeout_ms must be >= 0";
-    if (!detail::is_power_of_two_minus_one(cfg.mbuf_pool_size))
-        return "mbuf_pool_size must be 2^n - 1 (e.g. 1023, 4095, 8191)";
-    if (cfg.mbuf_cache_size >= cfg.mbuf_pool_size)
-        return "mbuf_cache_size must be less than mbuf_pool_size";
-    if (cfg.per_lcore_pools > 256)
-        return "per_lcore_pools must be <= RTE_MAX_LCORE (256)";
-    // v3-specific: max_procs / queues_per_proc combination check. The
-    // synthesized MpTopology must satisfy queue_hi <= nb_rx_queues for
-    // every slot. With queues_per_proc == 0 (auto), bring-up uses
-    // floor(nb_rx_queues / max_procs) so the check reduces to
-    // max_procs <= nb_rx_queues. With queues_per_proc > 0, every slot
-    // owns exactly that many queues, so the check is
-    // max_procs * queues_per_proc <= nb_rx_queues.
-    if (cfg.max_procs == 0)
-        return "max_procs must be >= 1 (1 = single-process; >= 2 = MP primary)";
-    if (cfg.max_procs > 1) {
-        if (cfg.file_prefix.empty())
-            return "max_procs > 1 requires a non-empty file_prefix "
-                   "(used as the registry memzone name eph_mp/<file_prefix>)";
-        const uint16_t qpp = cfg.queues_per_proc == 0
-                                 ? static_cast<uint16_t>(cfg.nb_rx_queues / cfg.max_procs)
-                                 : cfg.queues_per_proc;
-        if (qpp == 0)
-            return "queues_per_proc resolves to 0 (nb_rx_queues < max_procs); "
-                   "raise nb_rx_queues or lower max_procs";
-        if (static_cast<uint32_t>(qpp) * cfg.max_procs > cfg.nb_rx_queues)
-            return "queues_per_proc * max_procs must not exceed nb_rx_queues";
-    }
-    return {};
-}
-
-/// For use in static_assert with constexpr configs:
-///   constexpr PlatformConfig cfg{...};
-///   static_assert(config_ok(cfg), "bad platform config");
-[[nodiscard]] constexpr bool config_ok(const PlatformConfig& cfg) noexcept {
-    return validate_config(cfg).empty();
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform
@@ -699,33 +749,43 @@ public:
     };
 
     // ─────────────────────────────────────────────────────────────────
-    // Public Platform factories (zero-consensus surface)
+    // Public Platform factories (daemon-led surface)
     // ─────────────────────────────────────────────────────────────────
 
-    /// @brief Single-process factory. `cfg.max_procs` MUST be 1 (the
-    /// default); `max_procs > 1` is rejected — multi-process is reached
-    /// exclusively through `Platform::create_or_join`. EAL must be
-    /// initialized before this call (use `launch` for the
-    /// one-shot path).
+    /// @brief Application-side factory. Attaches to an already-running
+    /// `eph-nicd` daemon as a DPDK secondary, claims `cfg.queues`
+    /// queues from the pool, and returns a Platform.
+    ///
+    /// Owns the EAL session for this process (calls `rte_eal_init`
+    /// internally with proc_type=secondary and file_prefix derived
+    /// deterministically from `cfg.pci`).
+    ///
+    /// Failure modes (cold path):
+    ///   * `validate(cfg)` rejection (bad queues / pin spec / …)
+    ///   * No daemon running on this NIC (no primary on the
+    ///     derived file_prefix)
+    ///   * Pool exhausted (post-S5: returns
+    ///     `ErrorInfo{QueuePoolExhausted}`; today the static
+    ///     placeholder may surface a different bring-up error)
     [[nodiscard]] static std::expected<Platform, std::string>
     create(PlatformConfig cfg);
 
-    /// @brief One-shot EAL+Platform for the single-process path. Same
-    /// `cfg.max_procs == 1` contract as `create`. EalConfig caller-side:
-    /// do NOT set `proc_type` / `file_prefix` — this factory injects
-    /// them from `cfg.file_prefix` and `ProcType::Primary`.
+    /// @brief Daemon-side factory. Brings the NIC up as DPDK primary
+    /// with the physical state described by `cfg`, and returns a
+    /// Platform. The intended caller is the `eph-nicd` binary —
+    /// applications MUST use `Platform::create`.
+    ///
+    /// Owns the EAL session for this process. After this call returns,
+    /// secondaries may attach via `Platform::create` against the same
+    /// `cfg.pci`.
     [[nodiscard]] static std::expected<Platform, std::string>
-    launch(PlatformConfig                        cfg,
-                    EalConfig                               eal_cfg,
-                    std::span<eph::dpdk::LcorePin const>    pins   = {},
-                    eph::utils::CpuPinPolicy                policy = {});
+    serve_nic(NicServiceConfig cfg);
 
-    /// @brief Autojoin — the only multi-process entry point. `pci` is
-    /// the only required input. file_prefix is auto-derived from PCI
-    /// BDF; primary/secondary role auto-resolved post `eal_init`;
-    /// secondary needs no NIC physical knowledge.
-    [[nodiscard]] static std::expected<Platform, std::string>
-    create_or_join(CreateOrJoinConfig cfg);
+    /// @brief Block until SIGTERM or SIGINT is received. Used by the
+    /// daemon binary after `serve_nic` returns to keep the NIC
+    /// primary alive while secondaries attach. Returns on signal
+    /// receipt; ~Platform handles the actual NIC teardown.
+    void join() noexcept;
 
     ~Platform();
 
@@ -1115,15 +1175,16 @@ struct Platform::Impl {
     /// rule as fd_install_action.
     std::optional<::eph::dpdk::detail::MpIpcAction> fd_destroy_action;
 
-    /// @brief Cold-path NIC physical state (v3 shape). Holds every field
-    /// that the bring-up body reads — port_id, queue counts, descriptor
-    /// counts, mbuf pool, RSS / promiscuous flags, file_prefix,
-    /// per_lcore_pools, max_procs / queues_per_proc. The pre-cleanup v2
-    /// shape's role-and-topology fields (`proc_type`, `mp_topology`,
-    /// `rx_queue_range`) are NOT here — they are resolved at create
-    /// time and stored separately in `resolved_proc_type` /
-    /// `resolved_rx_queue_range` (and, transitively, `mp_registry`).
-    PlatformConfig config;
+    /// @brief Cold-path NIC physical state. Holds every field the
+    /// bring-up body reads — port_id, queue counts, descriptor counts,
+    /// mbuf pool, RSS / promiscuous flags, file_prefix, per_lcore_pools.
+    /// Internally typed as `detail::BringupConfig` so the cluster of
+    /// `impl_->config.<field>` accessors keeps working unchanged across
+    /// the public-API reshape; the public-facing `PlatformConfig`
+    /// (post-reshape lean shape) is no longer a 1:1 mirror of these
+    /// fields and would not satisfy the bring-up body's needs on its
+    /// own.
+    detail::BringupConfig config;
 
     /// @brief Resolved DPDK process role for THIS Platform instance.
     /// Captured from the role-specific bring-up entry point at create
@@ -2432,302 +2493,147 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Public entry-point implementations (PlatformConfig single-process,
-// CreateOrJoinConfig autojoin) — they synthesize an internal
-// `BringupConfig` and delegate to `primary_bringup_` /
-// `secondary_bringup_`.
+// Public entry-point implementations (daemon-led model)
 // ─────────────────────────────────────────────────────────────────────
+//
+// Two factories:
+//
+//   * `Platform::create(PlatformConfig)` — application secondary-attach.
+//     Derives file_prefix from cfg.pci, runs eal_init with
+//     proc_type=Secondary + allowed_devs={pci}, then secondary_bringup_.
+//     Today the queue claim is a static placeholder — the secondary
+//     just claims queues `0..(cfg.queues-1)`. S5 replaces this with the
+//     QueueAllocator + RETA-tracking IPC protocol.
+//
+//   * `Platform::serve_nic(NicServiceConfig)` — daemon primary entry.
+//     eal_init with proc_type=Primary, then primary_bringup_ with an
+//     `MpTopology::uniform` covering `cfg.total_queues` slots so
+//     secondaries can attach. Owns the EAL session
+//     (`Impl::owns_eal_init = true`).
 
 namespace detail {
 
-/// @brief Project a public `PlatformConfig` (primary or single-process)
-/// into the internal `BringupConfig` shape consumed by the bring-up
-/// helpers. Synthesizes `MpTopology` from `max_procs` / `queues_per_proc`
-/// when `max_procs > 1` (`MpTopology::uniform` handles `queues_per_proc=0`
-/// by splitting `nb_rx_queues / max_procs`).
-inline BringupConfig bringup_from_v3_(const PlatformConfig& v3) {
+/// @brief Internal helper: lower a `PlatformConfig` (lean app-side
+/// shape) into a `BringupConfig` for the secondary path. The caller
+/// (`Platform::create`) supplies the file_prefix it derived.
+[[nodiscard]] inline BringupConfig
+bringup_from_platform_(const PlatformConfig& cfg,
+                       std::string_view      file_prefix) {
     BringupConfig bcfg{};
-    bcfg.port_id                    = v3.port_id;
-    bcfg.nb_rx_queues               = v3.nb_rx_queues;
-    bcfg.nb_tx_queues               = v3.nb_tx_queues;
-    bcfg.nb_rx_desc                 = v3.nb_rx_desc;
-    bcfg.nb_tx_desc                 = v3.nb_tx_desc;
-    bcfg.mbuf_pool_size             = v3.mbuf_pool_size;
-    bcfg.mbuf_cache_size            = v3.mbuf_cache_size;
-    bcfg.enable_promiscuous         = v3.enable_promiscuous;
-    bcfg.enable_rx_checksum_offload = v3.enable_rx_checksum_offload;
-    bcfg.enable_strict_rx_checksum  = v3.enable_strict_rx_checksum;
-    bcfg.link_timeout_ms            = v3.link_timeout_ms;
-    bcfg.per_lcore_pools            = v3.per_lcore_pools;
-    bcfg.proc_type                  = ProcType::Primary;
-    bcfg.file_prefix                = v3.file_prefix;
-
-    if (v3.max_procs > 1) {
-        bcfg.mp_topology = MpTopology::uniform(
-            /*self_index=*/0, v3.max_procs, v3.nb_rx_queues);
-    }
+    bcfg.proc_type   = ProcType::Secondary;
+    bcfg.file_prefix = file_prefix;
+    // S5 lifts the placeholder: cfg.queues drives a real claim against
+    // the daemon's QueueAllocator, and the daemon hands back the actual
+    // queue range. Today we project naively into a uniform topology so
+    // the existing secondary_bringup_ machinery still works.
+    bcfg.port_id        = 0;            // single-port today
+    bcfg.nb_rx_queues   = cfg.queues;
+    bcfg.nb_tx_queues   = cfg.queues;
+    // Secondary doesn't reconfigure descriptor counts / mbuf pool —
+    // those are primary-owned. Leave the defaults; the bring-up body
+    // queries the live NIC anyway.
     return bcfg;
+}
+
+/// @brief Internal helper: lower a `NicServiceConfig` (daemon-side
+/// shape) into a `BringupConfig` for the primary path.
+[[nodiscard]] inline BringupConfig
+bringup_from_nic_service_(const NicServiceConfig& cfg,
+                          std::string_view        file_prefix) {
+    BringupConfig bcfg{};
+    bcfg.proc_type           = ProcType::Primary;
+    bcfg.file_prefix         = file_prefix;
+    bcfg.port_id             = 0;       // single-port today
+    bcfg.nb_rx_queues        = cfg.total_queues;
+    bcfg.nb_tx_queues        = cfg.total_queues;
+    bcfg.nb_rx_desc          = cfg.nb_rx_desc;
+    bcfg.nb_tx_desc          = cfg.nb_tx_desc;
+    bcfg.mbuf_pool_size      = cfg.mbuf_pool_size;
+    bcfg.mbuf_cache_size     = cfg.mbuf_cache_size;
+    bcfg.enable_promiscuous  = cfg.promiscuous;
+    // Always reserve enough registry slots so any future peer fits.
+    // Daemon takes slot 0 in this placeholder; S5 refines so the daemon
+    // takes no queue at all.
+    bcfg.mp_topology = MpTopology::uniform(
+        /*self_index=*/0,
+        /*total_procs=*/cfg.total_queues,
+        /*nb_rx_queues=*/cfg.total_queues);
+    return bcfg;
+}
+
+/// @brief Internal: derive `"eph_" + sanitize(pci)` from a BDF, or
+/// surface the bdf-sanitize error. Helper shared by both factories.
+[[nodiscard]] inline std::expected<std::string, std::string>
+derive_file_prefix_(std::string_view pci) {
+    auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(pci);
+    if (!san)
+        return std::unexpected(std::format(
+            "cannot derive file_prefix from pci='{}': {}",
+            pci, san.error().detail));
+    return std::string{"eph_"} + *san;
 }
 
 } // namespace detail
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::create(PlatformConfig cfg) {
-    // Single-process only. The cooperative MP path (declarative primary
-    // with secondaries calling Platform::attach) was deleted — autojoin
-    // via Platform::create_or_join is the only supported MP entry point.
-    if (cfg.max_procs > 1) {
-        return std::unexpected(std::format(
-            "Platform::create: cfg.max_procs={} but cooperative MP "
-            "(declarative primary + Platform::attach secondaries) was "
-            "removed. Use Platform::create_or_join(CreateOrJoinConfig) for "
-            "multi-process — peers race on EAL init and the registry "
-            "auto-resolves primary/secondary roles. Set max_procs=1 (the "
-            "default) for single-process",
-            cfg.max_procs));
-    }
-    // Project the public PlatformConfig into the internal BringupConfig
-    // and delegate to the shared primary bring-up helper.
-    return Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
-}
+    [[maybe_unused]] auto* log = detail::platform_logger();
 
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::launch(PlatformConfig                        cfg,
-                          EalConfig                               eal_cfg,
-                          std::span<eph::dpdk::LcorePin const>    pins,
-                          eph::utils::CpuPinPolicy                policy) {
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    // Single-process only — same contract as Platform::create. The
-    // cooperative MP path was removed; use Platform::create_or_join for MP.
-    if (cfg.max_procs > 1) {
-        return std::unexpected(std::format(
-            "Platform::launch: cfg.max_procs={} but cooperative MP "
-            "(declarative primary + Platform::attach_with_eal secondaries) "
-            "was removed. Use Platform::create_or_join(CreateOrJoinConfig) "
-            "for multi-process. Set max_procs=1 (the default) for "
-            "single-process",
-            cfg.max_procs));
-    }
-
-    // Inject identity fields into EalConfig — v3 contract: caller does
-    // not set these. Always Primary; cooperative-secondary attach was
-    // removed.
-    eal_cfg.proc_type     = ProcType::Primary;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = cfg.file_prefix;
-
-    // ── 1. Mutex: typed-pin path vs raw lcores ──────────────────────────
-    if (!pins.empty() && !eal_cfg.lcores.empty()) {
+    if (auto err = ::eph::dpdk::validate(cfg); !err.empty()) {
         SPDLOG_LOGGER_ERROR(log,
-            "launch: typed pins ({}) and raw lcores ({} entries) "
-            "are mutually exclusive — pick one",
-            pins.size(), eal_cfg.lcores.size());
-        return std::unexpected(std::string{
-            "launch: typed pins and raw eal_cfg.lcores are "
-            "mutually exclusive (the typed path internally emits "
-            "--lcores=<...>; supplying both duplicates the token)"});
+            "Platform::create: invalid PlatformConfig: {}", err);
+        return std::unexpected(std::string{err});
     }
-
-    // ── 2. Pre-EAL pin registration ────────────────────────────────────
-    std::vector<eph::utils::PinGuard> pin_guards;
-    if (!pins.empty()) {
-        auto pg = pin_lcores(pins, policy);
-        if (!pg) {
-            SPDLOG_LOGGER_ERROR(log,
-                "launch: pin_lcores rejected: {}", pg.error());
-            return std::unexpected(std::string{
-                "launch: pin_lcores: "} + pg.error());
-        }
-        pin_guards = std::move(*pg);
-        eal_cfg.extra_args.push_back(build_lcore_argv(pins));
-        SPDLOG_LOGGER_INFO(log,
-            "launch: typed-pin path engaged ({} pins registered)",
-            pins.size());
-    }
-
-    // ── 3. Build EAL argv + call eal_init ──────────────────────────────
-    auto argv_owned = build_eal_argv(eal_cfg);
-    std::vector<char*> argv;
-    argv.reserve(argv_owned.size());
-    for (auto& s : argv_owned) argv.push_back(s.data());
-
-    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
-    if (!eal_r) {
+    if (cfg.pci.empty()) {
+        // S6 will resolve "default = true" toml automatically; today
+        // the empty path is a hard error so users see a clear signal.
         SPDLOG_LOGGER_ERROR(log,
-            "launch: eal_init failed: {}", eal_r.error());
-        // pin_guards local destruction rolls back CPU registry on return.
+            "Platform::create: pci is empty — automatic default-NIC "
+            "selection from /etc/eph/*.toml is not yet wired (S6); "
+            "supply cfg.pci explicitly for now");
         return std::unexpected(std::string{
-            "launch: eal_init failed: "} + eal_r.error());
+            "Platform::create: pci must be non-empty (default-NIC "
+            "selection from toml is not yet wired)"});
     }
 
-    // ── 4. Primary bring-up via the shared helper ──────────────────────
-    auto plat_r = Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
-    if (!plat_r) {
+    auto fp_r = detail::derive_file_prefix_(cfg.pci);
+    if (!fp_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "launch: primary_bringup_ failed: {} — "
-            "rolling back eal_init and pin guards",
-            plat_r.error());
-        // Roll back EAL we just init'd. pin_guards roll back via local destruction.
-        [[maybe_unused]] bool ok = eal_cleanup();
-        return std::unexpected(std::string{
-            "launch: "} + plat_r.error());
+            "Platform::create: {}", fp_r.error());
+        return std::unexpected(std::move(fp_r.error()));
     }
-
-    // ── 5. Transfer EAL ownership into Platform::Impl ──────────────────
-    Platform plat = std::move(*plat_r);
-    if (plat.impl_) {
-        plat.impl_->pin_session_guards = std::move(pin_guards);
-        plat.impl_->owns_eal_init      = true;
-    }
+    const std::string derived_prefix = std::move(*fp_r);
     SPDLOG_LOGGER_INFO(log,
-        "launch: Platform owns EAL session (pins={})",
-        plat.impl_ ? plat.impl_->pin_session_guards.size() : 0);
-    return plat;
-}
+        "Platform::create: derived file_prefix='{}' from pci='{}', "
+        "queues={}", derived_prefix, cfg.pci, cfg.queues);
 
-// ─────────────────────────────────────────────────────────────────────
-// Autojoin — Platform::create_or_join(CreateOrJoinConfig)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Cold-path orchestrator over EAL init + role detection + registry
-// claim. The hot path is unchanged: by the time a Platform is
-// returned the impl is byte-for-byte identical to one produced by
-// `Platform::create(PlatformConfig)` (single-process). The
-// secondary-role impl is reached only via this path now that the
-// cooperative `Platform::attach` entry was removed.
-//
-// Failure modes are surfaced as `unexpected<std::string>` to match
-// the rest of `Platform::*` for source compatibility.
-//
-// Zero-consensus contract: secondary peers may leave
-// `cfg.nic` at default — every field is ignored on the
-// secondary path; the library reads queue count / max_procs from the
-// primary's registry + live NIC (A1). Primary peers populate
-// `cfg.nic.nb_rx_queues` and (optionally) `max_procs` /
-// `queues_per_proc` to drive the registry slot count.
-[[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_or_join(CreateOrJoinConfig cfg) {
-    [[maybe_unused]] auto log = detail::platform_logger();
-
-    // ── 1. validate ────────────────────────────────────────────────────────
-    if (cfg.pci.empty())
+    // ── 1. Pin lcores (typed path) ──────────────────────────────────
+    if (!cfg.pins.empty() && !cfg.lcores.empty()) {
         return std::unexpected(std::string{
-            "create_or_join: pci must be non-empty (provide a PCI BDF "
-            "such as '0000:28:00.0')"});
-    if (cfg.nic.nb_rx_queues == 0)
-        return std::unexpected(std::string{
-            "create_or_join: nic.nb_rx_queues must be > 0"});
-
-    // queues_per_proc default 0 = "auto" (== 1 effectively for the
-    // max_procs auto-derive below). max_procs default 1 = "single-
-    // process" — for autojoin we treat that as "secondary peer left
-    // it at default; auto-derive from nb_rx_queues" rather than as a
-    // hard 1, so secondary peers don't have to fill in primary's
-    // value.
-    const uint16_t queues_per_proc =
-        cfg.nic.queues_per_proc > 0
-            ? cfg.nic.queues_per_proc
-            : uint16_t{1};
-    if (queues_per_proc == 0)
-        return std::unexpected(std::string{
-            "create_or_join: queues_per_proc must be > 0"});
-
-    // Mutable: secondary path may overwrite from live NIC (A1).
-    uint16_t nb_rx_queues = cfg.nic.nb_rx_queues;
-
-    // ── 2. derive file_prefix ─────────────────────────────────────────────
-    // v3 zero-consensus: always auto-derive from pci. The escape hatch
-    // (caller-supplied prefix) lived on a now-removed config shape;
-    // v3 removed it deliberately to enforce the zero-consensus contract.
-    std::string derived_prefix;
-    std::string_view file_prefix;
-    {
-        auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(cfg.pci);
-        if (!san)
-            return std::unexpected(std::format(
-                "create_or_join: cannot derive file_prefix from pci='{}': {}",
-                cfg.pci, san.error().detail));
-        derived_prefix = std::string{"eph_"} + *san;
-        file_prefix    = derived_prefix;
-        SPDLOG_LOGGER_INFO(log,
-            "create_or_join: derived file_prefix='{}' from pci='{}'",
-            derived_prefix, cfg.pci);
+            "Platform::create: pins and lcores are mutually exclusive"});
     }
-
-    // ── 3. derive max_procs ───────────────────────────────────────────────
-    // `nic.max_procs <= 1` is the autojoin "auto-derive"
-    // sentinel — secondary peers default to 1 and must NOT lock the
-    // library into max_procs=1 (which would forbid any secondary
-    // attach). Track whether the caller explicitly set a value > 1
-    // so the "max_procs disagreement" check below only fires on
-    // explicit caller disagreement.
-    const bool max_procs_explicit = (cfg.nic.max_procs > 1);
-    uint8_t max_procs = max_procs_explicit ? cfg.nic.max_procs
-                                           : uint8_t{0};
-    if (max_procs == 0) {
-        const uint16_t auto_max = nb_rx_queues / queues_per_proc;
-        if (auto_max == 0) {
-            // Secondary peers in v3 zero-consensus may leave
-            // nb_rx_queues at default (1) and queues_per_proc at
-            // default (1) → auto_max=1. This is fine; secondary
-            // will read the actual value from primary's registry
-            // post-EAL. Don't reject here.
-            max_procs = 1;  // placeholder; replaced from registry on secondary path
-        } else {
-            max_procs = static_cast<uint8_t>(
-                std::min<uint16_t>(auto_max, MpTopology::kMaxProcs));
-        }
-    }
-    if (max_procs == 0 || max_procs > MpTopology::kMaxProcs)
-        return std::unexpected(std::format(
-            "create_or_join: max_procs={} out of range [1, kMaxProcs={}] "
-            "(caller cfg.max_procs={}, derived from nb_rx_queues={} / "
-            "queues_per_proc={})",
-            max_procs, MpTopology::kMaxProcs,
-            cfg.nic.max_procs, nb_rx_queues, queues_per_proc));
-
-    // ── 4. assemble EalConfig (proc-type=auto) ────────────────────────────
-    // Strings inside cfg are caller-owned; we copy them into a local
-    // EalConfig so the argv assembly below is decoupled from cfg's
-    // lifetime.
-    EalConfig eal_cfg{};
-    eal_cfg.program_name  = "eph_create_or_join";
-    // DPDK's default is `--proc-type=primary`, NOT auto. We emit
-    // `--proc-type=auto` explicitly so the second peer joins as
-    // secondary instead of dying on a lockfile collision.
-    eal_cfg.proc_type     = ProcType::Auto;
-    eal_cfg.proc_type_set = true;
-    eal_cfg.file_prefix   = file_prefix;
-    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
-    eal_cfg.lcores        = cfg.lcores;
-    eal_cfg.extra_args    = cfg.extra_eal_args;
-
-    // ── 5. EAL init (we do this directly here, not via launch,
-    //                because we need to inspect rte_eal_process_type
-    //                BEFORE deciding which BringupConfig to build).
-    //                pin_lcores happens in step 7 after role is known
-    //                — secondary path doesn't need to call
-    //                launch (it goes through `secondary_bringup_`
-    //                with the pre-claimed registry slot, then we
-    //                manually transfer EAL ownership into Impl).
-    if (!cfg.pins.empty() && !cfg.lcores.empty())
-        return std::unexpected(std::format(
-            "create_or_join: cfg.pins (size={}) and cfg.lcores (size={}) are "
-            "mutually exclusive (pick the typed-pin path or the raw-lcores "
-            "path, not both)",
-            cfg.pins.size(), cfg.lcores.size()));
-
     std::vector<eph::utils::PinGuard> pin_guards;
     if (!cfg.pins.empty()) {
         auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
         if (!pg) {
             SPDLOG_LOGGER_ERROR(log,
-                "create_or_join: pin_lcores rejected: {}", pg.error());
-            return std::unexpected(std::string{
-                "create_or_join: pin_lcores: "} + pg.error());
+                "Platform::create: pin_lcores rejected: {}", pg.error());
+            return std::unexpected(std::format(
+                "Platform::create: pin_lcores: {}", pg.error()));
         }
         pin_guards = std::move(*pg);
+    }
+
+    // ── 2. Assemble EalConfig (Secondary, library-derived) ──────────
+    EalConfig eal_cfg{};
+    eal_cfg.program_name  = std::string{cfg.program_name};
+    eal_cfg.proc_type     = ProcType::Secondary;
+    eal_cfg.proc_type_set = true;
+    eal_cfg.file_prefix   = derived_prefix;
+    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
+    eal_cfg.lcores        = cfg.lcores;
+    eal_cfg.extra_args    = cfg.extra_eal_args;
+    if (!cfg.pins.empty()) {
         eal_cfg.extra_args.push_back(build_lcore_argv(cfg.pins));
     }
 
@@ -2739,168 +2645,130 @@ Platform::create_or_join(CreateOrJoinConfig cfg) {
     auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
     if (!eal_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "create_or_join: eal_init failed: {}", eal_r.error());
-        // pin_guards local-destruct rolls back CPU registry on return.
-        return std::unexpected(std::string{
-            "create_or_join: eal_init failed: "} + eal_r.error());
+            "Platform::create: eal_init failed: {} — pin_guards roll "
+            "back automatically on return", eal_r.error());
+        return std::unexpected(std::format(
+            "Platform::create: eal_init failed: {}", eal_r.error()));
     }
 
-    // ── 6. role detection ─────────────────────────────────────────────────
-    const enum rte_proc_type_t role = rte_eal_process_type();
+    // ── 3. Bring up secondary ───────────────────────────────────────
+    // TODO(S5): replace this static-placeholder secondary attach with
+    // an `rte_mp_request_sync` call to the daemon's QueueAllocator,
+    // claiming `cfg.queues` queues from the pool and reading the
+    // returned QueueRange. Today the secondary just claims queues
+    // `0..(cfg.queues-1)` blindly — fine for single-secondary tests,
+    // racy under multiple secondaries.
+    detail::BringupConfig bcfg = detail::bringup_from_platform_(
+        cfg, derived_prefix);
+
+    auto plat_r = Platform::secondary_bringup_(
+        std::move(bcfg), /*registry_preclaimed=*/false);
+    if (!plat_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create: secondary_bringup_ failed: {} — "
+            "rolling back EAL", plat_r.error());
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::format(
+            "Platform::create: {}", plat_r.error()));
+    }
+
+    // ── 4. Transfer EAL ownership ───────────────────────────────────
+    Platform plat = std::move(*plat_r);
+    if (plat.impl_) {
+        plat.impl_->pin_session_guards = std::move(pin_guards);
+        plat.impl_->owns_eal_init      = true;
+    }
     SPDLOG_LOGGER_INFO(log,
-        "create_or_join: rte_eal_process_type() resolved to {} "
-        "(file_prefix='{}', max_procs={}, nb_rx_queues={})",
-        role == RTE_PROC_PRIMARY   ? "primary"
-        : role == RTE_PROC_SECONDARY ? "secondary"
-                                     : "<invalid>",
-        file_prefix, max_procs, nb_rx_queues);
+        "Platform::create: ready (pci='{}', file_prefix='{}', queues={})",
+        cfg.pci, derived_prefix, cfg.queues);
+    return plat;
+}
 
-    // Build the role-specific BringupConfig from the user's
-    // nic template. Autojoin owns three fields: proc_type,
-    // mp_topology, file_prefix. Other fields (mbuf pool, descriptor
-    // counts, RSS / promiscuous flags, per_lcore_pools) flow through
-    // the v3 PlatformConfig template.
-    detail::BringupConfig pcfg = detail::bringup_from_v3_(cfg.nic);
-    pcfg.file_prefix    = file_prefix;
-    // nb_tx_queues mirrors nb_rx_queues unless the user already set it.
-    if (pcfg.nb_tx_queues == 0) pcfg.nb_tx_queues = pcfg.nb_rx_queues;
+[[nodiscard]] inline std::expected<Platform, std::string>
+Platform::serve_nic(NicServiceConfig cfg) {
+    [[maybe_unused]] auto* log = detail::platform_logger();
 
-    auto attach_eal_session = [&pin_guards](
-        std::expected<Platform, std::string>&& r)
-        -> std::expected<Platform, std::string> {
-            if (r && r->impl_) {
-                r->impl_->pin_session_guards = std::move(pin_guards);
-                r->impl_->owns_eal_init      = true;
-            }
-            return std::move(r);
-        };
-
-    auto rollback_eal_on_error = [&pin_guards](
-        std::expected<Platform, std::string>&& r)
-        -> std::expected<Platform, std::string> {
-            if (!r) {
-                // Roll back EAL we init'd; pin_guards roll back via local
-                // destruction at function return.
-                [[maybe_unused]] bool ok = eal_cleanup();
-            }
-            return std::move(r);
-        };
-
-    // ── 7. branch on role ────────────────────────────────────────────────
-    if (role == RTE_PROC_PRIMARY) {
-        pcfg.proc_type   = ProcType::Primary;
-        pcfg.mp_topology = MpTopology::uniform(
-            /*self_index=*/0, max_procs, nb_rx_queues);
-        // Inject this peer's lcore_mask into its own slot so registry
-        // cross-process conflict check fires on overlap. Default 0 =
-        // opt out. See `CreateOrJoinConfig::self_lcore_mask`.
-        if (cfg.self_lcore_mask != 0) {
-            pcfg.mp_topology->procs[0].lcore_mask = cfg.self_lcore_mask;
-        }
-        auto plat_r = Platform::primary_bringup_(std::move(pcfg));
-        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
-        return attach_eal_session(std::move(plat_r));
+    if (auto err = ::eph::dpdk::validate(cfg); !err.empty()) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::serve_nic: invalid NicServiceConfig: {}", err);
+        return std::unexpected(std::string{err});
     }
 
-    if (role == RTE_PROC_SECONDARY) {
-        // 7S. attach read-only and validate the primary's view.
-        auto ro = ::eph::dpdk::detail::MpRegistryHandle::
-            attach_secondary_readonly(file_prefix);
-        if (!ro) {
-            SPDLOG_LOGGER_ERROR(log,
-                "create_or_join[secondary]: attach_secondary_readonly "
-                "failed (file_prefix='{}'): {}",
-                file_prefix, ro.error().detail);
-            std::expected<Platform, std::string> err{
-                std::unexpected(std::format(
-                    "create_or_join[secondary]: attach_secondary_readonly "
-                    "failed (file_prefix='{}'): {}",
-                    file_prefix, ro.error().detail))};
-            return rollback_eal_on_error(std::move(err));
-        }
+    auto fp_r = detail::derive_file_prefix_(cfg.pci);
+    if (!fp_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::serve_nic: {}", fp_r.error());
+        return std::unexpected(std::move(fp_r.error()));
+    }
+    const std::string derived_prefix = std::move(*fp_r);
+    SPDLOG_LOGGER_INFO(log,
+        "Platform::serve_nic: derived file_prefix='{}' from pci='{}', "
+        "total_queues={}, daemon_lcore={}",
+        derived_prefix, cfg.pci, cfg.total_queues, cfg.daemon_lcore);
 
-        const uint32_t primary_total = ro->header()->total_procs;
-        if (max_procs_explicit && primary_total != max_procs) {
-            SPDLOG_LOGGER_ERROR(log,
-                "create_or_join[secondary]: caller explicitly set "
-                "max_procs={} but primary's registry reports total_procs={} "
-                "— explicit caller value disagreed with primary",
-                max_procs, primary_total);
-            std::expected<Platform, std::string> err{std::unexpected(std::format(
-                "create_or_join[secondary]: caller-supplied max_procs={} "
-                "disagrees with primary's registry value (total_procs={}); "
-                "leave max_procs at default to inherit from primary",
-                max_procs, primary_total))};
-            return rollback_eal_on_error(std::move(err));
-        }
-        // Adopt primary's value (zero-consensus path: caller didn't
-        // supply max_procs and trusts primary's registry).
-        max_procs = static_cast<uint8_t>(primary_total);
-        // Likewise, secondary may not have known nb_rx_queues. The
-        // registry doesn't carry it, but the live NIC does — query it
-        // so MpTopology::uniform below builds the same topology
-        // primary did. (A1: rte_eth_dev_info_get returns
-        // primary-configured queue count from secondary.)
-        const uint16_t port_id_for_query =
-            (cfg.nic.port_id != 0)
-                ? cfg.nic.port_id
-                : uint16_t{0};
-        rte_eth_dev_info dev_info{};
-        if (int rc = rte_eth_dev_info_get(port_id_for_query, &dev_info);
-            rc == 0 && dev_info.nb_rx_queues > 0) {
-            // Override with live NIC value (which secondary trusts as
-            // primary-configured). See plan A1.
-            nb_rx_queues       = dev_info.nb_rx_queues;
-            pcfg.nb_rx_queues  = dev_info.nb_rx_queues;
-            pcfg.nb_tx_queues  = (dev_info.nb_tx_queues != 0)
-                                     ? dev_info.nb_tx_queues
-                                     : dev_info.nb_rx_queues;
-        }
+    // ── 1. Assemble EalConfig (Primary, library-owned) ──────────────
+    EalConfig eal_cfg{};
+    eal_cfg.program_name  = "eph_nicd";
+    eal_cfg.proc_type     = ProcType::Primary;
+    eal_cfg.proc_type_set = true;
+    eal_cfg.file_prefix   = derived_prefix;
+    eal_cfg.allowed_devs  = {std::string{cfg.pci}};
+    // Single-lcore daemon today; future iterations may take a list.
+    eal_cfg.lcores        = {std::format("{}", cfg.daemon_lcore)};
 
-        // 8S. CAS-claim the lowest free slot.
-        auto idx_r = ro->try_claim_free_slot();
-        if (!idx_r) {
-            SPDLOG_LOGGER_ERROR(log,
-                "create_or_join[secondary]: try_claim_free_slot failed "
-                "(file_prefix='{}', primary_total_procs={}): {}",
-                file_prefix, primary_total, idx_r.error().detail);
-            std::expected<Platform, std::string> err{
-                std::unexpected(std::format(
-                    "create_or_join[secondary]: try_claim_free_slot failed "
-                    "(file_prefix='{}', primary_total_procs={}): {}",
-                    file_prefix, primary_total, idx_r.error().detail))};
-            return rollback_eal_on_error(std::move(err));
-        }
-        const uint8_t self_idx = *idx_r;
+    auto argv_owned = build_eal_argv(eal_cfg);
+    std::vector<char*> argv;
+    argv.reserve(argv_owned.size());
+    for (auto& s : argv_owned) argv.push_back(s.data());
 
-        pcfg.proc_type   = ProcType::Secondary;
-        pcfg.mp_topology = MpTopology::uniform(
-            self_idx, max_procs, nb_rx_queues);
-        // Same as primary path: opt-in lcore_mask publishing for
-        // cross-process conflict detection.
-        if (cfg.self_lcore_mask != 0) {
-            pcfg.mp_topology->procs[self_idx].lcore_mask = cfg.self_lcore_mask;
-        }
-        ro->disarm_slot();  // hand off slot ownership to next handle
-
-        auto plat_r = Platform::secondary_bringup_(std::move(pcfg),
-                                                   /*registry_preclaimed=*/true);
-        if (!plat_r) return rollback_eal_on_error(std::move(plat_r));
-        return attach_eal_session(std::move(plat_r));
+    auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
+    if (!eal_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::serve_nic: eal_init failed: {}", eal_r.error());
+        return std::unexpected(std::format(
+            "Platform::serve_nic: eal_init failed: {}", eal_r.error()));
     }
 
-    // RTE_PROC_INVALID or future enum values.
-    SPDLOG_LOGGER_ERROR(log,
-        "create_or_join: rte_eal_process_type returned invalid role={}",
-        static_cast<int>(role));
-    [[maybe_unused]] bool ok = eal_cleanup();
-    return std::unexpected(std::format(
-        "create_or_join: rte_eal_process_type returned invalid role={} "
-        "(expected RTE_PROC_PRIMARY={} or RTE_PROC_SECONDARY={}; EAL "
-        "not properly initialized)",
-        static_cast<int>(role),
-        static_cast<int>(RTE_PROC_PRIMARY),
-        static_cast<int>(RTE_PROC_SECONDARY)));
+    // ── 2. Bring up primary ─────────────────────────────────────────
+    detail::BringupConfig bcfg =
+        detail::bringup_from_nic_service_(cfg, derived_prefix);
+
+    auto plat_r = Platform::primary_bringup_(std::move(bcfg));
+    if (!plat_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::serve_nic: primary_bringup_ failed: {} — "
+            "rolling back EAL", plat_r.error());
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::format(
+            "Platform::serve_nic: {}", plat_r.error()));
+    }
+
+    Platform plat = std::move(*plat_r);
+    if (plat.impl_) {
+        plat.impl_->owns_eal_init = true;
+    }
+    SPDLOG_LOGGER_INFO(log,
+        "Platform::serve_nic: ready (pci='{}', file_prefix='{}', "
+        "total_queues={})",
+        cfg.pci, derived_prefix, cfg.total_queues);
+    return plat;
+}
+
+inline void Platform::join() noexcept {
+    [[maybe_unused]] auto* log = detail::platform_logger();
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    sigaddset(&set, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &set, nullptr);
+    int sig = 0;
+    sigwait(&set, &sig);
+    SPDLOG_LOGGER_INFO(log,
+        "Platform::join: signal {} received, returning for graceful "
+        "shutdown", sig);
+    // S5/S6 will add cross-process notify (rte_mp_sendmsg "I'm leaving")
+    // here. For now, just return — ~Platform handles rte_eth_dev_stop /
+    // rte_eal_cleanup.
 }
 
 // Null guards on all impl_-accessing methods protect against use on a
