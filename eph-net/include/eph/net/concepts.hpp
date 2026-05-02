@@ -52,7 +52,8 @@ namespace eph::net {
 /// see oversized frames should check `frame.size() > 0xFFFF` themselves
 /// before forwarding, because this helper silently clamps. The kernel and
 /// DPDK Stream/Datagram backends log a one-shot WARN when clamping
-/// actually fires; see the `truncating_saturate_u16` helper below.
+/// actually fires; see the `saturate_u16_clamps` predicate below — it is
+/// the gate the backends evaluate before paying the WARN-log branch cost.
 [[nodiscard]] constexpr uint16_t saturate_u16(std::size_t n) noexcept {
     return static_cast<uint16_t>(n > 0xFFFFu ? 0xFFFFu : n);
 }
