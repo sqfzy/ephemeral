@@ -5,7 +5,7 @@
 /// shortest path from `Platform` bring-up to streaming application frames
 /// using the turnkey `DpdkTcpStream::create_and_attach` factory:
 ///
-///   1. `Platform::create_with_eal`     — EAL + port + mempool, single-process
+///   1. `Platform::launch`     — EAL + port + mempool, single-process
 ///   2. `arp::resolve` + `dns::resolve` — DPDK-native L2/L3 control plane
 ///   3. `DpdkPoller<>::create`          — single-queue burst-poll loop driver
 ///   4. `DpdkTcpStream<WsCodec, true>::create_and_attach`
@@ -206,7 +206,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 3) Platform::create_with_eal — single-process, single queue ───────
+    // ── 3) Platform::launch — single-process, single queue ───────
     // V3 API: PlatformConfig has no proc_type (always primary in
     // create()) and no file_prefix here (single-process default empty).
     ed::PlatformConfig pcfg{};
@@ -216,13 +216,13 @@ int main(int argc, char** argv) {
     pcfg.mbuf_pool_size = 8191;
     // max_procs left at default 1 = single-process (no MP registry).
 
-    auto plat_r = ed::Platform::create_with_eal(
+    auto plat_r = ed::Platform::launch(
         std::move(pcfg),
         ed::cli::to_eal_config(cfg.eal, "simple_hft"),
         std::span<ed::LcorePin const>{cfg.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("Platform::create_with_eal failed: {}", plat_r.error());
+        spdlog::error("Platform::launch failed: {}", plat_r.error());
         return 2;
     }
     auto platform = std::move(*plat_r);

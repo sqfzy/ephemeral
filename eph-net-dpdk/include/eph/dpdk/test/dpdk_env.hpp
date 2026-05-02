@@ -5,7 +5,7 @@
 ///
 /// `DpdkBenchEnv::create(pcfg, eal_cfg, pins, pin_policy, mock_ip,
 /// client_ip, gateway_ip)` performs:
-///   1. Platform::create_with_eal — EAL init (typed-pin or raw) +
+///   1. Platform::launch — EAL init (typed-pin or raw) +
 ///      Platform construction in a single call. The Platform owns
 ///      the EAL session and runs eal_cleanup automatically on
 ///      destruction.
@@ -191,7 +191,7 @@ parse_lcores_csv_to_mask(std::string_view lcores) noexcept {
 }
 
 /// Move-only bundle of all DPDK resources needed to drive a real-NIC
-/// scenario: Platform (which owns EAL — see `Platform::create_with_eal`),
+/// scenario: Platform (which owns EAL — see `Platform::launch`),
 /// resolved src/dst/gw IPs (host byte order), local MAC, gateway MAC
 /// (ARP-resolved at startup), and the port/pool handles used by
 /// sender factory methods.
@@ -221,7 +221,7 @@ struct DpdkBenchEnv {
     DpdkBenchEnv(DpdkBenchEnv&&) = default;
     DpdkBenchEnv& operator=(DpdkBenchEnv&&) = default;
 
-    /// One-shot factory: brings up Platform via `create_with_eal`,
+    /// One-shot factory: brings up Platform via `launch`,
     /// then ARP-resolves the gateway and packages everything into a
     /// move-only struct. The returned env owns Platform and Platform
     /// owns EAL — destruction is fully RAII.
@@ -245,7 +245,7 @@ struct DpdkBenchEnv {
            const std::string& client_ip,
            const std::string& gateway_ip) {
         // ── 1. EAL + Platform via the unified factory ──────────────
-        auto plat = eph::dpdk::Platform::create_with_eal(
+        auto plat = eph::dpdk::Platform::launch(
             std::move(pcfg), std::move(eal_cfg), pins, pin_policy);
         if (!plat) return std::unexpected("DpdkBenchEnv::create: " + plat.error());
 
@@ -300,7 +300,7 @@ struct DpdkBenchEnv {
     }
 
     /// Autojoin variant of `create()`: brings up Platform via
-    /// `Platform::create_or_join` instead of `create_with_eal`.
+    /// `Platform::create_or_join` instead of `launch`.
     /// Use this when running multiple bench-client processes on the
     /// same NIC simultaneously (e.g. each `lat_<sc>_dpdk` binary as
     /// its own MP process, sharing the NIC via RSS-partitioned

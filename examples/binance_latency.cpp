@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
     // Relaxed everything except IRQ overlap — preserves the warning
     // surfaced by the previous standalone `pin_thread(... warn_irq_overlap=
     // true)` call. validate_pin_policy runs against every LcorePin inside
-    // pin_lcores (called by create_with_eal) so the warning fires on the
+    // pin_lcores (called by launch) so the warning fires on the
     // WS event-loop lcore.
     eph::utils::CpuPinPolicy pin_policy{
         .require_isolcpus            = false,
@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
         .warn_irq_overlap            = true,
     };
 
-    // ── 2) EAL + Platform via the unified create_with_eal factory ────────
+    // ── 2) EAL + Platform via the unified launch factory ────────
     // Single binary, single peer, real-server probe ⇒ Platform owns EAL
     // and runs eal_cleanup atomically on destruction.
     eph::dpdk::PlatformConfig pcfg{};
@@ -323,26 +323,26 @@ int main(int argc, char** argv) {
     // max_procs default 1 = single-process.
 
     if (!app_cfg.eal.pins.empty()) {
-        spdlog::info("binance_latency: bring-up via create_with_eal "
+        spdlog::info("binance_latency: bring-up via launch "
                      "(typed pins, {} pin(s))", app_cfg.eal.pins.size());
     } else {
-        spdlog::info("binance_latency: bring-up via create_with_eal "
+        spdlog::info("binance_latency: bring-up via launch "
                      "(raw lcores='{}')", app_cfg.eal.lcores_raw);
     }
 
-    auto plat = eph::dpdk::Platform::create_with_eal(
+    auto plat = eph::dpdk::Platform::launch(
         std::move(pcfg),
         ed::cli::to_eal_config(app_cfg.eal, "binance_latency"),
         std::span<ed::LcorePin const>{app_cfg.eal.pins},
         pin_policy);
     if (!plat) {
-        spdlog::error("Platform::create_with_eal failed: {}", plat.error());
+        spdlog::error("Platform::launch failed: {}", plat.error());
         return 2;
     }
 
     // ── 3) Thread name + TSC bring-up ─────────────────────────────────────
     // The main thread's CPU affinity is set by `rte_eal_init` to the EAL
-    // main lcore's cpu (via the typed-pin path inside create_with_eal).
+    // main lcore's cpu (via the typed-pin path inside launch).
     // No separate pin call needed.
     pthread_setname_np(pthread_self(), "ws-latency");
     if (!eph::utils::TSC::is_initialized() && !eph::utils::TSC::init()) {

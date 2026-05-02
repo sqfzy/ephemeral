@@ -16,7 +16,7 @@
 ///   - v3 entry-point function pointers have the documented signatures.
 ///   - The v3 `validate_config(PlatformConfig)` rejection set
 ///     (max_procs / file_prefix / queues-per-proc invariants).
-///   - `Platform::create` / `create_with_eal` reject `max_procs > 1`
+///   - `Platform::create` / `launch` reject `max_procs > 1`
 ///     (cooperative-MP path was removed; use `create_or_join` for MP).
 
 #include <span>
@@ -72,13 +72,13 @@ TEST(PlatformV3Surface, EntryPointsHaveDocumentedSignatures) {
 
     [[maybe_unused]] CreateFn        f1 = &Platform::create;
     [[maybe_unused]] CreateWithEalFn f2 = static_cast<CreateWithEalFn>(
-        &Platform::create_with_eal);
+        &Platform::launch);
     [[maybe_unused]] CreateOrJoinFn     f3 = static_cast<CreateOrJoinFn>(
         &Platform::create_or_join);
     SUCCEED();
 }
 
-// `Platform::create` / `create_with_eal` are single-process only after
+// `Platform::create` / `launch` are single-process only after
 // the cooperative-MP removal. `cfg.max_procs > 1` must be rejected with
 // a clear message pointing the caller at `Platform::create_or_join`.
 
@@ -105,7 +105,7 @@ TEST(PlatformCreateWithEal, RejectsMaxProcsGreaterThanOne) {
     cfg.file_prefix  = "demo";
     EalConfig eal_cfg{};
 
-    auto r = Platform::create_with_eal(cfg, std::move(eal_cfg),
+    auto r = Platform::launch(cfg, std::move(eal_cfg),
                                        std::span<const LcorePin>{},
                                        eph::utils::CpuPinPolicy{});
     ASSERT_FALSE(r.has_value());

@@ -14,9 +14,9 @@ This document is the operational contract. For the design rationale see
 > cooperative path (`Platform::attach(PlatformAttachConfig)` plus
 > a declarative-primary `Platform::create(PlatformConfig)` with
 > `max_procs > 1`) was removed; both `Platform::create` and
-> `Platform::create_with_eal` now reject any `max_procs > 1`
+> `Platform::launch` now reject any `max_procs > 1`
 > config. Single-process programs continue to use `Platform::create` /
-> `Platform::create_with_eal` with `max_procs == 1` (the default).
+> `Platform::launch` with `max_procs == 1` (the default).
 >
 > Sections below that reference `primary_bringup_` /
 > `secondary_bringup_` describe the **internal lifecycle helpers**

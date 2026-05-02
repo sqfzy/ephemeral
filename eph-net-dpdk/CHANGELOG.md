@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed — Tier-2 naming audit follow-ups (BREAKING)
+
+Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 2,
+executed the 6 friction renames as one sweep (no aliases):
+
+  * Platform::create_with_eal     → Platform::launch
+  * eph::dpdk::cli::EalArgs       → EalCliConfig
+  * eph::dpdk::cli::try_consume   → consume_one
+  * MpTopology::custom            → MpTopology::from_specs
+  * StreamConfig::Dpdk::tcp_low_level / UdpConfig::Dpdk::udp_low_level
+                                  → cfg.dpdk.wire (protocol-symmetric)
+  * CreateOrJoinConfig::eal_extras → extra_eal_args
+
+Migration: every caller updates at compile time. No alias shim.
+
 ### Changed — Tier-1 naming audit follow-ups (BREAKING)
 
 Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 1, executed

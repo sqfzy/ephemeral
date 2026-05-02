@@ -16,7 +16,7 @@ Last verified: 2026-04-30 (none completed at this revision).
   (`ValidatorRejectsRssWithSingleTxQueue`,
   `ValidatorAcceptsMatchedMultiQueue`, `ValidatorAcceptsSingleQueueBoth`).
 
-- [ ] **Document `Platform::create_with_eal` in user docs**.
+- [ ] **Document `Platform::launch` in user docs**.
   Has good doc-comment in `platform.hpp` but no prose in
   `eph-net-dpdk/docs/`. New page `docs/platform-bringup.md`?
   Source: api-unify retro.

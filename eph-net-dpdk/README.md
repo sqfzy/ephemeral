@@ -27,7 +27,7 @@ already chose:
 |---|---|---|
 | Single-process or MP primary | `Platform::create(PlatformConfigV3)` | `PlatformConfigV3` has no `proc_type` / `mp_topology` — the MP shape is two numbers (`max_procs`, optional `queues_per_proc`). |
 | MP secondary | `Platform::attach(PlatformAttachConfig)` | The smallest "how to find primary" surface — `file_prefix` is the only required input; `nb_rx_queues` etc. are read live from primary's published registry / NIC. |
-| One-shot EAL+Platform | `Platform::create_with_eal` / `attach_with_eal` | v3 factories inject `--proc-type` / `--file-prefix` internally so callers don't restate them. |
+| One-shot EAL+Platform | `Platform::launch` / `attach_with_eal` | v3 factories inject `--proc-type` / `--file-prefix` internally so callers don't restate them. |
 | Auto primary-or-secondary | `Platform::create_or_join(CreateOrJoinConfig{.pci=...})` | Zero-coordination MP: whoever runs `rte_eal_init` first becomes primary; the next peer auto-attaches as secondary. Only `pci` is required. |
 
 The legacy v2 surface (`Platform::create_primary` / `create_secondary` +
@@ -301,7 +301,7 @@ the preserved internal-primitive tests under `tests/legacy/`.
 | `test_dpdk_udp_multicast_rss`      | UDP multicast under RSS — fail-fast on multi-queue, allow single-queue  |
 | `test_dpdk_multi_port_platform`    | `MultiPortPlatform` aggregator: per-port isolation, ICMP scoping        |
 | `test_dpdk_platform_mempool`       | Platform mempool naming / lookup across primary+secondary processes     |
-| `test_platform_create_with_eal`    | `Platform::create` post-EAL bring-up + RSS configure / probe fallback   |
+| `test_platform_launch`             | `Platform::launch` (one-shot EAL+Platform factory) + RSS configure / probe fallback |
 | `test_arp_api` / `test_arp_resolve`| `eph::dpdk::arp::resolve` (sync + RSS-safe reply routing)               |
 | `test_dns_async` / `test_dns_rss_aware` | `eph::dpdk::dns::resolve` (async + reverse-pick src_port for RSS) |
 | `test_icmp_directory` / `test_icmp_dispatch` | ICMP target registry + Type 3 Code 4 PMTU dispatch routing    |

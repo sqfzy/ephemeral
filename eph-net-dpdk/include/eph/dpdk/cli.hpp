@@ -15,7 +15,7 @@
 /// Why a separate header rather than folding into `eal.hpp`: parsing pulls
 /// in `<string_view>` and atoi-style logic that EAL bring-up itself does
 /// not need. Keeping it isolated means consumers of `EalConfig` /
-/// `Platform::create_with_eal` don't pay for the CLI surface unless they
+/// `Platform::launch` don't pay for the CLI surface unless they
 /// also want it.
 ///
 /// Typical use:
@@ -138,7 +138,7 @@ consume_one(EalCliConfig& args, std::string_view flag, char const* next) {
 ///
 /// `--pin` (typed, registry-aware) and `--lcores` (raw EAL spec) drive
 /// disjoint code paths inside `EalGuard::init_with_pins` /
-/// `Platform::create_with_eal`. Allowing both at once would silently
+/// `Platform::launch`. Allowing both at once would silently
 /// drop one. Surface the conflict at parse time with the same diagnostic
 /// every example used to print by hand.
 [[nodiscard]] inline std::expected<void, std::string>
@@ -154,14 +154,14 @@ validate(EalCliConfig const& a) {
 }
 
 /// @brief Lower an `EalCliConfig` into an `EalConfig` ready for
-/// `Platform::create_with_eal` / `EalGuard::init_with_pins`.
+/// `Platform::launch` / `EalGuard::init_with_pins`.
 ///
 /// `pci` -> `allowed_devs` (`-a` passthrough). `lcores_raw` -> single
 /// `lcores` entry (only when set; the typed-pin path leaves `lcores`
 /// empty so `init_with_pins` can emit `--lcores=...` itself).
 ///
 /// `pins` is **not** lowered: the typed pin span is passed alongside
-/// `EalConfig` into `Platform::create_with_eal(... , pins, policy)`.
+/// `EalConfig` into `Platform::launch(... , pins, policy)`.
 /// Pass `args.pins` directly there.
 ///
 /// `port_id` is **not** lowered into `EalConfig` either — it lives on

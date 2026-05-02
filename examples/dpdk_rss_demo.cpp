@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
+    // ── 1) EAL + Platform via the unified launch factory ────────
     // Single binary, single peer ⇒ single-process bring-up. Platform
     // owns the EAL session and runs eal_cleanup atomically on
     // destruction; no separate EalGuard needed.
@@ -269,20 +269,20 @@ int main(int argc, char** argv) {
     // max_procs default 1 = single-process RSS multi-queue.
 
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
+        spdlog::info("dpdk_rss_demo: bring-up via launch "
                      "(typed pins, {} pin(s))", args.eal.pins.size());
     } else {
-        spdlog::info("dpdk_rss_demo: bring-up via create_with_eal "
+        spdlog::info("dpdk_rss_demo: bring-up via launch "
                      "(raw lcores='{}')", args.eal.lcores_raw);
     }
 
-    auto plat_r = ed::Platform::create_with_eal(
+    auto plat_r = ed::Platform::launch(
         std::move(pcfg),
         ed::cli::to_eal_config(args.eal, "dpdk_rss_demo"),
         std::span<ed::LcorePin const>{args.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("dpdk_rss_demo: Platform::create_with_eal failed: {}",
+        spdlog::error("dpdk_rss_demo: Platform::launch failed: {}",
                       plat_r.error());
         return 2;
     }

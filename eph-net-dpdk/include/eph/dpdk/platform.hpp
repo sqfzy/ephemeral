@@ -446,7 +446,7 @@ struct BringupConfig {
 /// counts, mempool, RSS, promiscuous, etc.). The `max_procs` /
 /// `queues_per_proc` fields are read by `Platform::create_or_join`
 /// when this peer auto-resolves to primary; `Platform::create` and
-/// `Platform::create_with_eal` reject any value other than 1 since
+/// `Platform::launch` reject any value other than 1 since
 /// the cooperative-MP path was removed.
 struct PlatformConfig {
     // ── Identity ────────────────────────────────────────────────────
@@ -456,7 +456,7 @@ struct PlatformConfig {
     /// `Platform::create_or_join` when this peer resolves to primary —
     /// passed through into the registry memzone name. Empty value is
     /// the single-process default; the `Platform::create` /
-    /// `create_with_eal` paths do not consult it (they are
+    /// `launch` paths do not consult it (they are
     /// single-process only).
     std::string_view file_prefix  = {};
 
@@ -703,7 +703,7 @@ public:
     /// @brief Single-process factory. `cfg.max_procs` MUST be 1 (the
     /// default); `max_procs > 1` is rejected — multi-process is reached
     /// exclusively through `Platform::create_or_join`. EAL must be
-    /// initialized before this call (use `create_with_eal` for the
+    /// initialized before this call (use `launch` for the
     /// one-shot path).
     [[nodiscard]] static std::expected<Platform, std::string>
     create(PlatformConfig cfg);
@@ -713,7 +713,7 @@ public:
     /// do NOT set `proc_type` / `file_prefix` — this factory injects
     /// them from `cfg.file_prefix` and `ProcType::Primary`.
     [[nodiscard]] static std::expected<Platform, std::string>
-    create_with_eal(PlatformConfig                        cfg,
+    launch(PlatformConfig                        cfg,
                     EalConfig                               eal_cfg,
                     std::span<eph::dpdk::LcorePin const>    pins   = {},
                     eph::utils::CpuPinPolicy                policy = {});
@@ -1156,7 +1156,7 @@ struct Platform::Impl {
     std::shared_ptr<::eph::dpdk::detail::IcmpRegistry> icmp_registry_sp{
         std::make_shared<::eph::dpdk::detail::IcmpRegistry>()};
 
-    /// @brief Typed-pin session guards owned by `Platform::create_with_eal`
+    /// @brief Typed-pin session guards owned by `Platform::launch`
     /// (and `create_or_join` via delegation). Empty when EAL was init'd
     /// externally (declarative-path `Platform::create` /
     /// `create_primary` / `create_secondary` callers manage pins
@@ -1167,7 +1167,7 @@ struct Platform::Impl {
     /// `eal_cleanup` is harmless.
     std::vector<eph::utils::PinGuard> pin_session_guards;
 
-    /// @brief Set to `true` when `Platform::create_with_eal` (or
+    /// @brief Set to `true` when `Platform::launch` (or
     /// `create_or_join`) called `eal_init` itself. `~Impl`'s body reads
     /// this to decide whether to invoke `eal_cleanup` after DPDK
     /// resource teardown. Single Source of Truth: only one Platform
@@ -1825,7 +1825,7 @@ inline Platform::Platform(Platform&&) noexcept            = default;
 inline Platform& Platform::operator=(Platform&&) noexcept = default;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Platform::create_with_eal — one-shot EAL+Platform factory
+// Platform::launch — one-shot EAL+Platform factory
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // Cold-path orchestrator over typed-pin validation + eal_init +
@@ -2464,7 +2464,7 @@ Platform::create(PlatformConfig cfg) {
 }
 
 [[nodiscard]] inline std::expected<Platform, std::string>
-Platform::create_with_eal(PlatformConfig                        cfg,
+Platform::launch(PlatformConfig                        cfg,
                           EalConfig                               eal_cfg,
                           std::span<eph::dpdk::LcorePin const>    pins,
                           eph::utils::CpuPinPolicy                policy) {
@@ -2474,7 +2474,7 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     // cooperative MP path was removed; use Platform::create_or_join for MP.
     if (cfg.max_procs > 1) {
         return std::unexpected(std::format(
-            "Platform::create_with_eal: cfg.max_procs={} but cooperative MP "
+            "Platform::launch: cfg.max_procs={} but cooperative MP "
             "(declarative primary + Platform::attach_with_eal secondaries) "
             "was removed. Use Platform::create_or_join(CreateOrJoinConfig) "
             "for multi-process. Set max_procs=1 (the default) for "
@@ -2492,11 +2492,11 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     // ── 1. Mutex: typed-pin path vs raw lcores ──────────────────────────
     if (!pins.empty() && !eal_cfg.lcores.empty()) {
         SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: typed pins ({}) and raw lcores ({} entries) "
+            "launch: typed pins ({}) and raw lcores ({} entries) "
             "are mutually exclusive — pick one",
             pins.size(), eal_cfg.lcores.size());
         return std::unexpected(std::string{
-            "create_with_eal: typed pins and raw eal_cfg.lcores are "
+            "launch: typed pins and raw eal_cfg.lcores are "
             "mutually exclusive (the typed path internally emits "
             "--lcores=<...>; supplying both duplicates the token)"});
     }
@@ -2507,14 +2507,14 @@ Platform::create_with_eal(PlatformConfig                        cfg,
         auto pg = pin_lcores(pins, policy);
         if (!pg) {
             SPDLOG_LOGGER_ERROR(log,
-                "create_with_eal: pin_lcores rejected: {}", pg.error());
+                "launch: pin_lcores rejected: {}", pg.error());
             return std::unexpected(std::string{
-                "create_with_eal: pin_lcores: "} + pg.error());
+                "launch: pin_lcores: "} + pg.error());
         }
         pin_guards = std::move(*pg);
         eal_cfg.extra_args.push_back(build_lcore_argv(pins));
         SPDLOG_LOGGER_INFO(log,
-            "create_with_eal: typed-pin path engaged ({} pins registered)",
+            "launch: typed-pin path engaged ({} pins registered)",
             pins.size());
     }
 
@@ -2527,23 +2527,23 @@ Platform::create_with_eal(PlatformConfig                        cfg,
     auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
     if (!eal_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: eal_init failed: {}", eal_r.error());
+            "launch: eal_init failed: {}", eal_r.error());
         // pin_guards local destruction rolls back CPU registry on return.
         return std::unexpected(std::string{
-            "create_with_eal: eal_init failed: "} + eal_r.error());
+            "launch: eal_init failed: "} + eal_r.error());
     }
 
     // ── 4. Primary bring-up via the shared helper ──────────────────────
     auto plat_r = Platform::primary_bringup_(detail::bringup_from_v3_(cfg));
     if (!plat_r) {
         SPDLOG_LOGGER_ERROR(log,
-            "create_with_eal: primary_bringup_ failed: {} — "
+            "launch: primary_bringup_ failed: {} — "
             "rolling back eal_init and pin guards",
             plat_r.error());
         // Roll back EAL we just init'd. pin_guards roll back via local destruction.
         [[maybe_unused]] bool ok = eal_cleanup();
         return std::unexpected(std::string{
-            "create_with_eal: "} + plat_r.error());
+            "launch: "} + plat_r.error());
     }
 
     // ── 5. Transfer EAL ownership into Platform::Impl ──────────────────
@@ -2553,7 +2553,7 @@ Platform::create_with_eal(PlatformConfig                        cfg,
         plat.impl_->owns_eal_init      = true;
     }
     SPDLOG_LOGGER_INFO(log,
-        "create_with_eal: Platform owns EAL session (pins={})",
+        "launch: Platform owns EAL session (pins={})",
         plat.impl_ ? plat.impl_->pin_session_guards.size() : 0);
     return plat;
 }
@@ -2675,12 +2675,12 @@ Platform::create_or_join(CreateOrJoinConfig cfg) {
     eal_cfg.lcores        = cfg.lcores;
     eal_cfg.extra_args    = cfg.extra_eal_args;
 
-    // ── 5. EAL init (we do this directly here, not via create_with_eal,
+    // ── 5. EAL init (we do this directly here, not via launch,
     //                because we need to inspect rte_eal_process_type
     //                BEFORE deciding which BringupConfig to build).
     //                pin_lcores happens in step 7 after role is known
     //                — secondary path doesn't need to call
-    //                create_with_eal (it goes through `secondary_bringup_`
+    //                launch (it goes through `secondary_bringup_`
     //                with the pre-claimed registry slot, then we
     //                manually transfer EAL ownership into Impl).
     if (!cfg.pins.empty() && !cfg.lcores.empty())

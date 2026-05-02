@@ -184,7 +184,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via the unified create_with_eal factory ────────
+    // ── 1) EAL + Platform via the unified launch factory ────────
     // Single queue, RSS off (the safe shape for multicast). Platform owns
     // EAL — ~Platform handles eal_cleanup atomically.
     //
@@ -200,13 +200,13 @@ int main(int argc, char** argv) {
     pcfg.enable_promiscuous = false;
     // max_procs default 1 = single-process.
 
-    auto plat_r = ed::Platform::create_with_eal(
+    auto plat_r = ed::Platform::launch(
         std::move(pcfg),
         ed::cli::to_eal_config(args.eal, "dpdk_multicast_md"),
         std::span<ed::LcorePin const>{args.eal.pins},
         eph::utils::CpuPinPolicy{});
     if (!plat_r) {
-        spdlog::error("dpdk_multicast_md: Platform::create_with_eal failed: {}",
+        spdlog::error("dpdk_multicast_md: Platform::launch failed: {}",
                       plat_r.error());
         return 2;
     }

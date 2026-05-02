@@ -218,7 +218,7 @@ load_dpdk_env(const BenchConfig& cfg,
     eal_cfg.program_name = "lat_bench";
     eal_cfg.allowed_devs = {dpdk_pci};
     // --proc-type=auto and --log-level filter routed through extra_args.
-    // create_with_eal (via DpdkBenchEnv::create) appends its own
+    // launch (via DpdkBenchEnv::create) appends its own
     // `--lcores=...` token from the typed pins on top of these.
     eal_cfg.extra_args   = {std::string{"--proc-type=auto"},
                             std::string{"--log-level=lib.eal:warning"}};

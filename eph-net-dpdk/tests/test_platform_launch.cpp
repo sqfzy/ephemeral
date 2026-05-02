@@ -1,10 +1,10 @@
-/// @file test_platform_create_with_eal.cpp
-/// Unit tests for `eph::dpdk::Platform::create_with_eal` —
+/// @file test_platform_launch.cpp
+/// Unit tests for `eph::dpdk::Platform::launch` —
 /// the one-shot EAL+Platform factory.
 ///
 /// **Scope**: pre-EAL failure paths only (mutex / pin validation).
 /// Real EAL-up coverage of the success path is provided by every
-/// e2e binary that boots DPDK via `Platform::create_with_eal` after
+/// e2e binary that boots DPDK via `Platform::launch` after
 /// stages 5/6 of this reshape, plus `tests/integration/
 /// test_eal_init_with_pins.cpp` for `EalGuard::init_with_pins` (the
 /// underlying primitive). Booting EAL inside a unit test would
@@ -38,7 +38,7 @@ TEST(PlatformCreateWithEal, LcoresAndPinsMutex_Rejected) {
     pcfg.nb_tx_queues = 1;
 
     EalConfig eal_cfg{};
-    eal_cfg.program_name = "test_create_with_eal";
+    eal_cfg.program_name = "test_platform_launch";
     eal_cfg.lcores       = {"0,1"};
 
     // Caller supplies BOTH typed pins and raw lcores → must be
@@ -48,7 +48,7 @@ TEST(PlatformCreateWithEal, LcoresAndPinsMutex_Rejected) {
     const bool was_init_before =
         eal_initialized_flag().load(std::memory_order_acquire);
 
-    auto r = Platform::create_with_eal(
+    auto r = Platform::launch(
         pcfg, eal_cfg,
         std::span<LcorePin const>{pins},
         eph::utils::CpuPinPolicy{});
@@ -78,10 +78,10 @@ TEST(PlatformCreateWithEal, EmptyPinsAndEmptyLcores_PassesMutex) {
                                    std::span<LcorePin const> pins,
                                    eph::utils::CpuPinPolicy pol)
         -> std::expected<Platform, std::string> {
-        return Platform::create_with_eal(std::move(p), std::move(e),
+        return Platform::launch(std::move(p), std::move(e),
                                          pins, pol);
     };
-    SUCCEED() << "create_with_eal accepts empty pins + empty lcores "
+    SUCCEED() << "launch accepts empty pins + empty lcores "
                  "(success path exercised by e2e binaries)";
 }
 
@@ -92,6 +92,6 @@ TEST(PlatformCreateWithEal, ContractIsLiteral) {
     using FnPtr = std::expected<Platform, std::string> (*)(
         PlatformConfig, EalConfig,
         std::span<LcorePin const>, eph::utils::CpuPinPolicy);
-    [[maybe_unused]] FnPtr fp = &Platform::create_with_eal;
+    [[maybe_unused]] FnPtr fp = &Platform::launch;
     SUCCEED();
 }

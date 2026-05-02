@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
     // runs the TCP/TLS/WS handshakes, attaches to the poller, and
     // registers as an ICMP target. Sketch only — see
     // `examples/simple_hft.cpp` for the full scfg / ucfg + a
-    // `Platform` set up via `Platform::create_with_eal(...)`.
+    // `Platform` set up via `Platform::launch(...)`.
     auto order_ch = en::DpdkTcpStream<ec::WsCodec>::create_and_attach(
         order_scfg, *platform).value();
     order_ch->on_message = handle_exec_report;

@@ -8,7 +8,7 @@
 /// flag and no shared `--file-prefix` (it is auto-derived from the
 /// PCI BDF inside the library).
 ///
-/// The cooperative MP path (`Platform::create_with_eal` /
+/// The cooperative MP path (`Platform::launch` /
 /// `attach_with_eal` with explicit role + shared file_prefix) was
 /// deleted in favor of this single autojoin entry point. See
 /// `eph-net-dpdk/docs/dpdk-multiprocess.md` for the full ordering /
