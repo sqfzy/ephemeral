@@ -350,8 +350,8 @@ struct BringupConfig {
     //
     // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
     // `create_and_attach` paths take the source port from the caller-
-    // supplied `cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) /
-    // `cfg.dpdk.udp_low_level.src_port` (UDP) in Software / FlowDirector
+    // supplied `cfg.dpdk.wire.tuple.src_port` (TCP) /
+    // `cfg.dpdk.wire.src_port` (UDP) in Software / FlowDirector
     // mode, or rebind it to one that hashes to the desired queue
     // (RSS-pinned mode via `find_src_port_for_queue`). In a multi-process
     // setup it is

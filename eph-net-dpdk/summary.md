@@ -146,13 +146,13 @@ struct StreamConfig {
     ::eph::net::WsConfig                 ws{};
 
     // TCP keepalive (interval==0 disables). Lowered into
-    // dpdk.tcp_low_level.keepalive_interval / keepalive_probes at factory
+    // dpdk.wire.keepalive_interval / keepalive_probes at factory
     // time so TcpSession::tick_keepalive honours it on every poll cycle.
     ::eph::net::KeepaliveConfig          keepalive{};
 
     // DPDK-only knobs.
     struct Dpdk {
-        ::eph::dpdk::TcpConfig tcp_low_level{};   // 4-tuple, MAC, port/queue, MSS,
+        ::eph::dpdk::TcpConfig wire{};   // 4-tuple, MAC, port/queue, MSS,
                                                   // recv_window, max_rx_burst
                                                   // (renamed from `legacy` in T3.19)
         ::rte_mempool*        pool{nullptr};      // mempool for TcpSession mbufs

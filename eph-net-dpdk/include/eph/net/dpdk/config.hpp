@@ -38,7 +38,7 @@ namespace eph::net::dpdk {
 /// @brief Configuration for `DpdkTcpStream::create_and_attach`.
 ///
 /// The DPDK wire-level fields (4-tuple, MACs, MSS, recv_window, port/queue
-/// IDs) live inside `cfg.dpdk.tcp_low_level`; the surrounding `dpdk`
+/// IDs) live inside `cfg.dpdk.wire`; the surrounding `dpdk`
 /// substruct also carries the mempool pointer and the pin / per-lcore
 /// hints that only make sense in a userspace PMD. Top-level fields are
 /// the backend-shared knobs.
@@ -78,12 +78,12 @@ struct StreamConfig {
 
     /// @brief Optional TCP keepalive. Default-constructed (interval == 0)
     ///        disables it. When `interval > 0`, the value is lowered into
-    ///        `dpdk.tcp_low_level.keepalive_interval / keepalive_probes`
+    ///        `dpdk.wire.keepalive_interval / keepalive_probes`
     ///        at factory time so the existing DPDK PMD machinery
     ///        (`TcpSession::tick_keepalive`) honours it.
     ///
     ///        Previously this knob was reachable only via
-    ///        `cfg.dpdk.tcp_low_level.keepalive_interval`; it has been
+    ///        `cfg.dpdk.wire.keepalive_interval`; it has been
     ///        promoted to the top level (T3.19 reshape) so the surface
     ///        is symmetric with the kernel backend.
     ::eph::net::KeepaliveConfig keepalive{};
@@ -95,11 +95,11 @@ struct StreamConfig {
     struct Dpdk {
         /// @brief Underlying wire-level DPDK TcpSession configuration:
         ///        4-tuple, MAC addresses, MSS, recv_window, port/queue
-        ///        IDs, max_rx_burst. Validated via `tcp_low_level.validate()`
+        ///        IDs, max_rx_burst. Validated via `wire.validate()`
         ///        at factory time. (Renamed from `legacy` in T3.19 — the
         ///        old name was non-semantic; this is the wire-level
         ///        TcpConfig the PMD ingests.)
-        ::eph::dpdk::TcpConfig tcp_low_level{};
+        ::eph::dpdk::TcpConfig wire{};
 
         /// @brief The DPDK mempool used for TcpSession mbuf allocations.
         ///        Top-level so callers can use designated initialization
@@ -153,23 +153,23 @@ struct UdpConfig {
     struct Dpdk {
         /// @brief Underlying wire-level DPDK UdpSender configuration:
         ///        4-tuple, MACs, port/queue IDs, mempool, hw_cksum flag.
-        ///        Validated via `udp_low_level.validate()` at factory
+        ///        Validated via `wire.validate()` at factory
         ///        time. (Renamed from `legacy` in the Tier-1 audit
-        ///        follow-up — same rationale as TCP's `tcp_low_level`:
+        ///        follow-up — same rationale as TCP's `wire`:
         ///        the old name was non-semantic; this is the wire-level
         ///        UdpConfig the PMD ingests.)
-        ::eph::dpdk::wire::UdpConfig udp_low_level{};
+        ::eph::dpdk::wire::UdpConfig wire{};
 
         /// @brief See `StreamConfig::Dpdk::pin_to_queue`. UDP has no connect
         /// handshake, so the pin is honoured at attach time — the user is
-        /// expected to have already set `udp_low_level.src_port` such
+        /// expected to have already set `wire.src_port` such
         /// that the (src/dst) tuple hashes to the desired queue under
         /// RSS, or the helper installs an rte_flow rule under
         /// FlowDirector. nullopt = auto.
         std::optional<uint16_t> pin_to_queue{};
 
         /// @brief Per-lcore mempool hint for `create_and_attach`.
-        ///        Default `-1` keeps `udp_low_level.pool` as the caller
+        ///        Default `-1` keeps `wire.pool` as the caller
         ///        populated it.
         int pool_lcore_hint{-1};
     } dpdk;

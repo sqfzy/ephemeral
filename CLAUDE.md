@@ -35,7 +35,7 @@ The scope decisions for the current feature set are archived in
 - `eph::net::KeepaliveConfig` (`cfg.keepalive.interval` / `probes`) —
   backend-shared sub-config; default disabled. Kernel wires `setsockopt
   (SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`; DPDK lowers
-  to `cfg.dpdk.tcp_low_level.keepalive_*` for the PMD's `TcpSession::
+  to `cfg.dpdk.wire.keepalive_*` for the PMD's `TcpSession::
   tick_keepalive`. Replaces the DPDK-only `cfg.legacy.keepalive_*` path.
 - `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.

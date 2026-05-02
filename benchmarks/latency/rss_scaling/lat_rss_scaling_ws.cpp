@@ -392,7 +392,7 @@ int main(int argc, char** argv) {
 #if defined(EPH_USE_DPDK)
             const uint16_t target_q = i % nb_rx_queues;
             ed::StreamConfig scfg{};
-            scfg.dpdk.tcp_low_level = env.make_tcp_config(
+            scfg.dpdk.wire = env.make_tcp_config(
                 bench::random_src_port(), port);
             scfg.dpdk.pool         = env.pool;
             scfg.dpdk.pin_to_queue = target_q;

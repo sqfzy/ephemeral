@@ -542,17 +542,17 @@ int main(int argc, char** argv) {
         //        one call. Failure here is what the reconnect loop is
         //        here for.
         edpdk::StreamConfig scfg{};
-        scfg.dpdk.tcp_low_level.tuple.src_ip = app_cfg.local_ip;
-        scfg.dpdk.tcp_low_level.tuple.dst_ip = dst_ip;
-        scfg.dpdk.tcp_low_level.tuple.src_port = src_port;
-        scfg.dpdk.tcp_low_level.tuple.dst_port = app_cfg.port;
-        scfg.dpdk.tcp_low_level.src_mac = src_mac;
-        scfg.dpdk.tcp_low_level.dst_mac = gw_mac;
-        scfg.dpdk.tcp_low_level.port_id = port_id;
-        scfg.dpdk.tcp_low_level.tx_queue_id = 0;
-        scfg.dpdk.tcp_low_level.rx_queue_id = 0;
-        scfg.dpdk.tcp_low_level.mss = eph::dpdk::net::kDefaultMss;
-        scfg.dpdk.tcp_low_level.recv_window = 65535;
+        scfg.dpdk.wire.tuple.src_ip = app_cfg.local_ip;
+        scfg.dpdk.wire.tuple.dst_ip = dst_ip;
+        scfg.dpdk.wire.tuple.src_port = src_port;
+        scfg.dpdk.wire.tuple.dst_port = app_cfg.port;
+        scfg.dpdk.wire.src_mac = src_mac;
+        scfg.dpdk.wire.dst_mac = gw_mac;
+        scfg.dpdk.wire.port_id = port_id;
+        scfg.dpdk.wire.tx_queue_id = 0;
+        scfg.dpdk.wire.rx_queue_id = 0;
+        scfg.dpdk.wire.mss = eph::dpdk::net::kDefaultMss;
+        scfg.dpdk.wire.recv_window = 65535;
         scfg.dpdk.pool = pool;
         scfg.connect_timeout = 5s;
         scfg.tls.hostname = app_cfg.host;  // SNI

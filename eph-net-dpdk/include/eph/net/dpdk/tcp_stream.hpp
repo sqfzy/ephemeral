@@ -415,13 +415,13 @@ public:
         auto* log = detail::tcp_stream_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "DpdkTcpStream::create: tls={} src={}:{} dst={}:{}", EnableTls,
-            cfg.dpdk.tcp_low_level.tuple.src_ip,
-            cfg.dpdk.tcp_low_level.tuple.src_port,
-            cfg.dpdk.tcp_low_level.tuple.dst_ip,
-            cfg.dpdk.tcp_low_level.tuple.dst_port);
+            cfg.dpdk.wire.tuple.src_ip,
+            cfg.dpdk.wire.tuple.src_port,
+            cfg.dpdk.wire.tuple.dst_ip,
+            cfg.dpdk.wire.tuple.dst_port);
 
         // Lower the public KeepaliveConfig into the wire-level TcpConfig
-        // BEFORE validation so `tcp_low_level.validate()` sees the same
+        // BEFORE validation so `wire.validate()` sees the same
         // bytes the PMD will consume. The KeepaliveConfig contract bounds
         // probes to [1, 10] when interval > 0, which is exactly what
         // TcpConfig::validate enforces — but only one of the two layers
@@ -433,18 +433,18 @@ public:
             return std::unexpected(kv.error());
         }
         if (!cfg.keepalive.empty()) {
-            cfg.dpdk.tcp_low_level.keepalive_interval = cfg.keepalive.interval;
-            cfg.dpdk.tcp_low_level.keepalive_probes   = cfg.keepalive.probes;
+            cfg.dpdk.wire.keepalive_interval = cfg.keepalive.interval;
+            cfg.dpdk.wire.keepalive_probes   = cfg.keepalive.probes;
         }
 
         // Validate the wire-level TcpConfig — it carries all the DPDK
         // wiring (port/queue/MAC/mempool-adjacent parameters) and knows
         // exactly which invariants it needs. We convert the string error
         // to an ErrorInfo so the error contract holds.
-        auto verr = cfg.dpdk.tcp_low_level.validate();
+        auto verr = cfg.dpdk.wire.validate();
         if (!verr.empty()) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: tcp_low_level validate failed: {}", verr);
+                "DpdkTcpStream::create: wire validate failed: {}", verr);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkTcpStream::create: TcpConfig invalid"});
@@ -576,7 +576,7 @@ public:
                 // "10.0.0.1") in WS Host: headers when neither ws_host
                 // nor tls.hostname was supplied. The fix reuses
                 // `format_ipv4` which already handles host-order.
-                const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
+                const auto& t = stream->cfg_.dpdk.wire.tuple;
                 auto ip_buf = ::eph::dpdk::net::format_ipv4(t.dst_ip);
                 host_storage = std::string(ip_buf.data()) + ":" +
                                std::to_string(t.dst_port);
@@ -656,8 +656,8 @@ public:
 
         SPDLOG_LOGGER_INFO(log,
             "DpdkTcpStream::create: connected src=0x{:08x}:{} -> dst=0x{:08x}:{}",
-            stream->cfg_.dpdk.tcp_low_level.tuple.src_ip, stream->cfg_.dpdk.tcp_low_level.tuple.src_port,
-            stream->cfg_.dpdk.tcp_low_level.tuple.dst_ip, stream->cfg_.dpdk.tcp_low_level.tuple.dst_port);
+            stream->cfg_.dpdk.wire.tuple.src_ip, stream->cfg_.dpdk.wire.tuple.src_port,
+            stream->cfg_.dpdk.wire.tuple.dst_ip, stream->cfg_.dpdk.wire.tuple.dst_port);
         return stream;
     }
 
@@ -670,7 +670,7 @@ public:
     ///   * the relevant `DpdkPoller<>` is already registered with
     ///     `platform.register_poller(qid, poller)` for every queue this
     ///     stream might land on;
-    ///   * `cfg.dpdk.tcp_low_level.tuple.dst_ip` / `dst_port` carry the remote
+    ///   * `cfg.dpdk.wire.tuple.dst_ip` / `dst_port` carry the remote
     ///     endpoint, `src_ip` is the local ip, and `src_port` is either
     ///     a pre-chosen ephemeral port or 0 (the helper rebinds it in
     ///     the RSS+pin case anyway).
@@ -712,7 +712,7 @@ public:
         // RssPartitioned now always rewrites; we treat src_port==0 as
         // "caller didn't care" and never flag rewriting in that case.
         const uint16_t original_src_port =
-            cfg.dpdk.tcp_low_level.tuple.src_port;
+            cfg.dpdk.wire.tuple.src_port;
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
@@ -770,7 +770,7 @@ public:
             // single-process Platform returns nullopt → use Linux default
             // ephemeral range. The helper takes a CLOSED upper bound, so
             // we hand it `port_hi - 1`.
-            const auto& t = cfg.dpdk.tcp_low_level.tuple;
+            const auto& t = cfg.dpdk.wire.tuple;
             const auto pr = platform.self_port_range();
             const uint16_t port_lo_arg =
                 pr ? static_cast<uint16_t>(pr->first)
@@ -792,12 +792,12 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: find_src_port_for_queue exhausted"});
             }
-            cfg.dpdk.tcp_low_level.tuple.src_port = *sp;
+            cfg.dpdk.wire.tuple.src_port = *sp;
             // Critical: align rx/tx_queue_id with target_qid so the
             // SYN/SYN-ACK/ACK handshake in TStream::create() polls the
             // queue where the engineered SYN-ACK will actually land.
-            cfg.dpdk.tcp_low_level.rx_queue_id = target_qid;
-            cfg.dpdk.tcp_low_level.tx_queue_id = target_qid;
+            cfg.dpdk.wire.rx_queue_id = target_qid;
+            cfg.dpdk.wire.tx_queue_id = target_qid;
             SPDLOG_LOGGER_INFO(log,
                 "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
                 *sp, target_qid, cfg.dpdk.pin_to_queue.has_value());
@@ -810,16 +810,16 @@ public:
             // KNOWN LIMITATION (FlowDirector handshake race):
             // Unlike the RssPartitioned branch above — which engineers a
             // src_port that hashes to target_qid via find_src_port_for_queue
-            // and then aligns cfg.dpdk.tcp_low_level.{rx,tx}_queue_id = target_qid so the
+            // and then aligns cfg.dpdk.wire.{rx,tx}_queue_id = target_qid so the
             // SYN/SYN-ACK/ACK loop in TStream::create() polls the right queue
-            // — the FlowDirector branch does NOT touch cfg.dpdk.tcp_low_level.{rx,tx}_
+            // — the FlowDirector branch does NOT touch cfg.dpdk.wire.{rx,tx}_
             // queue_id here. The reason is timing: the rte_flow rule that
             // would steer this 5-tuple to target_qid is only installed AFTER
             // create() returns (post-handshake), so during the handshake the
             // PMD's default RSS routes the SYN-ACK to whichever queue its
             // hash picks — typically NOT target_qid. Setting rx_queue_id to
             // target_qid here would make the handshake poll an empty queue.
-            // Today's behaviour: the handshake polls cfg.dpdk.tcp_low_level.rx_queue_id
+            // Today's behaviour: the handshake polls cfg.dpdk.wire.rx_queue_id
             // (caller default, usually 0) and works iff default RSS happens
             // to route the SYN-ACK to that same queue. On NICs that
             // round-robin RSS without a steering rule (e.g. Mellanox, some
@@ -898,7 +898,7 @@ public:
         // the caller didn't pre-choose anything, so we never call that
         // a "rewrite" — the library is allowed to populate an empty slot.
         if (original_src_port != 0 &&
-            stream->cfg_.dpdk.tcp_low_level.tuple.src_port != original_src_port) {
+            stream->cfg_.dpdk.wire.tuple.src_port != original_src_port) {
             stream->src_port_rewritten_ = true;
         }
 
@@ -926,7 +926,7 @@ public:
         // and move it into the stream so RAII destruction (~FlowRule →
         // rte_flow_destroy) cleans up at stream teardown.
         if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
-            const auto& t = stream->cfg_.dpdk.tcp_low_level.tuple;
+            const auto& t = stream->cfg_.dpdk.wire.tuple;
             ::eph::dpdk::net::ConnectionTuple fl_tuple{
                 .src_ip   = t.src_ip,   .dst_ip   = t.dst_ip,
                 .src_port = t.src_port, .dst_port = t.dst_port};
@@ -1042,7 +1042,7 @@ public:
         // response happens to land on. The returned RAII handle auto-
         // unregisters on ~DpdkTcpStream.
         auto icmp_reg = platform.register_icmp_target(
-            stream->cfg_.dpdk.tcp_low_level.tuple,
+            stream->cfg_.dpdk.wire.tuple,
             eph::dpdk::net::kIpProtoTcp,
             stream.get(),
             &DpdkTcpStream::on_icmp_mtu_thunk_);
@@ -1605,7 +1605,7 @@ public:
     /// @see eph::net::StreamSnapshot for field semantics.
     [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
         ::eph::net::StreamSnapshot s{};
-        const auto& t = cfg_.dpdk.tcp_low_level.tuple;
+        const auto& t = cfg_.dpdk.wire.tuple;
         s.endpoint.src_ip   = t.src_ip;
         s.endpoint.src_port = t.src_port;
         s.endpoint.dst_ip   = t.dst_ip;
@@ -1614,8 +1614,8 @@ public:
 
         s.tcp.enabled             = true;
         s.tcp.recv_window         = static_cast<uint16_t>(
-            cfg_.dpdk.tcp_low_level.recv_window);
-        s.tcp.local_mss           = cfg_.dpdk.tcp_low_level.mss;
+            cfg_.dpdk.wire.recv_window);
+        s.tcp.local_mss           = cfg_.dpdk.wire.mss;
         s.tcp.effective_mss       = sess_.effective_mss();
         s.tcp.peer_mss_negotiated = sess_.peer_mss_negotiated();
         // peer_mss is the *raw* SYN-ACK advertisement (per
@@ -1644,8 +1644,8 @@ public:
         s.ws.host                      = cfg_.ws.host;
         s.ws.permessage_deflate_active = ws_deflate_active_;
 
-        s.dpdk.rx_queue                 = cfg_.dpdk.tcp_low_level.rx_queue_id;
-        s.dpdk.tx_queue                 = cfg_.dpdk.tcp_low_level.tx_queue_id;
+        s.dpdk.rx_queue                 = cfg_.dpdk.wire.rx_queue_id;
+        s.dpdk.tx_queue                 = cfg_.dpdk.wire.tx_queue_id;
         s.dpdk.pool_lcore_hint_resolved = cfg_.dpdk.pool_lcore_hint;
         if (flow_rule_ && flow_rule_->valid()) {
             s.dpdk.flow_rule_handle = flow_rule_->opaque_handle_id();
@@ -1743,7 +1743,7 @@ public:
     void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
                             uint16_t* src_port, uint16_t* dst_port,
                             uint8_t*  proto) noexcept {
-        const auto& t = cfg_.dpdk.tcp_low_level.tuple;
+        const auto& t = cfg_.dpdk.wire.tuple;
         *src_ip   = t.src_ip;
         *dst_ip   = t.dst_ip;
         *src_port = t.src_port;
@@ -1922,12 +1922,12 @@ public:
         // Minimally fill the legacy TcpConfig so the session constructor
         // doesn't trip internal asserts — validity of the values is
         // irrelevant, we never drive the session to Established.
-        cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
-        cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
-        cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
-        cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
-        cfg.dpdk.tcp_low_level.mss            = 1460;
-        cfg.dpdk.tcp_low_level.recv_window    = 65535;
+        cfg.dpdk.wire.tuple.src_ip   = 0x0A000001;
+        cfg.dpdk.wire.tuple.dst_ip   = 0x0A000002;
+        cfg.dpdk.wire.tuple.src_port = 12345;
+        cfg.dpdk.wire.tuple.dst_port = 443;
+        cfg.dpdk.wire.mss            = 1460;
+        cfg.dpdk.wire.recv_window    = 65535;
         return std::unique_ptr<DpdkTcpStream>(
             new DpdkTcpStream(std::move(cfg)));
     }
@@ -1948,7 +1948,7 @@ public:
 private:
     explicit DpdkTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg))
-        , sess_(cfg_.dpdk.tcp_low_level, cfg_.dpdk.pool)
+        , sess_(cfg_.dpdk.wire, cfg_.dpdk.pool)
         , reasm_(cfg_.reasm_capacity > 0 ? cfg_.reasm_capacity : 256 * 1024) {}
 
     /// @brief Translate an RX-side session error into the stream-layer

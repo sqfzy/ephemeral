@@ -115,7 +115,7 @@ inline int run_lat_tcp_loop(::bench::BenchCtx& ctx) noexcept {
     auto& view = *ctx.view;
 
     ed::StreamConfig cfg{};
-    cfg.dpdk.tcp_low_level = view.make_tcp_config(::bench::random_src_port(), port);
+    cfg.dpdk.wire = view.make_tcp_config(::bench::random_src_port(), port);
     cfg.dpdk.pool          = view.pool;
     cfg.connect_timeout    = std::chrono::milliseconds{3000};
     cfg.dpdk.pin_to_queue = ctx.queue_id;

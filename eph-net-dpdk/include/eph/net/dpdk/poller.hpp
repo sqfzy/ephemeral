@@ -750,7 +750,7 @@ public:
     /// pick + create + add atomically and additionally rebinds src_port
     /// to match the RSS hash when pin_to_queue is set):
     ///     auto port = poller->pick_src_port(src_ip, dst_ip, 443).value();
-    ///     cfg.dpdk.tcp_low_level.tuple.src_port = port;
+    ///     cfg.dpdk.wire.tuple.src_port = port;
     ///     auto stream = DpdkTcpStream<C, EnableTls>::create(std::move(cfg))
     ///                       .value();
     ///     auto add_r  = poller->add(stream.get());  // authoritative

@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
     }).value();
 
     // DpdkTcpStream's create_and_attach is the production factory — it
-    // takes a much fuller StreamConfig (dpdk.tcp_low_level 4-tuple, MAC,
+    // takes a much fuller StreamConfig (dpdk.wire 4-tuple, MAC,
     // mempool, queue selection) plus a Platform reference. See
     // examples/simple_hft.cpp and examples/dpdk_rss_demo.cpp for
     // runnable end-to-end DPDK setups.

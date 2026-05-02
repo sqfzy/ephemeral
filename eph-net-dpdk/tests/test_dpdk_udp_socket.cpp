@@ -59,11 +59,11 @@ TEST(DpdkUdpSocket, ZeroSrcIpFailsInvalidConfig) {
 
 TEST(DpdkUdpSocket, NullPoolFailsInvalidConfig) {
     edpk::UdpConfig cfg{};
-    cfg.dpdk.udp_low_level.src_ip   = 0x0A000001;
-    cfg.dpdk.udp_low_level.dst_ip   = 0x0A000002;
-    cfg.dpdk.udp_low_level.src_port = 12345;
-    cfg.dpdk.udp_low_level.dst_port = 30000;
-    cfg.dpdk.udp_low_level.pool     = nullptr;  // explicit
+    cfg.dpdk.wire.src_ip   = 0x0A000001;
+    cfg.dpdk.wire.dst_ip   = 0x0A000002;
+    cfg.dpdk.wire.src_port = 12345;
+    cfg.dpdk.wire.dst_port = 30000;
+    cfg.dpdk.wire.pool     = nullptr;  // explicit
     auto r = RawUdpSocket::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -81,7 +81,7 @@ TEST(DpdkUdpSocket, AssociatedTypesPresent) {
 // ---------------------------------------------------------------------------
 // connect_to peer validation — UdpSender is a precomputed-template fixed-
 // peer sender, so `connect_to(peer)` must reject any peer that does not
-// match `cfg.dpdk.udp_low_level.dst_*`. Otherwise TX goes to the real server but the
+// match `cfg.dpdk.wire.dst_*`. Otherwise TX goes to the real server but the
 // RX filter drops everything, leaving the socket silently hung.
 // ---------------------------------------------------------------------------
 
@@ -99,11 +99,11 @@ protected:
 
     static edpk::UdpConfig make_cfg() {
         edpk::UdpConfig cfg{};
-        cfg.dpdk.udp_low_level.src_ip   = 0x0A000001;  // 10.0.0.1
-        cfg.dpdk.udp_low_level.dst_ip   = 0x0A000002;  // 10.0.0.2
-        cfg.dpdk.udp_low_level.src_port = 12345;
-        cfg.dpdk.udp_low_level.dst_port = 30000;
-        cfg.dpdk.udp_low_level.pool     = pool_;
+        cfg.dpdk.wire.src_ip   = 0x0A000001;  // 10.0.0.1
+        cfg.dpdk.wire.dst_ip   = 0x0A000002;  // 10.0.0.2
+        cfg.dpdk.wire.src_port = 12345;
+        cfg.dpdk.wire.dst_port = 30000;
+        cfg.dpdk.wire.pool     = pool_;
         return cfg;
     }
 
@@ -118,8 +118,8 @@ TEST_F(DpdkUdpSocketConnectTo, AcceptsPeerMatchingConfiguredDst) {
     ASSERT_TRUE(r.has_value()) << r.error().detail;
 
     const eph::net::SocketAddr matching{
-        eph::net::Ipv4Addr::from_be32(cfg.dpdk.udp_low_level.dst_ip),
-        cfg.dpdk.udp_low_level.dst_port};
+        eph::net::Ipv4Addr::from_be32(cfg.dpdk.wire.dst_ip),
+        cfg.dpdk.wire.dst_port};
     auto ok = (*r)->connect_to(matching);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().detail);
 }
@@ -131,7 +131,7 @@ TEST_F(DpdkUdpSocketConnectTo, RejectsPeerWithMismatchedIp) {
 
     const eph::net::SocketAddr wrong_ip{
         eph::net::Ipv4Addr::from_be32(0x0A000003),  // 10.0.0.3 ≠ configured dst
-        cfg.dpdk.udp_low_level.dst_port};
+        cfg.dpdk.wire.dst_port};
     auto bad = (*r)->connect_to(wrong_ip);
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, eph::core::Error::InvalidConfig);
@@ -143,15 +143,15 @@ TEST_F(DpdkUdpSocketConnectTo, RejectsPeerWithMismatchedPort) {
     ASSERT_TRUE(r.has_value()) << r.error().detail;
 
     const eph::net::SocketAddr wrong_port{
-        eph::net::Ipv4Addr::from_be32(cfg.dpdk.udp_low_level.dst_ip),
-        static_cast<uint16_t>(cfg.dpdk.udp_low_level.dst_port + 1)};  // port ≠ configured
+        eph::net::Ipv4Addr::from_be32(cfg.dpdk.wire.dst_ip),
+        static_cast<uint16_t>(cfg.dpdk.wire.dst_port + 1)};  // port ≠ configured
     auto bad = (*r)->connect_to(wrong_port);
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, eph::core::Error::InvalidConfig);
 }
 
 // `connect_to()` on UdpSender is write-once in the sense that the TX peer
-// is fixed by cfg.dpdk.udp_low_level.dst_*; the API mutates only the RX-filter state.
+// is fixed by cfg.dpdk.wire.dst_*; the API mutates only the RX-filter state.
 // Still, calling it a second time with the SAME matching peer must be
 // idempotent — no error, no state corruption, socket still usable. Also
 // after an accepted match, a subsequent mismatched peer call must still
@@ -162,8 +162,8 @@ TEST_F(DpdkUdpSocketConnectTo, SamePeerCalledTwiceIsIdempotent) {
     ASSERT_TRUE(r.has_value()) << r.error().detail;
 
     const eph::net::SocketAddr matching{
-        eph::net::Ipv4Addr::from_be32(cfg.dpdk.udp_low_level.dst_ip),
-        cfg.dpdk.udp_low_level.dst_port};
+        eph::net::Ipv4Addr::from_be32(cfg.dpdk.wire.dst_ip),
+        cfg.dpdk.wire.dst_port};
     auto first  = (*r)->connect_to(matching);
     EXPECT_TRUE(first.has_value()) << (first ? "" : first.error().detail);
     auto second = (*r)->connect_to(matching);
@@ -182,13 +182,13 @@ TEST_F(DpdkUdpSocketConnectTo, MismatchAfterMatchDoesNotUnlatch) {
     ASSERT_TRUE(r.has_value()) << r.error().detail;
 
     const eph::net::SocketAddr matching{
-        eph::net::Ipv4Addr::from_be32(cfg.dpdk.udp_low_level.dst_ip),
-        cfg.dpdk.udp_low_level.dst_port};
+        eph::net::Ipv4Addr::from_be32(cfg.dpdk.wire.dst_ip),
+        cfg.dpdk.wire.dst_port};
     ASSERT_TRUE((*r)->connect_to(matching).has_value());
 
     const eph::net::SocketAddr wrong_ip{
         eph::net::Ipv4Addr::from_be32(0x0A000003),  // 10.0.0.3 ≠ configured
-        cfg.dpdk.udp_low_level.dst_port};
+        cfg.dpdk.wire.dst_port};
     auto bad = (*r)->connect_to(wrong_ip);
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, eph::core::Error::InvalidConfig);
@@ -261,11 +261,11 @@ protected:
     // callable and has no attach precondition.
     std::unique_ptr<RawUdpSocket> make_socket() {
         edpk::UdpConfig cfg{};
-        cfg.dpdk.udp_low_level.src_ip   = 0x0A000001;
-        cfg.dpdk.udp_low_level.dst_ip   = 0x0A000002;
-        cfg.dpdk.udp_low_level.src_port = 12345;
-        cfg.dpdk.udp_low_level.dst_port = 30000;
-        cfg.dpdk.udp_low_level.pool     = pool_;
+        cfg.dpdk.wire.src_ip   = 0x0A000001;
+        cfg.dpdk.wire.dst_ip   = 0x0A000002;
+        cfg.dpdk.wire.src_port = 12345;
+        cfg.dpdk.wire.dst_port = 30000;
+        cfg.dpdk.wire.pool     = pool_;
         auto r = RawUdpSocket::create(cfg);
         if (!r) return nullptr;
         return std::move(*r);
@@ -520,11 +520,11 @@ protected:
 
     std::unique_ptr<RawUdpSocket> make_socket() {
         edpk::UdpConfig cfg{};
-        cfg.dpdk.udp_low_level.src_ip   = 0x0A000001;
-        cfg.dpdk.udp_low_level.dst_ip   = 0x0A000002;
-        cfg.dpdk.udp_low_level.src_port = 12345;
-        cfg.dpdk.udp_low_level.dst_port = 30000;
-        cfg.dpdk.udp_low_level.pool     = pool_;
+        cfg.dpdk.wire.src_ip   = 0x0A000001;
+        cfg.dpdk.wire.dst_ip   = 0x0A000002;
+        cfg.dpdk.wire.src_port = 12345;
+        cfg.dpdk.wire.dst_port = 30000;
+        cfg.dpdk.wire.pool     = pool_;
         auto r = RawUdpSocket::create(cfg);
         if (!r) return nullptr;
         return std::move(*r);
@@ -685,8 +685,8 @@ TEST_F(DpdkUdpSocketConnectTo, SendToRejectsPayloadExceedingFrameCap) {
     // 65500 bytes > (0xFFFF - 42 = 65493); must be rejected.
     std::vector<uint8_t> too_big(65500, 0xAB);
     const eph::net::SocketAddr dst{
-        eph::net::Ipv4Addr::from_be32(cfg.dpdk.udp_low_level.dst_ip),
-        cfg.dpdk.udp_low_level.dst_port};
+        eph::net::Ipv4Addr::from_be32(cfg.dpdk.wire.dst_ip),
+        cfg.dpdk.wire.dst_port};
     // Attach requirement: bypass by calling send_to directly — we only
     // care about the payload-size gate here. The check fires before
     // the attach check though, so we expect InvalidConfig... actually

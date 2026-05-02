@@ -145,10 +145,10 @@ TEST(DpdkMpDynamicTcpHandshakeSecondary, ConnectsAndEchoes) {
 
     // ── 5. Stream::create_and_attach (no pin_to_queue — the fix path) ──
     ed::StreamConfig scfg{};
-    scfg.dpdk.tcp_low_level.tuple   = {src_ip, dst_ip, /*sp=*/0, kHandshakePort};
-    scfg.dpdk.tcp_low_level.src_mac = src_mac;
-    scfg.dpdk.tcp_low_level.dst_mac = gw_mac;
-    scfg.dpdk.tcp_low_level.port_id = port_id;
+    scfg.dpdk.wire.tuple   = {src_ip, dst_ip, /*sp=*/0, kHandshakePort};
+    scfg.dpdk.wire.src_mac = src_mac;
+    scfg.dpdk.wire.dst_mac = gw_mac;
+    scfg.dpdk.wire.port_id = port_id;
     scfg.dpdk.pool                  = pool;
     scfg.connect_timeout            = std::chrono::milliseconds{5000};
 

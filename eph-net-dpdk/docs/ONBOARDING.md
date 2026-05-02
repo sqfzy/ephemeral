@@ -156,8 +156,8 @@ Source-port partitioning across MP processes:
     disjoint segments without manual coordination.
   * **Without `mp_topology` (legacy / manual partition path)** — the
     caller is responsible: allocate disjoint sub-ranges per process
-    via `cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or
-    `cfg.dpdk.udp_low_level.src_port` (UDP — UDP now mirrors TCP's
+    via `cfg.dpdk.wire.tuple.src_port` (TCP) or
+    `cfg.dpdk.wire.src_port` (UDP — UDP now mirrors TCP's
     `dpdk` substruct shape post Tier-1 audit follow-up).
     `eph-net-dpdk` has no global view to enforce disjointness on this
     path.

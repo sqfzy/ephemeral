@@ -247,7 +247,7 @@ TEST(DpdkWsAutoResponse, ServerPingTriggersClientPong) {
     namespace ec    = eph::codec;
 
     edpdk::StreamConfig scfg{};
-    scfg.dpdk.tcp_low_level          = env.make_tcp_config(next_src_port(), kWsPingPort);
+    scfg.dpdk.wire          = env.make_tcp_config(next_src_port(), kWsPingPort);
     scfg.dpdk.pool            = env.pool;
     scfg.connect_timeout = 3s;
     scfg.ws.path         = "/ws";
@@ -269,7 +269,7 @@ TEST(DpdkWsAutoResponse, ServerPingTriggersClientPong) {
         };
 
     edpdk::PollerConfig pcfg{};
-    pcfg.port_id      = scfg.dpdk.tcp_low_level.port_id;
+    pcfg.port_id      = scfg.dpdk.wire.port_id;
     pcfg.rx_queue_id  = 0;
     auto poller_r = edpdk::DpdkPoller<>::create(pcfg);
     ASSERT_TRUE(poller_r.has_value())

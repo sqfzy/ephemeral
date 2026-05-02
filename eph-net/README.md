@@ -52,7 +52,7 @@ field cluster works against both backends:
 - `KeepaliveConfig` (`include/eph/net/keepalive_config.hpp`) —
   `interval` / `probes`. Default disabled. Kernel lowers to
   `setsockopt(SO_KEEPALIVE / TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`;
-  DPDK lowers to `cfg.dpdk.tcp_low_level.keepalive_*` for the PMD's
+  DPDK lowers to `cfg.dpdk.wire.keepalive_*` for the PMD's
   `TcpSession::tick_keepalive`.
 - `StreamSnapshot` (`include/eph/net/stream_snapshot.hpp`) — read
   counterpart of `StreamConfig`. Returned by `Stream::snapshot()` /

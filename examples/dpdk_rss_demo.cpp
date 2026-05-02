@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
     // 5-tuple on `queue = qr.first + (i % nb_owned_queues)`. The helper
     // walks `[32768, 60999]` looking for an ephemeral src_port whose
     // Toeplitz hash matches that queue under the NIC's RSS key, rebinds
-    // `cfg.dpdk.udp_low_level.src_port` to the picked value, and
+    // `cfg.dpdk.wire.src_port` to the picked value, and
     // constructs the sender. The library logs the picked port at INFO —
     // watch for "RSS pin → src_port=… hashes to queue=…".
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
@@ -355,14 +355,14 @@ int main(int argc, char** argv) {
         const uint16_t want_q = qr.first + (i % nb_owned);
 
         edpdk::UdpConfig ucfg{};
-        ucfg.dpdk.udp_low_level.src_ip   = args.src_ip;
-        ucfg.dpdk.udp_low_level.dst_ip   = args.dst_ip;
+        ucfg.dpdk.wire.src_ip   = args.src_ip;
+        ucfg.dpdk.wire.dst_ip   = args.dst_ip;
         // src_port populated as a placeholder: validate() requires non-zero.
         // The RSS-pin path overwrites it with the reverse-picked ephemeral.
-        ucfg.dpdk.udp_low_level.src_port = static_cast<uint16_t>(32768 + i);
-        ucfg.dpdk.udp_low_level.dst_port = args.dst_port;
-        ucfg.dpdk.udp_low_level.port_id  = platform.port_id();
-        ucfg.dpdk.udp_low_level.pool     = platform.mempool();
+        ucfg.dpdk.wire.src_port = static_cast<uint16_t>(32768 + i);
+        ucfg.dpdk.wire.dst_port = args.dst_port;
+        ucfg.dpdk.wire.port_id  = platform.port_id();
+        ucfg.dpdk.wire.pool     = platform.mempool();
         // dst_mac left zero — would need ARP resolution to drive real
         // traffic. See eph::dpdk::arp::resolve / examples/binance_latency.cpp.
 
@@ -372,7 +372,7 @@ int main(int argc, char** argv) {
         // `per_lcore_pools > 0`, each socket gets a pool local to its
         // own lcore — Platform clamps `hint` against the pool count, so
         // `i % per_lcore_pools` is safe.  When `per_lcore_pools == 0`,
-        // leave the hint at -1 so the helper uses `udp_low_level.pool`
+        // leave the hint at -1 so the helper uses `wire.pool`
         // as set (the single shared pool, byte-for-byte the pre-T2.9 path).
         if (args.per_lcore_pools > 0) {
             ucfg.dpdk.pool_lcore_hint =

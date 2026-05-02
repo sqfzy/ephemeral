@@ -68,15 +68,15 @@ static_assert(eph::net::dpdk::DpdkPollable<TlsRawStream>,
 
 static edpk::StreamConfig make_config_with_pool(::rte_mempool* pool) {
     edpk::StreamConfig cfg{};
-    cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
-    cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
-    cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
-    cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
-    cfg.dpdk.tcp_low_level.mss            = 1460;
-    cfg.dpdk.tcp_low_level.recv_window    = 65535;
-    cfg.dpdk.tcp_low_level.port_id        = 0;
-    cfg.dpdk.tcp_low_level.tx_queue_id    = 0;
-    cfg.dpdk.tcp_low_level.rx_queue_id    = 0;
+    cfg.dpdk.wire.tuple.src_ip   = 0x0A000001;
+    cfg.dpdk.wire.tuple.dst_ip   = 0x0A000002;
+    cfg.dpdk.wire.tuple.src_port = 12345;
+    cfg.dpdk.wire.tuple.dst_port = 443;
+    cfg.dpdk.wire.mss            = 1460;
+    cfg.dpdk.wire.recv_window    = 65535;
+    cfg.dpdk.wire.port_id        = 0;
+    cfg.dpdk.wire.tx_queue_id    = 0;
+    cfg.dpdk.wire.rx_queue_id    = 0;
     cfg.dpdk.pool = pool;
     return cfg;
 }
@@ -150,15 +150,15 @@ TEST(DpdkTcpStream, DefaultReasmCapacityIs256K) {
 namespace {
 edpk::StreamConfig valid_cfg_with_pool_sentinel() {
     edpk::StreamConfig cfg{};
-    cfg.dpdk.tcp_low_level.tuple.src_ip   = 0x0A000001;
-    cfg.dpdk.tcp_low_level.tuple.dst_ip   = 0x0A000002;
-    cfg.dpdk.tcp_low_level.tuple.src_port = 12345;
-    cfg.dpdk.tcp_low_level.tuple.dst_port = 443;
-    cfg.dpdk.tcp_low_level.mss            = 1460;
-    cfg.dpdk.tcp_low_level.recv_window    = 65535;
-    cfg.dpdk.tcp_low_level.port_id        = 0;
-    cfg.dpdk.tcp_low_level.tx_queue_id    = 0;
-    cfg.dpdk.tcp_low_level.rx_queue_id    = 0;
+    cfg.dpdk.wire.tuple.src_ip   = 0x0A000001;
+    cfg.dpdk.wire.tuple.dst_ip   = 0x0A000002;
+    cfg.dpdk.wire.tuple.src_port = 12345;
+    cfg.dpdk.wire.tuple.dst_port = 443;
+    cfg.dpdk.wire.mss            = 1460;
+    cfg.dpdk.wire.recv_window    = 65535;
+    cfg.dpdk.wire.port_id        = 0;
+    cfg.dpdk.wire.tx_queue_id    = 0;
+    cfg.dpdk.wire.rx_queue_id    = 0;
     cfg.dpdk.pool = reinterpret_cast<::rte_mempool*>(0xDEAD);  // fails later; fine
     return cfg;
 }
@@ -166,7 +166,7 @@ edpk::StreamConfig valid_cfg_with_pool_sentinel() {
 
 TEST(DpdkTcpStream, ZeroSrcPortFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.dpdk.tcp_low_level.tuple.src_port = 0;
+    cfg.dpdk.wire.tuple.src_port = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -174,7 +174,7 @@ TEST(DpdkTcpStream, ZeroSrcPortFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroDstPortFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.dpdk.tcp_low_level.tuple.dst_port = 0;
+    cfg.dpdk.wire.tuple.dst_port = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -182,7 +182,7 @@ TEST(DpdkTcpStream, ZeroDstPortFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroMssFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.dpdk.tcp_low_level.mss = 0;
+    cfg.dpdk.wire.mss = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -190,7 +190,7 @@ TEST(DpdkTcpStream, ZeroMssFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, MssExceedingJumboFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.dpdk.tcp_low_level.mss = 9001;  // one past the 9000-byte jumbo cap
+    cfg.dpdk.wire.mss = 9001;  // one past the 9000-byte jumbo cap
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
@@ -198,7 +198,7 @@ TEST(DpdkTcpStream, MssExceedingJumboFailsInvalidConfig) {
 
 TEST(DpdkTcpStream, ZeroRecvWindowFailsInvalidConfig) {
     auto cfg = valid_cfg_with_pool_sentinel();
-    cfg.dpdk.tcp_low_level.recv_window = 0;
+    cfg.dpdk.wire.recv_window = 0;
     auto r = PlainRawStream::create(cfg);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);

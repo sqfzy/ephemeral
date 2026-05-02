@@ -4,14 +4,14 @@
 /// @brief Common TCP keepalive configuration shared by Kernel and DPDK
 ///        stream backends.
 ///
-/// Extracted from the DPDK-only `cfg.dpdk.tcp_low_level.keepalive_interval
+/// Extracted from the DPDK-only `cfg.dpdk.wire.keepalive_interval
 /// / keepalive_probes` pair (`eph::dpdk::TcpConfig` low-level wire fields)
 /// and surfaced at the public `StreamConfig` level. The kernel backend
 /// also honours these via `setsockopt(TCP_KEEPIDLE / TCP_KEEPINTVL /
 /// TCP_KEEPCNT)` — previously the kernel surface had no keepalive knob.
 ///
 /// Note: the underlying low-level field path was renamed from `cfg.legacy.
-/// keepalive_*` to `cfg.dpdk.tcp_low_level.keepalive_*` in the T3.19 reshape;
+/// keepalive_*` to `cfg.dpdk.wire.keepalive_*` in the T3.19 reshape;
 /// this header pre-dates the rename and the comment now reflects the new
 /// path so future readers don't grep for the obsolete `legacy` prefix.
 ///

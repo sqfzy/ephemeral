@@ -238,8 +238,8 @@ manually must use `--proc-type=auto` — that is what
 
 `eph-net-dpdk` does **not** auto-allocate source ports. The TCP/UDP
 `create_and_attach` paths take the source port from the caller-supplied
-`cfg.dpdk.tcp_low_level.tuple.src_port` (TCP) or
-`cfg.dpdk.udp_low_level.src_port` (UDP — UDP now mirrors TCP's `dpdk`
+`cfg.dpdk.wire.tuple.src_port` (TCP) or
+`cfg.dpdk.wire.src_port` (UDP — UDP now mirrors TCP's `dpdk`
 substruct shape post Tier-1 audit follow-up) in Software / FlowDirector
 mode, or rebind it to one that hashes to the desired queue (RSS-pinned
 mode via `find_src_port_for_queue`). The library has no global view

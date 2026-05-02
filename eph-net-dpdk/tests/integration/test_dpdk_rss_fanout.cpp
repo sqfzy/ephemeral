@@ -294,7 +294,7 @@ TEST(PlatformRssFanout, NStreamsSameQueueSameEndpoint) {
     // Attach kFanout streams pinned to the same queue.
     for (uint16_t i = 0; i < kFanout; ++i) {
         ed::StreamConfig scfg{};
-        scfg.dpdk.tcp_low_level = benv.make_tcp_config(
+        scfg.dpdk.wire = benv.make_tcp_config(
             initial_src_port(i),
             ::eph::dpdk::test_e2e::kTcpEchoPort);
         scfg.dpdk.pool = benv.pool;
@@ -438,7 +438,7 @@ TEST(PlatformRssFanout, NStreamsDistributedAcrossQueues) {
         const uint16_t q = i % nb_q;
 
         ed::StreamConfig scfg{};
-        scfg.dpdk.tcp_low_level = benv.make_tcp_config(
+        scfg.dpdk.wire = benv.make_tcp_config(
             static_cast<uint16_t>(46000 + i),
             ::eph::dpdk::test_e2e::kTcpEchoPort);
         scfg.dpdk.pool = benv.pool;

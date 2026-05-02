@@ -13,7 +13,7 @@ The post-v3.3 type names are:
   `eph-net-dpdk/include/eph/dpdk/platform.hpp`) +
   `eph::net::dpdk::StreamConfig` (turnkey factory args, in
   `eph-net-dpdk/include/eph/net/dpdk/config.hpp` — backend-shared
-  knobs at the top level + a `dpdk.tcp_low_level` substruct of type
+  knobs at the top level + a `dpdk.wire` substruct of type
   `eph::dpdk::TcpConfig` for the wire-level fields)
 
 All fallible APIs return `std::expected<T, eph::core::ErrorInfo>`; see
@@ -121,7 +121,7 @@ streams against it.
 namespace ed = eph::dpdk;
 
 // 1. NIC bring-up (once per process) — handles RSS / mempools / queues.
-//    Per-stream IPs/MACs live on the StreamConfig::dpdk.tcp_low_level
+//    Per-stream IPs/MACs live on the StreamConfig::dpdk.wire
 //    sub-struct (4-tuple + MAC), not on PlatformConfig — Platform owns
 //    the port, not any L3 identity.
 ed::PlatformConfig pcfg{
@@ -152,7 +152,7 @@ end::StreamConfig scfg{
         .probes   = 3,                         // optional
     },
     .dpdk = {
-        .tcp_low_level = {
+        .wire = {
             // 4-tuple, MAC, MSS, recv_window, port/queue IDs.
             // .mss is left at the default (1460) for Ethernet; negotiated
             // down on Frag-Needed ICMP via TcpSession::on_icmp_frag_needed.
@@ -178,7 +178,7 @@ auto stream = ed::DpdkTcpStream<ec::WsCodec, true>::create_and_attach(scfg, *pla
 - `cfg.keepalive.interval` is optional; the tick fires inside
   `DpdkPoller::poll` via the `on_poll_tick_` hook, so single-stream users
   driving `poll_once_` directly must `tick_keepalive(now_tsc)` themselves.
-  The user-facing field is lowered into `dpdk.tcp_low_level.keepalive_*`
+  The user-facing field is lowered into `dpdk.wire.keepalive_*`
   at factory time — do not set the wire-level fields directly.
 - For multi-process (primary + secondary) deployments, see
   `eph-net-dpdk/docs/dpdk-multiprocess.md` — partitioning src_port across
@@ -212,7 +212,7 @@ one call.
 | UDP recv buffer (kernel)      | `UdpConfig::rcv_buf`                 | 16 MB for multicast bursts |
 | Mempool size (DPDK)           | `PlatformConfig::mbuf_pool_size`     | 2^k - 1 (e.g. 4095, 16383, 65535); ≥ 2 × (rx_q × rx_desc + tx_q × tx_desc) |
 | RSS queues (DPDK)             | `PlatformConfig::nb_rx_queues`       | 1 for single-symbol; 4–8 for fan-out |
-| TCP MSS (DPDK)                | `StreamConfig::dpdk.tcp_low_level.mss` | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
+| TCP MSS (DPDK)                | `StreamConfig::dpdk.wire.mss` | 1460 (Ethernet); negotiated down on Frag-Needed ICMP |
 | epoll burst (kernel)          | `PollerConfig::max_events_per_wait`  | 64 (default)          |
 
 The previous `tx_burst_size` / `rx_burst_size` / `tx_cpu` / `rx_cpu`

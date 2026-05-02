@@ -41,7 +41,7 @@ and reconnection paths driven by `eph::net::ReconnectPolicy`.
 
 **Cause**: `eph::net::kernel::StreamConfig` (kernel) or
 `eph::net::dpdk::StreamConfig` (DPDK — including its
-`dpdk.tcp_low_level` wire-level `eph::dpdk::TcpConfig` substruct) failed
+`dpdk.wire` wire-level `eph::dpdk::TcpConfig` substruct) failed
 validation before any I/O.
 
 | `detail` substring | Fix |
@@ -312,7 +312,7 @@ not WARN.
    answering them, indicating the connection is half-open. Tune
    `cfg.keepalive.interval` / `cfg.keepalive.probes` on the user-facing
    `eph::net::dpdk::StreamConfig` (lowered into
-   `dpdk.tcp_low_level.keepalive_*` at factory time).
+   `dpdk.wire.keepalive_*` at factory time).
 2. Kernel: tune `cfg.keepalive.interval` / `cfg.keepalive.probes` on
    `eph::net::kernel::StreamConfig` (wires `setsockopt(SO_KEEPALIVE / TCP_
    KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT)`), or rely on application-layer

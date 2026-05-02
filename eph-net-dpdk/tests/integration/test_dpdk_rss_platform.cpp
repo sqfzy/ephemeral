@@ -359,7 +359,7 @@ TEST(PlatformRss, CreateAndAttachSoftwareModeE2E) {
     // Build StreamConfig pointing at the kernel TCP echo mock.
     using TStream = ed::DpdkTcpStream<::eph::codec::RawStreamCodec, false>;
     ed::StreamConfig scfg{};
-    scfg.dpdk.tcp_low_level = benv.make_tcp_config(
+    scfg.dpdk.wire = benv.make_tcp_config(
         next_src_port(),
         ::eph::dpdk::test_e2e::kTcpEchoPort);
     scfg.dpdk.pool = benv.pool;

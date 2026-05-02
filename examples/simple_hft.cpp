@@ -295,17 +295,17 @@ int main(int argc, char** argv) {
     using Stream = edpdk::DpdkTcpStream<ec::WsCodec, /*EnableTls=*/true>;
 
     edpdk::StreamConfig scfg{};
-    scfg.dpdk.tcp_low_level.tuple.src_ip = cfg.local_ip;
-    scfg.dpdk.tcp_low_level.tuple.dst_ip = dst_ip;
-    scfg.dpdk.tcp_low_level.tuple.dst_port = cfg.port;
+    scfg.dpdk.wire.tuple.src_ip = cfg.local_ip;
+    scfg.dpdk.wire.tuple.dst_ip = dst_ip;
+    scfg.dpdk.wire.tuple.dst_port = cfg.port;
     // src_port left 0 — create_and_attach allocates an ephemeral one.
-    scfg.dpdk.tcp_low_level.src_mac     = src_mac;
-    scfg.dpdk.tcp_low_level.dst_mac     = gw_mac;
-    scfg.dpdk.tcp_low_level.port_id     = port_id;
-    scfg.dpdk.tcp_low_level.tx_queue_id = 0;
-    scfg.dpdk.tcp_low_level.rx_queue_id = 0;
-    scfg.dpdk.tcp_low_level.mss         = ed::net::kDefaultMss;
-    scfg.dpdk.tcp_low_level.recv_window = 65535;
+    scfg.dpdk.wire.src_mac     = src_mac;
+    scfg.dpdk.wire.dst_mac     = gw_mac;
+    scfg.dpdk.wire.port_id     = port_id;
+    scfg.dpdk.wire.tx_queue_id = 0;
+    scfg.dpdk.wire.rx_queue_id = 0;
+    scfg.dpdk.wire.mss         = ed::net::kDefaultMss;
+    scfg.dpdk.wire.recv_window = 65535;
     scfg.dpdk.pool       = pool;
     scfg.connect_timeout = 5s;
     scfg.tls.hostname    = cfg.host;     // SNI

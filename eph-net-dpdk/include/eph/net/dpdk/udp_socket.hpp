@@ -113,20 +113,20 @@ public:
         auto* log = detail::udp_socket_logger();
         SPDLOG_LOGGER_DEBUG(log,
             "DpdkUdpSocket::create: src=0x{:08x}:{} dst=0x{:08x}:{}",
-            cfg.dpdk.udp_low_level.src_ip, cfg.dpdk.udp_low_level.src_port,
-            cfg.dpdk.udp_low_level.dst_ip, cfg.dpdk.udp_low_level.dst_port);
+            cfg.dpdk.wire.src_ip, cfg.dpdk.wire.src_port,
+            cfg.dpdk.wire.dst_ip, cfg.dpdk.wire.dst_port);
 
         // Validate the wire-level UdpConfig first.
-        auto verr = cfg.dpdk.udp_low_level.validate();
+        auto verr = cfg.dpdk.wire.validate();
         if (!verr.empty()) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkUdpSocket::create: udp_low_level validate failed: {}", verr);
+                "DpdkUdpSocket::create: wire validate failed: {}", verr);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::create: UdpConfig invalid"});
         }
 
-        auto sender_r = ::eph::dpdk::UdpSender::create(cfg.dpdk.udp_low_level);
+        auto sender_r = ::eph::dpdk::UdpSender::create(cfg.dpdk.wire);
         if (!sender_r) {
             SPDLOG_LOGGER_WARN(log,
                 "DpdkUdpSocket::create: UdpSender::create failed: {}",
@@ -140,7 +140,7 @@ public:
             new DpdkUdpSocket(std::move(cfg), std::move(*sender_r)));
         SPDLOG_LOGGER_INFO(log,
             "DpdkUdpSocket::create: ready, peer=0x{:08x}:{}",
-            sock->cfg_.dpdk.udp_low_level.dst_ip, sock->cfg_.dpdk.udp_low_level.dst_port);
+            sock->cfg_.dpdk.wire.dst_ip, sock->cfg_.dpdk.wire.dst_port);
         return sock;
     }
 
@@ -152,7 +152,7 @@ public:
     /// @brief Turnkey factory: create a UDP socket and attach it to the
     /// per-queue Poller already registered with `platform`. Mirrors
     /// `DpdkTcpStream::create_and_attach`. UDP has no connect handshake,
-    /// so the RSS+pin path simply rebinds the src_port in `cfg.dpdk.udp_low_level`
+    /// so the RSS+pin path simply rebinds the src_port in `cfg.dpdk.wire`
     /// before sender construction.
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkUdpSocket>, core::ErrorInfo>
     create_and_attach(UdpConfig cfg, ::eph::dpdk::Platform& platform) noexcept {
@@ -239,9 +239,9 @@ public:
                    : uint16_t{60999};
             auto sp = ::eph::net::dpdk::find_src_port_for_queue(
                 platform.port_id(), target_qid,
-                /*remote_ip=*/  cfg.dpdk.udp_low_level.dst_ip,
-                /*remote_port=*/cfg.dpdk.udp_low_level.dst_port,
-                /*local_ip=*/   cfg.dpdk.udp_low_level.src_ip,
+                /*remote_ip=*/  cfg.dpdk.wire.dst_ip,
+                /*remote_port=*/cfg.dpdk.wire.dst_port,
+                /*local_ip=*/   cfg.dpdk.wire.src_ip,
                 port_lo_arg, port_hi_arg);
             if (!sp) {
                 SPDLOG_LOGGER_WARN(log,
@@ -251,11 +251,11 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: find_src_port_for_queue exhausted"});
             }
-            cfg.dpdk.udp_low_level.src_port = *sp;
+            cfg.dpdk.wire.src_port = *sp;
             // TX queue alignment: same family as RX. UdpConfig has no
             // rx_queue_id field by design (Poller owns the RX queue);
             // see the long comment removed alongside this rewrite.
-            cfg.dpdk.udp_low_level.tx_queue_id = target_qid;
+            cfg.dpdk.wire.tx_queue_id = target_qid;
             SPDLOG_LOGGER_INFO(log,
                 "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
                 *sp, target_qid, cfg.dpdk.pin_to_queue.has_value());
@@ -313,10 +313,10 @@ public:
 
         // ── Optional: resolve per-lcore mempool hint ─────────────────────────
         //
-        // When `cfg.dpdk.pool_lcore_hint >= 0`, override `cfg.dpdk.udp_low_level.pool` with
+        // When `cfg.dpdk.pool_lcore_hint >= 0`, override `cfg.dpdk.wire.pool` with
         // the Platform's per-lcore pool for that lcore id. NUMA-aware
         // alloc path (T2.9). When the hint is -1 (default) we leave
-        // `cfg.dpdk.udp_low_level.pool` untouched.
+        // `cfg.dpdk.wire.pool` untouched.
         if (cfg.dpdk.pool_lcore_hint >= 0) {
             const auto lcore_id =
                 static_cast<uint16_t>(cfg.dpdk.pool_lcore_hint);
@@ -330,7 +330,7 @@ public:
                     core::Error::InvalidConfig,
                     "create_and_attach: pool_for_lcore lookup returned nullptr"});
             }
-            cfg.dpdk.udp_low_level.pool = p;
+            cfg.dpdk.wire.pool = p;
         }
 
         auto sr = create(std::move(cfg));
@@ -355,10 +355,10 @@ public:
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::FlowDirector) {
             ::eph::dpdk::net::ConnectionTuple ft{
-                .src_ip   = sock->cfg_.dpdk.udp_low_level.src_ip,
-                .dst_ip   = sock->cfg_.dpdk.udp_low_level.dst_ip,
-                .src_port = sock->cfg_.dpdk.udp_low_level.src_port,
-                .dst_port = sock->cfg_.dpdk.udp_low_level.dst_port};
+                .src_ip   = sock->cfg_.dpdk.wire.src_ip,
+                .dst_ip   = sock->cfg_.dpdk.wire.dst_ip,
+                .src_port = sock->cfg_.dpdk.wire.src_port,
+                .dst_port = sock->cfg_.dpdk.wire.dst_port};
             auto rule = ::eph::net::dpdk::install_flow_rule(
                 platform.port_id(), target_qid, ft,
                 ::eph::net::dpdk::FlowProtocol::Udp);
@@ -453,8 +453,8 @@ public:
         }
         // Legacy UdpSender is fixed-peer; reject dst mismatches so user
         // code gets a clear error instead of silent misdelivery.
-        if (dst.ip.to_be32() != cfg_.dpdk.udp_low_level.dst_ip ||
-            dst.port         != cfg_.dpdk.udp_low_level.dst_port) {
+        if (dst.ip.to_be32() != cfg_.dpdk.wire.dst_ip ||
+            dst.port         != cfg_.dpdk.wire.dst_port) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::send_to: dst does not match configured peer "
@@ -603,18 +603,18 @@ public:
         // Poller's routing table keys on (src_ip, src_port, dst_ip, dst_port).
         //
         // Reject peer mismatches up front: if `peer` differs from the
-        // fixed TX destination, we'd end up sending to cfg.dpdk.udp_low_level.dst_*
+        // fixed TX destination, we'd end up sending to cfg.dpdk.wire.dst_*
         // but filtering inbound on `peer`, so replies from the real
         // server would be silently dropped and the socket would appear
         // hung. Fail loudly instead.
-        if (peer.ip.to_be32() != cfg_.dpdk.udp_low_level.dst_ip ||
-            peer.port         != cfg_.dpdk.udp_low_level.dst_port) {
+        if (peer.ip.to_be32() != cfg_.dpdk.wire.dst_ip ||
+            peer.port         != cfg_.dpdk.wire.dst_port) {
             SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
                 "DpdkUdpSocket::connect_to: peer ip_be=0x{:08x}:{} does not "
                 "match configured fixed peer ip_be=0x{:08x}:{} — would silently "
                 "drop all inbound traffic",
                 peer.ip.to_be32(), peer.port,
-                cfg_.dpdk.udp_low_level.dst_ip, cfg_.dpdk.udp_low_level.dst_port);
+                cfg_.dpdk.wire.dst_ip, cfg_.dpdk.wire.dst_port);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkUdpSocket::connect_to: peer does not match configured "
@@ -666,10 +666,10 @@ public:
     void tuple_for_poller_(uint32_t* src_ip, uint32_t* dst_ip,
                             uint16_t* src_port, uint16_t* dst_port,
                             uint8_t*  proto) noexcept {
-        *src_ip   = cfg_.dpdk.udp_low_level.src_ip;
-        *dst_ip   = cfg_.dpdk.udp_low_level.dst_ip;
-        *src_port = cfg_.dpdk.udp_low_level.src_port;
-        *dst_port = cfg_.dpdk.udp_low_level.dst_port;
+        *src_ip   = cfg_.dpdk.wire.src_ip;
+        *dst_ip   = cfg_.dpdk.wire.dst_ip;
+        *src_port = cfg_.dpdk.wire.src_port;
+        *dst_port = cfg_.dpdk.wire.dst_port;
         *proto    = eph::dpdk::net::kIpProtoUdp;
     }
 
@@ -862,7 +862,7 @@ private:
     ///        leave; safe to call when the list is empty (uninstalls).
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     apply_mcast_list_() noexcept {
-        const uint16_t port = cfg_.dpdk.udp_low_level.port_id;
+        const uint16_t port = cfg_.dpdk.wire.port_id;
         const int rc = ::rte_eth_dev_set_mc_addr_list(
             port,
             mcast_count_ > 0 ? mcast_macs_.data() : nullptr,
@@ -964,16 +964,16 @@ public:
     ///       `Platform::dispatch_mode()` for the broader picture.
     [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
         ::eph::net::StreamSnapshot s{};
-        s.endpoint.src_ip   = cfg_.dpdk.udp_low_level.src_ip;
-        s.endpoint.src_port = cfg_.dpdk.udp_low_level.src_port;
-        s.endpoint.dst_ip   = cfg_.dpdk.udp_low_level.dst_ip;
-        s.endpoint.dst_port = cfg_.dpdk.udp_low_level.dst_port;
+        s.endpoint.src_ip   = cfg_.dpdk.wire.src_ip;
+        s.endpoint.src_port = cfg_.dpdk.wire.src_port;
+        s.endpoint.dst_ip   = cfg_.dpdk.wire.dst_ip;
+        s.endpoint.dst_port = cfg_.dpdk.wire.dst_port;
         // UDP never reverse-picks src_port; src_port_rewritten stays false.
 
         // tcp.* / tls.* / ws.* / keepalive.* all stay default (enabled=false).
 
         s.dpdk.rx_queue                 = 0;  // RX is Poller-driven; no per-socket binding
-        s.dpdk.tx_queue                 = cfg_.dpdk.udp_low_level.tx_queue_id;
+        s.dpdk.tx_queue                 = cfg_.dpdk.wire.tx_queue_id;
         s.dpdk.pool_lcore_hint_resolved = cfg_.dpdk.pool_lcore_hint;
         if (flow_rule_ && flow_rule_->valid()) {
             s.dpdk.flow_rule_handle = flow_rule_->opaque_handle_id();
