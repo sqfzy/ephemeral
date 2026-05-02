@@ -1876,6 +1876,17 @@ public:
         // already gated on is_established(), so this is defense in depth.
         snd_wnd_ = 0;
         rcv_nxt_ = 0;
+        // Symmetrize keepalive state with connect()'s reset block (lines
+        // 719-721). connect() already zeros these on reconnect, so the
+        // happy path is unaffected — but if any path between reset() and
+        // the next connect() inspects keepalive state (telemetry, future
+        // accessor, or a tick_keepalive racing the close), a stale
+        // keepalive_misses_ near the threshold would falsify the next
+        // session's "probes unanswered" tally. Same defense-in-depth
+        // rationale as snd_wnd_ / rcv_nxt_ above.
+        last_rx_tsc_ = 0;
+        last_keepalive_tsc_ = 0;
+        keepalive_misses_ = 0;
         SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
     }
 
