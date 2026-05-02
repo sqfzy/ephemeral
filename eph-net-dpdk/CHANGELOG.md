@@ -105,27 +105,70 @@ See `docs/dpdk-daemon-deployment.md` for the deployment story and
 | `cfg.max_procs = 4; cfg.nb_rx_queues = 4`                                        | toml: `total_queues = 4` (operator-managed via `/etc/eph/<bdf>.toml`)                                    |
 | `cfg.file_prefix = "eph_X"`                                                      | derived from pci automatically (`eph_<sanitize_bdf(pci)>`)                                               |
 
-#### Caveats — what's still in flight
+#### Added (S6 — 2026-05-02 reshape close-out)
 
-The foundation commit lands the new factory shape and the lean configs.
-A handful of follow-on pieces are still ahead:
+S6 ties off the daemon-restart reconnect contract and adds the ops
+tooling for inspecting daemon state.
 
-- **Queue allocation**: today `Platform::create` claims queues
-  `0..(queues-1)` statically. The proper greedy allocator + dynamic
-  `rte_eth_dev_rss_reta_update` (so hash buckets only point at claimed
-  queues) lands in S5. Until then, two coexisting applications must not
-  both default to `queues=1` against the same daemon — they will collide
-  on queue 0.
-- **`Error::DaemonDisconnected`** + idempotent reconnect: the error
-  code, the `Platform::create` retry-safe contract, and the
-  `eph-nicctl peers / stats` ops tool are S6 deliverables. The
-  reconnect pattern in `docs/dpdk-reconnect-pattern.md` is a forward
-  spec — note the `TODO(S6)` markers.
-- **`eph-nicd` daemon binary** + `eph-nicd@<bdf>.service` systemd unit
-  + `/etc/eph/<bdf>.toml` parser are S4 deliverables. Until S4 lands,
-  exercising `Platform::serve_nic` requires hand-driving it from a test
-  fixture (see `tests/test_platform_config_validate.cpp` for the
-  current shape).
+- `eph::core::Error::DaemonDisconnected` — typed error code surfaced
+  when the `eph-nicd` daemon's IPC stops responding (rte_* returns
+  `-EIO`, port becomes invalid). Application code branches the
+  reconnect loop on `r.error().code == Error::DaemonDisconnected`
+  instead of string-matching. Distinct from `Disconnected` (TCP peer
+  close) and `Timeout` (per-request RTT exceeded) — this is a
+  whole-Platform condition that signals "drop the handle and call
+  `Platform::create` again once the daemon is back".
+- `Platform::owned_queues()` — `std::span<uint16_t const>` of the
+  queue indices this Platform owns (granted by the daemon's
+  QueueAllocator at create time). Apps use `.size()` to decide how
+  many RX worker threads to spawn (one per queue is the recommended
+  pattern). Empty span on moved-from / single-process / daemon-side
+  Platforms. Lazy-filled on first call (cold path); subsequent
+  calls return a span over the cached array.
+- `Platform::is_alive()` — atomic bool getter; `false` once any path
+  has marked daemon-disconnect. App reconnect loops poll this to
+  short-circuit no-op rx_burst calls when the port is already known
+  dead. Stays `true` for daemon-side / single-process Platforms.
+- `Platform::create` reconnect-safety preamble — when called repeatedly
+  in the same process (the standard reconnect template; see
+  `docs/dpdk-reconnect-pattern.md`), the preamble detects a stuck
+  `eal_initialized_flag` (typically left over from a daemon-died-
+  mid-flight cleanup that returned non-zero from `rte_eal_cleanup`),
+  forces a flag reset, and re-runs `rte_eal_init`. Resources the
+  dead Platform leaked stay leaked until process exit; the reconnect
+  attempt itself proceeds.
+- `eph::dpdk::dev::ensure_local_daemon(pci)` — dev-mode helper that
+  probes `/var/run/dpdk/eph_<sanitize(pci)>/config` for an active
+  primary and `fork`+`exec`s `eph-nicd --no-config-file --pci=<pci>`
+  if absent. Lives in a separate header `eph/dpdk/dev_helpers.hpp`
+  (NOT pulled in by `platform.hpp`) so production code never auto-
+  spawns by accident. Requires `geteuid() == 0`. Returns
+  `InvalidConfig` with a clear "needs sudo" detail when called as a
+  non-root user.
+- `eph-nicctl` — operator tool (`tools/eph-nicctl.cpp`, target
+  `eph_nicctl`) for inspecting daemon state. Subcommands `stats` /
+  `peers` attach as a DPDK secondary, send a single
+  `eph_nicctl_query` `rte_mp_request_sync` to the daemon, print the
+  `QueueAllocator::PoolState` snapshot (total / free / generation /
+  stale_releases / claimed bitmap), and exit. Read-only — never
+  mutates daemon state. Companion IPC handler
+  `on_nicctl_query_thunk` (registered by `Platform::serve_nic`
+  alongside the queue claim/release handlers).
+- New IPC types in `detail/queue_allocator.hpp`:
+  `kNicctlQueryActionName`, `NicctlQueryRequest`, `NicctlQueryReply`,
+  `NicctlQueryKind` (Stats / Reserved discriminator).
+
+S6 staging — what's NOT yet in this commit:
+
+- Per-call daemon-loss detection inside `rx_burst` / `tx_burst`.
+  The `Platform::mark_daemon_disconnected_()` hook is in place; the
+  burst paths invoke nothing today. Until those wire-ups land,
+  applications that need pre-emptive disconnect detection should
+  also poll `Platform::is_alive()` (or the kernel control-plane
+  path) on their own cadence.
+- Per-peer slot tracking (`nicctl peers` reply currently carries the
+  aggregated bitmap snapshot only — per-peer PID / uid / attach-time
+  needs a small `Header` extension in `queue_allocator.hpp`).
 
 ### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
 

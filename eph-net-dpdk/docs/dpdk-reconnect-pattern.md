@@ -5,14 +5,18 @@ toml change), every attached tenant loses its DPDK secondary view.
 This doc describes how tenant code should detect that and recover
 without exiting.
 
-> **TODO(S6)**: the typed error `Error::DaemonDisconnected` and the
-> idempotent-retry contract on `Platform::create` are S6
-> deliverables. The foundation commit lands the API surface but
-> does not yet wire daemon-loss detection into `rx_burst` /
-> `tx_burst`. Until S6, daemon restarts surface as generic
-> `rte_eth_*` failures or `rte_eal_init` errors at retry time, and
-> tenants must inspect those manually. Sections below marked
-> **`TODO(S6)`** describe the post-S6 contract.
+> **S6 status (2026-05-02)**: the typed error
+> `Error::DaemonDisconnected`, the `Platform::is_alive()` /
+> `Platform::owned_queues()` getters, the idempotent-retry preamble
+> on `Platform::create`, and the `eph::dpdk::dev::ensure_local_daemon`
+> helper are landed. Surfacing `DaemonDisconnected` from
+> `rx_burst` / `tx_burst` is wired as a `mark_daemon_disconnected_()`
+> hook on Platform; full per-call detection inside the burst paths
+> is staged separately (the hook is in place; the rx/tx call sites
+> will be updated as their interaction with the new flag is
+> established). Until that final wire-up, applications still see
+> generic `rte_eth_*` failures from rx/tx when the daemon dies — but
+> may use `Platform::is_alive()` to short-circuit the recovery loop.
 
 ## When to use this pattern
 
@@ -62,11 +66,11 @@ void run_tenant(std::stop_token stop) {
     while (!stop.stop_requested()) {
         auto r = some_operation(*plat);
 
-        // TODO(S6): replace this branch with a single
-        // r.error().code == Error::DaemonDisconnected check once S6
-        // wires the typed error. For now you may need to inspect
-        // r.error() string content or rte_errno after a generic
-        // rx/tx_burst failure.
+        // S6 (2026-05-02): the typed error code is now wired. The
+        // detection points inside rx/tx_burst are staged separately;
+        // until those land, applications can also short-circuit on
+        // Platform::is_alive() == false (set by the
+        // mark_daemon_disconnected_ hook on confirmed loss).
         if (!r && r.error().code == Error::DaemonDisconnected) {
             spdlog::warn("daemon disconnected; sleeping 1s before retry");
             std::this_thread::sleep_for(1s);
@@ -99,10 +103,13 @@ Key points:
   reattach logic through the codebase.
 - `Platform::create` is idempotent across the same process lifetime —
   drop the old `Platform`, then call again. The library handles
-  `rte_eal_cleanup` + re-`rte_eal_init` internally if needed.
-  *(TODO(S6): the idempotency guarantee depends on the S6 reconnect
-  cleanup path. Until then, calling `create` a second time in the
-  same process may hit DPDK's "EAL already initialised" branch.)*
+  `rte_eal_cleanup` + re-`rte_eal_init` internally if needed. The S6
+  preamble in `Platform::create` detects a stuck `eal_initialized_flag`
+  (typically caused by a daemon-died-mid-flight cleanup that left
+  `rte_eal_cleanup` returning non-zero) and forces a flag reset before
+  re-attempting `rte_eal_init`. Resources the dead Platform leaked
+  stay leaked until process exit; the reconnect attempt itself
+  proceeds.
 - The 1 s sleep is conservative — typical daemon restarts complete
   within `RestartSec=1s` + bring-up ~1 s. If you observe persistent
   failure after several retries, escalate to ops; the daemon
@@ -156,23 +163,34 @@ A reasonable pattern: snapshot every N seconds to
 `rebuild_business_state` callback above first tries to mmap an
 existing snapshot before falling back to a cold rebuild.
 
-## TODO(S6) summary
+## S6 status (2026-05-02)
 
-Items in this doc that are forward spec until S6 lands:
+Landed:
 
 - `Error::DaemonDisconnected` typed error code.
-- `rx_burst` / `tx_burst` daemon-loss detection (mp_alive
-  heartbeat or `rte_mp_*` aliveness check).
-- `Platform::create` idempotency guarantee across multiple calls in
+- `Platform::create` idempotency preamble across multiple calls in
   one process.
-- `eph::dpdk::dev::ensure_local_daemon` helper for spawning a
-  development daemon if one is not already running.
-- `eph-nicctl peers / stats` ops tool for verifying which tenants
-  are attached to which queue range.
+- `Platform::is_alive()` / `Platform::owned_queues()` app-side
+  state getters.
+- `eph::dpdk::dev::ensure_local_daemon` helper for auto-spawning a
+  daemon in dev / small-project deploys (root-only).
+- `eph-nicctl stats / peers` ops tool — DPDK secondary that queries
+  the daemon's `QueueAllocator` state via the `eph_nicctl_query`
+  IPC handler.
 
-Until those land, the reconnect pattern is best-effort: catch
-generic factory errors, sleep, retry. The post-S6 version replaces
-heuristics with a typed contract.
+Still staged separately (post-S6 follow-up):
+
+- `rx_burst` / `tx_burst` per-call daemon-loss detection. The
+  `mark_daemon_disconnected_()` hook is in place; the detection
+  points themselves (port-validity poll + rte_errno inspection
+  after each burst) will be wired as the burst-path interaction
+  with the typed flag is established. Until then,
+  `is_alive()` is set to true at create time and stays true unless
+  app code explicitly drives `mark_daemon_disconnected_()`.
+- Per-peer slot tracking in the `nicctl peers` reply (the wire
+  format carries only an aggregated bitmap snapshot today; per-peer
+  PID / uid / attach-time will need a small Header extension in
+  `queue_allocator.hpp`).
 
 ## See also
 

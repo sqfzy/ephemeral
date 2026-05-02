@@ -656,6 +656,12 @@ private:
 
 inline constexpr std::string_view kQueueClaimActionName   = "eph_queue_claim";
 inline constexpr std::string_view kQueueReleaseActionName = "eph_queue_release";
+/// @brief S6: ops-tool query handler. nicctl secondaries send a
+/// `NicctlQueryRequest` over `rte_mp_request_sync` and receive a
+/// `NicctlQueryReply` carrying the allocator's `PoolState` snapshot
+/// plus a small handful of daemon-wide diagnostics. Read-only —
+/// nicctl never mutates daemon state.
+inline constexpr std::string_view kNicctlQueryActionName  = "eph_nicctl_query";
 
 /// @brief Wire format for `eph_queue_claim` request — secondary →
 /// daemon. `requester_pid` is diagnostic only (logged on grant /
@@ -697,6 +703,47 @@ struct alignas(8) QueueReleaseRequest {
     uint32_t reserved2;
 };
 static_assert(std::is_trivially_copyable_v<QueueReleaseRequest>);
+
+/// @brief Subcommand discriminator for `eph_nicctl_query`. Both peers
+/// must agree on `version`; mismatched versions are rejected up-front
+/// at parse_payload boundary by the size check.
+enum class NicctlQueryKind : uint8_t {
+    /// Return per-allocator pool state plus a peer count. Used by
+    /// `eph-nicctl peers` and `eph-nicctl stats`.
+    Stats   = 0,
+    /// Reserved for future "tcpdump" / "list slot details" calls.
+    /// Daemon currently rejects with `ok=0` and a clear error.
+    Reserved = 1,
+};
+
+/// @brief Wire format for `eph_nicctl_query` — nicctl → daemon.
+struct alignas(8) NicctlQueryRequest {
+    uint8_t  version;          ///< wire version, must be 1
+    uint8_t  kind;             ///< NicctlQueryKind cast to uint8_t
+    uint16_t reserved0;
+    int32_t  requester_pid;    ///< diagnostic only
+};
+static_assert(std::is_trivially_copyable_v<NicctlQueryRequest>);
+static_assert(sizeof(NicctlQueryRequest) == 8);
+
+/// @brief Wire format for `eph_nicctl_query` reply — daemon → nicctl.
+/// Carries a flat snapshot of the daemon's QueueAllocator state.
+/// `error[]` is non-empty iff `ok == 0`.
+struct alignas(8) NicctlQueryReply {
+    uint8_t  version;          ///< wire version, must be 1
+    uint8_t  ok;               ///< 1 = success, 0 = error
+    uint16_t total_queues;     ///< from PoolState::total
+    uint16_t free_queues;      ///< from PoolState::free
+    uint16_t largest_free_run; ///< from PoolState::largest_free_run
+    uint64_t generation;       ///< monotonic claim counter
+    uint64_t stale_releases;   ///< diagnostic — bounced release count
+    uint64_t owned_bitmap_lo64;///< first 64 bits of the bitmap (queues 0..63)
+    uint16_t daemon_port_id;   ///< NIC port id the daemon owns; 0xFFFF = test
+    uint16_t reserved0;
+    uint32_t reserved1;
+    char     error[64];        ///< NUL-padded; empty on success
+};
+static_assert(std::is_trivially_copyable_v<NicctlQueryReply>);
 
 /// @brief Process-level pointer to the daemon's QueueAllocator.
 /// Set by `Platform::serve_nic` before the IPC actions register;
@@ -741,6 +788,13 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
 inline int
 on_queue_release_thunk(const struct rte_mp_msg* msg,
                        const void*              peer);
+
+/// @brief S6: DPDK rte_mp_t handler for `eph_nicctl_query`. Snapshots
+/// QueueAllocator state and replies. Read-only — never mutates daemon
+/// state.
+inline int
+on_nicctl_query_thunk(const struct rte_mp_msg* msg,
+                      const void*              peer);
 
 } // namespace eph::dpdk::detail
 
@@ -940,6 +994,72 @@ on_queue_release_thunk(const struct rte_mp_msg* msg,
     const uint16_t port_id =
         g_active_qalloc_port_id.load(std::memory_order_acquire);
     (void)refresh_reta_for_claimed_(*alloc, port_id);
+    return 0;
+}
+
+inline int
+on_nicctl_query_thunk(const struct rte_mp_msg* msg,
+                      const void*              peer) {
+    auto* alloc = g_active_queue_allocator.load(std::memory_order_acquire);
+    NicctlQueryReply reply{};
+    reply.version = 1;
+    reply.ok      = 0;
+
+    if (alloc == nullptr) {
+        std::strncpy(reply.error, "daemon allocator inactive",
+                     sizeof(reply.error) - 1);
+        SPDLOG_ERROR("on_nicctl_query_thunk: allocator inactive — replying error");
+        (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
+        return 0;
+    }
+    auto parsed = parse_payload<NicctlQueryRequest>(msg);
+    if (!parsed) {
+        std::strncpy(reply.error, "invalid query payload",
+                     sizeof(reply.error) - 1);
+        (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
+        return 0;
+    }
+    const auto& req = *parsed;
+    if (req.version != 1) {
+        SPDLOG_ERROR(
+            "on_nicctl_query_thunk: version={} unsupported (expected 1) "
+            "— rejecting", req.version);
+        std::strncpy(reply.error, "unsupported nicctl wire version",
+                     sizeof(reply.error) - 1);
+        (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
+        return 0;
+    }
+    const auto kind = static_cast<NicctlQueryKind>(req.kind);
+    if (kind != NicctlQueryKind::Stats) {
+        SPDLOG_INFO(
+            "on_nicctl_query_thunk: kind={} not yet implemented "
+            "(req.kind={})",
+            req.kind == 0 ? "Stats" : "Reserved", req.kind);
+        std::strncpy(reply.error,
+                     "kind not yet implemented (only Stats=0 is wired)",
+                     sizeof(reply.error) - 1);
+        (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
+        return 0;
+    }
+
+    // Snapshot pool state under the allocator's mutex (dump() locks).
+    const auto state = alloc->dump();
+    reply.ok                 = 1;
+    reply.total_queues       = state.total;
+    reply.free_queues        = state.free;
+    reply.largest_free_run   = state.largest_free_run;
+    reply.generation         = state.generation;
+    reply.stale_releases     = state.stale_releases;
+    reply.owned_bitmap_lo64  = alloc->owned_queues_bitmap();
+    reply.daemon_port_id     = g_active_qalloc_port_id.load(
+        std::memory_order_acquire);
+
+    SPDLOG_DEBUG(
+        "on_nicctl_query_thunk: replying to pid={} (total={} free={} "
+        "gen={} stale={})",
+        req.requester_pid, reply.total_queues, reply.free_queues,
+        reply.generation, reply.stale_releases);
+    (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
     return 0;
 }
 

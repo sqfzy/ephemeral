@@ -65,6 +65,21 @@ target("eph_nicd")
     add_defines("EPH_USE_DPDK=1")
     apply_dpdk_pmd_linkgroups()
 
+-- ============================================================================
+-- eph_nicctl — operator tool for inspecting eph-nicd daemon state (S6).
+--
+-- Attaches as a DPDK secondary to the daemon's EAL session, sends a single
+-- `eph_nicctl_query` IPC, prints the reply, exits. See tools/eph-nicctl.cpp
+-- header comment for subcommand reference.
+-- ============================================================================
+target("eph_nicctl")
+    set_kind("binary")
+    set_default(true)
+    add_files("tools/eph-nicctl.cpp")
+    add_deps("eph-net-dpdk")
+    add_defines("EPH_USE_DPDK=1")
+    apply_dpdk_pmd_linkgroups()
+
 -- Module unit tests (v3 API tests). Every test target needs PMD
 -- whole-archive linking. Tests use --no-pci mode (see dpdk_test_env.hpp)
 -- so they run on any host without a vfio-pci NIC.

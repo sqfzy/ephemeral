@@ -896,6 +896,47 @@ public:
     [[nodiscard]] std::pair<uint16_t, uint16_t>
     effective_rx_queue_range() const noexcept;
 
+    /// @brief S6: queue indices this Platform owns, in `[lo, hi)`.
+    ///
+    /// Empty span if moved-from OR if no claim is active (single-process
+    /// daemon-side Platforms / Platforms that didn't go through
+    /// `Platform::create`). Application code uses `.size()` to decide how
+    /// many RX worker threads to spawn — the recommended pattern is one
+    /// thread per owned queue.
+    ///
+    /// Lazy population: the first call materialises the cached
+    /// `[lo, lo+1, …, hi-1]` array under `owned_queues_cache`; subsequent
+    /// calls return a span over the same array. The contract matches the
+    /// rest of Platform's cold-getter surface (single-threaded /
+    /// caller-owned synchronisation); concurrent first-call invocations
+    /// would race on the cache fill — production code calls this once at
+    /// startup so the race is theoretical.
+    ///
+    /// @return Span of queue ids; lifetime tied to `*this`.
+    [[nodiscard]] std::span<uint16_t const> owned_queues() const noexcept;
+
+    /// @brief S6: app-side liveness probe. `true` while the daemon's IPC
+    /// is responsive and our local DPDK secondary view is intact; `false`
+    /// once a fallible path has observed daemon-disconnect (port became
+    /// invalid, `rte_*` returned -EIO, heartbeat IPC timed out).
+    ///
+    /// Daemon-side / single-process Platforms always return `true` until
+    /// destruction — there is no "daemon" to disconnect from when this
+    /// process IS the primary.
+    ///
+    /// Use case: applications hot-loop over `Platform::create` reconnect
+    /// (see `docs/dpdk-reconnect-pattern.md`); polling `is_alive()` lets
+    /// them skip a no-op rx_burst when the port is already known dead.
+    [[nodiscard]] bool is_alive() const noexcept;
+
+    /// @brief S6: TODO marker for future heartbeat wiring.
+    /// Forces `is_alive()` to `false`. Used by the burst-call wrappers
+    /// to flag daemon-disconnect once detected; exposed publicly so
+    /// future detection paths (heartbeat probe, port-validity poll) can
+    /// drive the same flag from outside the Platform internals if
+    /// needed. Idempotent.
+    void mark_daemon_disconnected_() noexcept;
+
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
@@ -1197,6 +1238,14 @@ struct Platform::Impl {
     /// `mp_ipc_send_oneway`; daemon free's the slot + refreshes RETA.
     std::optional<::eph::dpdk::detail::MpIpcAction> queue_release_action;
 
+    /// @brief S6: RAII handle for `eph_nicctl_query`. Read-only ops
+    /// query handler — registered alongside the queue claim/release
+    /// actions on the daemon. `eph-nicctl` sends a `NicctlQueryRequest`
+    /// over `rte_mp_request_sync` and reads back a `NicctlQueryReply`
+    /// containing the QueueAllocator's `PoolState` snapshot. Same
+    /// primary-only contract; secondaries never register.
+    std::optional<::eph::dpdk::detail::MpIpcAction> nicctl_query_action;
+
     /// @brief S5: secondary-side bookkeeping. Records the queue range
     /// granted by the daemon's QueueAllocator on attach. Used to
     /// drive the `eph_queue_release` IPC on this Platform's
@@ -1204,6 +1253,29 @@ struct Platform::Impl {
     /// (applies to single-process / primary instances; ~Impl skips
     /// the release IPC in that case).
     ::eph::dpdk::detail::QueueRange owned_queues_range{};
+
+    /// @brief S6: cached span backing for `Platform::owned_queues()`.
+    /// Lazily filled on first call (cold path, single-threaded contract
+    /// matches the rest of Platform's getter surface). Each entry is a
+    /// queue id in `[owned_queues_range.lo, owned_queues_range.hi)`.
+    /// Bounded by `kMaxRssQueues` so the storage cost is at most 128 B
+    /// per Platform; `mutable` so the const accessor can populate on
+    /// first call without forcing every caller into a non-const handle.
+    mutable std::array<uint16_t, kMaxRssQueues> owned_queues_cache{};
+    mutable uint16_t                            owned_queues_cache_count = 0;
+    mutable bool                                owned_queues_cache_valid = false;
+
+    /// @brief S6: app-side liveness flag. `true` while the daemon's
+    /// IPC is responsive and the local DPDK secondary view is intact;
+    /// flipped to `false` when any path observes `-EIO` from `rte_*`,
+    /// `rte_eth_dev_is_valid_port(port_id) == 0`, or a heartbeat probe
+    /// fails. Once cleared, every subsequent fallible operation should
+    /// surface `Error::DaemonDisconnected` instead of hitting DPDK.
+    /// Stays `true` for primaries (the daemon itself never observes its
+    /// own disconnect — it owns the primary), so `is_alive()` on a
+    /// daemon Platform is effectively equivalent to "Platform is
+    /// constructed".
+    std::atomic<bool> is_alive{true};
 
     /// @brief Cold-path NIC physical state. Holds every field the
     /// bring-up body reads — port_id, queue counts, descriptor counts,
@@ -2684,6 +2756,46 @@ Platform::create(PlatformConfig cfg) {
         "Platform::create: derived file_prefix='{}' from pci='{}', "
         "queues={}", derived_prefix, cfg.pci, cfg.queues);
 
+    // ── S6: reconnect-safety preamble ────────────────────────────────
+    //
+    // Standard reconnect template (see docs/dpdk-reconnect-pattern.md):
+    //   while (running) {
+    //     auto r = some_op(plat);
+    //     if (!r && r.error().code == DaemonDisconnected) {
+    //       sleep 1s;
+    //       plat = Platform::create({...});  // ← we want this to work
+    //     }
+    //   }
+    //
+    // The previous Platform handle has been dropped at this point — its
+    // ~Impl ran owned_queues release IPC + cleanup() + (because owns_eal_init
+    // was true) eal_cleanup(). eal_cleanup() resets `eal_initialized_flag`.
+    // So the *common* case is that we can simply fall through to the normal
+    // eal_init path below.
+    //
+    // However: if the daemon died mid-flight, the previous secondary's
+    // eal_cleanup may have left the flag stuck `true` (DPDK can return
+    // non-zero from rte_eal_cleanup when the primary went away). Detect
+    // that here and force a flag reset so this retry can proceed. We log
+    // loudly because forcing a reset is morally questionable — any DPDK
+    // resource the dead Platform leaked stays leaked until process exit.
+    if (eal_initialized_flag().load(std::memory_order_acquire)) {
+        SPDLOG_LOGGER_WARN(log,
+            "Platform::create: EAL is still flagged initialized in this "
+            "process despite no live Platform — most likely the previous "
+            "Platform's eal_cleanup failed (daemon died mid-flight). "
+            "Forcing flag reset to allow this retry to proceed; any "
+            "resources the dead Platform leaked stay leaked until process "
+            "exit. (file_prefix='{}', pci='{}')",
+            derived_prefix, cfg.pci);
+        eal_initialized_flag().store(false, std::memory_order_release);
+        // Best-effort actual cleanup. The contract here is "we must
+        // not crash"; rte_eal_cleanup may return non-zero but we
+        // ignore it. If it segfaults, that's a DPDK bug — there's
+        // nothing we can do from this layer.
+        (void)rte_eal_cleanup();
+    }
+
     // ── 1. Pin lcores (typed path) ──────────────────────────────────
     if (!cfg.pins.empty() && !cfg.lcores.empty()) {
         return std::unexpected(std::string{
@@ -2934,6 +3046,14 @@ Platform::serve_nic(NicServiceConfig cfg) {
         plat.impl_->queue_release_action.emplace(
             ::eph::dpdk::detail::kQueueReleaseActionName,
             &::eph::dpdk::detail::on_queue_release_thunk);
+        // S6: read-only ops query handler. Same degrade-on-failure
+        // contract as the claim/release actions — if registration
+        // fails (`--no-shconf` builds, duplicate name) the daemon
+        // continues to serve queue claims; only `eph-nicctl` querying
+        // is unavailable.
+        plat.impl_->nicctl_query_action.emplace(
+            ::eph::dpdk::detail::kNicctlQueryActionName,
+            &::eph::dpdk::detail::on_nicctl_query_thunk);
 
         // Initial RETA: empty claimed-set → all buckets point at queue 0
         // ("sink queue" — daemon doesn't poll it). Best-effort; on PMDs
@@ -2945,10 +3065,11 @@ Platform::serve_nic(NicServiceConfig cfg) {
 
         SPDLOG_LOGGER_INFO(log,
             "Platform::serve_nic: QueueAllocator ready (total_queues={}, "
-            "claim_action={}, release_action={})",
+            "claim_action={}, release_action={}, nicctl_query_action={})",
             cfg.total_queues,
             bool(*plat.impl_->queue_claim_action) ? "registered" : "DEGRADED",
-            bool(*plat.impl_->queue_release_action) ? "registered" : "DEGRADED");
+            bool(*plat.impl_->queue_release_action) ? "registered" : "DEGRADED",
+            bool(*plat.impl_->nicctl_query_action) ? "registered" : "DEGRADED");
     }
 
     SPDLOG_LOGGER_INFO(log,
@@ -3035,6 +3156,73 @@ Platform::effective_rx_queue_range() const noexcept {
     if (r.first == 0 && r.second == 0)
         return {uint16_t{0}, impl_->config.nb_rx_queues};
     return r;
+}
+
+inline std::span<uint16_t const>
+Platform::owned_queues() const noexcept {
+    if (!impl_) return {};
+    // Daemon-side / single-process Platforms have an empty granted
+    // range (sentinel `{0, 0, 0}` from S5); return empty span so
+    // callers can still safely iterate.
+    if (impl_->owned_queues_range.empty()) {
+        return {};
+    }
+    if (!impl_->owned_queues_cache_valid) {
+        const uint16_t lo = impl_->owned_queues_range.lo;
+        const uint16_t hi = impl_->owned_queues_range.hi;
+        // Bound the materialisation by kMaxRssQueues — the granted
+        // range is structurally bounded by total_queues which the
+        // QueueAllocator caps at kMaxAllocatorQueues=256, but our
+        // local cache uses the smaller kMaxRssQueues=64 (the same
+        // budget as Platform::register_poller). If a future
+        // deployment grants more, we materialise the prefix and log
+        // — the typical HFT secondary asks for << 64 queues so the
+        // truncation never fires in practice.
+        const uint16_t span_len =
+            static_cast<uint16_t>(std::min<uint32_t>(
+                static_cast<uint32_t>(hi - lo),
+                static_cast<uint32_t>(kMaxRssQueues)));
+        for (uint16_t i = 0; i < span_len; ++i) {
+            impl_->owned_queues_cache[i] =
+                static_cast<uint16_t>(lo + i);
+        }
+        impl_->owned_queues_cache_count = span_len;
+        impl_->owned_queues_cache_valid = true;
+        if (span_len < (hi - lo)) {
+            SPDLOG_LOGGER_WARN(detail::platform_logger(),
+                "Platform::owned_queues: granted range [{}, {}) ({} queues) "
+                "exceeds local cache budget kMaxRssQueues={}; materialising "
+                "first {} only — bump kMaxRssQueues if your deployment "
+                "asks for more",
+                lo, hi, hi - lo, kMaxRssQueues, span_len);
+        }
+    }
+    return std::span<uint16_t const>(
+        impl_->owned_queues_cache.data(),
+        impl_->owned_queues_cache_count);
+}
+
+inline bool Platform::is_alive() const noexcept {
+    if (!impl_) return false;
+    return impl_->is_alive.load(std::memory_order_acquire);
+}
+
+inline void Platform::mark_daemon_disconnected_() noexcept {
+    if (!impl_) return;
+    // Idempotent: only log on the first transition true → false so a
+    // burst loop that sees -EIO on every iteration doesn't spam the
+    // log. memory_order_acq_rel guarantees the release of any prior
+    // writes (e.g. an error string set elsewhere) before the
+    // disconnect flag is observable.
+    bool prev = impl_->is_alive.exchange(false, std::memory_order_acq_rel);
+    if (prev) {
+        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+            "Platform: marking daemon-disconnected (pid={}, port_id={}). "
+            "All subsequent fallible operations will surface "
+            "Error::DaemonDisconnected. Application should drop this "
+            "Platform and call create() to reconnect.",
+            ::getpid(), impl_->config.port_id);
+    }
 }
 
 inline bool Platform::is_multi_process() const noexcept {

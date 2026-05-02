@@ -81,6 +81,21 @@ enum class Error : uint8_t {
     // never registered, looking up a key that expired). Callers may ignore
     // NotFound where InvalidConfig should halt.
     NotFound,             ///< registered item / lookup key does not exist
+
+    // ── DPDK daemon-led model (S6 of daemon-reshape) ──────────────────────
+    //
+    // Surfaced when the `eph-nicd` daemon's primary IPC stops responding —
+    // e.g. the daemon was upgraded / crashed / restarted and rte_* calls
+    // start returning -EIO, or the local port is no longer valid. Distinct
+    // from `Disconnected` (peer-level TCP close) and `Timeout` (per-request
+    // RTT exceeded): this is a *whole-Platform* condition that signals "the
+    // primary went away; drop this Platform handle and call create() again
+    // once the daemon is back".
+    //
+    // Application reconnect template lives in
+    // `eph-net-dpdk/docs/dpdk-reconnect-pattern.md`. Use the typed code
+    // (not error_name() string compare) when branching the recovery loop.
+    DaemonDisconnected,
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +168,7 @@ struct ErrorInfo {
         case Error::ProxyHandshakeFailed:return "PROXY_HANDSHAKE_FAILED";
         case Error::ProxyAuthRequired:   return "PROXY_AUTH_REQUIRED";
         case Error::NotFound:            return "NOT_FOUND";
+        case Error::DaemonDisconnected:  return "DAEMON_DISCONNECTED";
     }
     return "UNKNOWN";
 }
