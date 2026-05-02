@@ -166,6 +166,18 @@ public:
         constexpr std::size_t kTag  = 16;
         if (record_len < kHdr + kTag + 1) return false;
 
+        // RFC 8446 §5.3: the per-record nonce is iv XOR seq_be. Once seq_
+        // wraps, the nonce starts repeating against the same key — under
+        // AES-GCM that is a catastrophic key-recovery / forgery condition.
+        // The legacy `TlsDecryptor::decrypt` enforces a hard `seq_ <
+        // kMaxSequenceNumber (= 1<<32)` cap; the DPDK in-place hot path
+        // (this method) was missing that guard, so a long-lived session
+        // could silently roll over and reuse nonces. Fail closed instead
+        // — operators see decrypt failures and reconnect, the
+        // alternative is silent crypto failure on the wire.
+        constexpr uint64_t kMaxSeq = 1ULL << 32;
+        if (seq_ >= kMaxSeq) [[unlikely]] return false;
+
         const std::size_t payload_len = record_len - kHdr;
 
         // Build per-record nonce: first 4 bytes of iv || (iv[4..12] XOR seq_be).
