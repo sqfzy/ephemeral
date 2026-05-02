@@ -195,12 +195,6 @@ struct TcpConfig {
     /// 32KB provides ~2 TLS records of headroom in the Transport reassembly buffer.
     static constexpr uint32_t kDefaultRxBudgetBytes = 32768;
 
-    /// Format a MAC address as "xx:xx:xx:xx:xx:xx".
-    /// @deprecated Prefer net::format_mac() directly to avoid std::string allocation.
-    [[nodiscard]] static std::string format_mac(const rte_ether_addr& m) {
-        return std::string(net::format_mac(m).data());
-    }
-
     /// Multi-line formatted dump for logging/debugging.
     [[nodiscard]] std::string dump() const {
         return std::format(

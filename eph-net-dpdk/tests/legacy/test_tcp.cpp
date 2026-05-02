@@ -143,22 +143,22 @@ TEST(TcpConfig, MaxRxBurstOneIsValid) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TcpConfig::format_mac
+// net::format_mac (canonical formatter; TcpConfig::format_mac was removed)
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(TcpConfig, FormatMacZero) {
+TEST(NetFormatMac, FormatMacZero) {
     rte_ether_addr mac{};
     std::memset(&mac, 0, sizeof(mac));
-    EXPECT_EQ(TcpConfig::format_mac(mac), "00:00:00:00:00:00");
+    EXPECT_STREQ(net::format_mac(mac).data(), "00:00:00:00:00:00");
 }
 
-TEST(TcpConfig, FormatMacBroadcast) {
+TEST(NetFormatMac, FormatMacBroadcast) {
     rte_ether_addr mac{};
     std::memset(&mac, 0xFF, sizeof(mac));
-    EXPECT_EQ(TcpConfig::format_mac(mac), "ff:ff:ff:ff:ff:ff");
+    EXPECT_STREQ(net::format_mac(mac).data(), "ff:ff:ff:ff:ff:ff");
 }
 
-TEST(TcpConfig, FormatMacCustom) {
+TEST(NetFormatMac, FormatMacCustom) {
     rte_ether_addr mac{};
     mac.addr_bytes[0] = 0xDE;
     mac.addr_bytes[1] = 0xAD;
@@ -166,7 +166,7 @@ TEST(TcpConfig, FormatMacCustom) {
     mac.addr_bytes[3] = 0xEF;
     mac.addr_bytes[4] = 0x01;
     mac.addr_bytes[5] = 0x23;
-    EXPECT_EQ(TcpConfig::format_mac(mac), "de:ad:be:ef:01:23");
+    EXPECT_STREQ(net::format_mac(mac).data(), "de:ad:be:ef:01:23");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
