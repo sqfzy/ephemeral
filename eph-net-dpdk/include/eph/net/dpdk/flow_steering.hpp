@@ -1030,8 +1030,13 @@ try_install_flow_rule_via_ipc(uint16_t      port_id,
             std::memory_order_acquire);
     FdInstallMsg req{};
     req.version        = 1;
-    req.proto          = (proto == FlowProtocol::Udp) ? uint8_t{17}
-                                                      : uint8_t{6};
+    // Wire byte must use the same named constants the receiver checks
+    // against (on_fd_install_thunk uses kIpProtoTcp/Udp). Magic-number
+    // literals here drift silently from the receiver if anyone ever
+    // remaps the named constants — same-source-of-truth on both sides.
+    req.proto          = (proto == FlowProtocol::Udp)
+                             ? ::eph::dpdk::net::kIpProtoUdp
+                             : ::eph::dpdk::net::kIpProtoTcp;
     req.requester_proc = requester_proc;
     req.target_queue   = queue_id;
     req.src_ip         = tuple.src_ip;
