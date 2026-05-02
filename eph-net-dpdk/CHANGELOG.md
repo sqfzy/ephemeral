@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Changed — Tier-3 naming audit follow-ups (BREAKING)
+
+Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 3 (nits),
+landed:
+
+  * Platform::has_mp_topology()    → Platform::is_multi_process()
+    (predicate-form sibling of `is_secondary` / `is_running` /
+    `is_promiscuous`; underscore-noun-as-verb dropped).
+  * Platform::self_port_range()    → Platform::port_range()
+    (the redundant `self` prefix that every other Platform getter
+    omitted has been dropped).
+  * EalGuard::init_with_pins       → EalGuard::init
+    (typed-pin overload `(EalConfig, span<LcorePin>, CpuPinPolicy)` is
+    the recommended path and now bears the unadorned name; the
+    legacy escape hatch `init(int argc, char** argv)` was renamed
+    → EalGuard::init_raw to make its "raw EAL argv" framing explicit.
+    Default-good is the path that does not need a suffix.)
+
+Deliberately not changed (audit "leave alone" call):
+  * Platform::effective_rx_queue_range — "effective" carries the
+    sentinel-resolution semantic the doc relies on (`{0,0}` →
+    `[0, nb_rx_queues)`); renaming away would lose information for
+    cosmetic gain.
+  * detail::BringupConfig — the audit suggested possibly folding it
+    into PlatformConfig now that v2-only fields are gone, but
+    inspection shows `BringupConfig` carries `proc_type` /
+    `mp_topology` / `rx_queue_range` (resolved-state fields produced
+    by the autojoin race + registry, NOT public PlatformConfig
+    fields). It is not structurally a subset of PlatformConfig; the
+    name remains accurate as the post-translation internal struct
+    consumed by `primary_bringup_` / `secondary_bringup_`. Left as-is.
+
+Migration: every caller updates at compile time. No alias shim.
+
 ### Changed — Tier-2 naming audit follow-ups (BREAKING)
 
 Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 2,
