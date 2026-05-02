@@ -676,10 +676,10 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IcmpDirectorySlotGuard — RAII slot release for compound handles
+// IcmpDirectorySlotGuard — RAII slot release for handle composition
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Owned by `Platform::IcmpTargetCompoundHandle` to make the directory
+// Owned by `Platform::IcmpTargetHandle` to make the directory
 // slot's unregister run automatically alongside the local
 // `IcmpRegistry::Handle` unregister. Holds a non-owning pointer to
 // the directory; the directory itself is owned by `Platform::Impl`

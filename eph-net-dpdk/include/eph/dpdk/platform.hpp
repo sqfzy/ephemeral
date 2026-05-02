@@ -916,15 +916,15 @@ public:
     //       reverse order no longer causes UAF in the ICMP path.
     using IcmpMtuCallback  = ::eph::dpdk::detail::IcmpRegistry::MtuCallback;
 
-    /// @brief Compound RAII handle returned by `register_icmp_target`.
+    /// @brief RAII handle returned by `register_icmp_target`.
     /// Wraps the per-process `IcmpRegistry::Handle` (existing weak_ptr-
     /// based unregister) PLUS an optional `IcmpDirectorySlotGuard`
     /// that releases the cross-process directory slot. The directory
     /// guard is only populated when the Platform was created with
-    /// `mp_topology` set; single-process Platforms produce a compound
-    /// handle whose directory portion is a no-op default.
+    /// `mp_topology` set; single-process Platforms produce a handle
+    /// whose directory portion is a no-op default.
     ///
-    /// Both portions are move-only; the compound type inherits move-
+    /// Both portions are move-only; the type inherits move-
     /// only and lets default member dtor do the work — `local_` and
     /// `dir_` each handle their own cleanup independently and in the
     /// declaration order given here (`dir_` last → released first
@@ -936,24 +936,24 @@ public:
     /// `engaged()` reports the local side (the cross-proc slot may
     /// or may not be engaged independently — irrelevant to most
     /// callers).
-    class IcmpTargetCompoundHandle {
+    class IcmpTargetHandle {
     public:
-        IcmpTargetCompoundHandle() noexcept = default;
+        IcmpTargetHandle() noexcept = default;
 
-        explicit IcmpTargetCompoundHandle(
+        explicit IcmpTargetHandle(
             ::eph::dpdk::detail::IcmpRegistry::Handle local) noexcept
             : local_(std::move(local)) {}
 
-        IcmpTargetCompoundHandle(
+        IcmpTargetHandle(
             ::eph::dpdk::detail::IcmpRegistry::Handle  local,
             ::eph::dpdk::detail::IcmpDirectorySlotGuard dir) noexcept
             : local_(std::move(local)), dir_(std::move(dir)) {}
 
-        IcmpTargetCompoundHandle(const IcmpTargetCompoundHandle&)            = delete;
-        IcmpTargetCompoundHandle& operator=(const IcmpTargetCompoundHandle&) = delete;
-        IcmpTargetCompoundHandle(IcmpTargetCompoundHandle&&) noexcept            = default;
-        IcmpTargetCompoundHandle& operator=(IcmpTargetCompoundHandle&&) noexcept = default;
-        ~IcmpTargetCompoundHandle() noexcept = default;
+        IcmpTargetHandle(const IcmpTargetHandle&)            = delete;
+        IcmpTargetHandle& operator=(const IcmpTargetHandle&) = delete;
+        IcmpTargetHandle(IcmpTargetHandle&&) noexcept            = default;
+        IcmpTargetHandle& operator=(IcmpTargetHandle&&) noexcept = default;
+        ~IcmpTargetHandle() noexcept = default;
 
         [[nodiscard]] bool engaged() const noexcept { return local_.engaged(); }
 
@@ -964,15 +964,6 @@ public:
         ::eph::dpdk::detail::IcmpRegistry::Handle   local_{};
         ::eph::dpdk::detail::IcmpDirectorySlotGuard dir_{};
     };
-
-    /// @brief Public alias kept for source-compat with reshape stage 0.
-    /// Now points at the compound handle (was `IcmpRegistry::Handle`
-    /// before stage 3). Existing call sites that store
-    /// `Platform::IcmpTargetHandle` by name compile unchanged; sites
-    /// that reach into `IcmpRegistry::Handle` directly (the legacy
-    /// unit tests) are unaffected because they don't go through this
-    /// alias.
-    using IcmpTargetHandle = IcmpTargetCompoundHandle;
 
     /// @brief Register an ICMP Frag Needed target. Returns an RAII
     ///        handle — destroy it (or overwrite via move-assignment) to
