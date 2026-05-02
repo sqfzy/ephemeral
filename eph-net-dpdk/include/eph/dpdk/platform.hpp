@@ -44,6 +44,7 @@
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
+#include "eph/dpdk/detail/queue_allocator.hpp" // detail::QueueAllocator + IPC payloads (S5)
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (internal helper)
 #include "eph/dpdk/lcore_pin.hpp"              // LcorePin (typed pin spec for PlatformConfig)
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
@@ -1175,6 +1176,35 @@ struct Platform::Impl {
     /// rule as fd_install_action.
     std::optional<::eph::dpdk::detail::MpIpcAction> fd_destroy_action;
 
+    /// @brief S5: hugepage-backed queue-pair allocator. Populated only
+    /// on the daemon (primary) side by `Platform::serve_nic`. Owns the
+    /// `eph_qalloc/<file_prefix>` memzone — secondary applications go
+    /// through the IPC path (`eph_queue_claim` / `eph_queue_release`)
+    /// and never directly touch this object. Declared before any
+    /// resource-owning field that the IPC handlers might reference so
+    /// that on shutdown the action handlers (declared below) unregister
+    /// FIRST and the allocator memzone frees LAST among the S5 group.
+    std::optional<::eph::dpdk::detail::QueueAllocator> queue_allocator;
+
+    /// @brief S5: RAII handle for `eph_queue_claim`. Registered only
+    /// on the daemon (primary). Application-side `Platform::create`
+    /// calls `mp_ipc_request_sync` against this action, the handler
+    /// runs the allocator's claim() and replies with a granted range.
+    std::optional<::eph::dpdk::detail::MpIpcAction> queue_claim_action;
+
+    /// @brief S5: RAII handle for `eph_queue_release`. Same primary-
+    /// only rule. Secondary `~Platform` sends a one-way release via
+    /// `mp_ipc_send_oneway`; daemon free's the slot + refreshes RETA.
+    std::optional<::eph::dpdk::detail::MpIpcAction> queue_release_action;
+
+    /// @brief S5: secondary-side bookkeeping. Records the queue range
+    /// granted by the daemon's QueueAllocator on attach. Used to
+    /// drive the `eph_queue_release` IPC on this Platform's
+    /// destruction. Default `{0, 0, 0}` sentinel = "no claim active"
+    /// (applies to single-process / primary instances; ~Impl skips
+    /// the release IPC in that case).
+    ::eph::dpdk::detail::QueueRange owned_queues_range{};
+
     /// @brief Cold-path NIC physical state. Holds every field the
     /// bring-up body reads — port_id, queue counts, descriptor counts,
     /// mbuf pool, RSS / promiscuous flags, file_prefix, per_lcore_pools.
@@ -1273,6 +1303,53 @@ struct Platform::Impl {
     }
 
     ~Impl() {
+        // ── S5: secondary-side queue release ────────────────────────────
+        // If this Platform was an application-side secondary that
+        // claimed queues from the daemon's QueueAllocator, fire-and-
+        // forget a release IPC before any cleanup() syscalls touch the
+        // EAL state. Best-effort: if the daemon already exited the
+        // sendmsg fails silently and the daemon's reset-on-create
+        // contract reclaims the slot on the next bring-up.
+        if (resolved_proc_type == ProcType::Secondary &&
+            !owned_queues_range.empty()) {
+            ::eph::dpdk::detail::QueueReleaseRequest req{};
+            req.version       = 1;
+            req.lo            = owned_queues_range.lo;
+            req.hi            = owned_queues_range.hi;
+            req.generation    = owned_queues_range.generation;
+            req.requester_pid = static_cast<int32_t>(::getpid());
+            auto sr = ::eph::dpdk::detail::mp_ipc_send_oneway(
+                ::eph::dpdk::detail::kQueueReleaseActionName, req);
+            if (!sr) {
+                SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+                    "~Impl(secondary): queue release IPC failed: {} — "
+                    "daemon may have exited; primary's reset-on-create "
+                    "will reclaim the slot on next bring-up.",
+                    sr.error().detail);
+            } else {
+                SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+                    "~Impl(secondary): released queue range=[{},{}) gen={} "
+                    "back to daemon", owned_queues_range.lo,
+                    owned_queues_range.hi, owned_queues_range.generation);
+            }
+        }
+
+        // ── S5: daemon-side allocator global handoff ────────────────────
+        // Clear the process-level pointer if it still points at us, so
+        // any in-flight claim/release thunk that loads the global after
+        // this point sees null and replies / drops cleanly. Done before
+        // queue_claim_action / queue_release_action's RAII fires
+        // rte_mp_action_unregister (which blocks until in-flight
+        // handlers return). Same pattern as the FlowDir / ICMP handoff
+        // below.
+        if (queue_allocator.has_value()) {
+            auto* expected_alloc = &*queue_allocator;
+            ::eph::dpdk::detail::g_active_queue_allocator.compare_exchange_strong(
+                expected_alloc, nullptr, std::memory_order_acq_rel);
+            ::eph::dpdk::detail::g_active_qalloc_port_id.store(
+                uint16_t{0xFFFF}, std::memory_order_release);
+        }
+
         cleanup();
         // Clear process-level ICMP IPC globals if they still point at
         // us. CAS so a concurrently-created replacement Platform isn't
@@ -2651,36 +2728,106 @@ Platform::create(PlatformConfig cfg) {
             "Platform::create: eal_init failed: {}", eal_r.error()));
     }
 
-    // ── 3. Bring up secondary ───────────────────────────────────────
-    // TODO(S5): replace this static-placeholder secondary attach with
-    // an `rte_mp_request_sync` call to the daemon's QueueAllocator,
-    // claiming `cfg.queues` queues from the pool and reading the
-    // returned QueueRange. Today the secondary just claims queues
-    // `0..(cfg.queues-1)` blindly — fine for single-secondary tests,
-    // racy under multiple secondaries.
+    // ── 3. S5: claim queue range via daemon IPC ─────────────────────
+    //
+    // Replaces the pre-S5 static placeholder (which claimed
+    // `0..cfg.queues-1` blindly). Sends `eph_queue_claim` to the
+    // daemon's QueueAllocator and reads the granted `[lo, hi)` range
+    // back. Failure modes:
+    //   * Daemon not running on this NIC → mp_ipc_request_sync times
+    //     out; surface as the user-visible "daemon IPC failed" error.
+    //   * Pool exhausted → reply.ok == 0 with reply.error ==
+    //     "QueuePoolExhausted"; surface verbatim.
+    //   * Wire mismatch (cross-version IPC) → InvalidConfig from
+    //     parse_payload; surface as a structural bring-up error.
+    ::eph::dpdk::detail::QueueClaimRequest claim_req{};
+    claim_req.version       = 1;
+    claim_req.count         = cfg.queues;
+    claim_req.requester_pid = static_cast<int32_t>(::getpid());
+
+    auto reply_r = ::eph::dpdk::detail::mp_ipc_request_sync<
+        ::eph::dpdk::detail::QueueClaimRequest,
+        ::eph::dpdk::detail::QueueClaimReply>(
+        ::eph::dpdk::detail::kQueueClaimActionName,
+        claim_req,
+        std::chrono::milliseconds{2000});
+    if (!reply_r) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create: queue claim IPC failed: {} — is the "
+            "eph-nicd daemon running on pci='{}'? (file_prefix='{}')",
+            reply_r.error().detail, cfg.pci, derived_prefix);
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::format(
+            "Platform::create: queue claim IPC failed: {}",
+            reply_r.error().detail));
+    }
+    if (!reply_r->ok) {
+        // Daemon-formatted error; "QueuePoolExhausted" is the canonical
+        // pool-empty reply.
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::create: daemon rejected claim for {} queue(s): {}",
+            cfg.queues, reply_r->error);
+        [[maybe_unused]] bool ok = eal_cleanup();
+        return std::unexpected(std::format(
+            "Platform::create: claim rejected: {}",
+            reply_r->error));
+    }
+    const ::eph::dpdk::detail::QueueRange granted{
+        reply_r->lo, reply_r->hi, reply_r->generation};
+    SPDLOG_LOGGER_INFO(log,
+        "Platform::create: daemon granted queue range=[{},{}) gen={} "
+        "for pci='{}' (requested count={})",
+        granted.lo, granted.hi, granted.generation, cfg.pci, cfg.queues);
+
+    // ── 4. Bring up secondary with the daemon-granted range ─────────
     detail::BringupConfig bcfg = detail::bringup_from_platform_(
         cfg, derived_prefix);
+    // Steer the secondary's RR queue selection at the granted range
+    // (instead of "[0, cfg.queues)" placeholder) so two concurrent
+    // secondaries with non-zero offsets each operate on their own
+    // queues.
+    bcfg.rx_queue_range = std::pair<uint16_t, uint16_t>{granted.lo, granted.hi};
+    // The bring-up validator requires `rx_queue_range.hi <= nb_rx_queues`.
+    // Bump nb_rx_queues to accommodate the upper bound — the secondary
+    // doesn't actually configure rings (primary owns that), the field
+    // is only used to bound the round-robin selector.
+    if (bcfg.nb_rx_queues < granted.hi) {
+        bcfg.nb_rx_queues = granted.hi;
+        bcfg.nb_tx_queues = granted.hi;
+    }
 
     auto plat_r = Platform::secondary_bringup_(
         std::move(bcfg), /*registry_preclaimed=*/false);
     if (!plat_r) {
         SPDLOG_LOGGER_ERROR(log,
             "Platform::create: secondary_bringup_ failed: {} — "
-            "rolling back EAL", plat_r.error());
+            "rolling back EAL + releasing claim", plat_r.error());
+        // Best-effort release IPC: roll back the claim we just got so
+        // the daemon's pool isn't leaked on bring-up failure.
+        ::eph::dpdk::detail::QueueReleaseRequest rel{};
+        rel.version       = 1;
+        rel.lo            = granted.lo;
+        rel.hi            = granted.hi;
+        rel.generation    = granted.generation;
+        rel.requester_pid = static_cast<int32_t>(::getpid());
+        (void)::eph::dpdk::detail::mp_ipc_send_oneway(
+            ::eph::dpdk::detail::kQueueReleaseActionName, rel);
         [[maybe_unused]] bool ok = eal_cleanup();
         return std::unexpected(std::format(
             "Platform::create: {}", plat_r.error()));
     }
 
-    // ── 4. Transfer EAL ownership ───────────────────────────────────
+    // ── 5. Transfer EAL ownership and record granted range ──────────
     Platform plat = std::move(*plat_r);
     if (plat.impl_) {
         plat.impl_->pin_session_guards = std::move(pin_guards);
         plat.impl_->owns_eal_init      = true;
+        plat.impl_->owned_queues_range = granted;
     }
     SPDLOG_LOGGER_INFO(log,
-        "Platform::create: ready (pci='{}', file_prefix='{}', queues={})",
-        cfg.pci, derived_prefix, cfg.queues);
+        "Platform::create: ready (pci='{}', file_prefix='{}', "
+        "queues=[{},{}) gen={})",
+        cfg.pci, derived_prefix, granted.lo, granted.hi, granted.generation);
     return plat;
 }
 
@@ -2747,6 +2894,63 @@ Platform::serve_nic(NicServiceConfig cfg) {
     if (plat.impl_) {
         plat.impl_->owns_eal_init = true;
     }
+
+    // ── 3. S5: bring up the QueueAllocator + IPC handlers ───────────
+    //
+    // The allocator owns a hugepage memzone keyed by `derived_prefix`
+    // and exposes `eph_queue_claim` / `eph_queue_release` IPC actions
+    // that secondary applications drive from `Platform::create`.
+    //
+    // Failure modes are degrade-on-failure: a memzone reservation
+    // failure aborts (we can't run without an allocator), but action
+    // registration failures (e.g. `--no-shconf` builds) leave
+    // `bool(action) == false` and secondaries surface a clean
+    // "daemon IPC unavailable" error on `Platform::create`.
+    if (plat.impl_) {
+        auto alloc_r = ::eph::dpdk::detail::QueueAllocator::create_primary(
+            derived_prefix, cfg.total_queues);
+        if (!alloc_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "Platform::serve_nic: QueueAllocator::create_primary failed: "
+                "{} — rolling back EAL", alloc_r.error());
+            // plat goes out of scope; ~Platform tears down primary_bringup_'s
+            // Impl AND fires eal_cleanup via owns_eal_init.
+            return std::unexpected(std::format(
+                "Platform::serve_nic: {}", alloc_r.error()));
+        }
+        plat.impl_->queue_allocator = std::move(*alloc_r);
+
+        // Wire the process-level globals BEFORE installing the IPC
+        // handlers so a freshly-arrived claim msg never observes a
+        // null allocator. Same race-free ordering as ICMP / FlowDir.
+        ::eph::dpdk::detail::g_active_queue_allocator.store(
+            &*plat.impl_->queue_allocator, std::memory_order_release);
+        ::eph::dpdk::detail::g_active_qalloc_port_id.store(
+            plat.impl_->config.port_id, std::memory_order_release);
+
+        plat.impl_->queue_claim_action.emplace(
+            ::eph::dpdk::detail::kQueueClaimActionName,
+            &::eph::dpdk::detail::on_queue_claim_thunk);
+        plat.impl_->queue_release_action.emplace(
+            ::eph::dpdk::detail::kQueueReleaseActionName,
+            &::eph::dpdk::detail::on_queue_release_thunk);
+
+        // Initial RETA: empty claimed-set → all buckets point at queue 0
+        // ("sink queue" — daemon doesn't poll it). Best-effort; on PMDs
+        // that reject runtime RETA updates the bring-up RETA stays in
+        // place and the contract becomes "RETA is configured once and
+        // any in-flight peer queues stay stable" — still correct.
+        (void)::eph::dpdk::detail::refresh_reta_for_claimed_(
+            *plat.impl_->queue_allocator, plat.impl_->config.port_id);
+
+        SPDLOG_LOGGER_INFO(log,
+            "Platform::serve_nic: QueueAllocator ready (total_queues={}, "
+            "claim_action={}, release_action={})",
+            cfg.total_queues,
+            bool(*plat.impl_->queue_claim_action) ? "registered" : "DEGRADED",
+            bool(*plat.impl_->queue_release_action) ? "registered" : "DEGRADED");
+    }
+
     SPDLOG_LOGGER_INFO(log,
         "Platform::serve_nic: ready (pci='{}', file_prefix='{}', "
         "total_queues={})",
