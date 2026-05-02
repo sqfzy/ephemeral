@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+### Docs — post-rename audit sweep (non-BREAKING)
+
+After the Tier-1 / Tier-2 / Tier-3 naming-audit renames landed, a
+sweep of the prose / Doxygen / example / xmake-comment surface
+caught references to symbols that no longer exist. None affect
+build behaviour; following the stale paragraphs verbatim was the
+problem (e.g. README's MP table named `Platform::attach`,
+`PlatformAttachConfig`, `PlatformConfigV3` — all deleted, all
+producing compile errors). Migrated:
+
+  * README.md / summary.md / docs/ONBOARDING.md — replaced the v2/v3
+    MP factory table with the actual `create` / `launch` /
+    `create_or_join` triple; rewrote the `PlatformConfig` schema
+    listing to match the current header (drops `proc_type` /
+    `rx_queue_range`, adds `max_procs` / `queues_per_proc`).
+  * docs/lcore-pin-integration.md / docs/dpdk-multiprocess.md —
+    `EalGuard::init_with_pins` → `init`; added an
+    `EalGuard::init_raw` row to the API-at-a-glance table.
+  * docs/multi-connection.md (root) — same `init` rename in the
+    "thread layout" + "see also" sections.
+  * Doxygen on `Platform::is_secondary` / `is_multi_process` /
+    `port_range` — replaced "created via `Platform::create_secondary`"
+    framings with "resolved to secondary role via autojoin"
+    framings, and similar for the other two getters.
+  * Internal `detail::MpRegistryHandle::create_primary` /
+    `attach_secondary` Doxygen — point "Called by ..." at the actual
+    callers (`Platform::primary_bringup_` / `secondary_bringup_`)
+    rather than the removed public factories.
+  * `eph-net-dpdk/include/eph/dpdk/mp_topology.hpp` end-of-struct
+    comment — describes MpTopology's actual current role (autojoin
+    bring-up + deprecated `PlatformConfig::mp_topology` field) instead
+    of the deleted `pcfg_template` / `create_primary` /
+    `create_secondary` triple.
+  * `eph-net-dpdk/xmake.lua` — comment above the
+    `test_eal_init_with_pins` target now explicitly notes the file
+    name was retained for git-history continuity.
+  * `examples/dpdk_mp_demo.cpp` / `dpdk_multicast_md.cpp` /
+    `dpdk_rss_demo.cpp` file headers — example bodies were already
+    correct; only the descriptive prose mentioned the removed
+    factories. `dpdk_mp_demo.cpp` had a particularly misleading
+    sentence that conflated `Platform::launch` (which still exists
+    for single-process) with the removed cooperative `attach_with_eal`.
+
+No code, signatures, or behaviour changed. The remaining rename
+references in the tree are intentional history pointers (CHANGELOG,
+the file `tests/integration/test_eal_init_with_pins.cpp` and its
+matching xmake target name).
+
 ### Changed — Tier-3 naming audit follow-ups (BREAKING)
 
 Per .artifacts/naming-audit-eph-net-dpdk-20260501.md Tier 3 (nits),
