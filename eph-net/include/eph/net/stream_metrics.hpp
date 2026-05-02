@@ -144,16 +144,19 @@ enum class StreamMetric : std::size_t {
     /// Kernel backends and UDP emit 0.
     kTcpDupSegments,
 
-    /// DPDK TCP only: the stream layer observed an error return from
-    /// `TcpSession::process_rx` / `poll_rx` (reorder-buffer overflow on
-    /// genuine packet loss being the production-observed trigger) and
-    /// proactively put the session into `Closed` so the app's reconnect
-    /// policy can take over. Distinct from `kTcpResetsReceived` (peer-
-    /// initiated RST) and from a plain connection close: this signals
-    /// "RX-side session torn down from THIS side before silent stall".
-    /// Expect ~0 in healthy deployments; a sustained rise indicates
-    /// upstream loss or NIC reordering beyond the configured
-    /// `ReorderSlots` capacity.
+    /// The stream layer proactively tore down a stalled RX-side session
+    /// from THIS side, rather than waiting for a silent stall. Two
+    /// triggers, both backends:
+    ///   1. `drain(timeout)` expired without observing the peer's
+    ///      FIN-ACK (kernel + DPDK): peer never orderly-closed within
+    ///      the configured budget.
+    ///   2. DPDK TCP only — `TcpSession::process_rx` / `poll_rx` returned
+    ///      an error (reorder-buffer overflow on genuine packet loss
+    ///      being the production-observed trigger).
+    /// Distinct from `kTcpResetsReceived` (peer-initiated RST) and from
+    /// a plain connection close. Expect ~0 in healthy deployments; a
+    /// sustained rise indicates either misbehaving peers (case 1) or
+    /// upstream loss / NIC reordering beyond `ReorderSlots` (case 2).
     kRxSessionResets,
 
     /// DPDK only: aggregate counter for any RX bad-checksum drop
