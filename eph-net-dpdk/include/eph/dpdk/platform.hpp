@@ -822,16 +822,21 @@ public:
     [[nodiscard]] std::pair<uint16_t, uint16_t>
     effective_rx_queue_range() const noexcept;
 
-    // ── Auto-derived MP layout (mp_topology-driven) ──────────────────────
+    // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
-    /// @brief True iff this Platform was created with a populated
-    /// `cfg.mp_topology` and successfully attached to (primary) /
-    /// looked up (secondary) the cross-process registry. Cold getter,
-    /// safe on moved-from instances (returns false).
+    /// @brief True iff this Platform participates in an active
+    /// multi-process group — typically because it was created via
+    /// `Platform::create_or_join` (autojoin) and the registry now has
+    /// at least one peer slot, or because the internal `mp_topology`
+    /// machinery was driven directly by an internal helper. Cold
+    /// getter, safe on moved-from instances (returns false). Returns
+    /// false on single-process Platforms produced by
+    /// `Platform::create` / `launch`.
     [[nodiscard]] bool is_multi_process() const noexcept;
 
     /// @brief This process's `[port_lo, port_hi)` src_port window when
-    /// `mp_topology` is in effect; `std::nullopt` otherwise. Stream
+    /// the multi-process topology has been resolved (autojoin or the
+    /// internal `mp_topology` path); `std::nullopt` otherwise. Stream
     /// `create_and_attach` consults this to constrain
     /// `find_src_port_for_queue`'s search range — letting the library
     /// auto-pick a non-colliding ephemeral src_port instead of asking
@@ -840,12 +845,16 @@ public:
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
     port_range() const noexcept;
 
-    /// @brief True iff this Platform was created via
-    /// `Platform::create_secondary` (i.e. `cfg.proc_type ==
-    /// ProcType::Secondary`). Cold getter consumed by
-    /// `Stream::create_and_attach` to gate the FlowDir IPC-fallback
-    /// path: only secondaries hit `eph_fd_install` after a local
-    /// `rte_flow_create` rejection. Returns false on moved-from.
+    /// @brief True iff this Platform resolved to the secondary role —
+    /// either because `Platform::create_or_join` lost the EAL race
+    /// (autojoin path), or because the internal `secondary_bringup_`
+    /// helper was invoked directly. Equivalent to
+    /// `rte_eal_process_type() == RTE_PROC_SECONDARY` for live
+    /// Platforms. Cold getter consumed by `Stream::create_and_attach`
+    /// to gate the FlowDir IPC-fallback path: only secondaries hit
+    /// `eph_fd_install` after a local `rte_flow_create` rejection.
+    /// Returns false on single-process Platforms and on moved-from
+    /// instances.
     [[nodiscard]] bool is_secondary() const noexcept;
 
     /// @brief Register a per-queue Poller. Intended to be called once per
