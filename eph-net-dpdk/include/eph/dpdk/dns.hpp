@@ -639,6 +639,14 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
                      uint32_t expected_local_ip = 0) noexcept {
     constexpr size_t min_len = net::kEtherHeaderLen + net::kIpv4HeaderLen
                              + kUdpHeaderLen + kDnsHeaderLen;
+    // Defensive nullptr guard: try_parse_dns_packet is reachable from
+    // the fuzzer harness and from the resolve() loop where a nullptr
+    // mbuf should never appear in practice — but the very next line
+    // dereferences `mbuf->nb_segs` without checking, which would
+    // segfault rather than surface as `nullopt`. Mirror the same
+    // null-guard already on `parse_arp_reply` so the two LAN-protocol
+    // entry points have symmetric robustness against caller misuse.
+    if (mbuf == nullptr) [[unlikely]] return std::nullopt;
     // Reject multi-segment mbufs — our bounds math below reads first-segment
     // bytes via `rte_pktmbuf_data_len`; a scattered packet would have its
     // tail in later segments and defeat those checks. Same defense-in-depth
