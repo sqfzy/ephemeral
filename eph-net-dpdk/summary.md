@@ -7,14 +7,31 @@ implementation of the network concepts on top of DPDK kernel-bypass I/O.
 
 ### `Eal` - RAII EAL wrapper
 
-Alias for `eph::dpdk::EalGuard`. Constructed via the static `init` factory
-rather than a public constructor so the expected-returning API can surface
-EAL-init failures (missing hugepages, bad arguments, already-initialized).
+Alias for `eph::dpdk::EalGuard`. Constructed via the static `init` /
+`init_raw` factories rather than a public constructor so the
+expected-returning API can surface EAL-init failures (missing hugepages,
+bad arguments, already-initialized). Both factories return move-only
+guards that drive `rte_eal_cleanup` on destruction.
 
 ```cpp
 class Eal {                                            // = EalGuard
 public:
-    static std::expected<Eal, std::string> init(int argc, char** argv);
+    // Recommended typed-pin path. Pre-validates and registers each
+    // (lcore, cpu) pair into the process-wide pin registry BEFORE
+    // calling rte_eal_init, so SMT / NUMA / IRQ / duplicate-cpu
+    // policy violations surface as a typed error with no DPDK side
+    // effects. See eph-net-dpdk/docs/lcore-pin-integration.md.
+    static std::expected<Eal, std::string>
+    init(EalConfig cfg, std::span<LcorePin const> pins,
+         eph::utils::CpuPinPolicy policy = {});
+
+    // Escape hatch: hand-assembled argv. Skips pin pre-validation so
+    // callers that already drove --lcores=N@cpu themselves don't
+    // double-register. See eph-net-dpdk/docs/dpdk-multiprocess.md
+    // for the autojoin orchestrator's use of this path.
+    static std::expected<Eal, std::string>
+    init_raw(int argc, char** argv);
+
     ~Eal();                                            // rte_eal_cleanup
     Eal(Eal&&) noexcept;                               // move-only
     Eal& operator=(Eal&&) noexcept;
