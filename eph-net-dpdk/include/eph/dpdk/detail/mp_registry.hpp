@@ -522,6 +522,30 @@ public:
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary(std::string_view file_prefix, MpTopology const& topo,
                      bool already_claimed = false) {
+        // When the autojoin path preclaimed via try_claim_free_slot, ANY
+        // early-return below would leak the preclaimed slot — claimed=1
+        // with this process's pid, which `is_pid_alive` correctly sees as
+        // alive, so subsequent attempts in the same process can never
+        // pass-2-reclaim it. The spec-disagree / lcore-overlap branches
+        // already release manually; this guard does the same for every
+        // earlier validation failure (memzone lookup, magic/version,
+        // file_prefix, total_procs, self_index range). We can only honour
+        // the release once `hdr` has been resolved AND we know the slot
+        // index is in range; failures before that point return as-is
+        // because no slot was identified.
+        struct PreclaimedSlotGuard {
+            MpRegistryHeader* hdr_to_release{nullptr};
+            uint8_t           idx_to_release{0};
+            bool              armed{false};
+            void disarm() noexcept { armed = false; }
+            ~PreclaimedSlotGuard() noexcept {
+                if (armed && hdr_to_release != nullptr) {
+                    hdr_to_release->procs[idx_to_release].claimed.store(
+                        0, std::memory_order_release);
+                }
+            }
+        } slot_guard;
+
         if (!topo.valid()) {
             SPDLOG_ERROR(
                 "MpRegistry::attach_secondary: MpTopology failed valid() "
@@ -529,6 +553,11 @@ public:
                 "already_claimed={})",
                 topo.self_index, topo.total_procs, file_prefix,
                 already_claimed);
+            // No hdr yet → cannot release; topology coming from a
+            // builder-validated source (autojoin uses MpTopology::uniform)
+            // makes this branch effectively unreachable on the preclaim
+            // path. Pre-v3 cooperative callers controlled the topology and
+            // hadn't preclaimed.
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry::attach_secondary: topology failed valid()"});
@@ -553,12 +582,24 @@ public:
 
         auto* hdr = static_cast<MpRegistryHeader*>(mz->addr);
 
+        // Once `hdr` and `topo.self_index` are both available we can arm
+        // the preclaim release guard. Validation failures from this point
+        // on will release the slot during stack unwind; the explicit
+        // releases at the spec-disagree / lcore-overlap branches still
+        // disarm the guard before returning so we never double-release.
+        if (already_claimed && topo.self_index < MpTopology::kMaxProcs) {
+            slot_guard.hdr_to_release = hdr;
+            slot_guard.idx_to_release = topo.self_index;
+            slot_guard.armed          = true;
+        }
+
         if (hdr->magic != kMpRegistryMagic) {
             SPDLOG_ERROR(
                 "MpRegistry: header magic mismatch on '{}' "
                 "(got=0x{:08x}, expected=0x{:08x}) — memzone collided "
                 "with a non-eph layout under the same file_prefix",
                 name, hdr->magic, kMpRegistryMagic);
+            // slot_guard releases on unwind if already_claimed
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: header magic mismatch (memzone collided "
@@ -603,6 +644,12 @@ public:
             SPDLOG_ERROR(
                 "MpRegistry: self_index ({}) >= total_procs ({}) on '{}'",
                 topo.self_index, hdr->total_procs, name);
+            // self_index out of range — guard's idx_to_release was
+            // bounded by kMaxProcs, but the slot we'd release may not
+            // be the slot the caller actually preclaimed. Disarm to
+            // avoid clearing an unrelated slot that pass-2 reclaim will
+            // self-heal anyway.
+            slot_guard.disarm();
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "MpRegistry: self_index >= total_procs"});
@@ -640,6 +687,7 @@ public:
             if (already_claimed) {
                 hdr->procs[topo.self_index].claimed.store(
                     0, std::memory_order_release);
+                slot_guard.disarm();  // explicit release done; avoid double
             }
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -681,6 +729,7 @@ public:
                         // Caller pre-claimed; release before bailing.
                         hdr->procs[topo.self_index].claimed.store(
                             0, std::memory_order_release);
+                        slot_guard.disarm();  // explicit release done
                     }
                     return std::unexpected(core::ErrorInfo{
                         core::Error::InvalidConfig,
@@ -763,6 +812,10 @@ public:
         h.mz_           = mz;
         h.owns_memzone_ = false;
         h.self_index_   = topo.self_index;
+        // Slot ownership transfers from preclaim guard to `h`; disarm so
+        // the guard's destructor does not race with the new handle's
+        // future release_().
+        slot_guard.disarm();
         return h;
     }
 
