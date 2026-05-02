@@ -848,13 +848,16 @@ public:
             return std::unexpected("Cannot extract keys: handshake not done");
         }
 
-        // After key extraction the caller takes over the TLS data path
-        // with its own AEAD context. The TlsSession's SSL* object must
-        // NOT send a close_notify when destructed — the connection is
-        // still alive and the caller will continue to use it.
-        suppress_close_notify_ = true;
-
-        // Determine key length from negotiated cipher
+        // Determine key length from negotiated cipher. Note we deliberately
+        // defer setting `suppress_close_notify_ = true` until *after* every
+        // fallible step below succeeds: the suppress flag's contract is
+        // "the caller has taken over the data path — do not send a
+        // close_notify when ~TlsSession runs". On a mid-extract failure
+        // the caller has NOT taken over, so the destructor should still
+        // attempt the orderly close (or be cleanly ignored if the session
+        // is being torn down anyway). Setting it eagerly mis-classifies
+        // the failure path as "takeover succeeded" and silently degrades
+        // the wire-level shutdown.
         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
         if (!cipher) return std::unexpected("No cipher negotiated");
 
@@ -909,6 +912,13 @@ public:
 
         OPENSSL_cleanse(write_secret, sizeof(write_secret));
         OPENSSL_cleanse(read_secret, sizeof(read_secret));
+        // Commit the takeover only now — every fallible step above has
+        // succeeded. ~TlsSession will skip close_notify because the
+        // caller now owns the AEAD context (see suppress_close_notify_
+        // doc comment). Rationale-deep: setting this earlier would
+        // suppress close_notify even on failure paths where the caller
+        // never actually took over.
+        suppress_close_notify_ = true;
         return state;
     }
 
