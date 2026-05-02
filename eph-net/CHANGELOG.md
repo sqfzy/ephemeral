@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
+
+Defence-in-depth fixes uncovered by `/pax --loop --auto review eph-net-dpdk`
+that landed in `eph-net` (the shared waist):
+
+  * `include/eph/net/test/fake_datagram.hpp` — `inject_*` and
+    `poll_once_` now swap-drain the rx queue into a local vector
+    before invoking `on_datagram`, so a callback that calls back
+    into `inject_*` (re-entrant injection — used by symmetric
+    fixture patterns) does not invalidate the iterator the outer
+    loop is walking. The kernel-test `FakeStream` analogue was
+    already swap-drained; this aligns the two fakes. (Commit
+    `22bdf966`.)
+  * `include/eph/net/reconnect_orchestrator.hpp` — the fallback
+    cycle math now saturates instead of overflowing when the TSC
+    has not been calibrated. Previously a long-running process
+    that lost calibration mid-flight could compute a `cycle_ns`
+    of `~UINT64_MAX` and skip the next reconnect attempt
+    indefinitely. (Commit `1764beb6`.)
+  * `include/eph/net/detail/tls_session.hpp` — the
+    `suppress_close_notify` flag is now set AFTER the in-flight
+    record extract succeeds, not before. A failure on the extract
+    path used to leave the flag set, which violated TLS 1.3
+    closure semantics on the next session's first `SSL_shutdown`.
+    (Commit `51821eb5`.)
+  * `include/eph/net/detail/tls_inplace.hpp` —
+    `TlsInPlaceDecryptor::open_in_place` now guards the AEAD
+    sequence-number counter against overflow and surfaces
+    `Error::TlsBad` instead of wrapping silently. (Commit
+    `3220593d`.)
+  * `include/eph/net/concepts.hpp` — Doxygen comment fixed to
+    reference `saturate_u16` (the actual exported helper) instead
+    of `truncating_saturate_u16` (a name from an earlier draft).
+    (Commit `3383c7d8`.)
+  * `include/eph/net/tls_config.hpp` — Doxygen comment on
+    `verify_peer` no longer claims a "soft-pin" default; the
+    actual current default is the strict cert-chain verification
+    path. (Commit `24b213f7`.)
+
 ### Fixed (2026-04-30) — `build_coinbase_jwt` rejects out-of-range params
 
 - `include/eph/net/jwt_signed_request.hpp` — `build_coinbase_jwt`

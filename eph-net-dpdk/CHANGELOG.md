@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
+
+Defence-in-depth fixes uncovered by `/pax --loop --auto review eph-net-dpdk`
+across rounds 1-4. None change public types or signatures; all are
+behaviour fixes on previously unreachable-or-rare paths:
+
+  * `eph/dpdk/platform.hpp` — `secondary_bringup_` now releases the
+    pre-claimed `MpRegistryHandle` slot when early validation
+    (NIC parameter disagreement vs primary, generation mismatch)
+    rejects the secondary BEFORE the slot has reached the
+    "fully validated" state. Without the rollback the slot
+    remained accounted-for in the registry until process death,
+    which on the third disagreeing-spec attempt could exhaust
+    `max_procs`. (Commits `750aa0a1`, `d5c8ff1d`.)
+  * `eph/dpdk/tcp.hpp` — `TcpSession::reset()` now clears
+    `keepalive_outstanding_probes_` / `next_keepalive_tsc_` and
+    `effective_mss_` / `peer_mss_` symmetrically with the rest of
+    the per-session state. Previously a `reset() → reconnect`
+    cycle could carry stale keepalive accounting (false positive
+    "session already exhausted") or stale MSS (incorrect
+    segmentation on the new path). (Commits `76f77f4a`, `3c7c2d15`.)
+  * `eph/net/dpdk/tcp_stream.hpp` — `send()` now accumulates
+    `kBytesSent` from EVERY successful inner write, not just the
+    final fully-drained one. Partial loops (where `write_to_session`
+    returns success after multiple `nb_seg` chunks) were under-
+    reporting bytes-sent telemetry by the count of all but the last
+    chunk. (Commit `4b6e4aab`.)
+  * `eph/dpdk/dns.hpp` — `try_parse_dns_packet` now null-guards
+    the inbound `rte_mbuf*` argument before dereferencing
+    `rte_pktmbuf_mtod`. Defence-in-depth against a future caller
+    that forgets to filter the burst before dispatch.
+    (Commit `c96d2a0a`.)
+  * `eph/dpdk/packet_parse.hpp` — ICMP embedded-payload reads now
+    bound by `ip_total` from the outer IP header instead of trusting
+    the embedded length field, eliminating a crafted-packet
+    OOB-read class. (Commit `804a2a9e`.)
+  * `eph/net/dpdk/flow_steering.hpp` — `fd_install` thunk now
+    rejects non-TCP/UDP `proto` values with `Error::InvalidConfig`
+    before reaching `rte_flow_create`; `destroy_all` now logs
+    `rte_flow_destroy` failure (previously silent). The
+    primary→secondary IPC sender now references named IP-proto
+    constants. (Commits `8ff7ebab`, `d50407f7`, `86d645a5`.)
+  * `eph/dpdk/lcore_pin.hpp` — `parse_pin_spec` now uses `strtol`
+    with `errno`/`endptr` checks instead of `atoi`, rejecting
+    malformed `--pin lcore=cpu` tokens (`""`, `"abc"`, `"3xyz"`,
+    overflow). (Commit `4610dd95`.)
+
+### Removed (2026-04-30) — `TcpConfig::format_mac` (non-BREAKING for users)
+
+  * `eph/dpdk/tcp.hpp` — the deprecated `TcpConfig::format_mac`
+    helper was removed. It had been marked `[[deprecated]]` since
+    the pre-`v0.1.0` consolidation, was not part of any documented
+    public API surface, and the only in-tree caller had migrated to
+    `eph::dpdk::format_mac` from `net_header.hpp`. (Commit
+    `ab4b0ba8`.)
+
 ### Tests / Observability — post-rename audit follow-ups (non-BREAKING)
 
 Second-pass cleanup after the Tier-3 naming audit and the
