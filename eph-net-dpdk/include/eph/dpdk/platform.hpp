@@ -323,15 +323,17 @@ struct BringupConfig {
     // `pool_lcore_hint` keep using the shared pool.
     uint16_t per_lcore_pools = 0;
 
-    // ── Auto-derived MP layout (recommended path) ───────────────────────
+    // ── Auto-derived MP layout (internal autojoin path) ─────────────────
     //
     // When set, the library treats this as the source of truth for
-    // multi-process resource allocation: `Platform::create_primary` /
-    // `create_secondary` derive the effective `rx_queue_range` from
-    // `mp_topology->self()`, register the topology in a shared hugepage
-    // memzone (`detail::MpRegistry`) so cross-process disjointness is
-    // enforced rather than trusted, and constrain the stream creators'
-    // src_port search range to the self spec's `[port_lo, port_hi)`.
+    // multi-process resource allocation: the internal bring-up helpers
+    // `Platform::primary_bringup_` / `secondary_bringup_` (invoked by
+    // `Platform::create_or_join` once the EAL race resolves the role)
+    // derive the effective `rx_queue_range` from `mp_topology->self()`,
+    // register the topology in a shared hugepage memzone
+    // (`detail::MpRegistry`) so cross-process disjointness is enforced
+    // rather than trusted, and constrain the stream creators' src_port
+    // search range to the self spec's `[port_lo, port_hi)`.
     //
     // Mutually exclusive with a hand-set `rx_queue_range != {0,0}`:
     // `validate_config` rejects the combination so the caller can't

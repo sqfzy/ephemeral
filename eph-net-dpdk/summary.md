@@ -179,33 +179,38 @@ struct PollerConfig {
 
 ## `PlatformConfig` (`eph::dpdk::PlatformConfig`)
 
-Used by `Platform::create` / `create_primary` / `create_secondary`. All
-fields are *requested* values and are clamped to the NIC-reported limits
-at bring-up time. The multi-process fields at the bottom default to
-single-process / primary semantics — pre-MP code compiles byte-for-byte
-unchanged.
+Used by `Platform::create`, `Platform::launch`, and (embedded as
+`CreateOrJoinConfig::nic`) `Platform::create_or_join`. All fields are
+*requested* values and are clamped to the NIC-reported limits at
+bring-up time. The multi-process knobs at the bottom default to
+single-process — `Platform::create` / `launch` reject any
+`max_procs > 1` (the cooperative MP path was removed; use
+`Platform::create_or_join` for multi-process).
 
 ```cpp
-enum class ProcType : uint8_t { Primary, Secondary };
+enum class ProcType : uint8_t { Primary, Secondary };  // resolved post-EAL by autojoin
 
 struct PlatformConfig {
+    // ── Identity ─────────────────────────────────────────────────────
     uint16_t     port_id              = 0;
-    uint16_t     nb_rx_queues         = 1;
-    uint16_t     nb_tx_queues         = 1;
-    uint16_t     nb_rx_desc           = 1024;
-    uint16_t     nb_tx_desc           = 1024;
-    uint32_t     mbuf_pool_size       = 8'191;   // 2^k - 1
-    uint32_t     mbuf_cache_size      = 250;
-    bool         enable_promiscuous   = false;
-    bool         enable_rss           = false;
-    bool         enable_rx_checksum_offload = false;
-    bool         enable_strict_rx_checksum  = false;
-    int          link_timeout_ms      = 2000;
+    std::string_view file_prefix      = {};          // mirrors EAL --file-prefix; primary-only
 
-    // ── Multi-process (primary+secondary) ────────────────────────────
-    ProcType     proc_type            = ProcType::Primary;
-    std::string_view file_prefix      {};          // mirrors EAL --file-prefix
-    std::pair<uint16_t, uint16_t> rx_queue_range {0, 0};      // {0,0} = full range
+    // ── NIC physical state ───────────────────────────────────────────
+    uint16_t     nb_rx_queues                  = 1;
+    uint16_t     nb_tx_queues                  = 1;
+    uint16_t     nb_rx_desc                    = 256;
+    uint16_t     nb_tx_desc                    = 512;
+    uint32_t     mbuf_pool_size                = 4095;
+    uint16_t     mbuf_cache_size               = 256;
+    bool         enable_promiscuous            = false;
+    bool         enable_rx_checksum_offload    = false;
+    bool         enable_strict_rx_checksum     = false;
+    int          link_timeout_ms               = 2000;
+    uint16_t     per_lcore_pools               = 0;  // 0 = single shared pool
+
+    // ── Multi-process knobs (read by autojoin primary) ───────────────
+    uint8_t      max_procs                     = 1;  // 1 = single-process
+    uint16_t     queues_per_proc               = 0;  // 0 = auto (nb_rx_queues / max_procs)
     // Source-port partitioning across MP processes is the caller's
     // responsibility — eph-net-dpdk does not auto-allocate src_port.
 
@@ -213,32 +218,40 @@ struct PlatformConfig {
 };
 ```
 
-### Multi-process factories
+### Public factories
 
 ```cpp
-static std::expected<Platform, std::string> create         (const PlatformConfig&);
-static std::expected<Platform, std::string> create_primary (PlatformConfig);
-static std::expected<Platform, std::string> create_secondary(PlatformConfig);
+static std::expected<Platform, std::string> create        (PlatformConfig);
+static std::expected<Platform, std::string> launch        (PlatformConfig, EalConfig,
+                                                           std::span<LcorePin const> pins,
+                                                           CpuPinPolicy policy);
+static std::expected<Platform, std::string> create_or_join(CreateOrJoinConfig);
 ```
 
-- `create()` — original single-process factory; honours
-  `config.proc_type`. Default `Primary` matches legacy behaviour
-  byte-for-byte.
-- `create_primary()` — forces `proc_type = Primary`, otherwise
-  equivalent to `create()`. Use at call sites that also use
-  `create_secondary` for clarity.
-- `create_secondary()` — forces `proc_type = Secondary` and runs the
-  full secondary contract: invokes `validate_config` (which polices
-  `rx_queue_range`: either the `{0,0}` sentinel or a non-empty sub-range
-  bounded by `nb_rx_queues`), validates non-empty `file_prefix`, then
-  does `rte_eth_dev_is_valid_port` + `rte_mempool_lookup("eph_mbuf_p<port>")`
-  and skips `rte_eth_dev_configure / rx_queue_setup / tx_queue_setup /
-  configure_rss / dev_start / wait_link_up` entirely (primary-only
-  APIs). `Impl::cleanup` branches on `config.proc_type`: primary does
-  `rte_eth_dev_stop/close` + `rte_mempool_free`, secondary only zeroes
-  its per-process view (pollers[] + mempool pointer) so the shared
-  port state the primary owns is never touched. The EAL-side complement
-  (`EalConfig` + `build_eal_argv`) lives in `eph/dpdk/eal.hpp`.
+- `create()` — single-process. EAL must be initialized externally.
+  Rejects `max_procs > 1` with a recovery hint pointing at
+  `create_or_join`.
+- `launch()` — single-process one-shot: builds the EAL argv from
+  `EalConfig` + typed `LcorePin`s, calls `rte_eal_init`, and brings up
+  the `Platform`. EAL ownership rides with the returned guard.
+- `create_or_join()` — the **only** multi-process entry point. Every
+  peer issues the same call; the library races on `rte_eal_init` and
+  the winner becomes primary (runs the internal `primary_bringup_()`
+  helper, builds the mempool named `eph_mbuf_p<port>`, publishes a
+  shared hugepage registry). Losers attach as secondaries via
+  `secondary_bringup_()` (CAS-claim a registry slot, look up the
+  primary's mempool, skip configure/start/stop/close).
+
+### Lifecycle and teardown
+
+`Impl::cleanup` checks `rte_eal_process_type()` (or the cached
+secondary flag synthesized inside `secondary_bringup_`): primary does
+`rte_eth_dev_stop/close` + `rte_mempool_free`, secondary only zeroes
+its per-process view (pollers[] + mempool pointer) so the shared port
+state the primary owns is never touched. The EAL-side complement
+(`EalConfig` + `build_eal_argv`) lives in `eph/dpdk/eal.hpp`; the
+`launch` and `create_or_join` factories invoke it under the hood and
+inject `--proc-type` / `--file-prefix` automatically.
 
 ### `proc_type.hpp` — minimal cross-cutting header
 
