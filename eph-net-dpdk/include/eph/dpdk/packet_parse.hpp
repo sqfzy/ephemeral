@@ -12,6 +12,8 @@
 
 #include "eph/dpdk/packet_core.hpp"
 
+#include <algorithm>  // std::min for ICMP embedded-header bound
+
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 
@@ -464,12 +466,25 @@ struct ParsedIcmp {
         out.next_hop_mtu = ntoh16(mtu_net);
 
         const uint16_t emb_ip_off = icmp_offset + 8;
-        if (static_cast<uint32_t>(emb_ip_off) + kIpv4HeaderLen > pkt_len) return out;
+        // Bound embedded-header reads by the IP-declared end
+        // (`kEtherHeaderLen + ip_total`), NOT just by `pkt_len`. A NIC may
+        // deliver Ethernet padding past `ip_total` (RFC 1042 / 802.3
+        // minimum frame is 64 bytes, so any short ICMP rides with trailer
+        // bytes in the same mbuf); without this the parser would happily
+        // read into those trailer bytes if an attacker arranged them to
+        // look like a valid embedded IP+L4. Using `min(pkt_len, ether +
+        // ip_total)` keeps the parse strictly inside the IP-declared
+        // payload — pkt_len is still the upper bound of byte safety, but
+        // ip_total is the upper bound of *meaningful* ICMP content.
+        const uint32_t ip_declared_end =
+            static_cast<uint32_t>(kEtherHeaderLen) + ip_total;
+        const uint32_t parse_end = std::min<uint32_t>(pkt_len, ip_declared_end);
+        if (static_cast<uint32_t>(emb_ip_off) + kIpv4HeaderLen > parse_end) return out;
         const auto* e_ip = reinterpret_cast<const rte_ipv4_hdr*>(data + emb_ip_off);
         if ((e_ip->version_ihl >> 4) != 4) return out;
         const uint8_t e_ihl = (e_ip->version_ihl & 0x0F) << 2;
         if (e_ihl < kIpv4HeaderLen) return out;
-        if (static_cast<uint32_t>(emb_ip_off) + e_ihl + 4u > pkt_len) return out;
+        if (static_cast<uint32_t>(emb_ip_off) + e_ihl + 4u > parse_end) return out;
 
         out.embedded_src_ip = ntoh32(e_ip->src_addr);
         out.embedded_dst_ip = ntoh32(e_ip->dst_addr);
