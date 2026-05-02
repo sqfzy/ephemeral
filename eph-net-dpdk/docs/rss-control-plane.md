@@ -1,8 +1,9 @@
 # RSS multi-queue × DPDK control-plane integration
 
 How DNS / ARP / Multicast behave under RSS multi-queue dispatch
-(`Platform::is_rss_active() == true && nb_rx_queues > 1`), and the
-contract each control-plane API enforces to make that combination safe.
+(`Platform::dispatch_mode() == eph::net::dpdk::RxDispatchMode::RssPartitioned`
+&& `Platform::nb_rx_queues() > 1`), and the contract each
+control-plane API enforces to make that combination safe.
 
 > **See also**: `examples/dpdk_rss_demo.cpp` for a runnable
 > single-process Platform-with-RSS demo (one Poller per queue, several
@@ -120,7 +121,10 @@ cfg.rx_queue_id = 0;
 // Forward Platform's RSS state to the receiver — start() will fail-fast
 // if this is true and the caller hasn't explicitly handled RSS via
 // FlowDirector pinning per group.
-cfg.rss_active_multi_queue = platform.is_rss_active();
+cfg.rss_active_multi_queue =
+    (platform.dispatch_mode()
+        == eph::net::dpdk::RxDispatchMode::RssPartitioned)
+    && platform.nb_rx_queues() > 1;
 
 eph::dpdk::MulticastReceiver rx(cfg);
 rx.join_group(...);
@@ -181,7 +185,7 @@ If you add a new DPDK control-plane API that does its own RX polling
   * `eph-net-dpdk/include/eph/dpdk/dns.hpp` — `select_dns_src_port`
   * `eph-net-dpdk/include/eph/dpdk/arp.hpp` — `arp::resolve`
   * `eph-net-dpdk/include/eph/dpdk/multicast.hpp` — `MulticastConfig::rss_active_multi_queue`
-  * `eph-net-dpdk/include/eph/dpdk/platform.hpp` — `Platform::is_rss_active()`
+  * `eph-net-dpdk/include/eph/dpdk/platform.hpp` — `Platform::dispatch_mode()` (returns `eph::net::dpdk::RxDispatchMode`; `RssPartitioned` is the RSS-active value, replacing the legacy `is_rss_active()` predicate)
   * `eph-net-dpdk/include/eph/net/dpdk/flow_steering.hpp` — `query_rss_state` / `queue_for_tuple` / `find_src_port_for_queue`
 * Tests:
   * `eph-net-dpdk/tests/test_dns_rss_aware.cpp` (7 cases)

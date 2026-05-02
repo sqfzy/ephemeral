@@ -59,12 +59,14 @@ SMT / NUMA conflicts against running EAL lcores), use the typed
 `eph/dpdk/lcore_pin.hpp` and `eph/dpdk/eal.hpp`. Full rationale and
 escape-hatch rules: [`docs/lcore-pin-integration.md`](docs/lcore-pin-integration.md).
 
-When running with RSS multi-queue dispatch (`Platform::is_rss_active() == true`),
-the blocking control-plane APIs (`dns::resolve`, `arp::resolve`,
-`MulticastReceiver`) need a small contract to route their replies back
-to the caller's queue. DNS reverse-picks a hashed src_port, ARP hardcodes
-queue 0, Multicast fail-fasts unless single-queued or FlowDirector-pinned.
-Full integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
+When running with RSS multi-queue dispatch
+(`Platform::dispatch_mode() == eph::net::dpdk::RxDispatchMode::RssPartitioned`
+&& `Platform::nb_rx_queues() > 1`), the blocking control-plane APIs
+(`dns::resolve`, `arp::resolve`, `MulticastReceiver`) need a small
+contract to route their replies back to the caller's queue. DNS
+reverse-picks a hashed src_port, ARP hardcodes queue 0, Multicast
+fail-fasts unless single-queued or FlowDirector-pinned. Full
+integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
 
 ## Lower-level DPDK primitives (`eph/dpdk/*`)
 
