@@ -92,6 +92,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <functional>
 #include <memory>
 #include <span>
@@ -828,9 +829,26 @@ inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept 
     // Fallback when TSC is uncalibrated: assume 3 GHz so we still progress
     // in tests / unusual setups. Production paths must call TSC::init() per
     // CLAUDE.md, but we don't crash if they forgot.
+    //
+    // Saturating multiply: a caller setting `max_backoff = milliseconds::max()`
+    // (~9.22e18 ms) feeds `delay.count() * 3'000'000ULL` into uint64_t, which
+    // wraps modulo 2^64 and yields a tiny `next_attempt_tsc_` — defeating the
+    // backoff. `to_cycles` already saturates to `UINT64_MAX` on overflow when
+    // calibrated; mirror that here for the uncalibrated fallback so both paths
+    // behave identically under pathological config. UINT64_MAX as a future
+    // deadline becomes "retry approximately never" which is the desired
+    // behaviour for an effectively-unbounded delay.
+    constexpr uint64_t kCyclesPerMsAt3GHz = 3'000'000ULL;
+    constexpr uint64_t kFallbackOverflowMs =
+        std::numeric_limits<uint64_t>::max() / kCyclesPerMsAt3GHz;
+    const auto delay_ms = delay.count();
     const uint64_t cycles = cycles_opt
         ? *cycles_opt
-        : static_cast<uint64_t>(delay.count()) * 3'000'000ULL;
+        : (delay_ms <= 0
+               ? 0ULL
+               : (static_cast<uint64_t>(delay_ms) >= kFallbackOverflowMs
+                      ? std::numeric_limits<uint64_t>::max()
+                      : static_cast<uint64_t>(delay_ms) * kCyclesPerMsAt3GHz));
     next_attempt_tsc_ = now_tsc + cycles;
     state_ = ReconnectState::Backoff;
     SPDLOG_LOGGER_DEBUG(log,
