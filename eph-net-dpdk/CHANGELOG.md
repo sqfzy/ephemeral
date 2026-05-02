@@ -2,6 +2,116 @@
 
 ## [Unreleased]
 
+### BREAKING — daemon-led Platform reshape (2026-05-02)
+
+The public `Platform` factory surface has been replaced with a daemon-led
+model. Old code using `Platform::launch`, `Platform::create_or_join`, or
+the kitchen-sink `PlatformConfig` will not compile.
+
+#### Why
+
+Eliminates point-to-point consensus between independent applications
+sharing a NIC. NIC physical state lives in `/etc/eph/<bdf>.toml`,
+managed by ops via the `eph-nicd` daemon. Applications just attach;
+they no longer carry any "I am the primary" / `max_procs` / `file_prefix`
+mental burden, and crashes are isolated (only the daemon ever runs as
+DPDK primary, never a tenant application).
+
+See `docs/dpdk-daemon-deployment.md` for the deployment story and
+`docs/dpdk-reconnect-pattern.md` for the daemon-restart pattern.
+
+#### Removed
+
+- `Platform::launch(PlatformConfig, EalConfig, pins, policy)` — one-shot
+  EAL+Platform factory.
+- `Platform::create_or_join(CreateOrJoinConfig)` — autojoin MP entry.
+- `eph::dpdk::CreateOrJoinConfig` (entire `eph/dpdk/create_or_join.hpp`
+  header).
+- The kitchen-sink fields on the old `PlatformConfig`: `port_id`,
+  `file_prefix`, `nb_rx_queues`, `nb_tx_queues`, `nb_rx_desc`,
+  `nb_tx_desc`, `mbuf_pool_size`, `mbuf_cache_size`,
+  `enable_promiscuous`, `enable_rx_checksum_offload`,
+  `enable_strict_rx_checksum`, `link_timeout_ms`, `per_lcore_pools`,
+  `max_procs`, `queues_per_proc`.
+- `eph::dpdk::detail::bringup_from_v3_` v2→v3 projector — replaced by
+  `bringup_from_platform_` / `bringup_from_nic_service_`.
+- `EalConfig` as a public factory parameter. The struct still exists in
+  `eph/dpdk/eal.hpp` as an internal helper for `build_eal_argv`; it is
+  no longer accepted by any `Platform` factory.
+
+#### Added
+
+- `eph::dpdk::PlatformConfig` (lean, application-side; consumed by
+  `Platform::create`):
+
+  | Field            | Type                                | Notes                                                          |
+  |------------------|-------------------------------------|----------------------------------------------------------------|
+  | `pci`            | `std::string_view`                  | NIC PCI BDF; drives both EAL `-a` and the auto-derived prefix. |
+  | `queues`         | `uint16_t`                          | Bidirectional queue pairs requested. RX/TX 1:1.                |
+  | `pins`           | `std::span<LcorePin const>`         | Typed lcore→cpu pins. Mutex w/ `lcores`.                       |
+  | `pin_policy`     | `eph::utils::CpuPinPolicy`          | NUMA / SMT / IRQ strictness.                                   |
+  | `lcores`         | `std::vector<std::string>`          | Raw `--lcores` spec. Mutex w/ `pins`.                          |
+  | `extra_eal_args` | `std::vector<std::string>`          | Passthrough EAL argv tokens.                                   |
+  | `program_name`   | `std::string_view`                  | EAL `argv[0]` for log identification.                          |
+
+  `proc_type=Secondary`, `file_prefix`, and `allowed_devs={pci}` are
+  derived internally — applications never set them.
+
+- `eph::dpdk::NicServiceConfig` (daemon-side; consumed by
+  `Platform::serve_nic` and the `eph-nicd` binary):
+
+  | Field             | Type                            | Default            | Notes                                          |
+  |-------------------|---------------------------------|--------------------|------------------------------------------------|
+  | `pci`             | `std::string_view`              | (required)         | NIC PCI BDF.                                   |
+  | `total_queues`    | `uint16_t`                      | `16`               | Pool capacity = max sum of attached `queues`.  |
+  | `rss_key`         | `std::array<uint8_t, 40>`       | `kDefaultRssKey`   | Symmetric Toeplitz key.                        |
+  | `promiscuous`     | `bool`                          | `false`            | HFT default off.                               |
+  | `nb_rx_desc`      | `uint16_t`                      | `1024`             | Per-queue RX ring depth.                       |
+  | `nb_tx_desc`      | `uint16_t`                      | `1024`             | Per-queue TX ring depth.                       |
+  | `mbuf_pool_size`  | `uint32_t`                      | `8191`             | Must be `2^n - 1`.                             |
+  | `mbuf_cache_size` | `uint16_t`                      | `256`              | Per-lcore cache; `< mbuf_pool_size`.           |
+  | `daemon_lcore`    | `uint16_t`                      | `0`                | Lcore the daemon's primary process runs on.    |
+
+- `Platform::create(PlatformConfig)` — application secondary-attach
+  factory. Calls `rte_eal_init` with `proc_type=secondary` and the
+  derived file_prefix.
+- `Platform::serve_nic(NicServiceConfig)` — daemon primary factory.
+  Owned by the `eph-nicd` binary; applications must not call this.
+- `Platform::join()` — blocks until `SIGTERM` / `SIGINT`. Used by the
+  daemon binary to keep the NIC primary alive while secondaries attach.
+
+#### Migration before / after
+
+| Old                                                                              | New                                                                                                       |
+|----------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `Platform::launch(cfg, eal_cfg, pins, policy)` (single-process app that owns EAL)| `Platform::create(PlatformConfig{ .pci=..., .queues=N, .pins=pins, .pin_policy=policy })` (assumes daemon up) |
+| `Platform::create_or_join(CreateOrJoinConfig{ .pci="X", .nic={...} })` (autojoin MP primary) | `Platform::serve_nic(NicServiceConfig{ .pci="X", .total_queues=N })` (daemon process)         |
+| `Platform::create_or_join(CreateOrJoinConfig{ .pci="X" })` (autojoin MP secondary)| `Platform::create(PlatformConfig{ .pci="X", .queues=N })` (assumes daemon up)                            |
+| `cfg.max_procs = 4; cfg.nb_rx_queues = 4`                                        | toml: `total_queues = 4` (operator-managed via `/etc/eph/<bdf>.toml`)                                    |
+| `cfg.file_prefix = "eph_X"`                                                      | derived from pci automatically (`eph_<sanitize_bdf(pci)>`)                                               |
+
+#### Caveats — what's still in flight
+
+The foundation commit lands the new factory shape and the lean configs.
+A handful of follow-on pieces are still ahead:
+
+- **Queue allocation**: today `Platform::create` claims queues
+  `0..(queues-1)` statically. The proper greedy allocator + dynamic
+  `rte_eth_dev_rss_reta_update` (so hash buckets only point at claimed
+  queues) lands in S5. Until then, two coexisting applications must not
+  both default to `queues=1` against the same daemon — they will collide
+  on queue 0.
+- **`Error::DaemonDisconnected`** + idempotent reconnect: the error
+  code, the `Platform::create` retry-safe contract, and the
+  `eph-nicctl peers / stats` ops tool are S6 deliverables. The
+  reconnect pattern in `docs/dpdk-reconnect-pattern.md` is a forward
+  spec — note the `TODO(S6)` markers.
+- **`eph-nicd` daemon binary** + `eph-nicd@<bdf>.service` systemd unit
+  + `/etc/eph/<bdf>.toml` parser are S4 deliverables. Until S4 lands,
+  exercising `Platform::serve_nic` requires hand-driving it from a test
+  fixture (see `tests/test_platform_config_validate.cpp` for the
+  current shape).
+
 ### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
 
 Defence-in-depth fixes uncovered by `/pax --loop --auto review eph-net-dpdk`
