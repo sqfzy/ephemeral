@@ -775,46 +775,6 @@ public:
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Handshake-phase I/O (for WebSocket Upgrade after TLS handshake)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Write data through TLS during handshake/upgrade phase only.
-    /// NOT for hot-path use — hot path uses TlsRecordCrypto directly.
-    /// Must be called from the control thread (single-threaded).
-    [[nodiscard]] std::expected<int, std::string> handshake_write(const void* data, int len) {
-        if (!handshake_done_) {
-            return std::unexpected("TLS handshake not completed");
-        }
-        int ret = SSL_write(ssl_, data, len);
-        if (ret <= 0) {
-            int err = SSL_get_error(ssl_, ret);
-            if (err == SSL_ERROR_WANT_WRITE) return 0;
-            return std::unexpected(std::format(
-                "SSL_write failed (err={}): {}",
-                err, detail::ssl_error_string()));
-        }
-        return ret;
-    }
-
-    /// Read data through TLS during handshake/upgrade phase only.
-    /// Returns 0 if no data available (would block).
-    [[nodiscard]] std::expected<int, std::string> handshake_read(void* buf, int len) {
-        if (!handshake_done_) {
-            return std::unexpected("TLS handshake not completed");
-        }
-        if (bio_ctx_) bio_ctx_->poll_rx();
-        int ret = SSL_read(ssl_, buf, len);
-        if (ret <= 0) {
-            int err = SSL_get_error(ssl_, ret);
-            if (err == SSL_ERROR_WANT_READ) return 0;
-            return std::unexpected(std::format(
-                "SSL_read failed (err={}): {}",
-                err, detail::ssl_error_string()));
-        }
-        return ret;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
     // Session key extraction (for hot-path AEAD via TlsRecordCrypto)
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -835,9 +795,9 @@ public:
     /// `bad_record_mac` AEAD failures on the very next record.
     ///
     /// Concretely: when the WebSocket framer is in use, this must be
-    /// called AFTER the WS HTTP Upgrade request/response (which goes
-    /// through `handshake_write`/`handshake_read` and therefore
-    /// `SSL_write`/`SSL_read`).
+    /// called AFTER the WS HTTP Upgrade request/response, which the
+    /// `TlsWsSink` byte-sink drives through `encrypt_for_send` /
+    /// `decrypt_into` (both internally call `SSL_write` / `SSL_read`).
     ///
     /// Key length is determined dynamically from the negotiated cipher:
     ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
