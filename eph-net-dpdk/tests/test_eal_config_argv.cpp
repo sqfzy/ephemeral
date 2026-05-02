@@ -8,11 +8,10 @@
 /// runtime side-effects. Running them safely coexists with another DPDK
 /// process holding hugepages on the host.
 ///
-/// The pre-existing tests for the EAL plumbing (`test_platform_create_
-/// with_eal`, `test_eal_init_with_pins`) all require a real EAL bring-up
-/// and so are gated behind hugepage / vfio-pci availability. This file
-/// fills the gap by pinning the argv-shape contract that those tests
-/// depend on.
+/// The pre-existing tests for the EAL plumbing (`test_platform_launch`,
+/// `test_eal_init_with_pins`) all require a real EAL bring-up and so are
+/// gated behind hugepage / vfio-pci availability. This file fills the
+/// gap by pinning the argv-shape contract that those tests depend on.
 
 #include <algorithm>
 #include <string>
