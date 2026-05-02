@@ -31,6 +31,7 @@
 #include "dpdk_test_env.hpp" // IWYU pragma: keep
 
 #include "eph/codec/raw_stream_codec.hpp"
+#include "eph/codec/ws_codec.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/tcp.hpp"
 #include "eph/net/concepts.hpp"
@@ -44,6 +45,12 @@ namespace ec  = eph::codec;
 
 using PlainRawStream = edpk::DpdkTcpStream<ec::RawStreamCodec, false>;
 using TlsRawStream   = edpk::DpdkTcpStream<ec::RawStreamCodec, true>;
+// WS variants are the production-canonical shape for HFT exchange WS feeds
+// (binance / okx / coinbase: WsCodec on top of DpdkTcpStream, optionally
+// over TLS). Pinning their concept conformance at compile time keeps the
+// public Stream contract honest under the WsCodec template instantiation.
+using PlainWsStream  = edpk::DpdkTcpStream<ec::WsCodec, false>;
+using TlsWsStream    = edpk::DpdkTcpStream<ec::WsCodec, true>;
 
 // ---------------------------------------------------------------------------
 // Concept conformance
@@ -61,6 +68,20 @@ static_assert(eph::net::Stream<TlsRawStream>,
               "DpdkTcpStream<RawStreamCodec,true> must be Stream");
 static_assert(eph::net::dpdk::DpdkPollable<TlsRawStream>,
               "DpdkTcpStream<RawStreamCodec,true> must be DpdkPollable");
+static_assert(eph::net::Pollable<PlainWsStream>,
+              "DpdkTcpStream<WsCodec,false> must be Pollable");
+static_assert(eph::net::Stream<PlainWsStream>,
+              "DpdkTcpStream<WsCodec,false> must be Stream");
+static_assert(eph::net::dpdk::DpdkPollable<PlainWsStream>,
+              "DpdkTcpStream<WsCodec,false> must be DpdkPollable");
+static_assert(eph::net::Pollable<TlsWsStream>,
+              "DpdkTcpStream<WsCodec,true> must be Pollable");
+static_assert(eph::net::Stream<TlsWsStream>,
+              "DpdkTcpStream<WsCodec,true> must be Stream");
+static_assert(eph::net::dpdk::DpdkPollable<TlsWsStream>,
+              "DpdkTcpStream<WsCodec,true> must be DpdkPollable");
+static_assert(std::is_same_v<PlainWsStream::CodecType, ec::WsCodec>);
+static_assert(std::is_same_v<TlsWsStream::CodecType,   ec::WsCodec>);
 
 // ---------------------------------------------------------------------------
 // Helpers
