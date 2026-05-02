@@ -1,14 +1,24 @@
 /// @file core/dpdk_env.hpp
 /// Bridge from bench.conf + ScenarioConfig globals to a
-/// fully-initialized `eph::dpdk::test::DpdkBenchEnv` (EAL init + Platform +
-/// ARP resolve) so the six `lat_*_dpdk` scenario binaries can share one
-/// bring-up sequence.
+/// fully-initialized `eph::dpdk::test::DpdkBenchEnv` (Platform secondary
+/// attach + ARP resolve) so the six `lat_*_dpdk` scenario binaries can
+/// share one bring-up sequence.
 ///
 /// Per .artifacts/plan-phase-11-dpdk-measurement-20260411-082123.md D-1/D-2:
 /// we deliberately keep `DpdkBenchEnv` in `eph::dpdk::test::` (not in
 /// `eph::net::dpdk::`) because test fixtures and benchmarks share the same
 /// bring-up; and EAL parameters are synthesized from bench.conf so the user
 /// CLI stays `sudo lat tcp --dpdk` without passing `-l 0,1 -a 0000:28:00.0`.
+///
+/// Daemon-reshape (post-b4fc8969): `DpdkBenchEnv::create` now goes through
+/// `Platform::create(PlatformConfig)` (secondary attach to a daemon-managed
+/// NIC). The `lat` wrapper script is responsible for ensuring an
+/// `eph-nicd@<pci>` daemon is running for `cfg.networking.nic_b_pci`
+/// before each bench invocation. The previous `Platform::launch` /
+/// `create_via_autojoin` paths (and the `EPH_LAT_AUTOJOIN_*` envvar
+/// diversion) are gone — multi-process bench runs simply launch N
+/// scenario binaries, each one a secondary; the daemon arbitrates queue
+/// allocation.
 ///
 /// This header compiles to nothing when `EPH_USE_DPDK` is not defined so
 /// kernel-only bench builds keep working.
@@ -167,13 +177,17 @@ parse_eal_cores_csv(std::string_view csv) {
 /// Read DPDK bootstrap fields from config.toml-backed `BenchConfig` and
 /// construct a fully-initialized `DpdkBenchEnv`.
 ///
-/// EAL init goes through typed `EalGuard::init`: the CSV
-/// `cpu.eal_cores` is parsed into typed `LcorePin` specs, validated against
-/// the process-wide pin registry (relaxed policy for shared dev hosts —
-/// `cpu_client` collisions surface loudly), then lowered to
-/// `--lcores=<lcore>@<cpu>,...` argv. The legacy `synthesize_eal_argv`
-/// (`-l <csv>`) helper remains for unit-test coverage but is no longer
-/// the bench bring-up path.
+/// Bench bring-up under the daemon-led model:
+///   1. Operator (or `lat` wrapper) starts `eph-nicd@<pci>.service`
+///      against `cfg.networking.nic_b_pci`. The daemon owns NIC physical
+///      state — descriptor depth, RSS key, mempool size live in
+///      `NicServiceConfig` on the daemon side, NOT in this fixture.
+///   2. `DpdkBenchEnv::create` calls `Platform::create(PlatformConfig)`
+///      with the bench's per-process EAL knobs (typed pins, allowed_devs)
+///      and claims `cfg.dpdk.nb_rx_queues` queue pairs from the daemon's
+///      pool.
+///   3. ARP-resolves the gateway and packages everything into a move-only
+///      struct.
 ///
 /// Required fields (validated by `load_bench_conf()`):
 ///   - networking.server_ip   — destination (kernel mock on NIC_A)
@@ -182,15 +196,22 @@ parse_eal_cores_csv(std::string_view csv) {
 ///   - networking.nic_b_pci   — NIC_B PCI BDF (required for DPDK bring-up)
 /// Optional:
 ///   - cpu.eal_cores          — comma-separated cpu list (default "0,1")
-///   - dpdk.rss.nb_rx_queues  — default 1; > 1 auto-engages RSS/FD bring-up
+///   - dpdk.rss.nb_rx_queues  — default 1; > 1 asks daemon for a multi-queue
+///                              claim (the daemon must be configured with
+///                              total_queues >= the requested count)
 ///
 /// Failure modes (all surface as `std::unexpected(std::string)`):
 ///   - "load_dpdk_env: networking.nic_b_pci is required ..."
 ///   - "load_dpdk_env: parse_eal_cores_csv: <reason>"
-///   - "load_dpdk_env: DpdkBenchEnv::create: <reason>"
+///   - "load_dpdk_env: DpdkBenchEnv::create: <reason>" (often "is
+///      eph-nicd@<pci>.service running?")
 [[nodiscard]] inline std::expected<eph::dpdk::test::DpdkBenchEnv, std::string>
 load_dpdk_env(const BenchConfig& cfg,
               uint16_t dpdk_port_id = 0) noexcept try {
+    (void)dpdk_port_id;  // port_id is no longer settable per-process — the
+                         // daemon owns NIC bring-up. Kept in the signature
+                         // for ABI compat with kernel-only callers.
+
     const std::string& mock_ip    = cfg.networking.server_ip;
     const std::string& client_ip  = cfg.networking.client_ip;
     const std::string& gateway_ip = cfg.networking.gateway_ip;
@@ -214,98 +235,66 @@ load_dpdk_env(const BenchConfig& cfg,
     }
     auto pins = std::move(*pins_r);
 
-    eph::dpdk::EalConfig eal_cfg{};
-    eal_cfg.program_name = "lat_bench";
-    eal_cfg.allowed_devs = {dpdk_pci};
-    // --proc-type=auto and --log-level filter routed through extra_args.
-    // launch (via DpdkBenchEnv::create) appends its own
-    // `--lcores=...` token from the typed pins on top of these.
-    eal_cfg.extra_args   = {std::string{"--proc-type=auto"},
-                            std::string{"--log-level=lib.eal:warning"}};
-
     SPDLOG_INFO(
-        "load_dpdk_env: EAL+Platform via DpdkBenchEnv::create: "
-        "pins={} cpus_csv={} pci={} nb_rx_queues={}",
+        "load_dpdk_env: Platform::create via DpdkBenchEnv::create: "
+        "pins={} cpus_csv={} pci={} queues={}",
         pins.size(), eal_cores, dpdk_pci, cfg.dpdk.nb_rx_queues);
 
+    // ── Build the new lean PlatformConfig ─────────────────────────
+    // Under the daemon-led model the per-process config carries only:
+    //   - pci          — identifies which daemon to attach to
+    //   - queues       — bidirectional queue pairs to claim from the
+    //                    pool (nb_rx_queues from bench.conf maps here)
+    //   - pins/lcores  — per-process EAL lcore layout
+    //   - pin_policy   — how strict the typed-pin validator should be
+    //   - extra_eal_args — log-level / proc-type passthrough
+    //   - program_name — argv[0] for EAL log identification
+    //
+    // NIC physical state (rss key, descriptors, mempool size,
+    // promiscuous, …) lives on the daemon's NicServiceConfig and is
+    // not tunable from the bench client.
     eph::dpdk::PlatformConfig pcfg{};
-    pcfg.port_id      = dpdk_port_id;
-    pcfg.nb_rx_queues = cfg.dpdk.nb_rx_queues;
-    pcfg.nb_tx_queues = std::max<uint16_t>(pcfg.nb_rx_queues, 1);
-
-    if (pcfg.nb_rx_queues > 1) {
-        SPDLOG_INFO(
-            "load_dpdk_env: RSS auto-engaged via nb_rx_queues={}",
-            pcfg.nb_rx_queues);
-    }
-
+    pcfg.pci          = dpdk_pci;
+    pcfg.queues       = std::max<uint16_t>(cfg.dpdk.nb_rx_queues, 1);
+    pcfg.pins         = std::span<eph::dpdk::LcorePin const>{pins};
     // Relaxed CpuPinPolicy: bench runs on shared dev hosts where
     // isolcpus / NUMA / SMT-sibling enforcement would gate the run
     // on cluster topology rather than what we care about (every
     // measurement thread on a fixed cpu).
-    eph::utils::CpuPinPolicy pin_policy{
+    pcfg.pin_policy   = eph::utils::CpuPinPolicy{
         .require_isolcpus            = false,
         .require_no_sibling_conflict = false,
         .require_same_numa           = false,
         .warn_irq_overlap            = false,
     };
+    // Bench keeps its EAL log channel quiet — the proc_type, file_prefix,
+    // and -a allowlist are all derived inside Platform::create from
+    // pcfg.pci, so we only have to forward log-level here.
+    pcfg.extra_eal_args = {std::string{"--log-level=lib.eal:warning"}};
+    pcfg.program_name   = "lat_bench";
 
-    // ── EPH_LAT_AUTOJOIN_* envvar diversion (multi-process bench mode) ──
-    // When EPH_LAT_AUTOJOIN_MAX_PROCS is set, use create_via_autojoin so
-    // lat_*_dpdk binaries can run as either primary or secondary within one
-    // NIC session. Originally diagnostic; now also the production path for
-    // 7-process parallel bench acceptance.
-    if (const char* max_procs_s = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
-        max_procs_s && *max_procs_s) {
-        // Strict parse: reject non-numeric / out-of-range / 0/1 envvars
-        // up front instead of silently coercing via atoi() (Vuln A from
-        // /pax --review). atoi("bad")=0 and atoi("-1")→cast→4294967295
-        // would have surfaced as opaque "no free slot" or topology
-        // parse errors with no pointer back at the typo.
-        char* end = nullptr;
-        const unsigned long mp_raw = std::strtoul(max_procs_s, &end, 10);
-        if (end == max_procs_s || *end != '\0' || mp_raw < 2 || mp_raw > 64) {
-            return std::unexpected(
-                std::string{"load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS='"}
-                + max_procs_s + "' invalid (expect integer in [2, 64])");
-        }
-        const uint32_t max_procs = static_cast<uint32_t>(mp_raw);
-        const char* lcores_s     = std::getenv("EPH_LAT_AUTOJOIN_LCORES");
-        const char* gw_mac_file  = std::getenv("EPH_LAT_AUTOJOIN_GW_MAC_FILE");
-        // Treat empty env-var values the same as unset — without this, an
-        // orchestrator that does `export EPH_LAT_AUTOJOIN_LCORES="$VAR"`
-        // with `$VAR` accidentally empty would bypass the bench.conf
-        // fallback and surface as a hard error from create_via_autojoin's
-        // empty-lcores guard. The hard error is correct downstream
-        // (mask=0 silently disables MpRegistry v2), but at the bench
-        // boundary an unset/empty env-var should fall back to eal_cores
-        // (the bench.conf value) so the user-facing contract matches the
-        // doc claim "Optional. Falls back to bench.conf eal_cores".
-        std::string lcores_str   =
-            (lcores_s && *lcores_s) ? lcores_s : eal_cores;
-        std::string gw_mac_path  =
-            (gw_mac_file && *gw_mac_file) ? gw_mac_file : "";
+    if (pcfg.queues > 1) {
         SPDLOG_INFO(
-            "load_dpdk_env: EPH_LAT_AUTOJOIN_MAX_PROCS={} lcores={} gw_mac_file={}",
-            max_procs, lcores_str, gw_mac_path);
-        auto env_r = eph::dpdk::test::DpdkBenchEnv::create_via_autojoin(
-            dpdk_pci, max_procs, lcores_str,
-            mock_ip, client_ip, gateway_ip, gw_mac_path);
-        if (!env_r) {
-            return std::unexpected(
-                "load_dpdk_env: DpdkBenchEnv::create_via_autojoin: " + env_r.error());
-        }
-        return std::move(*env_r);
+            "load_dpdk_env: claiming queues={} (RSS multi-queue requires "
+            "the daemon to be configured with total_queues >= {})",
+            pcfg.queues, pcfg.queues);
     }
+
+    // TODO(daemon-reshape): the multi-process bench mode (formerly
+    // gated on EPH_LAT_AUTOJOIN_MAX_PROCS) is now the default — every
+    // lat_*_dpdk binary attaches as a secondary, the daemon arbitrates.
+    // The orchestrator just spawns N binaries instead of setting the
+    // envvar. Once S5's QueueAllocator + sub-range partitioning lands,
+    // this fixture should validate that pcfg.queues fits in the daemon's
+    // unclaimed pool before attempting the create call.
 
     auto env_r = eph::dpdk::test::DpdkBenchEnv::create(
         std::move(pcfg),
-        std::move(eal_cfg),
-        std::span<eph::dpdk::LcorePin const>{pins},
-        pin_policy,
         mock_ip, client_ip, gateway_ip);
     if (!env_r) {
-        return std::unexpected("load_dpdk_env: DpdkBenchEnv::create: " + env_r.error());
+        return std::unexpected(
+            "load_dpdk_env: DpdkBenchEnv::create: " + env_r.error()
+            + " (is `eph-nicd@" + dpdk_pci + ".service` running?)");
     }
     return std::move(*env_r);
 } catch (const std::exception& e) {

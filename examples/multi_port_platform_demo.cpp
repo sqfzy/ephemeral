@@ -153,54 +153,49 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL init ───────────────────────────────────────────────────────
-    // Every --pci entry is forwarded as an EAL allowlist (-a) entry. DPDK
-    // enumerates the allowed devs in the order they appear, so the first
-    // --pci becomes port_id=0, the second port_id=1, etc.
+    // ── 1) Build one PlatformConfig per --pci ─────────────────────────────
+    // Under the daemon model, each PCI BDF must already have its own
+    // `eph-nicd@<pci>.service` running. Each `PlatformConfig` ask
+    // attaches as a secondary on the corresponding daemon — `pci`
+    // identifies the NIC instead of the old `port_id` slot. `queues = 1`
+    // keeps the demo focused on the aggregator. To overlap with RSS,
+    // bump `queues` per port and configure `total_queues` on the
+    // matching daemon's `NicServiceConfig`.
+    //
+    // TODO(daemon-reshape): MultiPortPlatform::create itself still
+    // references the old `cfg.port_id` field internally (foundation gap
+    // — eph-net-dpdk/include/eph/dpdk/multi_port_platform.hpp must be
+    // migrated alongside the Platform reshape). This example sets the
+    // new fields correctly so it compiles cleanly once that header is
+    // updated; until then the build fails inside MultiPortPlatform,
+    // which is the right loud signal that the aggregator hasn't been
+    // adapted yet.
     const std::size_t n_ports = args.eal.pci.size();
-    const bool typed_pins = !args.eal.pins.empty();
-    auto pins_for_init    = args.eal.pins;  // copy — to_eal_config consumes args.eal
-    ed::EalConfig eal_cfg = ed::cli::to_eal_config(std::move(args.eal),
-                                                   "multi_port_platform_demo");
-
-    std::expected<ed::EalGuard, std::string> eal = std::unexpected(std::string{});
-    if (typed_pins) {
-        spdlog::info("multi_port_platform_demo: EAL init via typed pins ({} pin(s))",
-                     pins_for_init.size());
-        eal = ed::EalGuard::init(eal_cfg, pins_for_init,
-                                 eph::utils::CpuPinPolicy{});
-    } else {
-        spdlog::info("multi_port_platform_demo: EAL init via raw lcores");
-        auto argv_owned = ed::build_eal_argv(eal_cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv_owned.size());
-        for (auto& s : argv_owned) argv_ptrs.push_back(s.data());
-        eal = ed::EalGuard::init_raw(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
-    }
-    if (!eal) {
-        spdlog::error("multi_port_platform_demo: EAL init failed: {}", eal.error());
-        return 2;
-    }
-
-    // ── 2) One PlatformConfig per --pci, port_id = slot index ─────────────
-    // `nb_rx_queues = 1` keeps the demo's focus on the aggregator. To
-    // overlap with RSS, set `nb_rx_queues > 1` and `enable_rss = true`
-    // per port — the aggregator imposes no policy.
     std::vector<ed::PlatformConfig> port_cfgs;
     port_cfgs.reserve(n_ports);
     for (std::size_t i = 0; i < n_ports; ++i) {
         ed::PlatformConfig pcfg{};
-        pcfg.port_id      = static_cast<uint16_t>(i);
-        pcfg.nb_rx_queues = 1;
-        pcfg.nb_tx_queues = 1;
-        port_cfgs.push_back(pcfg);
+        pcfg.pci          = args.eal.pci[i];
+        pcfg.queues       = 1;
+        // Pins / lcores are EAL-process-wide; only seed them on the
+        // first config (the rest reuse the same EAL session).
+        if (i == 0) {
+            pcfg.pins       = std::span<ed::LcorePin const>{args.eal.pins};
+            pcfg.pin_policy = eph::utils::CpuPinPolicy{};
+            pcfg.lcores     = args.eal.lcores_raw.empty()
+                                  ? std::vector<std::string>{}
+                                  : std::vector<std::string>{args.eal.lcores_raw};
+        }
+        pcfg.program_name = "multi_port_platform_demo";
+        port_cfgs.push_back(std::move(pcfg));
     }
 
-    // ── 3) Atomic N-port bringup with rollback ────────────────────────────
+    // ── 2) Atomic N-port bringup with rollback ────────────────────────────
     auto mp_r = ed::MultiPortPlatform::create(
         std::span<const ed::PlatformConfig>(port_cfgs));
     if (!mp_r) {
-        spdlog::error("multi_port_platform_demo: MultiPortPlatform::create failed: {}",
+        spdlog::error("multi_port_platform_demo: MultiPortPlatform::create failed: {} "
+                      "(check that all `eph-nicd@<pci>.service` daemons are running)",
                       mp_r.error().detail);
         return 3;
     }

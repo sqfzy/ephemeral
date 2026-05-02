@@ -1,58 +1,61 @@
 /// @file dpdk_mp_demo.cpp
 ///
-/// DPDK single-NIC multi-process (primary + secondary) **autojoin**
-/// path skeleton. Both peers run THIS SAME BINARY with the same
-/// arguments — `Platform::create_or_join` races on `eal_init` to decide
-/// which process becomes primary and which becomes secondary, then
-/// CAS-claims a registry slot for each peer. There is no `--role`
-/// flag and no shared `--file-prefix` (it is auto-derived from the
-/// PCI BDF inside the library).
+/// DPDK single-NIC multi-process demo under the **daemon-led model**.
+/// The pre-2026-05-02 autojoin path
+/// (`Platform::create_or_join` / `CreateOrJoinConfig`) was deleted —
+/// see `.claude/plans/calm-roaming-sedgewick.md`. The new shape:
 ///
-/// The cooperative MP path (`Platform::create_primary` /
-/// `Platform::create_secondary` / `Platform::attach` /
-/// `Platform::attach_with_eal`, all with explicit role +
-/// hand-shared `file_prefix`) was deleted in favor of this single
-/// autojoin entry point. `Platform::launch` survives as the
-/// **single-process** one-shot EAL+Platform factory — it rejects
-/// `cfg.max_procs > 1` with a recovery hint pointing here. See
-/// `eph-net-dpdk/docs/dpdk-multiprocess.md` for the full ordering /
-/// teardown protocol; for the single-process counterpart with full
-/// TLS+WS handshake via `create_and_attach`, see
-/// `examples/simple_hft.cpp`.
+///   1. `eph-nicd@<pci>.service` runs as the NIC primary (operator
+///      starts it once via systemd; or ad-hoc via `sudo ./eph-nicd
+///      --pci <bdf>` until S4 wires the systemd unit). It owns the
+///      port bring-up, mempool, RSS key, and queue pool.
+///   2. Every application process — including multiple instances of
+///      THIS BINARY — calls `Platform::create(PlatformConfig{...})`
+///      and attaches as a secondary. Each ask claims a sub-range of
+///      the daemon's queue pool. Different binaries (strategy A, MD B,
+///      risk C) coexist with zero point-to-point coordination — the
+///      daemon is the single arbiter.
 ///
-/// What the library does for you (cross-process control plane):
-///   * RX-queue partitioning: each peer's `effective_rx_queue_range`
-///     resolves to a disjoint sub-range of `[0, nb_rx_queues)` so two
-///     processes never burst the same queue.
-///   * Source-port partitioning: each peer's
-///     `find_src_port_for_queue` window is narrowed to its own
-///     `[port_lo, port_hi)` segment so primary and secondary do not
-///     collide on `src_port` selection.
-///   * ICMP MTU propagation: ICMP Frag Needed messages that land on a
-///     peer process's RX queue auto-forward via `rte_mp_*` IPC to the
-///     owning stream's `effective_mss`.
+/// What the library still does for you (cross-process control plane):
+///   * RX-queue partitioning: the daemon's QueueAllocator (S5) hands
+///     each secondary a disjoint sub-range; today (foundation) the
+///     placeholder claims `0..(cfg.queues - 1)` blindly — fine for one
+///     secondary, racy under multiple. Final S5 closes the gap.
+///   * Source-port partitioning: secondaries draw from disjoint
+///     segments of the ephemeral range based on their owned queue ids
+///     so two apps do not collide on `src_port`.
+///   * ICMP MTU propagation: ICMP Frag Needed messages auto-forward
+///     via `rte_mp_*` IPC to the owning stream's `effective_mss`.
 ///   * FlowDir secondary install fallback: if the PMD rejects
 ///     `rte_flow_create` from a secondary, the library transparently
-///     routes the install through `eph_fd_install` IPC to the primary.
+///     routes the install through `eph_fd_install` IPC to the primary
+///     (= daemon).
 ///
 /// Scope:
 ///   * UDP, not TCP — no connect handshake clutter (RawDatagramCodec).
-///   * No actual traffic. We bring up the per-process Platform, attach a
-///     `DpdkUdpSocket`, drive `poll()` for a few seconds, then shut down.
-///   * The point is the *control plane* (mempool create-vs-lookup, port
-///     bring-up vs skip, cleanup branches) — once that's clear, swap in
-///     a real codec / connect / loop and this scales to production.
+///   * No actual traffic. Each invocation brings up a per-process
+///     Platform, attaches a `DpdkUdpSocket`, drives `poll()` for a few
+///     seconds, then shuts down.
+///   * The point is the *control plane* (mempool lookup, queue pool
+///     claim/release, cleanup branches) — once that's clear, swap in a
+///     real codec / connect / loop and this scales to production.
 ///
-/// Usage (two terminals, same host, same NIC, same args):
+/// Usage (three terminals: daemon + two app peers):
 ///
-///   # Terminal A — first peer; auto-resolves as primary
+///   # Terminal A — daemon (NIC primary)
+///   sudo ./eph-nicd --pci 0000:28:00.0 --total-queues 8
+///
+///   # Terminal B — first application secondary
 ///   sudo ./dpdk_mp_demo --pci 0000:28:00.0 --pin 0=0:rx --pin 1=1:tx
+///                       --queues 4
 ///
-///   # Terminal B — second peer; auto-resolves as secondary
+///   # Terminal C — second application secondary (different lcores
+///   #              + different queue range; the daemon arbitrates)
 ///   sudo ./dpdk_mp_demo --pci 0000:28:00.0 --pin 0=2:rx --pin 1=3:tx
+///                       --queues 4
 ///
 /// `--pin lcore_id=cpu_id[:role]` (repeatable) is the typed entry
-/// point — goes through `Platform::create_or_join`'s typed-pin path,
+/// point — goes through `Platform::create`'s typed-pin path,
 /// which validates each pin (cpu >= 0, no SMT/NUMA conflict per
 /// policy) and registers the cpus into the process-wide pin registry
 /// BEFORE `rte_eal_init` fires. Any later `eph::utils::pin_thread`
@@ -65,17 +68,16 @@
 /// `--pin` in one call.
 ///
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
-/// See `eph-net-dpdk/scripts/dpdk-setup.sh`. Both peers must use the
-/// SAME `--pci` (file_prefix is auto-derived from BDF, so identical
-/// pci → identical hugepage namespace → secondary's
-/// `rte_mempool_lookup` finds primary's mempool).
+/// See `eph-net-dpdk/scripts/dpdk-setup.sh`. The daemon and every app
+/// peer must use the SAME `--pci` — file_prefix is auto-derived from
+/// the BDF, so identical pci → identical hugepage namespace →
+/// secondary's `rte_mempool_lookup` finds the daemon's mempool.
 ///
 /// Additional flags (all optional; full list at parse_args):
-///   --port-id <id>    DPDK port enumeration index (default 0).
-///   --nb-queues <n>   total RX/TX queue count primary configures
-///                     (default 4 — see AppArgs::nb_rx_queues below).
-///                     Both peers must agree; the library partitions
-///                     these queues into disjoint per-peer sub-ranges.
+///   --queues <n>      bidirectional queue pairs to claim from the
+///                     daemon's pool (default 1; foundation
+///                     placeholder takes queues `0..(n-1)`, S5 wires
+///                     proper allocation).
 ///   --seconds <n>     demo run duration (default 5).
 
 #include <atomic>
@@ -111,7 +113,10 @@ namespace {
 struct AppArgs {
     /// EAL flags — --pci / --pin / --lcores / --port-id (or --dpdk-port).
     ed::cli::EalCliConfig        eal{};
-    uint16_t                nb_rx_queues = 4;    // total queues primary configures
+    /// `cfg.queues` for `Platform::create` — bidirectional queue pairs
+    /// to claim from the daemon's pool. Must be <= the daemon's
+    /// `total_queues` minus what other secondaries already hold.
+    uint16_t                queues       = 1;
     std::chrono::seconds    run_seconds  = 5s;   // how long to drive poll()
 };
 
@@ -136,8 +141,9 @@ AppArgs parse_args(int argc, char** argv) {
         }
         if (*consumed > 0) { i += *consumed - 1; continue; }
 
-        if      (a == "--nb-queues" && next) { out.nb_rx_queues = static_cast<uint16_t>(std::atoi(next)); ++i; }
-        else if (a == "--seconds"   && next) { out.run_seconds  = std::chrono::seconds(std::atoi(next));  ++i; }
+        if      (a == "--queues"    && next) { out.queues      = static_cast<uint16_t>(std::atoi(next)); ++i; }
+        else if (a == "--nb-queues" && next) { out.queues      = static_cast<uint16_t>(std::atoi(next)); ++i; }  // legacy alias
+        else if (a == "--seconds"   && next) { out.run_seconds = std::chrono::seconds(std::atoi(next));  ++i; }
     }
     return out;
 }
@@ -150,19 +156,19 @@ int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::info);
 
     const AppArgs args = parse_args(argc, argv);
-    if (args.nb_rx_queues < 2) {
-        spdlog::error("dpdk_mp_demo: --nb-queues must be >= 2 "
-                      "(per-peer ranges need to be disjoint)");
+    if (args.queues == 0) {
+        spdlog::error("dpdk_mp_demo: --queues must be >= 1");
         return 1;
     }
     if (args.eal.pci.empty()) {
         spdlog::error("dpdk_mp_demo: --pci <BDF> is required "
-                      "(autojoin auto-derives file_prefix from the PCI BDF)");
+                      "(file_prefix is auto-derived from the BDF and must "
+                      "match the daemon's `eph-nicd@<pci>.service` instance)");
         return 1;
     }
     if (args.eal.pci.size() > 1) {
-        spdlog::error("dpdk_mp_demo: --pci passed {} times; autojoin "
-                      "is single-NIC (file_prefix is derived from one BDF)",
+        spdlog::error("dpdk_mp_demo: --pci passed {} times; one app peer "
+                      "attaches to one NIC (one daemon = one BDF)",
                       args.eal.pci.size());
         return 1;
     }
@@ -179,47 +185,59 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── Single autojoin entry point — no role flag ─────────────────────
-    // Whoever wins the EAL race becomes primary; the other becomes
-    // secondary. Both peers populate nic.nb_rx_queues so the
-    // primary peer (whichever it ends up being) has the value it needs;
-    // secondary peers ignore it post-resolution.
+    // ── Platform::create — application secondary attach ───────────────
+    // Every app peer (this binary, strategy A, MD B, …) takes the same
+    // path: claim N queue pairs from the daemon's pool. The daemon
+    // arbitrates so two peers never share a queue. Foundation
+    // placeholder takes `0..(queues - 1)`; S5 wires the real
+    // QueueAllocator IPC.
+    //
+    // TODO(daemon-reshape): start the daemon first, e.g.
+    //
+    //   sudo ./eph-nicd --pci <BDF> --total-queues 8
+    //
+    // (`eph-nicd` lands in S4; until then, an in-process equivalent
+    // can be hand-spun by a sibling that calls `Platform::serve_nic`
+    // — EAL forbids primary+secondary in one process, so the daemon
+    // MUST be a separate process.)
     const std::string& pci_bdf = args.eal.pci.front();
-    ed::CreateOrJoinConfig cfg{};
-    cfg.pci                          = pci_bdf;
-    cfg.nic.port_id       = args.eal.port_id;
-    cfg.nic.nb_rx_queues  = args.nb_rx_queues;
-    cfg.nic.nb_tx_queues  = args.nb_rx_queues;
-    cfg.pins                         = std::span<ed::LcorePin const>{args.eal.pins};
-    cfg.lcores                       = args.eal.lcores_raw.empty()
-                                           ? std::vector<std::string>{}
-                                           : std::vector<std::string>{args.eal.lcores_raw};
-    cfg.pin_policy                   = eph::utils::CpuPinPolicy{};
+    ed::PlatformConfig pcfg{};
+    pcfg.pci          = pci_bdf;
+    pcfg.queues       = args.queues;
+    pcfg.pins         = std::span<ed::LcorePin const>{args.eal.pins};
+    pcfg.pin_policy   = eph::utils::CpuPinPolicy{};
+    pcfg.lcores       = args.eal.lcores_raw.empty()
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{args.eal.lcores_raw};
+    pcfg.program_name = "dpdk_mp_demo";
 
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_mp_demo: bring-up via Platform::create_or_join "
-                     "(typed pins, {} pin(s); pci={})",
-                     args.eal.pins.size(), pci_bdf);
+        spdlog::info("dpdk_mp_demo: Platform::create "
+                     "(typed pins, {} pin(s); pci={}, queues={})",
+                     args.eal.pins.size(), pci_bdf, args.queues);
     } else {
-        spdlog::info("dpdk_mp_demo: bring-up via Platform::create_or_join "
-                     "(raw lcores='{}'; pci={})",
-                     args.eal.lcores_raw, pci_bdf);
+        spdlog::info("dpdk_mp_demo: Platform::create "
+                     "(raw lcores='{}'; pci={}, queues={})",
+                     args.eal.lcores_raw, pci_bdf, args.queues);
     }
 
-    auto plat_r = ed::Platform::create_or_join(std::move(cfg));
+    auto plat_r = ed::Platform::create(std::move(pcfg));
     if (!plat_r) {
-        spdlog::error("dpdk_mp_demo: Platform::create_or_join failed: {}",
-                      plat_r.error());
+        spdlog::error("dpdk_mp_demo: Platform::create failed: {} "
+                      "(is `eph-nicd@{}.service` running with "
+                      "total_queues >= what other peers have already "
+                      "claimed + {}?)",
+                      plat_r.error(), pci_bdf, args.queues);
         return 2;
     }
     auto platform = std::move(*plat_r);
 
-    const bool is_secondary = platform.is_secondary();
-    const char* role_str = is_secondary ? "secondary" : "primary";
+    // Every peer is a secondary under the daemon-led model; no more
+    // primary/secondary role distinction at the app layer.
     const auto qr = platform.effective_rx_queue_range();
-    spdlog::info("dpdk_mp_demo[{}]: ready — port={}, "
+    spdlog::info("dpdk_mp_demo: secondary ready — port={}, "
                  "rx_queue_range=[{},{}), mempool={:p}",
-                 role_str, platform.port_id(), qr.first, qr.second,
+                 platform.port_id(), qr.first, qr.second,
                  static_cast<void*>(platform.mempool()));
 
     // ── Per-process Poller bound to one of the queues we own ────────────
@@ -255,7 +273,10 @@ int main(int argc, char** argv) {
     edpdk::UdpConfig ucfg{};
     ucfg.dpdk.wire.src_ip   = 0x0A000010;   // 10.0.0.16
     ucfg.dpdk.wire.dst_ip   = 0x0A000020;   // 10.0.0.32
-    ucfg.dpdk.wire.src_port = is_secondary ? 49152 : 32768;
+    // Pick a src_port that lands in our owned queue range — production
+    // code should use `find_src_port_for_queue` for RSS-correctness;
+    // here we just hardcode something inside the ephemeral range.
+    ucfg.dpdk.wire.src_port = static_cast<uint16_t>(32768 + qr.first);
     ucfg.dpdk.wire.dst_port = 30000;
     ucfg.dpdk.wire.port_id  = platform.port_id();
     ucfg.dpdk.wire.pool     = platform.mempool();
@@ -273,17 +294,17 @@ int main(int argc, char** argv) {
     }
 
     // ── Drive the burst loop for `--seconds` (default 5s) ───────────────
-    spdlog::info("dpdk_mp_demo[{}]: entering poll loop for {}s",
-                 role_str, args.run_seconds.count());
+    spdlog::info("dpdk_mp_demo: entering poll loop for {}s",
+                 args.run_seconds.count());
     const auto deadline = std::chrono::steady_clock::now() + args.run_seconds;
     while (g_running.load(std::memory_order_acquire)
            && std::chrono::steady_clock::now() < deadline) {
         (void)poller->poll();
     }
 
-    spdlog::info("dpdk_mp_demo[{}]: shutting down — Platform RAII "
-                 "will run the {}-mode cleanup branch",
-                 role_str, role_str);
+    spdlog::info("dpdk_mp_demo: shutting down — Platform RAII releases "
+                 "the secondary attach (queue range returns to the "
+                 "daemon's pool).");
     // RAII: ~UdpSock → ~DpdkPoller → ~Platform (which owns EAL).
     // Secondary's ~Platform leaves the port + mempool untouched
     // (owned by primary); primary's ~Platform does dev_stop / dev_close /

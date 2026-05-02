@@ -258,33 +258,52 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ── 1) EAL + Platform via the unified launch factory ────────
-    // Single binary, single peer ⇒ single-process bring-up. Platform
-    // owns the EAL session and runs eal_cleanup atomically on
-    // destruction; no separate EalGuard needed.
+    // ── 1) Platform::create — application secondary attach ────────
+    //
+    // Operator must already have the daemon running for this NIC:
+    //
+    //   sudo systemctl start eph-nicd@<pci>.service
+    //
+    // and the daemon's `NicServiceConfig::total_queues` must be at least
+    // `args.nb_rx_queues` so we can claim that many queue pairs from the
+    // pool. `per_lcore_pools` is now a daemon-side toggle (not yet wired
+    // through PlatformConfig in foundation); to use it, ops sets the
+    // matching field on the daemon's bring-up config. See S5 of the
+    // daemon-reshape plan for the full QueueAllocator semantics.
+    //
+    // TODO(daemon-reshape): once the QueueAllocator (S5) is wired, the
+    // `cfg.queues` ask drives a real claim against the NIC's queue pool;
+    // today the secondary attach blindly takes queues `0..(queues-1)`.
+    if (args.eal.pci.empty()) {
+        spdlog::error("dpdk_rss_demo: --pci is required");
+        return 1;
+    }
     ed::PlatformConfig pcfg{};
-    pcfg.port_id          = args.eal.port_id;
-    pcfg.nb_rx_queues     = args.nb_rx_queues;
-    pcfg.nb_tx_queues     = args.nb_rx_queues;
-    pcfg.per_lcore_pools  = args.per_lcore_pools;
-    // max_procs default 1 = single-process RSS multi-queue.
+    pcfg.pci          = args.eal.pci.front();
+    pcfg.queues       = args.nb_rx_queues;
+    pcfg.pins         = std::span<ed::LcorePin const>{args.eal.pins};
+    pcfg.pin_policy   = eph::utils::CpuPinPolicy{};
+    pcfg.lcores       = args.eal.lcores_raw.empty()
+                            ? std::vector<std::string>{}
+                            : std::vector<std::string>{args.eal.lcores_raw};
+    pcfg.program_name = "dpdk_rss_demo";
 
     if (!args.eal.pins.empty()) {
-        spdlog::info("dpdk_rss_demo: bring-up via launch "
-                     "(typed pins, {} pin(s))", args.eal.pins.size());
+        spdlog::info("dpdk_rss_demo: Platform::create (typed pins, "
+                     "{} pin(s), queues={})",
+                     args.eal.pins.size(), args.nb_rx_queues);
     } else {
-        spdlog::info("dpdk_rss_demo: bring-up via launch "
-                     "(raw lcores='{}')", args.eal.lcores_raw);
+        spdlog::info("dpdk_rss_demo: Platform::create (raw lcores='{}', "
+                     "queues={})", args.eal.lcores_raw, args.nb_rx_queues);
     }
 
-    auto plat_r = ed::Platform::launch(
-        std::move(pcfg),
-        ed::cli::to_eal_config(args.eal, "dpdk_rss_demo"),
-        std::span<ed::LcorePin const>{args.eal.pins},
-        eph::utils::CpuPinPolicy{});
+    auto plat_r = ed::Platform::create(std::move(pcfg));
     if (!plat_r) {
-        spdlog::error("dpdk_rss_demo: Platform::launch failed: {}",
-                      plat_r.error());
+        spdlog::error("dpdk_rss_demo: Platform::create failed: {} "
+                      "(is `eph-nicd@{}.service` running with "
+                      "total_queues >= {}?)",
+                      plat_r.error(), args.eal.pci.front(),
+                      args.nb_rx_queues);
         return 2;
     }
     auto platform = std::move(*plat_r);
