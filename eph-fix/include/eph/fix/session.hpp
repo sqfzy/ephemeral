@@ -52,6 +52,7 @@
 ///   session.logout();
 /// @endcode
 
+#include <algorithm>  // std::min in send_test_request snprintf clamp
 #include <atomic>
 #include <chrono>
 #include <cmath>     // isfinite for FixSessionConfig::validate()
@@ -926,13 +927,23 @@ private:
             static_cast<unsigned long long>(
                 std::chrono::steady_clock::now().time_since_epoch().count()));
 
+        // snprintf returns negative on encoding error (vanishingly rare for
+        // a simple format) or the would-be-written length on truncation.
+        // Both edges hit the same string_view-builder downstream: a naked
+        // `static_cast<size_t>(n)` wraps a -1 to ~SIZE_MAX, and a >= sizeof
+        // result over-reads past `id_buf`. Clamp to [0, sizeof - 1] so the
+        // resulting view is always inside the buffer.
+        const size_t id_len = (n < 0)
+            ? 0u
+            : std::min(static_cast<size_t>(n), sizeof(id_buf) - 1);
+
         uint8_t buf[256];
         MessageBuilder b(buf, sizeof(buf));
         b.set(tag::MsgType, "1");
         if (!fill_session_header(b)) return false;
-        b.set(tag::TestReqID, std::string_view(id_buf, static_cast<size_t>(n)));
+        b.set(tag::TestReqID, std::string_view(id_buf, id_len));
         SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
-            "Sending TestRequest (TestReqID={})", std::string_view(id_buf, static_cast<size_t>(n)));
+            "Sending TestRequest (TestReqID={})", std::string_view(id_buf, id_len));
         // Mark pending ONLY if the wire write succeeded. Previous order
         // set pending=true before send_message returned — on TX failure
         // (TLS desync, socket disconnect, builder overflow) the bucket
