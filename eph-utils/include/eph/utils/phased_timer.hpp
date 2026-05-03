@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 
 #include "eph/utils/time.hpp"
 
@@ -57,8 +58,22 @@ public:
         const uint64_t now = TSC::now();
         const auto warmup_cycles  = TSC::to_cycles(warmup).value_or(0);
         const auto measure_cycles = TSC::to_cycles(measurement).value_or(0);
-        warmup_end_  = now + warmup_cycles;
-        measure_end_ = warmup_end_ + measure_cycles;
+        // Saturating add: TSC::to_cycles saturates at UINT64_MAX on overflow
+        // (e.g. caller passing nanoseconds::max for an unbounded benchmark).
+        // The unguarded `now + UINT64_MAX` wraps to `now - 1` and the
+        // subsequent `is_running()` check `TSC::now() < measure_end_` reads
+        // false on the very next tick — collapsing the documented "window
+        // still open" intent to "exit immediately". Clamp to UINT64_MAX so
+        // the deadline stays in the future until TSC itself wraps
+        // (~195 years at 3 GHz).
+        warmup_end_ = (warmup_cycles >
+                       std::numeric_limits<uint64_t>::max() - now)
+                          ? std::numeric_limits<uint64_t>::max()
+                          : now + warmup_cycles;
+        measure_end_ = (measure_cycles >
+                        std::numeric_limits<uint64_t>::max() - warmup_end_)
+                           ? std::numeric_limits<uint64_t>::max()
+                           : warmup_end_ + measure_cycles;
         started_ = true;
     }
 

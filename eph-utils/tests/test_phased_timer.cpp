@@ -197,3 +197,27 @@ TEST_F(PhasedTimerTest, copy_preserves_state) {
     PhasedTimer t2 = t;
     EXPECT_TRUE(t2.is_running());
 }
+
+// ---------------------------------------------------------------------------
+// Saturation: nanoseconds::max collapses to UINT64_MAX cycles in
+// `TSC::to_cycles`. Without the saturating-add guard, `now + UINT64_MAX`
+// wraps to `now - 1` and `is_running()` returns false on the very next
+// tick — exactly opposite to "window still open" intent. Verify both
+// windows remain open immediately after start with extreme inputs.
+// ---------------------------------------------------------------------------
+TEST_F(PhasedTimerTest, unbounded_warmup_stays_open) {
+    PhasedTimer t;
+    t.start(std::chrono::nanoseconds::max(), 1ms);
+    EXPECT_TRUE(t.is_warmup())
+        << "warmup_end_ wrapped to past — saturating-add guard missing";
+    EXPECT_TRUE(t.is_running())
+        << "measure_end_ chained from wrapped warmup_end_";
+}
+
+TEST_F(PhasedTimerTest, unbounded_measurement_stays_open) {
+    PhasedTimer t;
+    t.start(0ns, std::chrono::nanoseconds::max());
+    EXPECT_FALSE(t.is_warmup());  // zero warmup
+    EXPECT_TRUE(t.is_running())
+        << "measure_end_ wrapped to past — saturating-add guard missing";
+}
