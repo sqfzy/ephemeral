@@ -164,6 +164,42 @@ public:
                 "submit: rejected empty cl_ord_id");
             return false;
         }
+        // Reject non-finite / non-positive qty: NaN comparisons all
+        // return false, so a NaN qty would slip past `<= 0.0` and
+        // poison `orig_qty`, `leaves_qty`, every downstream
+        // avg_fill_price recalc, and the pending OrderManager state.
+        // Apply the same isfinite-first ordering used in
+        // PositionTracker::on_fill / RiskChecker::check_order so the
+        // three layers reject the same boundary inputs.
+        if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "submit: rejected qty={} (must be finite and > 0) "
+                "for cl_ord_id={} symbol={}", qty, cl_ord_id, symbol);
+            return false;
+        }
+        // Price 0 is legal for market orders (`OrdType=1`), but
+        // negative or non-finite is never legal. Same NaN-slip
+        // hazard as qty.
+        if (!std::isfinite(price) || price < 0.0) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "submit: rejected price={} (must be finite and >= 0; "
+                "use 0 for market orders) for cl_ord_id={} symbol={}",
+                price, cl_ord_id, symbol);
+            return false;
+        }
+        // FIX 4.4 Side: '1'=Buy, '2'=Sell. Other codes (sell-short,
+        // buy-minus, etc.) exist but the order_manager / position
+        // / risk pipeline only routes the two majority cases. An
+        // unrecognized side here would let the order through but
+        // PositionTracker::on_fill would later reject every fill,
+        // leaving leaves_qty stuck. Surface up-front.
+        if (side != '1' && side != '2') [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                "submit: rejected side='{}' (0x{:02x}) for cl_ord_id={} "
+                "symbol={} — must be FIX '1' (Buy) or '2' (Sell)",
+                side, static_cast<uint8_t>(side), cl_ord_id, symbol);
+            return false;
+        }
 
         auto [it, inserted] = orders_.try_emplace(cl_ord_id);
         if (!inserted) {
