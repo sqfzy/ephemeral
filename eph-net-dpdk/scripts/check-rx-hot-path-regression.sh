@@ -74,8 +74,17 @@ if ! xmake build "$BENCH_TARGET" >/dev/null 2>&1; then
 fi
 
 log "running $BENCH_TARGET ..."
+# Allocate every tempfile up front and register a single EXIT trap
+# covering all of them. Allocating-then-trap-then-allocate-then-retrap
+# briefly leaves the second batch unprotected: any unexpected exit
+# between the second mktemp and the second trap (e.g. SIGTERM, ENOMEM
+# from awk) leaks them. Doing it in one shot is both simpler and
+# leak-proof.
 CURRENT=$(mktemp)
-trap 'rm -f "$CURRENT"' EXIT
+BASELINE_TABLE=$(mktemp)
+CURRENT_TABLE=$(mktemp)
+trap 'rm -f "$CURRENT" "$BASELINE_TABLE" "$CURRENT_TABLE"' EXIT
+
 if ! xmake run "$BENCH_TARGET" --benchmark_format=console > "$CURRENT" 2>&1; then
     log "ERROR: $BENCH_TARGET run failed"
     tail -20 "$CURRENT" >&2
@@ -101,10 +110,6 @@ extract_benches() {
         }
     ' "$1"
 }
-
-BASELINE_TABLE=$(mktemp)
-CURRENT_TABLE=$(mktemp)
-trap 'rm -f "$CURRENT" "$BASELINE_TABLE" "$CURRENT_TABLE"' EXIT
 
 extract_benches "$BASELINE"   > "$BASELINE_TABLE"
 extract_benches "$CURRENT"    > "$CURRENT_TABLE"
