@@ -149,9 +149,11 @@ private:
 // ---------------------------------------------------------------------------
 //
 // Mirrors the kernel variants: the DPDK byte pipe is `eph::dpdk::TcpSession<>`
-// and its `send` + `poll_rx` return legacy string-typed errors, so the
-// adapters translate into `core::ErrorInfo` before handing the bytes to
-// `eph::net::detail::perform_ws_handshake`.
+// whose `send` + `poll_rx` return `std::expected<…, core::ErrorInfo>` with
+// transport-layer error codes; the adapters re-classify those into the
+// handshake-vocabulary codes (`Disconnected` / `BufferFull` / `WouldBlock`)
+// that `eph::net::detail::perform_ws_handshake` expects, and pin the
+// `detail` field to the adapter's call-site for diagnostics.
 //
 // Send path:
 //   * TcpSession::send has an MSS cap — we chunk larger payloads on its
