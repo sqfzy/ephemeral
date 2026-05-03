@@ -34,6 +34,7 @@
 /// other DPDK applications coexisting on the same host (their own
 /// runtime directories) are ignored.
 
+#include <algorithm>   // std::sort — used in scan_eph_nicd_daemons below
 #include <expected>
 #include <filesystem>
 #include <fstream>
