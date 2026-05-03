@@ -196,44 +196,50 @@ struct PollerConfig {
 
 ## `PlatformConfig` (`eph::dpdk::PlatformConfig`)
 
-Used by `Platform::create`, `Platform::launch`, and (embedded as
-`CreateOrJoinConfig::nic`) `Platform::create_or_join`. All fields are
-*requested* values and are clamped to the NIC-reported limits at
-bring-up time. The multi-process knobs at the bottom default to
-single-process — `Platform::create` / `launch` reject any
-`max_procs > 1` (the cooperative MP path was removed; use
-`Platform::create_or_join` for multi-process).
+Used by `Platform::create` (the only public bring-up entry for
+application-side tenant secondaries since the 2026-05-02 daemon
+reshape). The lean shape carries `pci` + `queues` + per-process EAL
+knobs (`pins` / `pin_policy` / `lcores` / `extra_eal_args` /
+`program_name`); secondary-attach plumbing (`proc_type`,
+`file_prefix`, `allowed_devs`) is derived internally from
+`/var/run/dpdk/eph_<bdf>/` so applications never set it. All fields
+are *requested* values and are clamped to the NIC-reported limits at
+bring-up time. The previous autojoin-era factory `Platform::launch`
+plus the `CreateOrJoinConfig` multi-process knobs (`max_procs` /
+`queues_per_proc` / `file_prefix`) were removed in the reshape — see
+`CHANGELOG.md` for the migration table.
 
 ```cpp
-enum class ProcType : uint8_t { Primary, Secondary };  // resolved post-EAL by autojoin
+enum class ProcType : uint8_t { Primary, Secondary };
 
 struct PlatformConfig {
-    // ── Identity ─────────────────────────────────────────────────────
-    uint16_t     port_id              = 0;
-    std::string_view file_prefix      = {};          // mirrors EAL --file-prefix; primary-only
+    // ── NIC selection ────────────────────────────────────────────────
+    std::string_view pci{};       // empty = scan /var/run/dpdk/eph_*/
 
-    // ── NIC physical state ───────────────────────────────────────────
-    uint16_t     nb_rx_queues                  = 1;
-    uint16_t     nb_tx_queues                  = 1;
-    uint16_t     nb_rx_desc                    = 256;
-    uint16_t     nb_tx_desc                    = 512;
-    uint32_t     mbuf_pool_size                = 4095;
-    uint16_t     mbuf_cache_size               = 256;
-    bool         enable_promiscuous            = false;
-    bool         enable_rx_checksum_offload    = false;
-    bool         enable_strict_rx_checksum     = false;
-    int          link_timeout_ms               = 2000;
-    uint16_t     per_lcore_pools               = 0;  // 0 = single shared pool
+    // ── Resource ask ─────────────────────────────────────────────────
+    uint16_t        queues = 1;   // bidirectional queue pairs
 
-    // ── Multi-process knobs (read by autojoin primary) ───────────────
-    uint8_t      max_procs                     = 1;  // 1 = single-process
-    uint16_t     queues_per_proc               = 0;  // 0 = auto (nb_rx_queues / max_procs)
-    // Source-port partitioning across MP processes is the caller's
-    // responsibility — eph-net-dpdk does not auto-allocate src_port.
+    // ── Per-process EAL knobs ────────────────────────────────────────
+    std::span<const eph::dpdk::LcorePin> pins{};
+    eph::dpdk::PinPolicy pin_policy = eph::dpdk::PinPolicy::Strict;
+    std::span<const uint16_t>            lcores{};
+    std::span<const std::string_view>    extra_eal_args{};
+    std::string_view                     program_name{"eph"};
 
     friend bool operator==(const PlatformConfig&, const PlatformConfig&) = default;
 };
 ```
+
+`proc_type=Secondary`, `file_prefix=eph_<sanitize_bdf(pci)>`, and
+`allowed_devs={pci}` are derived internally — applications never set
+them. NIC physical state (`nb_rx_queues` / `nb_tx_queues` /
+`nb_rx_desc` / `nb_tx_desc` / `mbuf_pool_size` / `mbuf_cache_size` /
+`enable_promiscuous` / `enable_rx_checksum_offload` /
+`enable_strict_rx_checksum` / `link_timeout_ms` / `per_lcore_pools`)
+moved to the daemon's `NicServiceConfig` (one toml per NIC at
+`/etc/eph/<bdf>.toml`). Multi-process knobs (`max_procs` /
+`queues_per_proc` / `file_prefix`) are gone — the daemon owns the
+`total_queues` cap, every secondary `claim`s a sub-range cooperatively.
 
 ### Public factories
 
