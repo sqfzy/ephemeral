@@ -621,7 +621,22 @@ class Recorder {
         // Integer truncation: loses at most 1 cycle, which on a 3 GHz
         // machine is ≈ 0.33 ns — well within the ±1 ns round-trip budget
         // documented on record_ns().
-        return static_cast<uint64_t>(static_cast<double>(ns) * cycles_per_ns);
+        //
+        // Saturate-on-overflow: a misbehaving caller (or a TSC delta
+        // computed across cores with non-coherent counters before the
+        // delta_ns guard catches it) could feed `ns ≈ UINT64_MAX`. The
+        // multiply produces a double value larger than UINT64_MAX,
+        // which `static_cast<uint64_t>` is UB on per [conv.fpint]/p1.
+        // Saturate to UINT64_MAX so the histogram receives an
+        // out-of-range tally (counted under skipped_overflow_) rather
+        // than a UB-poisoned value. Use the same `< double(UINT64_MAX)`
+        // strict-bound trick as TSC::to_cycles since UINT64_MAX is
+        // unrepresentable in IEEE-754 double.
+        const double cycles_d = static_cast<double>(ns) * cycles_per_ns;
+        if (!(cycles_d < static_cast<double>(UINT64_MAX))) [[unlikely]] {
+            return UINT64_MAX;
+        }
+        return static_cast<uint64_t>(cycles_d);
     }
 
     void print_warnings() const {
