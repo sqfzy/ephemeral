@@ -228,13 +228,16 @@ for _, file in ipairs(os.files("benchmarks/*.cpp")) do
         apply_dpdk_pmd_linkgroups()
 end
 
--- Module fuzzers
-for _, file in ipairs(os.files("fuzzers/*.cpp")) do
-    target(path.basename(file))
-        set_kind("binary")
-        set_group("fuzzers")
-        set_default(false)
-        add_files(file)
-        add_deps("eph-net-dpdk")
-        apply_dpdk_pmd_linkgroups()
-end
+-- Module fuzzers — INTENTIONALLY NOT WIRED INTO XMAKE.
+--
+-- The libFuzzer harnesses under `fuzzers/*.cpp` require Clang ≥ 17 with
+-- `-fsanitize=fuzzer`. The project's default toolchain is GCC 14, which
+-- has no libFuzzer; building these via the normal target loop produces
+-- either a link failure (no `main`, no fuzzer entry) or — for harnesses
+-- that forward-declare DPDK types as a TU shim — a struct-redefinition
+-- error against the real `<rte_mbuf_core.h>` pulled in by eph-net-dpdk's
+-- `add_packages("dpdk")`.
+--
+-- Build instructions live in `fuzzers/README.md` (`clang++
+-- -fsanitize=fuzzer,address,undefined ...`). Do NOT add a glob loop here.
+-- See CLAUDE.md ("Tests" section) for the matching policy note.
