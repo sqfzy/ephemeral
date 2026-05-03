@@ -932,12 +932,27 @@ public:
     /// them skip a no-op rx_burst when the port is already known dead.
     [[nodiscard]] bool is_alive() const noexcept;
 
-    /// @brief S6: TODO marker for future heartbeat wiring.
-    /// Forces `is_alive()` to `false`. Used by the burst-call wrappers
-    /// to flag daemon-disconnect once detected; exposed publicly so
-    /// future detection paths (heartbeat probe, port-validity poll) can
-    /// drive the same flag from outside the Platform internals if
-    /// needed. Idempotent.
+    /// @brief Force `is_alive()` to return false on this Platform.
+    /// Idempotent: only logs and only flips the flag on the first
+    /// `true → false` transition. Memory ordering on the underlying
+    /// atomic is `acq_rel` so any prior writes (e.g. an error string
+    /// stored elsewhere) are visible to a subsequent `is_alive()`
+    /// reader who sees `false`.
+    ///
+    /// Status (S6 / 2026-05-02): the typed `Error::DaemonDisconnected`
+    /// surface and the idempotent retry-safe `Platform::create`
+    /// preamble are both landed; this hook is the public knob future
+    /// detection paths will drive (heartbeat probe, port-validity
+    /// poll, rx/tx burst error-classifier). Today the rx/tx burst
+    /// call sites do NOT yet invoke this hook — applications
+    /// following `docs/dpdk-reconnect-pattern.md` may call it from
+    /// outside (e.g. their own watchdog thread observing
+    /// `rte_eth_link_get` going down) to short-circuit poll loops
+    /// without waiting on the burst-side wire-up.
+    ///
+    /// Trailing underscore reflects the helper's "named-publicly-but-
+    /// for-eph-or-watchdog-tools-only" status — applications usually
+    /// call `is_alive()` (the read side) instead.
     void mark_daemon_disconnected_() noexcept;
 
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
