@@ -25,10 +25,13 @@
 ///   - NIC bound to vfio-pci, ≥ 256 hugepages free
 ///     (see `eph-net-dpdk/scripts/dpdk-setup.sh`)
 ///   - `eph-nicd@<pci>.service` running for the target PCI BDF (the daemon
-///     owns the NIC primary; this example attaches as secondary). Until
-///     the eph-nicd binary lands (S4 of the daemon reshape), operators can
-///     bring up the daemon equivalent in a sibling process via
-///     `Platform::serve_nic(NicServiceConfig{.pci=...})`. EAL forbids
+///     owns the NIC primary; this example attaches as secondary). The
+///     daemon binary lives at `eph-net-dpdk/tools/eph-nicd.cpp` and is
+///     produced by the `eph_nicd` xmake target. Operators without systemd
+///     can bring it up directly:
+///         sudo eph-nicd --config-file=/etc/eph/<pci>.toml
+///     or in a sibling process via `Platform::serve_nic
+///     (NicServiceConfig{.pci=...})` from a custom binary. EAL forbids
 ///     primary+secondary in the same process, so this single-binary demo
 ///     is application-only.
 ///
