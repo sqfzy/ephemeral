@@ -542,6 +542,123 @@ TEST(OrderManager, NegativeLastQtyOnFullFillRejected)
     EXPECT_NEAR(order->leaves_qty, 50.0, kEps);
 }
 
+// Reject ExecReports whose LastQty drives filled_qty past orig_qty.
+// Without the guard, leaves_qty would go negative and PositionTracker
+// would over-attribute the trade. Single-shot over-fill on PartialFill.
+TEST(OrderManager, OverFillOnPartialFillRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDOF1", "AAPL", '1', 100.0, 150.0));
+
+    // last_qty = 150 > orig_qty = 100 — illegal partial fill.
+    auto body = make_exec_report_body('1', '1',
+        "ORDOF1", "EXCHN", "EXECN", "AAPL", '1',
+        "150.00", "150", "150.00", "150", "-50");
+    auto raw = make_fix_msg("FIX.4.4", body);
+    BasicMessageView<256> msg;
+    auto report = make_report(raw, msg);
+
+    EXPECT_FALSE(mgr.on_execution_report(report));
+
+    auto* order = mgr.get("ORDOF1");
+    ASSERT_NE(order, nullptr);
+    // Order state must remain at PendingNew with filled_qty == 0 — the
+    // guard fires before any state mutation, leaving leaves_qty intact.
+    EXPECT_EQ(order->state, OrderState::PendingNew);
+    EXPECT_NEAR(order->filled_qty, 0.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 100.0, kEps);
+}
+
+// Cumulative over-fill: two reports each within bounds, third pushes over.
+TEST(OrderManager, OverFillCumulativeRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDOF2", "MSFT", '1', 100.0, 300.0));
+
+    // First partial fill: 60 / 100. Allowed.
+    auto body1 = make_exec_report_body('1', '1',
+        "ORDOF2", "EXCHN", "EXEC1", "MSFT", '1',
+        "300.00", "60", "300.00", "60", "40");
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    BasicMessageView<256> msg1;
+    EXPECT_TRUE(mgr.on_execution_report(make_report(raw1, msg1)));
+
+    // Second partial fill: trying to add 50 (total 110 > 100). Reject.
+    auto body2 = make_exec_report_body('1', '1',
+        "ORDOF2", "EXCHN", "EXEC2", "MSFT", '1',
+        "300.00", "50", "300.00", "110", "-10");
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+    BasicMessageView<256> msg2;
+    EXPECT_FALSE(mgr.on_execution_report(make_report(raw2, msg2)));
+
+    // Order state should reflect the FIRST fill only — the second was
+    // rejected pre-mutation.
+    auto* order = mgr.get("ORDOF2");
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(order->state, OrderState::PartiallyFilled);
+    EXPECT_NEAR(order->filled_qty, 60.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 40.0, kEps);
+}
+
+// Same guard for ExecType=Fill ('2'): a terminal Fill that overshoots.
+TEST(OrderManager, OverFillOnTerminalFillRejected)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDOF3", "TSLA", '2', 50.0, 250.0));
+
+    // A first partial fill of 30, leaving 20 to fill.
+    auto body1 = make_exec_report_body('1', '1',
+        "ORDOF3", "EXCHN", "EXEC1", "TSLA", '2',
+        "250.00", "30", "250.00", "30", "20");
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    BasicMessageView<256> msg1;
+    EXPECT_TRUE(mgr.on_execution_report(make_report(raw1, msg1)));
+
+    // Bogus terminal Fill claiming last_qty=40 (would total 70 > 50).
+    auto body2 = make_exec_report_body('2', '2',
+        "ORDOF3", "EXCHN", "EXEC2", "TSLA", '2',
+        "250.00", "40", "250.00", "70", "-20");
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+    BasicMessageView<256> msg2;
+    EXPECT_FALSE(mgr.on_execution_report(make_report(raw2, msg2)));
+
+    auto* order = mgr.get("ORDOF3");
+    ASSERT_NE(order, nullptr);
+    // Order should still be in PartiallyFilled with the legit 30/50 from
+    // the first fill — not Filled, not over-filled.
+    EXPECT_EQ(order->state, OrderState::PartiallyFilled);
+    EXPECT_NEAR(order->filled_qty, 30.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 20.0, kEps);
+}
+
+// Boundary: an exact-fit Fill (existing 50 + last_qty 50 == orig_qty 100)
+// must be accepted under the epsilon guard.
+TEST(OrderManager, ExactFitFillAccepted)
+{
+    OrderManager mgr;
+    ASSERT_TRUE(mgr.submit("ORDOF4", "GOOG", '1', 100.0, 2800.0));
+
+    auto body1 = make_exec_report_body('1', '1',
+        "ORDOF4", "EXCHN", "EXEC1", "GOOG", '1',
+        "2800.00", "50", "2800.00", "50", "50");
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    BasicMessageView<256> msg1;
+    EXPECT_TRUE(mgr.on_execution_report(make_report(raw1, msg1)));
+
+    auto body2 = make_exec_report_body('2', '2',
+        "ORDOF4", "EXCHN", "EXEC2", "GOOG", '1',
+        "2800.00", "50", "2800.00", "100", "0");
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+    BasicMessageView<256> msg2;
+    EXPECT_TRUE(mgr.on_execution_report(make_report(raw2, msg2)));
+
+    auto* order = mgr.get("ORDOF4");
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(order->state, OrderState::Filled);
+    EXPECT_NEAR(order->filled_qty, 100.0, kEps);
+    EXPECT_NEAR(order->leaves_qty, 0.0, kEps);
+}
+
 // Negative LastPx must also be rejected — FIX Px is non-negative and a
 // negative price would drive avg_fill_price downward in nonsensical ways.
 TEST(OrderManager, NegativeLastPxRejected)
