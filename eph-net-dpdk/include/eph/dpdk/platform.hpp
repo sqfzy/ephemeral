@@ -3157,9 +3157,35 @@ inline void Platform::join() noexcept {
     sigemptyset(&set);
     sigaddset(&set, SIGTERM);
     sigaddset(&set, SIGINT);
-    pthread_sigmask(SIG_BLOCK, &set, nullptr);
+    // Block SIGTERM/SIGINT so they are delivered via sigwait below (and not
+    // by the default disposition, which terminates the process). On failure
+    // — EINVAL on a malformed set, ENOMEM in extreme corner cases — the
+    // signals would still be delivered the legacy way, but `sigwait` below
+    // would also fail (it requires the signals to be blocked on the calling
+    // thread per POSIX). Surface the failure so a daemon operator sees it
+    // rather than a silent immediate-return that tears down the NIC.
+    if (const int rc = pthread_sigmask(SIG_BLOCK, &set, nullptr); rc != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::join: pthread_sigmask(SIG_BLOCK) failed (rc={}: {}) — "
+            "signals may not be delivered via sigwait; daemon will return "
+            "immediately and tear down the NIC. Check signal-mask state.",
+            rc, std::strerror(rc));
+        return;
+    }
     int sig = 0;
-    sigwait(&set, &sig);
+    // sigwait is a cancellation point; EINTR is impossible on Linux per
+    // its man page (kernel restarts internally), but EINVAL is possible
+    // if `set` is corrupted between `sigaddset` and the call. Defend
+    // against the rare error so a corrupted set doesn't manifest as a
+    // legitimate-looking "signal 0 received" log entry.
+    if (const int rc = sigwait(&set, &sig); rc != 0) {
+        SPDLOG_LOGGER_ERROR(log,
+            "Platform::join: sigwait failed (rc={}: {}) — daemon will "
+            "return for shutdown without a real signal. Investigate the "
+            "blocking state of SIGTERM/SIGINT on this thread.",
+            rc, std::strerror(rc));
+        return;
+    }
     SPDLOG_LOGGER_INFO(log,
         "Platform::join: signal {} received, returning for graceful "
         "shutdown", sig);
