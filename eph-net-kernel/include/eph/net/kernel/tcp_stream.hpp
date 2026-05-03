@@ -36,6 +36,8 @@
 #include <variant>
 #include <vector>
 
+#include <arpa/inet.h>     // ntohs for getsockname() result in snapshot()
+#include <netinet/in.h>    // sockaddr_in for getsockname() in snapshot()
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -1312,11 +1314,36 @@ public:
     ///       requires a syscall and is left to user code if needed.
     [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
         ::eph::net::StreamSnapshot s{};
-        s.endpoint.src_ip   = cfg_.kernel.local_bind.ip.to_be32();
-        s.endpoint.src_port = cfg_.kernel.local_bind.port;
         s.endpoint.dst_ip   = cfg_.remote.ip.to_be32();
         s.endpoint.dst_port = cfg_.remote.port;
+        // src_ip / src_port: prefer `getsockname()` over the configured
+        // `cfg_.kernel.local_bind` because the latter is often
+        // 0.0.0.0:0 (kernel chooses both at connect time based on
+        // routing). DPDK reports the wire-level src that we own; the
+        // kernel snapshot should match that information density when
+        // the fd is open. Fall back to the configured bind if the
+        // syscall fails (closed fd, race during shutdown) — caller
+        // sees the configured value rather than a confusing 0.0.0.0.
         // src_port_rewritten: kernel never reverse-picks; always false.
+        bool src_resolved = false;
+        if (sock_.fd() >= 0) {
+            sockaddr_in addr{};
+            socklen_t   alen = sizeof(addr);
+            if (::getsockname(sock_.fd(),
+                              reinterpret_cast<sockaddr*>(&addr), &alen) == 0
+                && addr.sin_family == AF_INET) {
+                // sin_addr.s_addr / sin_port are network byte order;
+                // StreamSnapshot::Endpoint convention is also be32 for
+                // src_ip and host-order uint16 for ports.
+                s.endpoint.src_ip   = addr.sin_addr.s_addr;
+                s.endpoint.src_port = ntohs(addr.sin_port);
+                src_resolved        = true;
+            }
+        }
+        if (!src_resolved) {
+            s.endpoint.src_ip   = cfg_.kernel.local_bind.ip.to_be32();
+            s.endpoint.src_port = cfg_.kernel.local_bind.port;
+        }
 
         s.tcp.enabled = true;
         // recv_window / mss / icmp_pmtu_shrunk left at default zero —
