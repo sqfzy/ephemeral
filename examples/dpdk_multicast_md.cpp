@@ -314,12 +314,15 @@ int main(int argc, char** argv) {
     receiver.stop();
     const auto total_matched = receiver.total_rx_packets();
     const auto total_unm     = receiver.rx_unmatched_packets();
+    const auto total_ssm     = receiver.rx_ssm_rejected_packets();
     spdlog::info("dpdk_multicast_md: rx={}, bytes={}, "
-                 "total_matched={}, rx_unmatched={} "
+                 "total_matched={}, rx_unmatched={}, rx_ssm_rejected={} "
                  "(non-zero unmatched = wrong filter, MAC collision, or "
-                 "stale group state — see eph::dpdk::MulticastReceiver docs)",
+                 "stale group state; non-zero ssm_rejected = working SSM "
+                 "filter shedding wrong-source traffic — see "
+                 "eph::dpdk::MulticastReceiver docs)",
                  rx_count.load(std::memory_order_relaxed),
                  rx_bytes.load(std::memory_order_relaxed),
-                 total_matched, total_unm);
+                 total_matched, total_unm, total_ssm);
     return 0;
 }
