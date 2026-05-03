@@ -35,11 +35,11 @@ struct ScenarioEntry {
     ScenarioFn       fn;
 };
 
-/// Full registry — five echo scenarios (Phase 1) + two market-data push
-/// scenarios (Phase 3) + the rss_scaling RX-fanout push handler. The
-/// `section` column mirrors config.toml exactly so a future audit
-/// script can cross-check that every `[scenarios.lat_*]` section has a
-/// handler.
+/// Full registry of 9 scenarios: 5 echo (tcp / udp / ws /
+/// ex_order / ex_md_udp) + 4 push (ex_market / ex_market_2p /
+/// rss_scaling / rss_scaling_ws). The `section` column mirrors
+/// config.toml exactly so a future audit script can cross-check
+/// that every `[scenarios.lat_*]` section has a handler.
 inline constexpr std::array<ScenarioEntry, 9> kScenarioTable{{
     {"tcp",            "lat_tcp",            &scenarios::tcp_echo_run},
     {"udp",            "lat_udp",            &scenarios::udp_echo_run},
