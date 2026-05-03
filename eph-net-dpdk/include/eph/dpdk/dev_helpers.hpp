@@ -138,8 +138,13 @@ double_fork_exec_(const std::string& bin_path,
         // First child. Detach from controlling terminal so the
         // grandchild isn't killed if our parent's tty closes.
         if (::setsid() < 0) {
-            // Non-fatal: continue. Grandchild may still get SIGHUP
-            // on tty close; not catastrophic for a dev daemon.
+            // setsid() fails with EPERM when the caller is already
+            // a session leader (rare here — fork() guarantees we
+            // aren't) or with other errors that imply a hostile
+            // process environment. We bail rather than spawn a
+            // grandchild that could be killed by SIGHUP on tty
+            // close. The parent's post-spawn probe times out and
+            // the caller sees the documented `Error::Timeout`.
             ::_exit(127);
         }
         pid_t pid2 = ::fork();
