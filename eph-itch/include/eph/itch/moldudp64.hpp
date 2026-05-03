@@ -52,7 +52,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& moldudp64_logger() {
     static auto l = [] {
         auto lg = spdlog::get("itch.moldudp64");
-        if (!lg) lg = spdlog::stdout_color_mt("itch.moldudp64");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("itch.moldudp64"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("itch.moldudp64"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

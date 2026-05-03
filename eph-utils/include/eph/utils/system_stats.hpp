@@ -30,7 +30,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& system_stats_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.system_stats");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.system_stats");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.system_stats"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.system_stats"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

@@ -125,7 +125,11 @@ namespace detail {
 inline spdlog::logger* fix_ordmgr_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.ordmgr");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.ordmgr");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("fix.ordmgr"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.ordmgr"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l.get();

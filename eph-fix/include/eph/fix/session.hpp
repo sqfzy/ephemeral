@@ -259,7 +259,14 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.session");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.session");
+        if (!lg) {
+            // try/catch around the create: a concurrent first-call from
+            // another TU can win the registry slot and make this throw
+            // "logger already exists". Recover via spdlog::get.
+            try { lg = spdlog::stdout_color_mt("fix.session"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.session"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

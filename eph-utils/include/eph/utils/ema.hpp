@@ -23,7 +23,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& ema_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.ema");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.ema");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.ema"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.ema"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

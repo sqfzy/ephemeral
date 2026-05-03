@@ -44,7 +44,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& fix_parser_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.parser");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.parser");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("fix.parser"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.parser"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

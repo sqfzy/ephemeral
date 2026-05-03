@@ -29,7 +29,11 @@ namespace detail {
 inline spdlog::logger* fix_orders_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.orders");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.orders");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("fix.orders"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.orders"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l.get();

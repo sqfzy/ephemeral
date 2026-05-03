@@ -27,7 +27,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& itch_parser_logger() {
     static auto l = [] {
         auto lg = spdlog::get("itch.parser");
-        if (!lg) lg = spdlog::stdout_color_mt("itch.parser");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("itch.parser"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("itch.parser"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

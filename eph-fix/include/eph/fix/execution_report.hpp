@@ -113,7 +113,11 @@ namespace detail {
 inline spdlog::logger* fix_execrpt_logger() noexcept {
     static auto l = [] {
         auto lg = spdlog::get("fix.execrpt");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.execrpt");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("fix.execrpt"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.execrpt"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l.get();

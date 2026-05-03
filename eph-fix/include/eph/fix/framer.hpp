@@ -25,7 +25,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& fix_framer_logger() {
     static auto l = [] {
         auto lg = spdlog::get("fix.framer");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.framer");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("fix.framer"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.framer"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;
