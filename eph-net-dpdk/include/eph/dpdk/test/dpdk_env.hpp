@@ -25,7 +25,9 @@
 /// invoking `create()`. In the benchmark / integration test path this is
 /// orchestrated by the `lat` wrapper. Tests that cannot guarantee a
 /// daemon should `GTEST_SKIP()` cleanly when `Platform::create` returns
-/// `NoDaemonRunning`.
+/// `unexpected` — its error string carries the underlying cause
+/// (typically a `rte_eal_init` failure with `Permission denied` /
+/// `Cannot find primary process` when the daemon is absent).
 
 #ifdef EPH_USE_DPDK
 
