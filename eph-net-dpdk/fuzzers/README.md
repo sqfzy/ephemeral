@@ -10,7 +10,7 @@ Currently shipped:
 |-----------------------|---------------------------------------------------------------|----------------------------------------|
 | `fuzz_dns_reply.cpp`  | `eph::dpdk::dns::detail::parse_dns_response` + `skip_dns_name` | `corpus/fuzz_dns_reply/` (8 inputs)   |
 | `fuzz_arp_reply.cpp`  | `eph::dpdk::arp::parse_arp_reply`                              | `corpus/fuzz_arp_reply/` (10 inputs)  |
-| `fuzz_icmp_reply.cpp` | `eph::dpdk::net::parse_icmp` + `parse_ip_header` + `is_ip_fragment` | `corpus/fuzz_icmp_reply/` (10 inputs) |
+| `fuzz_icmp_reply.cpp` | `eph::dpdk::net::parse_icmp` + `parse_ip_header` + `is_ip_fragment` | `corpus/fuzz_icmp_reply/` (15 inputs) |
 | `fuzz_udp_packet.cpp` | `eph::dpdk::net::parse_udp_packet` + layered `parse_udp_from_ip` / `parse_tcp_from_ip` | `corpus/fuzz_udp_packet/` (11 inputs) |
 
 ## Requirements
