@@ -189,6 +189,28 @@ public:
             }
         }
 
+        // Pre-reserve capacity BEFORE mutating epoll state so the
+        // `entries_.push_back` below is guaranteed non-throwing (no
+        // re-allocation needed). The function is `noexcept`, so if
+        // `entries_.push_back` ever raised `std::bad_alloc` after we
+        // had already issued `epoll_ctl(ADD)`, the unhandled exception
+        // would `std::terminate` the process AND leave the kernel
+        // epoll set with a stale registration pointing at `obj`. By
+        // reserving first and catching the only allocation point, we
+        // surface OOM as a clean `Error::OutOfMemory` and leave both
+        // `entries_` and the epoll fd untouched.
+        try {
+            entries_.reserve(entries_.size() + 1);
+        } catch (...) {
+            SPDLOG_LOGGER_ERROR(log,
+                "KernelPoller::add: entries_.reserve({}) threw — OOM, "
+                "epoll_ctl(ADD) NOT issued, no partial state",
+                entries_.size() + 1);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::OutOfMemory,
+                "KernelPoller::add: entries_ vector reserve failed (OOM)"});
+        }
+
         struct epoll_event ev{};
         ev.events   = EPOLLIN;  // RX-ready interest. Stream handles POLLOUT
                                 // via its own send() poll fallback.
@@ -213,6 +235,7 @@ public:
         entry.detach_fn = +[](void* p) noexcept {
             static_cast<P*>(p)->notify_detached_();
         };
+        // Guaranteed non-throwing: capacity was pre-reserved above.
         entries_.push_back(entry);
 
         obj->notify_attached_(this);
