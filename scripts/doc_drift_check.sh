@@ -22,6 +22,8 @@
 #
 # Excludes:
 #   .git/, build*/, .artifacts/ (historical), .planning/, .claude/,
+#   .discuss/ (historical conversations), .xmake/, .temp/ (frozen
+#   baseline / scratch trees), .dpdk_state/ (runtime state),
 #   any *CHANGELOG*.md (legitimately mentions removed symbols)
 #
 # Exit codes:
@@ -74,6 +76,15 @@ EXCLUDE_DIRS=(
     -not -path '*/.claude/*'
     -not -path '*/.discuss/*'
     -not -path '*/.xmake/*'
+    # `.temp/` holds frozen pre-v3.3 baselines and scratch trees that
+    # legitimately reference symbols removed from the current codebase
+    # (TransportConfig::*, bench::BenchRunner, eph::dpdk::Reactor, …).
+    # Without this exclude every drift run hits ~24 false-positive
+    # WARN lines that mask real drift in the live tree.
+    -not -path '*/.temp/*'
+    # `.dpdk_state/` is runtime daemon state (sockets, pid files); never
+    # contains markdown but added for symmetry with the other dot-dirs.
+    -not -path '*/.dpdk_state/*'
 )
 
 # ANSI helpers — only when stdout is a tty.
@@ -160,11 +171,16 @@ check_test_counts() {
 check_symbol_refs() {
     printf '%b== Drift class B1: doc symbol references vs codebase ==%b\n' "$G" "$D"
 
-    # Files to scan: all .md outside excluded dirs, minus CHANGELOG variants.
+    # Files to scan: all .md outside excluded dirs, minus CHANGELOG variants
+    # and the script's OWN documentation (which legitimately reproduces
+    # example WARN lines naming non-existent template-placeholder symbols
+    # like `msg::MyType` and `detail::xxx_logger` to illustrate the
+    # heuristic — these would otherwise self-flag every run).
     local md_files
     md_files="$(find "$REPO_ROOT" -name '*.md' -type f \
         "${EXCLUDE_DIRS[@]}" \
         -not -iname '*CHANGELOG*' \
+        -not -path '*/docs/doc_drift_check.md' \
         2>/dev/null | sort)"
 
     [[ -z "$md_files" ]] && {
