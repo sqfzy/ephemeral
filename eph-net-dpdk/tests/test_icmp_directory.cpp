@@ -253,6 +253,50 @@ TEST(IcmpDirectory, Unregister_BumpsGeneration_LookupMisses) {
               1u);
 }
 
+TEST(IcmpDirectory, Unregister_OnFreeSlot_IsIdempotentNoGenBump) {
+    // Regression: a caller (test path / future introspection tool /
+    // RAII guard double-release after move) calling unregister on a
+    // slot that is already free MUST NOT bump generation or clobber
+    // fields. The naive (pre-2026-05-03) implementation bumped gen
+    // unconditionally, so a stale double-unregister would silently
+    // invalidate a future re-registration into the same slot — the
+    // legitimate owner's in-flight IPC dispatches would then drop as
+    // "stale gen" with no diagnostic.
+    //
+    // Pin shape: register → unregister (gen: 0 → 1) → unregister
+    // again on the same now-free slot → assert gen still 1.
+    auto h = IcmpDirectoryHandle::create_primary("idtest_unreg_idem");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    auto t = make_tuple(50301);
+    auto idx = h->register_target(t, kProtoTcp, 0);
+    ASSERT_TRUE(idx.has_value());
+
+    // First unregister: gen 0 → 1.
+    h->unregister(*idx);
+    const uint32_t gen_after_first =
+        h->header()->entries[*idx].generation.load(std::memory_order_acquire);
+    EXPECT_EQ(gen_after_first, 1u);
+
+    // Repeat unregister on the now-free slot — must be no-op (free-
+    // slot guard returns early before the ++gen).
+    h->unregister(*idx);
+    EXPECT_EQ(h->header()->entries[*idx].generation.load(
+                  std::memory_order_acquire),
+              gen_after_first)
+        << "unregister on already-free slot bumped generation; the "
+           "next re-registration would observe a non-zero baseline gen "
+           "and any older IPC dispatch carrying gen==1 would be dropped";
+
+    // Idempotent re-call x3 to make the no-op shape unambiguous.
+    h->unregister(*idx);
+    h->unregister(*idx);
+    h->unregister(*idx);
+    EXPECT_EQ(h->header()->entries[*idx].generation.load(
+                  std::memory_order_acquire),
+              gen_after_first);
+}
+
 TEST(IcmpDirectory, IsSlotAlive_GenMatchAndMismatch) {
     auto h = IcmpDirectoryHandle::create_primary("idtest_alive");
     ASSERT_TRUE(h.has_value()) << h.error();

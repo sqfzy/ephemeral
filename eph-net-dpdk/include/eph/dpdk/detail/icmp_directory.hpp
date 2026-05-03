@@ -581,9 +581,29 @@ public:
     /// @brief Release a slot. Bumps generation so any in-flight IPC
     /// msg referencing this slot's old gen will be dropped at owner-
     /// side dispatch.
+    ///
+    /// Idempotent: silently no-op on out-of-range `slot_idx` and on
+    /// a slot that is already free (`claimed==0`). The free-slot
+    /// guard matters because:
+    ///
+    ///   * `IcmpDirectorySlotGuard::release_()` already gates on its
+    ///     own `engaged_` flag, but a misbehaving caller invoking
+    ///     `unregister(slot_idx)` directly (test paths, future
+    ///     introspection tools) on a stale index would otherwise
+    ///     corrupt a valid neighbouring registration that has since
+    ///     reused that slot, AND silently bump its generation so the
+    ///     legitimate owner's in-flight IPC dispatches start getting
+    ///     dropped as "stale gen". Both failures present as silent
+    ///     ICMP misses with no diagnostic — bad.
+    ///   * Idempotent unregister also lets retry / cleanup paths
+    ///     call `unregister` defensively without bookkeeping.
     void unregister(size_t slot_idx) noexcept {
         if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return;
         auto& e = hdr_->entries[slot_idx];
+        // Free-slot guard — see @note above. Acquire-load on `claimed`
+        // synchronises-with the producing CAS in register_target so we
+        // observe a consistent view of the slot's `claimed` bit.
+        if (e.claimed.load(std::memory_order_acquire) == 0) return;
         // ++gen first (acquire-release with claimed clear so dispatch
         // path observing claimed=1 + new gen is consistent).
         e.generation.fetch_add(1, std::memory_order_acq_rel);
