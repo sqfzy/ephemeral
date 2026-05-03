@@ -12,6 +12,7 @@
 /// Responsibility: handshake + session key extraction only.
 /// Data-plane I/O uses TlsRecordCrypto (EVP_AEAD) — no SSL_write/SSL_read.
 
+#include <atomic>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -293,16 +294,46 @@ class TlsSession {
     }
 
     /// Create the custom BIO method (singleton per TcpImpl instantiation).
-    static const BIO_METHOD* bio_method() {
-        static BIO_METHOD* method = [] {
-            auto* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
-                                   "net_tcp_bio");
-            BIO_meth_set_write(m, bio_write_cb);
-            BIO_meth_set_read(m, bio_read_cb);
-            BIO_meth_set_ctrl(m, bio_ctrl_cb);
-            return m;
-        }();
-        return method;
+    ///
+    /// Returns nullptr on allocation failure; create() checks BIO_new()'s
+    /// return value (which propagates nullptr if the method is null), so
+    /// the caller path is already covered. We must NOT call
+    /// BIO_meth_set_write/read/ctrl on a null `m` — those macros dereference
+    /// the BIO_METHOD pointer unconditionally and segfault.
+    ///
+    /// We additionally guard the static initializer so a one-shot OOM at
+    /// first call does NOT permanently poison the singleton with nullptr:
+    /// each call retries the allocation until it succeeds (or stays null).
+    /// In practice BIO_meth_new is a tiny aws-lc allocation that only fails
+    /// under extreme memory pressure, so the retry is a belt-and-braces
+    /// guarantee — the realistic recovery is the application reconnects
+    /// after pressure subsides, and TLS now works on the next try instead
+    /// of being permanently broken for the process lifetime.
+    static const BIO_METHOD* bio_method() noexcept {
+        static std::atomic<BIO_METHOD*> method{nullptr};
+        BIO_METHOD* m = method.load(std::memory_order_acquire);
+        if (m) [[likely]] return m;
+        m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
+                         "net_tcp_bio");
+        if (!m) {
+            SPDLOG_LOGGER_ERROR(detail::tls_logger(),
+                "TlsSession::bio_method: BIO_meth_new returned nullptr — "
+                "TLS unavailable until aws-lc allocation succeeds");
+            return nullptr;
+        }
+        BIO_meth_set_write(m, bio_write_cb);
+        BIO_meth_set_read(m, bio_read_cb);
+        BIO_meth_set_ctrl(m, bio_ctrl_cb);
+        // Race: if two threads both alloc, one wins the CAS and the loser
+        // leaks its method. BIO_METHOD has no public free fn (BIO_meth_free
+        // exists but isn't part of every aws-lc release we target); the
+        // leak is one struct per losing thread, bounded by core count.
+        BIO_METHOD* expected = nullptr;
+        if (!method.compare_exchange_strong(expected, m,
+                                            std::memory_order_acq_rel)) {
+            return expected;
+        }
+        return m;
     }
 
 public:
