@@ -22,6 +22,8 @@
 
 #include <gtest/gtest.h>
 
+#include <openssl/err.h>
+
 #include "eph/net/detail/tls_inplace.hpp"
 
 namespace {
@@ -122,6 +124,43 @@ TEST(TlsInPlaceDecryptorSeqGuard, SeqJustBelowKMaxSeqDoesNotBlockAtGuard) {
     const bool ok = dec.open_in_place(
         rec.buf, MinimalRecord::record_len, &plaintext_len);
     EXPECT_FALSE(ok);  // expected: AEAD reject, not guard reject
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression for batch-10 commit 1d723d2b (drain OpenSSL error queue on
+// in-place AEAD failure).
+//
+// Pre-fix the in-place decryptor's AEAD-failure branch did not drain
+// `ERR_get_error`, so a "bad record mac" entry would persist in the
+// per-thread queue and contaminate any subsequent caller's diagnostic
+// snapshot. Verify that after a known AEAD failure the queue is empty,
+// matching the legacy (non-in-place) `TlsDecryptor::decrypt`'s behavior.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(TlsInPlaceDecryptorErrorQueue, DrainedAfterAeadFailure) {
+    // Pre-test cleanup: another test in the same binary may have left
+    // entries in the queue. Start clean so the post-test assertion is
+    // attributable to *this* call.
+    while (ERR_get_error() != 0) { /* drain */ }
+    ASSERT_EQ(ERR_get_error(), 0u)
+        << "queue not clean at test entry — fixture / linker issue";
+
+    // seq just below the guard threshold so we DEFINITELY reach
+    // EVP_AEAD_CTX_open (and not the seq cap fail-fast path).
+    auto dec = make_decryptor_at_seq(kMaxSeq - 1);
+
+    MinimalRecord rec;
+    std::size_t plaintext_len = 0;
+    const bool ok = dec.open_in_place(
+        rec.buf, MinimalRecord::record_len, &plaintext_len);
+    EXPECT_FALSE(ok);
+
+    // The fix's contract: regardless of whether aws-lc actually pushed
+    // anything to the queue on this AEAD failure, the queue must be
+    // observably empty after open_in_place returns. A non-zero result
+    // here means the post-failure drain regressed.
+    EXPECT_EQ(ERR_get_error(), 0u)
+        << "OpenSSL error queue not drained after AEAD failure — "
+           "regression of batch-10 commit 1d723d2b";
 }
 
 }  // namespace
