@@ -641,15 +641,20 @@ public:
     void stop() {
         if (!running_.exchange(false, std::memory_order_acq_rel)) return;
         if (thread_.joinable()) thread_.join();
-        // Log both matched and unmatched counts so operators can compute
-        // the hit-rate (matched / (matched + unmatched)) from the stop
-        // event without scraping a separate metric. A high unmatched ratio
-        // is the single most useful diagnostic for multicast misconfig.
-        const uint64_t rx     = total_rx_packets_.load(std::memory_order_relaxed);
-        const uint64_t unm    = rx_unmatched_.load(std::memory_order_relaxed);
+        // Log matched / unmatched / SSM-rejected counts so operators can
+        // compute the hit-rate (matched / total) from the stop event
+        // without scraping separate metrics. A high `rx_unmatched` ratio
+        // is the single most useful diagnostic for multicast NIC-filter
+        // misconfig; `rx_ssm_rejected` distinguishes a working NIC filter
+        // shedding wrong-source traffic (legitimate SSM behaviour) from
+        // a broken NIC filter delivering everything (where rx_unmatched
+        // would dominate).
+        const uint64_t rx  = total_rx_packets_.load(std::memory_order_relaxed);
+        const uint64_t unm = rx_unmatched_.load(std::memory_order_relaxed);
+        const uint64_t ssm = rx_ssm_rejected_.load(std::memory_order_relaxed);
         SPDLOG_LOGGER_INFO(detail::multicast_logger(),
-            "MulticastReceiver stopped (total_rx={}, rx_unmatched={})",
-            rx, unm);
+            "MulticastReceiver stopped (total_rx={}, rx_unmatched={}, rx_ssm_rejected={})",
+            rx, unm, ssm);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -689,7 +694,7 @@ public:
         return total_rx_packets_.load(std::memory_order_relaxed);
     }
 
-    /// @brief Packets received that matched no joined group.
+    /// @brief Packets received that matched no joined `(group_ip, group_port)`.
     ///
     /// MAC-hash collisions (RFC 1112: 23-bit truncation maps multiple IPs to
     /// the same MAC) cause the NIC to deliver unwanted multicast packets. A
@@ -698,8 +703,36 @@ public:
     /// disabled/promiscuous, or (b) accidental subscription to a too-broad
     /// MAC group. Operators want to graph this alongside `total_rx_packets`
     /// to compute a hit-rate. Relaxed ordering matches `total_rx_packets`.
+    ///
+    /// **Disjoint from `rx_ssm_rejected_packets`**: this counter only
+    /// advances when the destination `(group_ip, group_port)` matched no
+    /// active group. Packets that matched a group's IP+port but were
+    /// dropped by its source-specific multicast filter increment
+    /// `rx_ssm_rejected_packets` instead — the two together-with-matched
+    /// account for every packet `process_packet` saw past the L2/L3 parse.
     [[nodiscard]] uint64_t rx_unmatched_packets() const noexcept {
         return rx_unmatched_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Packets dropped by a per-group source-specific multicast (SSM)
+    ///        filter (`MulticastGroup::source_ip`).
+    ///
+    /// Increments when the destination `(group_ip, group_port)` matched a
+    /// joined group but the packet's source IP did not match the group's
+    /// SSM filter. Disjoint from `rx_unmatched_packets` (which tracks
+    /// packets that matched no group at all).
+    ///
+    /// A non-zero rate here is the **expected** signature of a working SSM
+    /// filter: any peer on the multicast group whose `source_ip` is not
+    /// the configured one shows up as an SSM-reject. A zero rate when SSM
+    /// is configured AND the joined group has additional senders on the
+    /// network suggests either (a) the NIC filter is too narrow (we never
+    /// see those senders), or (b) the SSM filter isn't being exercised.
+    /// Operators graph this alongside `rx_unmatched_packets` to attribute
+    /// "deliveries the receiver chose to discard" between "wrong group"
+    /// (NIC filter behaviour) and "wrong source" (SSM filter behaviour).
+    [[nodiscard]] uint64_t rx_ssm_rejected_packets() const noexcept {
+        return rx_ssm_rejected_.load(std::memory_order_relaxed);
     }
 
     /// @brief Access the receiver's configuration.
@@ -872,12 +905,24 @@ private:
 
             // Source-specific multicast filter (SSM): if source_ip is set,
             // only accept packets from that specific source.
+            //
+            // Attribution: SSM-rejected packets advance `rx_ssm_rejected_`,
+            // NOT `rx_unmatched_`. Pre-fix the loop did `continue` here,
+            // and since each `(group_ip, group_port)` is unique among
+            // active groups, no later iteration could match — so the
+            // packet always fell through to the post-loop unmatched
+            // counter, falsely inflating the "MAC-hash collision /
+            // promiscuous NIC" signal. Operators graphing `rx_unmatched`
+            // to detect NIC misconfig saw spurious alerts whenever any
+            // joined group had an SSM filter active. Returning here keeps
+            // the unmatched counter reserved for its documented purpose.
             if (entry.group.source_ip != 0 && entry.group.source_ip != src_ip) {
                 SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
                     "SSM filter: dropping packet from {} (expected {})",
                     net::format_ipv4(src_ip).data(),
                     net::format_ipv4(entry.group.source_ip).data());
-                continue;
+                rx_ssm_rejected_.fetch_add(1, std::memory_order_relaxed);
+                return;
             }
 
             // Match found — deliver payload
@@ -914,6 +959,11 @@ private:
     // Packets the NIC delivered but no joined group claimed (MAC-hash
     // collision, NIC promiscuous, or stale filter). See rx_unmatched_packets().
     std::atomic<uint64_t> rx_unmatched_     = 0;
+    // Packets the NIC delivered to a matching (group_ip, group_port) but
+    // whose source IP did not match the group's SSM filter
+    // (`MulticastGroup::source_ip`). Disjoint from rx_unmatched_ — see
+    // rx_ssm_rejected_packets() for the operational rationale.
+    std::atomic<uint64_t> rx_ssm_rejected_  = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
