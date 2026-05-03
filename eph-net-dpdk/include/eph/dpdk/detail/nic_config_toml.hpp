@@ -21,8 +21,9 @@
 /// pci) does NOT use a toml flag — it works by scanning live daemons at
 /// runtime: the unique running `eph-nicd` is automatically the default.
 /// Multi-NIC hosts must specify `.pci` explicitly. See
-/// `detail/default_nic_scan.hpp`.
-///                                     #   (S6 wires this in; S4 only parses it)
+/// `detail/default_nic_scan.hpp`. Any pre-2026-05-02 toml carrying a
+/// `default = true` field is REJECTED at parse time with a migration
+/// message; do not re-introduce it.
 /// @endcode
 ///
 /// Diagnostics: every error path returns `std::unexpected("nic_config_toml: "

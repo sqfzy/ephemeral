@@ -492,9 +492,12 @@ struct PlatformConfig {
     // ── NIC selection ────────────────────────────────────────────────
     /// PCI BDF of the NIC to attach (e.g. `"0000:01:00.1"`). Drives
     /// both the EAL `-a` allowlist AND the auto-derived `file_prefix`.
-    /// Empty = resolved at create time from the daemon's
-    /// `default = true` toml (S6 wires this in; today the empty path
-    /// still requires daemon registry to exist for the derived prefix).
+    /// Empty = resolved at create time by scanning the DPDK runtime
+    /// directory (`/var/run/dpdk/eph_*/eph-pci.txt`) for the unique
+    /// running `eph-nicd` daemon — single-NIC hosts get a zero-config
+    /// `Platform::create({})` call site. Multi-NIC hosts get a typed
+    /// error listing all candidate BDFs and must specify `.pci`
+    /// explicitly. See `detail/default_nic_scan.hpp` for the resolver.
     std::string_view pci{};
 
     // ── Resource ask ────────────────────────────────────────────────
@@ -504,10 +507,18 @@ struct PlatformConfig {
     /// asymmetric RX-heavy / TX-light layouts).
     ///
     /// Pool exhausted ⇒ `Platform::create` returns
-    /// `ErrorInfo{QueuePoolExhausted}`. Today (foundation commit) the
-    /// queue allocation is a static placeholder: the secondary just
-    /// claims queues `0..(queues-1)`. The proper QueueAllocator + RETA
-    /// dynamics arrive in S5.
+    /// `ErrorInfo{QueuePoolExhausted}` (the daemon's `QueueAllocator`
+    /// rejects the claim; the application sees the typed error and
+    /// can either retry with a smaller `queues` ask or surface the
+    /// capacity exhaustion to the operator).
+    ///
+    /// Allocation: secondaries send an `eph_queue_claim` IPC request
+    /// to the daemon, which carves a contiguous `[lo, hi)` half-open
+    /// range out of its hugepage-backed bitmap (S5 QueueAllocator,
+    /// landed 2026-04-30). Release on Platform destruction is fire-
+    /// and-forget via `eph_queue_release`. ABA-safe: each claim
+    /// increments a per-slot generation; stale releases from prior
+    /// incarnations are silently ignored.
     std::uint16_t queues = 1;
 
     // ── Per-process EAL knobs (the old `EalConfig` minus the bits
@@ -2677,9 +2688,12 @@ Platform::secondary_bringup_(detail::BringupConfig config,
 //   * `Platform::create(PlatformConfig)` — application secondary-attach.
 //     Derives file_prefix from cfg.pci, runs eal_init with
 //     proc_type=Secondary + allowed_devs={pci}, then secondary_bringup_.
-//     Today the queue claim is a static placeholder — the secondary
-//     just claims queues `0..(cfg.queues-1)`. S5 replaces this with the
-//     QueueAllocator + RETA-tracking IPC protocol.
+//     The queue claim is daemon-mediated via `eph_queue_claim` IPC
+//     (S5 QueueAllocator landed 2026-04-30): the secondary sends the
+//     ask, the daemon's primary serves a contiguous `[lo, hi)` range
+//     out of its hugepage bitmap, the secondary records that range in
+//     its Impl, and the destructor fires `eph_queue_release` to free
+//     the range back to the pool.
 //
 //   * `Platform::serve_nic(NicServiceConfig)` — daemon primary entry.
 //     eal_init with proc_type=Primary, then primary_bringup_ with an
