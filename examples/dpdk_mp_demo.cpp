@@ -6,8 +6,8 @@
 /// see `.claude/plans/calm-roaming-sedgewick.md`. The new shape:
 ///
 ///   1. `eph-nicd@<pci>.service` runs as the NIC primary (operator
-///      starts it once via systemd; or ad-hoc via `sudo ./eph-nicd
-///      --pci <bdf>` until S4 wires the systemd unit). It owns the
+///      starts it via systemd, or ad-hoc via
+///      `sudo /usr/local/bin/eph-nicd --pci <bdf>`). It owns the
 ///      port bring-up, mempool, RSS key, and queue pool.
 ///   2. Every application process — including multiple instances of
 ///      THIS BINARY — calls `Platform::create(PlatformConfig{...})`
@@ -17,10 +17,12 @@
 ///      daemon is the single arbiter.
 ///
 /// What the library still does for you (cross-process control plane):
-///   * RX-queue partitioning: the daemon's QueueAllocator (S5) hands
-///     each secondary a disjoint sub-range; today (foundation) the
-///     placeholder claims `0..(cfg.queues - 1)` blindly — fine for one
-///     secondary, racy under multiple. Final S5 closes the gap.
+///   * RX-queue partitioning: the daemon's QueueAllocator (S5, live —
+///     hugepage-backed greedy first-fit, see
+///     `eph/dpdk/detail/queue_allocator.hpp`) hands each secondary a
+///     disjoint sub-range; pool-exhausted asks fail with
+///     "QueuePoolExhausted" rather than racing other tenants for
+///     queue 0.
 ///   * Source-port partitioning: secondaries draw from disjoint
 ///     segments of the ephemeral range based on their owned queue ids
 ///     so two apps do not collide on `src_port`.
@@ -75,9 +77,9 @@
 ///
 /// Additional flags (all optional; full list at parse_args):
 ///   --queues <n>      bidirectional queue pairs to claim from the
-///                     daemon's pool (default 1; foundation
-///                     placeholder takes queues `0..(n-1)`, S5 wires
-///                     proper allocation).
+///                     daemon's pool (default 1; the daemon's S5
+///                     QueueAllocator hands back a disjoint sub-range
+///                     and pool-exhausted asks fail fast).
 ///   --seconds <n>     demo run duration (default 5).
 
 #include <atomic>
@@ -187,19 +189,17 @@ int main(int argc, char** argv) {
 
     // ── Platform::create — application secondary attach ───────────────
     // Every app peer (this binary, strategy A, MD B, …) takes the same
-    // path: claim N queue pairs from the daemon's pool. The daemon
-    // arbitrates so two peers never share a queue. Foundation
-    // placeholder takes `0..(queues - 1)`; S5 wires the real
-    // QueueAllocator IPC.
+    // path: claim N queue pairs from the daemon's pool. The daemon's
+    // QueueAllocator (S5, live) arbitrates so two peers never share
+    // a queue, and pool-exhausted asks fail fast.
     //
-    // TODO(daemon-reshape): start the daemon first, e.g.
+    // Pre-flight: the daemon must already be running on this NIC, e.g.
     //
-    //   sudo ./eph-nicd --pci <BDF> --total-queues 8
+    //   sudo systemctl start eph-nicd@<bdf>.service     # production
+    //   sudo /usr/local/bin/eph-nicd --pci <bdf>        # ad-hoc
     //
-    // (`eph-nicd` lands in S4; until then, an in-process equivalent
-    // can be hand-spun by a sibling that calls `Platform::serve_nic`
-    // — EAL forbids primary+secondary in one process, so the daemon
-    // MUST be a separate process.)
+    // EAL forbids primary+secondary in one process, so the daemon
+    // MUST be a separate process.
     const std::string& pci_bdf = args.eal.pci.front();
     ed::PlatformConfig pcfg{};
     pcfg.pci          = pci_bdf;
