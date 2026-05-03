@@ -53,8 +53,12 @@ else
     PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/config.toml"
-DPDK_SETUP="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-setup.sh"
-DPDK_TEARDOWN="$PROJECT_DIR/benchmarks/latency/scripts/dpdk-teardown.sh"
+# Canonical NIC bring-up / tear-down lives under eph-net-dpdk/scripts/
+# (referenced by CLAUDE.md, production-config.md, ONBOARDING.md). The
+# older copies under benchmarks/latency/scripts/ are stale shims kept
+# only for backward-compat with anyone who memorised the old path.
+DPDK_SETUP="$PROJECT_DIR/eph-net-dpdk/scripts/dpdk-setup.sh"
+DPDK_TEARDOWN="$PROJECT_DIR/eph-net-dpdk/scripts/dpdk-teardown.sh"
 
 # ── Valid scenarios + their mock implementations ────────────────────
 #
