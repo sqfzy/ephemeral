@@ -607,10 +607,17 @@ public:
             if (ret == 1) {
                 // Handshake completed
                 handshake_done_ = true;
+                // Match cipher_name()'s null-safety: aws-lc post-handshake
+                // always returns a non-null cipher, but `SSL_CIPHER_get_name
+                // (nullptr)` is UB and we already guard against it in the
+                // public getter — keep the log path equally hardened so a
+                // stub / mock TLS impl that returns null cipher cannot crash
+                // the INFO log.
+                const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
                 SPDLOG_LOGGER_INFO(log,
                     "TLS handshake complete: version={}, cipher={}",
                     SSL_get_version(ssl_),
-                    SSL_CIPHER_get_name(SSL_get_current_cipher(ssl_)));
+                    cipher ? SSL_CIPHER_get_name(cipher) : "<unknown>");
 
                 // ─── Drain post-handshake records (NewSessionTicket capture) ───
                 //
