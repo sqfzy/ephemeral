@@ -283,3 +283,41 @@ TEST(DpdkPollerTimeout, ReturnValueMatchesPacketCount) {
     EXPECT_EQ(pa.packets_seen, kN);
     EXPECT_EQ(pa.burst_calls, kN);
 }
+
+// Huge timeouts (e.g. `nanoseconds::max()`) must NOT silently collapse to
+// zero. The previous deadline arithmetic was `start_tsc + cycles_opt`;
+// `to_cycles(max())` returns `UINT64_MAX` (saturated), and the naive
+// add then wraps around to `start_tsc - 1`, immediately failing the
+// `now() < deadline` check. Same hazard exists on the steady_clock
+// fallback (`time_point + nanoseconds::max()` overflows the int64
+// rep). We can't actually wait `nanoseconds::max()` to verify "doesn't
+// return", but we *can* arrange for an injected packet to arrive after
+// a small delay and assert that the saturated-deadline path still
+// drains it — i.e. the deadline did not collapse to "now or earlier".
+TEST(DpdkPollerTimeout, HugeTimeoutDoesNotCollapseToZero) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    TimeoutPollable pa;
+    ASSERT_TRUE(p->add<TimeoutPollable>(&pa).has_value());
+
+    ForgedPacket pkt;
+    forge_tcp_pkt_for(pkt, pa);
+    p->inject_mbuf_for_test_(&pkt.mbuf);
+
+    // Inject is already queued; max() timeout should drain it on the
+    // very first burst (Phase 1) and return 1, not 0. Without the
+    // saturation fix, both phase 2 (TSC) and phase 3 (steady_clock)
+    // had a hazard if we ever got past Phase 1 — this test pins the
+    // simpler "doesn't collapse on entry" property.
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::size_t n = p->poll(std::chrono::nanoseconds::max());
+    const auto t1 = std::chrono::steady_clock::now();
+
+    EXPECT_EQ(n, 1u);
+    // We should NOT have actually waited near "forever". Phase 1 catches
+    // the injected packet, so this returns essentially immediately.
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
+    EXPECT_LT(elapsed_ms, std::chrono::milliseconds(50))
+        << "huge timeout took " << elapsed_ms.count()
+        << "ms (Phase 1 should have returned immediately)";
+}

@@ -532,8 +532,20 @@ public:
             const auto spin_cycles_opt = eph::utils::TSC::to_cycles(spin_budget);
             const auto total_cycles_opt = eph::utils::TSC::to_cycles(timeout);
             if (spin_cycles_opt && total_cycles_opt) {
-                const uint64_t spin_deadline  = start_tsc + *spin_cycles_opt;
-                const uint64_t total_deadline = start_tsc + *total_cycles_opt;
+                // Saturating deadline arithmetic. `to_cycles` returns
+                // `UINT64_MAX` on overflow (e.g. `std::chrono::nanoseconds::
+                // max()` at any plausible TSC frequency); a naive
+                // `start_tsc + UINT64_MAX` then wraps to `start_tsc - 1`,
+                // making `now() < deadline` immediately false and
+                // collapsing a "wait forever" timeout to zero — silent
+                // misbehaviour for callers that pass a huge debugging
+                // timeout. Saturate at `UINT64_MAX` so the deadline stays
+                // genuinely far-future regardless of `start_tsc`.
+                auto sat_add = [](uint64_t a, uint64_t b) noexcept {
+                    return (a > UINT64_MAX - b) ? UINT64_MAX : a + b;
+                };
+                const uint64_t spin_deadline  = sat_add(start_tsc, *spin_cycles_opt);
+                const uint64_t total_deadline = sat_add(start_tsc, *total_cycles_opt);
 
                 // Spin phase — rte_pause() is the cheapest yield available
                 // and keeps the wakeup latency in the tens of nanoseconds
@@ -572,9 +584,21 @@ public:
         // steady_clock fallback — used when TSC was never calibrated
         // (typical in unit tests that skip TSC::init()). Slightly more
         // expensive per iteration but correct.
+        //
+        // Saturating deadline arithmetic. `time_point + nanoseconds::max()`
+        // overflows the underlying int64 rep (UB on signed-int overflow),
+        // and even on impls where it happens to wrap, the resulting
+        // deadline lands in the past — silently collapsing a "wait
+        // forever" timeout to zero. Cap the addends so a huge timeout
+        // pins the deadline at `time_point::max()` instead.
         const auto wall_start = std::chrono::steady_clock::now();
-        const auto spin_deadline  = wall_start + spin_budget;
-        const auto total_deadline = wall_start + timeout;
+        const auto kFar = std::chrono::steady_clock::time_point::max();
+        auto sat_deadline = [&](std::chrono::nanoseconds dur) noexcept {
+            const auto headroom = kFar - wall_start;
+            return (dur > headroom) ? kFar : (wall_start + dur);
+        };
+        const auto spin_deadline  = sat_deadline(spin_budget);
+        const auto total_deadline = sat_deadline(timeout);
 
         while (std::chrono::steady_clock::now() < spin_deadline) {
             rte_pause();
