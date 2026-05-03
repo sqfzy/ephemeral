@@ -492,6 +492,21 @@ TEST(TcpConfigWarnings, SelfConnect) {
     EXPECT_TRUE(found) << "Expected self-connect warning";
 }
 
+TEST(TcpConfigWarnings, ZeroIpsDoNotEmitSelfConnectWarning) {
+    // Both IPs at 0 is an uninitialised config — `validate()` already
+    // surfaces "src_ip must not be zero" as a hard error. The warnings
+    // path used to ALSO emit a misleading "src_ip == dst_ip == 0.0.0.0
+    // -- self-connect is unusual" advisory, doubling the noise on the
+    // exact misconfig that's already explicit. Mirrors the symmetric
+    // guard wire::UdpConfig::warnings carries.
+    eph::dpdk::TcpConfig cfg{};  // default-constructed: all fields zero
+    auto w = cfg.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("self-connect"), std::string::npos)
+            << "Unexpected self-connect warning on uninit config: " << msg;
+    }
+}
+
 TEST(TcpConfigWarnings, LowMss) {
     auto cfg = make_valid_config();
     cfg.src_mac.addr_bytes[0] = 0xDE;

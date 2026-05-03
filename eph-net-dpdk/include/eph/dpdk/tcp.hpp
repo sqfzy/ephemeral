@@ -174,8 +174,14 @@ struct TcpConfig {
             w.emplace_back("dst_ip is in 127.0.0.0/8 (loopback) -- "
                            "DPDK bypasses the kernel, loopback traffic "
                            "will not reach the NIC");
-        // Same src and dst IP likely means self-connect
-        if (tuple.src_ip == tuple.dst_ip)
+        // Same src and dst IP likely means self-connect.
+        //
+        // Skip when both are zero — that's an uninitialised config which
+        // `validate()` already rejects with "src_ip must not be zero",
+        // and the "self-connect" diagnostic is misleading in that case.
+        // Mirrors `wire::UdpConfig::warnings`'s `src_ip != 0 &&` guard
+        // (the two transports share the same misconfig taxonomy).
+        if (tuple.src_ip != 0 && tuple.src_ip == tuple.dst_ip)
             w.emplace_back(std::format(
                 "src_ip == dst_ip ({}) -- self-connect is unusual for DPDK",
                 net::format_ipv4(tuple.src_ip).data()));
