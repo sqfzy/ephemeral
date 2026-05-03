@@ -21,22 +21,18 @@
 ///
 /// Tests access shared state via the static accessors below.
 ///
-/// Migration note (calm-roaming-sedgewick / S3 placeholder):
-///   * The pre-reshape code went through `DpdkBenchEnv::create` →
-///     `Platform::launch` (single-process EAL primary). That helper
-///     still references the deleted `Platform::launch` /
-///     `Platform::create_or_join` API and the deleted
-///     `EalConfig`-as-public-factory-input shape.
-///   * The new model is daemon-led: a separate `eph-nicd` process owns
-///     primary NIC bring-up. This fixture is now a pure secondary —
-///     `Platform::create({ pci, queues=1, ... })` and inline ARP/MAC
-///     resolution. The previous bundle's accessors (`port_id`,
-///     `pool`, `src_mac`, `gw_mac`, `make_tcp_config`,
-///     `make_udp_sender`) are reproduced on the local `E2EBundle`
-///     struct so individual TEST bodies need no migration.
-///   * `cfg.queues = 1` is the only value supported by the S3
-///     placeholder (queues 0..(queues-1) blindly claimed). S5 lifts
-///     that limitation.
+/// Daemon-led model (post-2026-05-02 reshape):
+///   * A separate `eph-nicd` process owns primary NIC bring-up. This
+///     fixture is a pure DPDK secondary — `Platform::create({ pci,
+///     queues=1, ... })` and inline ARP/MAC resolution.
+///   * `E2EBundle`'s accessors (`port_id` / `pool` / `src_mac` /
+///     `gw_mac` / `make_tcp_config` / `make_udp_sender`) keep the
+///     same shape the pre-reshape `DpdkBenchEnv` exposed, so
+///     individual TEST bodies don't see the daemon-attach detail.
+///   * `cfg.queues = 1` is the simplest fixture default; the S5
+///     `QueueAllocator` supports larger asks but every existing
+///     E2E case fits inside one queue and avoids interfering with
+///     a multi-tenant daemon.
 
 #include <atomic>
 #include <chrono>
@@ -77,13 +73,14 @@ namespace eph::dpdk::test_e2e {
 /// addressing context downstream tests need to drive UDP/TCP traffic
 /// against the kernel mock dispatcher.
 ///
-/// Field layout intentionally matches the legacy `DpdkBenchEnv` so the
-/// migrated TEST bodies access `env.port_id` / `env.pool` / `env.src_mac`
-/// / `env.gw_mac` / `env.src_ip` / `env.dst_ip` / `env.gw_ip` /
-/// `env.make_tcp_config(...)` / `env.make_udp_sender(...)` exactly as
-/// before. The construction path under the hood is the only thing that
-/// changed (Platform::launch → Platform::create against an external
-/// daemon).
+/// Field layout matches the bench-side `DpdkBenchEnv` (still in
+/// `benchmarks/latency/core/dpdk_env.hpp`) so the TEST bodies access
+/// `env.port_id` / `env.pool` / `env.src_mac` / `env.gw_mac` /
+/// `env.src_ip` / `env.dst_ip` / `env.gw_ip` / `env.make_tcp_config(...)`
+/// / `env.make_udp_sender(...)` with the same names. Construction goes
+/// through `Platform::create` against an externally-running `eph-nicd`
+/// daemon (the previous one-shot `Platform::launch` factory was
+/// removed in the 2026-05-02 reshape).
 struct E2EBundle {
     ::eph::dpdk::Platform  platform;
     uint32_t               src_ip{};   ///< local IP (host byte order)
