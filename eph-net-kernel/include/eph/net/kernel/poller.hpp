@@ -221,7 +221,14 @@ public:
         return {};
     }
 
-    /// @brief Unregister `obj`. Returns `InvalidConfig` if not registered.
+    /// @brief Unregister `obj`.
+    ///
+    /// Returns `InvalidConfig` if `obj` is nullptr (caller programming
+    /// error). Returns `NotFound` if `obj` was never registered or was
+    /// already removed (recoverable state mismatch — symmetric with the
+    /// DPDK sibling `DpdkPoller::remove`, post the 2026-04-23 enum
+    /// cleanup that split the two cases). Operators benefit from the
+    /// uniform error surface across both backends.
     template <KernelPollable P>
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         auto* log = detail::poller_logger();
@@ -240,7 +247,7 @@ public:
                 "KernelPoller::remove: obj={} not registered (entries={})",
                 static_cast<void*>(obj), entries_.size());
             return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
+                core::Error::NotFound,
                 "KernelPoller::remove: not registered"});
         }
         const int fd = it->fd;

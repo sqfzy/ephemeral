@@ -164,9 +164,14 @@ TEST(KernelPoller, AddRemoveLifecycle) {
     EXPECT_EQ(p->size(), 0u);
     EXPECT_FALSE(ev.is_attached_());
 
-    // Remove of non-registered pollable fails.
+    // Remove of non-registered pollable fails — symmetric with the DPDK
+    // sibling (DpdkPoller::remove): nullptr is `InvalidConfig` (caller
+    // programming error), not-registered is `NotFound` (recoverable
+    // state mismatch). Pinning the distinction here so a future regression
+    // that collapses both back into `InvalidConfig` trips this assert.
     auto rr2 = p->remove(&ev);
     EXPECT_FALSE(rr2.has_value());
+    EXPECT_EQ(rr2.error().code, eph::core::Error::NotFound);
 }
 
 TEST(KernelPoller, PollDrivesReadyEventfd) {
