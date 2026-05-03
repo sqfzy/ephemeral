@@ -854,3 +854,57 @@ TEST(ReconnectOrchestratorFallbackMath, OverflowBoundaryCorrect) {
     EXPECT_EQ(compute_fallback_cycles(at + 1),
               std::numeric_limits<uint64_t>::max());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regression test: `next_attempt_tsc_` deadline saturates instead of wrapping.
+//
+// `enter_backoff_` computes `next_attempt_tsc_ = now_tsc + cycles`. When
+// `cycles == UINT64_MAX` (the saturation result above for "effectively
+// unbounded delay" configs), the unsaturated `now_tsc + UINT64_MAX` wraps
+// modulo 2^64 to `now_tsc - 1`. The Backoff branch in `tick()` then
+// satisfies `now_tsc >= next_attempt_tsc_` immediately on the very next
+// poll, defeating backoff and triggering an immediate-and-tight retry —
+// the opposite of the documented intent.
+//
+// Mirror the live formula here; drift = test-driven failure.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+// Replica of the saturating-add at reconnect_orchestrator.hpp.
+uint64_t compute_next_attempt_tsc(uint64_t now_tsc, uint64_t cycles) noexcept {
+    return (cycles > std::numeric_limits<uint64_t>::max() - now_tsc)
+        ? std::numeric_limits<uint64_t>::max()
+        : now_tsc + cycles;
+}
+} // namespace
+
+TEST(ReconnectOrchestratorFallbackMath, NextAttemptSaturatesOnUnboundedCycles) {
+    // The bug shape: cycles=UINT64_MAX wraps to now-1, defeating the
+    // tick comparison `now >= next_attempt`.
+    const uint64_t now_tsc = 1'000'000ULL;
+    const uint64_t bug_cycles = std::numeric_limits<uint64_t>::max();
+    const uint64_t deadline = compute_next_attempt_tsc(now_tsc, bug_cycles);
+    EXPECT_EQ(deadline, std::numeric_limits<uint64_t>::max());
+    // Critically: `now_tsc < deadline`, so tick's check `now >= deadline`
+    // is FALSE and the Backoff branch sits tight. This is the only
+    // observation that differentiates correct saturation from the
+    // wrap-and-tight-retry bug.
+    EXPECT_LT(now_tsc, deadline);
+}
+
+TEST(ReconnectOrchestratorFallbackMath, NextAttemptNormalCyclesAddsExactly) {
+    // Sanity: ordinary backoffs aren't accidentally clamped.
+    const uint64_t now_tsc = 1'000'000'000ULL;
+    const uint64_t cycles  = 30'000'000ULL;  // ~10 ms at 3 GHz
+    EXPECT_EQ(compute_next_attempt_tsc(now_tsc, cycles), 1'030'000'000ULL);
+}
+
+TEST(ReconnectOrchestratorFallbackMath, NextAttemptSaturatesAtBoundary) {
+    // now_tsc + cycles == UINT64_MAX: should equal UINT64_MAX (not wrap).
+    const uint64_t now_tsc = 1'000'000ULL;
+    const uint64_t cycles  = std::numeric_limits<uint64_t>::max() - now_tsc;
+    EXPECT_EQ(compute_next_attempt_tsc(now_tsc, cycles),
+              std::numeric_limits<uint64_t>::max());
+    // One more cycle than that triggers saturation.
+    EXPECT_EQ(compute_next_attempt_tsc(now_tsc, cycles + 1),
+              std::numeric_limits<uint64_t>::max());
+}

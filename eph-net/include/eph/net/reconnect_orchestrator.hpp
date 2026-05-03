@@ -849,7 +849,17 @@ inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept 
                : (static_cast<uint64_t>(delay_ms) >= kFallbackOverflowMs
                       ? std::numeric_limits<uint64_t>::max()
                       : static_cast<uint64_t>(delay_ms) * kCyclesPerMsAt3GHz));
-    next_attempt_tsc_ = now_tsc + cycles;
+    // Saturating add: when `cycles` is UINT64_MAX (the "effectively
+    // unbounded delay" intent above), `now_tsc + cycles` wraps to
+    // `now_tsc - 1` in modular uint64 arithmetic. The tick check
+    // `now_tsc >= next_attempt_tsc_` then becomes true on the very next
+    // poll, defeating the backoff and triggering an immediate-and-tight
+    // retry loop — exactly opposite to the documented "retry approximately
+    // never" intent. Clamp the deadline to UINT64_MAX so the comparison
+    // stays false until TSC itself wraps (~195 years at 3 GHz).
+    next_attempt_tsc_ = (cycles > std::numeric_limits<uint64_t>::max() - now_tsc)
+        ? std::numeric_limits<uint64_t>::max()
+        : now_tsc + cycles;
     state_ = ReconnectState::Backoff;
     SPDLOG_LOGGER_DEBUG(log,
         "ReconnectOrchestrator: scheduled retry in {} ms (attempt {} of policy)",
