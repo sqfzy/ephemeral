@@ -77,6 +77,19 @@ struct WsConfig {
     ///     servers reject with 400 Bad Request — the failure surface
     ///     becomes a generic WS handshake error instead of a
     ///     pinpoint config-validation message.
+    ///   * `path` contains CR / LF / NUL / SP / HTAB — would be rejected
+    ///     by `build_http_request`'s target-token check after the connect
+    ///     cost was paid; reject up front.
+    ///   * `host` contains CR / LF / NUL — header-injection vector
+    ///     (the value would land in the `Host:` header of the HTTP
+    ///     Upgrade request). `build_http_request` catches it later via
+    ///     `builder_reject_unsafe_value`, but only after TCP+TLS handshake
+    ///     has already paid its full cost; pre-validating here turns a
+    ///     stale `WsHandshakeFailed` (returned a few hundred ms after
+    ///     `create()` was called) into a synchronous `InvalidConfig`.
+    ///   * any `extra_headers` entry has an empty / non-token name OR a
+    ///     value containing CR / LF / NUL — same defense-in-depth as
+    ///     `host`, with the same late-failure-vs-early-failure tradeoff.
     ///
     /// Empty WsConfig (default-constructed) is always valid — it disables
     /// the upgrade. Backends only need to call this when `!empty()`.
@@ -95,6 +108,54 @@ struct WsConfig {
                 ::eph::core::Error::InvalidConfig,
                 "WsConfig: path must begin with '/' (RFC 7230 origin-form "
                 "request-target)"});
+        }
+        // Path goes into the request-target slot of GET <target> HTTP/1.1.
+        // build_http_request rejects CR/LF/NUL/SP/HTAB via
+        // `builder_reject_unsafe_token` — replicate the check here so the
+        // failure surfaces synchronously at config time rather than after
+        // TCP + TLS handshake have already paid their cost. Defense-in-
+        // depth: build_http_request still enforces the same invariant
+        // downstream regardless.
+        if (detail::builder_reject_unsafe_token(path)) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "WsConfig: path contains CR / LF / NUL / SP / HTAB — would "
+                "be rejected by HTTP request builder downstream"});
+        }
+        // Host header value injection: a Host containing CR/LF would
+        // smuggle a second header line into the Upgrade request,
+        // potentially pinning a back-end behind a forwarding proxy or
+        // poisoning shared HTTP caches. build_http_request catches this
+        // via `builder_reject_unsafe_value` once the header vector is
+        // assembled — that's also valid, but only fires AFTER the TCP +
+        // TLS handshake has completed. Validating here turns a
+        // late `WsHandshakeFailed` (where the operator has to check
+        // perform_ws_handshake's sub-error to see "invalid header value")
+        // into a synchronous `InvalidConfig`. Empty `host` is fine — it
+        // falls back to `tls.hostname` / `remote.to_string()` downstream.
+        if (!host.empty() && detail::builder_reject_unsafe_value(host)) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "WsConfig: host contains CR / LF / NUL — would inject "
+                "extra headers into the Upgrade request"});
+        }
+        // Same defense for caller-supplied extras. Mirror the exact
+        // checks `validate_builder_headers` runs (token name + safe
+        // value) so a config that passes here is guaranteed to pass
+        // build_http_request later.
+        for (const auto& h : extra_headers) {
+            if (h.name.empty() || !detail::is_valid_token(h.name)) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::InvalidConfig,
+                    "WsConfig: extra_headers entry has empty or non-token "
+                    "name (RFC 7230 token: ALPHA / DIGIT / a few specials)"});
+            }
+            if (detail::builder_reject_unsafe_value(h.value)) {
+                return std::unexpected(::eph::core::ErrorInfo{
+                    ::eph::core::Error::InvalidConfig,
+                    "WsConfig: extra_headers entry value contains CR / LF "
+                    "/ NUL — header injection vector"});
+            }
         }
         return {};
     }
