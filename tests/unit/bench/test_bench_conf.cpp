@@ -246,6 +246,25 @@ port = "not-a-number"
     EXPECT_EQ(port_r.error().code, ConfigError::WrongType);
 }
 
+// `get_or` returns the default for ANY error (missing OR wrong-type / out-of-
+// range) but emits a stderr WARN on the wrong-type path so a typo'd
+// `port = "8080"` doesn't silently degrade to the default port and surface
+// downstream as an opaque connect failure. We can't easily capture stderr
+// from gtest without plumbing, so this test only pins the return-value
+// behaviour; the WARN is a side effect surfaced to operators reading the
+// bench output.
+TEST(BenchConf, ScenarioGetOrFallsBackOnWrongType) {
+    TmpToml f{std::string{kMinimalValid} + R"(
+[scenarios.lat_tcp]
+port = "not-a-number"
+)"};
+    auto r = load_bench_conf(f.path.string());
+    ASSERT_TRUE(r.has_value()) << format_error(r.error());
+    auto tcp = r->scenario("lat_tcp");
+    ASSERT_NE(tcp, nullptr);
+    EXPECT_EQ(tcp->get_or<uint16_t>("port", uint16_t{1234}), uint16_t{1234});
+}
+
 // Out-of-range integer values silently truncate via `static_cast<T>(int64)`.
 // The caller asks for a uint16_t; if the user typo'd `port = 70000` (or
 // `port = -1`), today's code returns 4464 / 65535 with no diagnostic.

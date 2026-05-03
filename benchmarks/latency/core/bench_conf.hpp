@@ -211,12 +211,28 @@ public:
     }
 
     /// Optional-get with caller-supplied default. Missing key → returns `def`.
-    /// Wrong-type is still an error (we fall back to `def` only for absence).
+    /// Wrong-type / out-of-range → returns `def` AND emits a stderr WARN with
+    /// the dotted key + the underlying error detail so a typo in
+    /// `port = "8080"` (string instead of int) or `port = 70000`
+    /// (uint16_t out of range) doesn't silently degrade to the default and
+    /// fall over later as an opaque connect failure.
+    ///
+    /// (The doc-string previously claimed wrong-type was "still an error",
+    /// but the implementation returned `def` for any error including
+    /// wrong-type. Surfacing the diagnostic as a WARN preserves the
+    /// non-failing API shape while making the misconfiguration observable —
+    /// matches the codebase-wide preference for actionable observability
+    /// over silent fallback.)
     template <typename T>
     [[nodiscard]] T get_or(std::string_view key, T def) const {
         if (!has(key)) return def;
         auto r = get<T>(key);
-        return r ? std::move(*r) : def;
+        if (r) return std::move(*r);
+        std::fprintf(stderr,
+                     "[bench::Scenario::get_or] WARN: %s — falling back to "
+                     "default; fix the TOML to silence (detail='%s')\n",
+                     r.error().key.c_str(), r.error().detail.c_str());
+        return def;
     }
 
 private:
