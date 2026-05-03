@@ -39,6 +39,7 @@
 #include <string>
 
 #include "eph/core/error.hpp"
+#include "eph/net/socket_addr.hpp"
 
 namespace eph::net {
 
@@ -103,6 +104,17 @@ struct ProxyConfig {
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig,
                 "ProxyConfig: host must be non-empty"});
+        }
+        // Surface the IPv4-literal contract at validate-time rather than
+        // letting the caller burn a TCP setup roundtrip just to learn the
+        // host string is a hostname. KernelTcpStream::create still re-parses
+        // — that path stays the source of truth — but a caller that pre-
+        // validates() now gets the same diagnostic without a connect attempt.
+        if (auto r = Ipv4Addr::parse(host); !r) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::InvalidConfig,
+                "ProxyConfig: host must be a dotted-quad IPv4 literal "
+                "(use Ipv4Addr::parse / dns::resolve to convert hostnames)"});
         }
         if (port == 0) {
             return std::unexpected(::eph::core::ErrorInfo{

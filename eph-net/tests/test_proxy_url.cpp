@@ -64,25 +64,25 @@ TEST(ProxyConfig, ValidMinimalConfigAccepted) {
 
 TEST(ProxyConfig, PortBoundaryValuesAccepted) {
     // Smallest legal port is 1 (0 is reserved and we treat it as invalid).
-    ProxyConfig p1{.host = "x", .port = 1};
+    ProxyConfig p1{.host = "10.0.0.1", .port = 1};
     EXPECT_TRUE(p1.validate().has_value());
 
     // HTTP default.
-    ProxyConfig p80{.host = "x", .port = 80};
+    ProxyConfig p80{.host = "10.0.0.1", .port = 80};
     EXPECT_TRUE(p80.validate().has_value());
 
     // HTTPS default.
-    ProxyConfig p443{.host = "x", .port = 443};
+    ProxyConfig p443{.host = "10.0.0.1", .port = 443};
     EXPECT_TRUE(p443.validate().has_value());
 
     // Common corporate proxy ports.
-    ProxyConfig p8080{.host = "x", .port = 8080};
+    ProxyConfig p8080{.host = "10.0.0.1", .port = 8080};
     EXPECT_TRUE(p8080.validate().has_value());
-    ProxyConfig p3128{.host = "x", .port = 3128};
+    ProxyConfig p3128{.host = "10.0.0.1", .port = 3128};
     EXPECT_TRUE(p3128.validate().has_value());
 
     // Upper bound — max uint16_t.
-    ProxyConfig pmax{.host = "x", .port = 65535};
+    ProxyConfig pmax{.host = "10.0.0.1", .port = 65535};
     EXPECT_TRUE(pmax.validate().has_value());
 }
 
@@ -90,19 +90,26 @@ TEST(ProxyConfig, PortBoundaryValuesAccepted) {
 // Long host (DNS 253-char limit)
 // ═══════════════════════════════════════════════════════════════════════════
 
-TEST(ProxyConfig, LongHostWithinDnsLimitAccepted) {
-    // Build a 253-char name of repeating "a.b.c.d..." labels. This is at
-    // the RFC 1035 maximum. validate() doesn't inspect length, but we
-    // assert the struct tolerates long hosts without truncation / UB.
-    std::string host;
-    while (host.size() + 10 <= 253) {
-        host += "abcdefghi.";
-    }
-    while (host.size() < 253) host.push_back('x');
-    ASSERT_EQ(host.size(), 253u);
-    ProxyConfig cfg{.host = host, .port = 8080};
+TEST(ProxyConfig, HostnameRejectedAtValidateTime) {
+    // The doc string declares `host` MUST be a dotted-quad IPv4 literal.
+    // Pre-fix this was only enforced at KernelTcpStream::create — a caller
+    // that pre-validate()d would see "OK", then burn a TCP setup roundtrip
+    // before learning the hostname was unusable. validate() now surfaces
+    // the contract up-front, mirroring what `Ipv4Addr::parse` would reject.
+    ProxyConfig cfg{.host = "proxy.example.com", .port = 8080};
     auto v = cfg.validate();
-    EXPECT_TRUE(v.has_value()) << (v ? "" : v.error().detail);
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
+}
+
+TEST(ProxyConfig, MalformedIpv4Rejected) {
+    // 999.0.0.1 is syntactically a dotted-quad but the leftmost octet is
+    // out of range. Ipv4Addr::parse rejects it; ProxyConfig::validate must
+    // surface the same rejection rather than passing through.
+    ProxyConfig cfg{.host = "999.0.0.1", .port = 8080};
+    auto v = cfg.validate();
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(v.error().code, Error::InvalidConfig);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -110,7 +117,7 @@ TEST(ProxyConfig, LongHostWithinDnsLimitAccepted) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(ProxyConfig, UserWithoutPasswordRejected) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.basic_auth_user = "alice";
     // pass deliberately left unset
     auto v = cfg.validate();
@@ -119,7 +126,7 @@ TEST(ProxyConfig, UserWithoutPasswordRejected) {
 }
 
 TEST(ProxyConfig, PasswordWithoutUserRejected) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.basic_auth_pass = "secret";
     auto v = cfg.validate();
     ASSERT_FALSE(v.has_value());
@@ -127,7 +134,7 @@ TEST(ProxyConfig, PasswordWithoutUserRejected) {
 }
 
 TEST(ProxyConfig, BothAuthFieldsSetAccepted) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.basic_auth_user = "alice";
     cfg.basic_auth_pass = "wonderland";
     auto v = cfg.validate();
@@ -140,7 +147,7 @@ TEST(ProxyConfig, BothAuthFieldsSetAccepted) {
 // `Authorization: Basic Og==` (base64 of ":") which some proxies treat
 // as anonymous.
 TEST(ProxyConfig, EmptyUserRejectedWhenAuthRequested) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.basic_auth_user = "";          // empty string, not nullopt
     cfg.basic_auth_pass = "wonderland";
     auto v = cfg.validate();
@@ -149,7 +156,7 @@ TEST(ProxyConfig, EmptyUserRejectedWhenAuthRequested) {
 }
 
 TEST(ProxyConfig, EmptyPassRejectedWhenAuthRequested) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.basic_auth_user = "alice";
     cfg.basic_auth_pass = "";          // empty string, not nullopt
     auto v = cfg.validate();
@@ -162,7 +169,7 @@ TEST(ProxyConfig, EmptyPassRejectedWhenAuthRequested) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(ProxyConfig, ZeroTimeoutRejected) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.timeout = std::chrono::milliseconds{0};
     auto v = cfg.validate();
     ASSERT_FALSE(v.has_value());
@@ -171,7 +178,7 @@ TEST(ProxyConfig, ZeroTimeoutRejected) {
 
 TEST(ProxyConfig, NegativeTimeoutRejected) {
     // A negative duration is nonsensical; validate() should bail.
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     cfg.timeout = std::chrono::milliseconds{-1};
     auto v = cfg.validate();
     ASSERT_FALSE(v.has_value());
@@ -204,13 +211,13 @@ TEST(ProxyConfig, SimpleUserPassBase64Example) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(ProxyConfig, CopyConstructPreservesFields) {
-    ProxyConfig a{.host = "proxy.local", .port = 8080};
+    ProxyConfig a{.host = "192.168.1.1", .port = 8080};
     a.basic_auth_user = "alice";
     a.basic_auth_pass = "secret";
     a.timeout         = std::chrono::milliseconds{5000};
 
     ProxyConfig b = a;  // copy
-    EXPECT_EQ(b.host, "proxy.local");
+    EXPECT_EQ(b.host, "192.168.1.1");
     EXPECT_EQ(b.port, 8080);
     ASSERT_TRUE(b.basic_auth_user.has_value());
     EXPECT_EQ(*b.basic_auth_user, "alice");
@@ -220,12 +227,12 @@ TEST(ProxyConfig, CopyConstructPreservesFields) {
 }
 
 TEST(ProxyConfig, MoveConstructTransfersStrings) {
-    ProxyConfig a{.host = "proxy.local", .port = 8080};
+    ProxyConfig a{.host = "192.168.1.1", .port = 8080};
     a.basic_auth_user = "alice";
     a.basic_auth_pass = "secret";
 
     ProxyConfig b = std::move(a);
-    EXPECT_EQ(b.host, "proxy.local");
+    EXPECT_EQ(b.host, "192.168.1.1");
     ASSERT_TRUE(b.basic_auth_user.has_value());
     EXPECT_EQ(*b.basic_auth_user, "alice");
     ASSERT_TRUE(b.basic_auth_pass.has_value());
@@ -237,7 +244,7 @@ TEST(ProxyConfig, MoveConstructTransfersStrings) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(ProxyConfig, ValidateIsNoexcept) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     static_assert(noexcept(cfg.validate()),
                   "ProxyConfig::validate must be noexcept");
     EXPECT_TRUE(cfg.validate().has_value());
@@ -248,7 +255,7 @@ TEST(ProxyConfig, ValidateIsNoexcept) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST(ProxyConfig, OptionalDefaultsEmpty) {
-    ProxyConfig cfg{.host = "x", .port = 1};
+    ProxyConfig cfg{.host = "10.0.0.1", .port = 1};
     EXPECT_FALSE(cfg.basic_auth_user.has_value());
     EXPECT_FALSE(cfg.basic_auth_pass.has_value());
 }
