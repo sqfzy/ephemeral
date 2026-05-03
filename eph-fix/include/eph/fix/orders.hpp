@@ -9,6 +9,7 @@
 /// No heap allocations.
 
 #include <chrono>
+#include <cmath>     // isfinite for qty validation in build_new_order
 #include <cstdint>
 #include <format>
 #include <string_view>
@@ -128,6 +129,22 @@ enum class TimeInForce : char {
     SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
         "build_new_order: cl_ord_id={}, symbol={}, side={}, ord_type={}, qty={}, price={}",
         cl_ord_id, symbol, static_cast<char>(side), static_cast<char>(ord_type), qty, price);
+
+    // Reject pathological qty up-front. set_double() further down catches
+    // non-finite (sets overflow_, finish() returns 0), but lets through
+    // qty=0 and negative qty silently — which then ends up on the wire as
+    // "0.00" or "-1.00", an invalid OrderQty per FIX 4.4 §F.2 that the
+    // venue rejects with BusinessMessageReject. Surface as a build-time
+    // failure instead so the caller gets a clear "qty must be > 0" log
+    // line at submission rather than a confusing exchange reject seconds
+    // later. Same isfinite-first ordering as the sibling guards in
+    // PositionTracker / RiskChecker / OrderManager.
+    if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+            "build_new_order: rejected qty={} (must be finite and > 0) "
+            "for cl_ord_id={} symbol={}", qty, cl_ord_id, symbol);
+        return 0;
+    }
 
     MessageBuilder b(buf, capacity);
 
