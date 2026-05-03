@@ -33,6 +33,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -2256,7 +2257,19 @@ private:
             static_cast<double>(config_.keepalive_interval.count()) * 1'000'000.0;
         if (auto opt = eph::utils::TSC::to_cycles(ns)) return *opt;
         // Fallback: assume 3 GHz upper-bound. cycles = ns × 3.
-        return static_cast<uint64_t>(ns * 3.0);
+        // Saturate the cast: per [conv.fpint], static_cast<uint64_t>(x)
+        // is UB when `x` is outside [0, UINT64_MAX]. Caller-supplied
+        // `keepalive_interval = milliseconds::max()` would push `ns × 3`
+        // far beyond UINT64_MAX (~1.8e19) and modern GCC may emit any
+        // value, including 0 (probe storm) or a huge number (probe
+        // never). TSC::to_cycles already saturates on the calibrated
+        // path; mirror that here so the uncalibrated fallback behaves
+        // identically and the tick comparator stays well-defined.
+        const double cycles = ns * 3.0;
+        if (!(cycles >= 0.0)) return 0ULL;  // NaN-safe (also catches negative)
+        if (cycles >= static_cast<double>(std::numeric_limits<uint64_t>::max()))
+            return std::numeric_limits<uint64_t>::max();
+        return static_cast<uint64_t>(cycles);
     }
 
     /// Send a bare ACK packet.
