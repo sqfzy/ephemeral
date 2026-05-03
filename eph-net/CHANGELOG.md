@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Fixed (2026-05-03) — pax loop batch 10 closeouts
+
+  * `include/eph/net/posix_listener.hpp::accept_one` — the
+    `char ip[INET_ADDRSTRLEN]` scratch was uninitialized then
+    unconditionally fed to `SPDLOG_INFO` even on the (theoretical)
+    `inet_ntop` failure branch. fmt would scan past unmapped memory
+    looking for a NUL until it found one or hit a SIGSEGV. Zero-init
+    the buffer and stamp `?\0` on failure. Same file: the
+    `SO_REUSEADDR / TCP_NODELAY` setsockopt returns in
+    `tcp_bind_listen` / `udp_bind` / `accept_one`'s per-client setup
+    were silently discarded — demoted to `SPDLOG_DEBUG` instead so a
+    seccomp-restricted runner that denies one of these leaves a
+    journal breadcrumb when downstream sees "port already in use" or
+    unexpected tail latency. (Commit `2bff492b`.)
+  * `include/eph/net/detail/tls_inplace.hpp` —
+    `TlsInPlaceDecryptor::open_in_place` now drains the per-thread
+    OpenSSL error queue (`while (ERR_get_error() != 0) {}`) on AEAD
+    auth-tag failure. Pre-fix a "bad record mac" entry could persist
+    in the queue and contaminate any subsequent caller's diagnostic
+    snapshot — a cross-stream `EVP_AEAD_CTX_open` on the same thread,
+    or a TLS handshake routine reading the queue, would misattribute
+    the cached error to its own operation. The legacy non-in-place
+    `TlsDecryptor::decrypt` already does this drain; this brings the
+    two backends into symmetric error-queue hygiene. New regression
+    test `TlsInPlaceDecryptorErrorQueue.DrainedAfterAeadFailure`
+    pre-cleans the queue, exercises a known-bad ciphertext, and
+    asserts `ERR_get_error() == 0` on return. (Commit `1d723d2b`.)
+
 ### Fixed (2026-05-01 .. 2026-05-02) — pax review round 1-4 closeouts
 
 Defence-in-depth fixes uncovered by `/pax --loop --auto review eph-net-dpdk`
