@@ -25,12 +25,15 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <system_error>
 #include <thread>
+#include <utility>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -57,33 +60,99 @@ using namespace std::chrono_literals;
 
 namespace {
 
+/// Tiny single-client TCP echo server bound to an OS-allocated loopback
+/// port. Public `port` is non-zero only after the ctor's bind+getsockname
+/// completed; check `is_valid()` before using `port`.
+///
+/// Failure model: every syscall return is checked. On any error during
+/// setup the server logs the errno via spdlog and leaves `port == 0`;
+/// the caller (main) detects this and exits with a clear message rather
+/// than letting the demo client `connect()` to port 0 and surface an
+/// opaque "Connection refused" / `bad_expected_access`. This used to be
+/// the failure mode — every syscall return was discarded so a sandboxed
+/// runner that denied SOCK_STREAM (or hit the per-process fd limit at
+/// startup) just produced a confusing crash inside `Stream::create(...)`
+/// downstream.
 struct EchoServer {
     int               listen_fd{-1};
     uint16_t          port{0};
     std::thread       th;
     std::atomic<bool> stop{false};
 
-    EchoServer() {
+    EchoServer() noexcept {
         listen_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (listen_fd < 0) {
+            spdlog::error("EchoServer: socket() failed: {} ({})",
+                          errno, std::strerror(errno));
+            return;
+        }
         int yes = 1;
-        ::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        if (::setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR,
+                         &yes, sizeof(yes)) != 0) {
+            // Non-fatal — bind on an OS-allocated ephemeral port should
+            // succeed without REUSEADDR. Just warn so an operator who
+            // sees a follow-up bind failure has the breadcrumb.
+            spdlog::warn("EchoServer: SO_REUSEADDR failed: {} ({})",
+                         errno, std::strerror(errno));
+        }
         sockaddr_in sa{};
         sa.sin_family      = AF_INET;
         sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         sa.sin_port        = 0;
-        ::bind(listen_fd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
+        if (::bind(listen_fd,
+                   reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) != 0) {
+            spdlog::error("EchoServer: bind(127.0.0.1:0) failed: {} ({})",
+                          errno, std::strerror(errno));
+            ::close(listen_fd);
+            listen_fd = -1;
+            return;
+        }
         socklen_t len = sizeof(sa);
-        ::getsockname(listen_fd, reinterpret_cast<sockaddr*>(&sa), &len);
+        if (::getsockname(listen_fd,
+                          reinterpret_cast<sockaddr*>(&sa), &len) != 0) {
+            spdlog::error("EchoServer: getsockname failed: {} ({})",
+                          errno, std::strerror(errno));
+            ::close(listen_fd);
+            listen_fd = -1;
+            return;
+        }
         port = ntohs(sa.sin_port);
-        ::listen(listen_fd, 1);
-        th = std::thread([this] { run(); });
+        if (::listen(listen_fd, 1) != 0) {
+            spdlog::error("EchoServer: listen failed: {} ({})",
+                          errno, std::strerror(errno));
+            ::close(listen_fd);
+            listen_fd = -1;
+            port = 0;
+            return;
+        }
+        try {
+            th = std::thread([this] { run(); });
+        } catch (const std::system_error& e) {
+            spdlog::error("EchoServer: spawn accept thread failed: {}",
+                          e.what());
+            ::close(listen_fd);
+            listen_fd = -1;
+            port = 0;
+        }
     }
 
-    void run() {
+    [[nodiscard]] bool is_valid() const noexcept {
+        return listen_fd >= 0 && port != 0;
+    }
+
+    void run() noexcept {
         sockaddr_in peer{};
         socklen_t pl = sizeof(peer);
         int cfd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&peer), &pl);
-        if (cfd < 0) return;
+        if (cfd < 0) {
+            // accept(-1, …) gives EBADF; legitimate accept-after-shutdown
+            // gives EINVAL. Either way the demo client side will see
+            // ECONNREFUSED downstream — log so the journal carries the
+            // root cause.
+            spdlog::warn("EchoServer::run: accept failed: {} ({})",
+                         errno, std::strerror(errno));
+            return;
+        }
         while (!stop.load(std::memory_order_relaxed)) {
             char buf[1024];
             ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
@@ -112,15 +181,33 @@ int main() {
     std::signal(SIGTERM, on_signal);
 
     EchoServer srv;
+    if (!srv.is_valid()) {
+        spdlog::error("observability_demo: echo server bring-up failed "
+                      "(see prior errors). Aborting.");
+        return 2;
+    }
     spdlog::info("observability_demo: echo server listening on 127.0.0.1:{}",
                  srv.port);
 
-    auto poller = ek::KernelPoller::create().value();
+    auto poller_r = ek::KernelPoller::create();
+    if (!poller_r) {
+        spdlog::error("observability_demo: KernelPoller::create failed: {}",
+                      poller_r.error().detail);
+        return 3;
+    }
+    auto poller = std::move(*poller_r);
 
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     using Stream = ek::KernelTcpStream<ec::RawStreamCodec, /*EnableTls=*/false>;
-    auto stream = Stream::create(cfg).value();
+    auto stream_r = Stream::create(cfg);
+    if (!stream_r) {
+        spdlog::error("observability_demo: Stream::create failed: {} "
+                      "(target=127.0.0.1:{})",
+                      stream_r.error().detail, srv.port);
+        return 4;
+    }
+    auto stream = std::move(*stream_r);
 
     std::size_t echoes = 0;
     stream->on_message = [&](std::span<const uint8_t> app_frame) {
