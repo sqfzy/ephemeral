@@ -931,10 +931,28 @@ private:
         b.set(tag::MsgType, "1");
         if (!fill_session_header(b)) return false;
         b.set(tag::TestReqID, std::string_view(id_buf, static_cast<size_t>(n)));
-        test_request_pending_.store(true, std::memory_order_release);
         SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
             "Sending TestRequest (TestReqID={})", std::string_view(id_buf, static_cast<size_t>(n)));
-        return send_message(b);
+        // Mark pending ONLY if the wire write succeeded. Previous order
+        // set pending=true before send_message returned — on TX failure
+        // (TLS desync, socket disconnect, builder overflow) the bucket
+        // would be left "pending probe never answered", and the next
+        // tick() would observe `test_request_pending_=true` past the
+        // timeout window and declare the server dead even though we
+        // never actually probed it. Move the store after send so a
+        // failed send leaves the pending flag false and the next
+        // tick() can re-issue the probe legitimately.
+        const bool ok = send_message(b);
+        if (ok) {
+            test_request_pending_.store(true, std::memory_order_release);
+        } else {
+            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                "send_test_request: TX failed (TestReqID={}) — pending flag "
+                "NOT set; next tick() will re-probe instead of declaring "
+                "the server dead",
+                std::string_view(id_buf, static_cast<size_t>(n)));
+        }
+        return ok;
     }
 
     bool send_resend_request(uint32_t begin_seq, uint32_t end_seq) noexcept {
