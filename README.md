@@ -140,26 +140,34 @@ One `DpdkPoller` drives a TLS WebSocket `TcpStream` (order channel) and a multic
 `UdpSocket` running a `Mold64Codec` (ITCH feed) on the same lcore.
 
 ```cpp
-#include "eph/net/dpdk/eal.hpp"
+#include "eph/dpdk/platform.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
 #include "eph/net/dpdk/udp_socket.hpp"
 #include "eph/codec/ws_codec.hpp"
 #include "eph/codec/mold64_codec.hpp"
 
+namespace ed = eph::dpdk;
 namespace en = eph::net::dpdk;
 namespace ec = eph::codec;
 
-int main(int argc, char** argv) {
-    // Eal::init is the only public factory — there is no bare ctor.
-    // Returns a move-only RAII guard that runs rte_eal_cleanup on
-    // scope exit; bare `en::Eal{argc, argv}` does NOT compile.
-    auto eal = en::Eal::init(argc, argv).value();
+int main() {
+    // Daemon-led model (post-2026-05-02 reshape): `eph-nicd` owns the
+    // NIC primary and applications attach as DPDK secondaries via
+    // `Platform::create(PlatformConfig)`. PlatformConfig carries
+    // `pci` + `queues` + per-process EAL knobs only — NIC physical
+    // state (descriptor depth, RSS key, mempool, promiscuous) is the
+    // daemon's territory and is never set tenant-side.
+    ed::PlatformConfig pcfg{};
+    pcfg.pci          = "0000:18:00.0";   // your NIC BDF
+    pcfg.queues       = 4;                // queues this tenant claims
+    pcfg.program_name = "hft_client";
+    auto platform = ed::Platform::create(std::move(pcfg)).value();
 
     // PollerConfig has port_id + rx_queue_id (caller pins the lcore
     // themselves; DpdkPoller does not spawn its own thread).
     auto poller = en::DpdkPoller<>::create({
-        .port_id     = 0,
+        .port_id     = platform->port_id(),
         .rx_queue_id = 0,
     }).value();
 
@@ -167,8 +175,7 @@ int main(int argc, char** argv) {
     // it picks an RX queue, allocates a non-conflicting src_port,
     // runs the TCP/TLS/WS handshakes, attaches to the poller, and
     // registers as an ICMP target. Sketch only — see
-    // `examples/simple_hft.cpp` for the full scfg / ucfg + a
-    // `Platform` set up via `Platform::launch(...)`.
+    // `examples/simple_hft.cpp` for the full scfg / ucfg.
     auto order_ch = en::DpdkTcpStream<ec::WsCodec>::create_and_attach(
         order_scfg, *platform).value();
     order_ch->on_message = handle_exec_report;
