@@ -351,14 +351,15 @@ enum class StreamMetric : std::size_t {
     kTlsCrossRecordFrames, kTlsSendDesyncs,
     kTcpResetsReceived, kTcpOutOfOrderSegments,
     kTcpReorderBufferHits, kTcpReorderBufferOverflows,
-    kTcpKeepaliveProbesSent, kTcpMssNegotiationApplied,
+    kTcpKeepaliveProbesSent, kTcpKeepaliveSendFailures,
+    kTcpMssNegotiationApplied,
     kIcmpFragNeededReceived, kTcpDupSegments,
     kRxSessionResets,
     kRxBadChecksum, kRxIpChecksumBad, kRxL4ChecksumBad,
     kPacketsDropped, kFragmentRejected,
     kWsDeflateBytesIn, kWsDeflateBytesOut,            // RFC 7692
     kTlsResumeCount, kTlsHandshakeCount,              // RFC 8446 §4.6.1
-    kCount   // sentinel — current value: 24
+    kCount   // sentinel — current value: 25
 };
 
 inline constexpr std::array<std::string_view,

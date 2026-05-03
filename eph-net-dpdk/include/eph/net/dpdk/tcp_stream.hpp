@@ -1708,6 +1708,8 @@ public:
                 return sess_.tcp_stats().dup_segments;
             case SM::kTcpKeepaliveProbesSent:
                 return sess_.tcp_stats().keepalive_probes_sent;
+            case SM::kTcpKeepaliveSendFailures:
+                return sess_.tcp_stats().keepalive_send_failures;
             case SM::kTcpMssNegotiationApplied:
                 return sess_.tcp_stats().mss_negotiations_applied;
             case SM::kIcmpFragNeededReceived:

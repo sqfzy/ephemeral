@@ -126,6 +126,20 @@ enum class StreamMetric : std::size_t {
     /// peer went idle past `keepalive_interval`. DPDK TCP only.
     kTcpKeepaliveProbesSent,
 
+    /// Keepalive ticks where the probe could not be transmitted —
+    /// `rte_pktmbuf_alloc` returned null (mempool exhausted) or
+    /// `rte_eth_tx_burst` returned 0 (TX queue full / driver
+    /// back-pressure / link down). Each failure still consumes a
+    /// "miss slot" inside `tick_keepalive`, so a stuck NIC eventually
+    /// times out the connection rather than silently looping forever.
+    /// Disjoint from `kTcpKeepaliveProbesSent`: a single tick increments
+    /// exactly one of the two. Persistently non-zero is the canonical
+    /// "TX path is wedged" signal — pair with `kTcpKeepaliveProbesSent`
+    /// to compute the failure ratio. Kernel backends emit 0 (the kernel
+    /// owns its own keepalive state machine and never surfaces this).
+    /// DPDK TCP only.
+    kTcpKeepaliveSendFailures,
+
     /// SYN-ACK carried a peer MSS option that clamped our effective MSS
     /// below the configured local value. Should be very low in steady
     /// state; a sudden spike indicates the upstream changed MTU.
@@ -296,6 +310,7 @@ kStreamMetricNames = {
     "net.stream.tcp.reorder_buffer_hits",
     "net.stream.tcp.reorder_buffer_overflows",
     "net.stream.tcp.keepalive_probes_sent",
+    "net.stream.tcp.keepalive_send_failures",
     "net.stream.tcp.mss_negotiation_applied",
     "net.stream.icmp.frag_needed_received",
     "net.stream.tcp.dup_segments",

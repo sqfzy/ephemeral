@@ -128,6 +128,7 @@ Defined in `eph/net/stream_metrics.hpp` as `enum class StreamMetric`:
 | `kTcpReorderBufferHits` | OoO segment successfully buffered + drained | DPDK TCP only |
 | `kTcpReorderBufferOverflows` | reorder buf full → session reset | DPDK TCP only |
 | `kTcpKeepaliveProbesSent` | keepalive probes emitted by `tick_keepalive` | DPDK TCP only |
+| `kTcpKeepaliveSendFailures` | keepalive tick where mbuf alloc / `tx_burst` failed (TX path wedged) | DPDK TCP only |
 | `kTcpMssNegotiationApplied` | SYN-ACK MSS option clamped `effective_mss` | DPDK TCP only |
 | `kIcmpFragNeededReceived` | ICMP Type 3 Code 4 acted on | DPDK TCP only |
 | `kRxSessionResets` | stream-layer proactive RX reset (reorder overflow / process_rx Disconnected) | DPDK TCP only |

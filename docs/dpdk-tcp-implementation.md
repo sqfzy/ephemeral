@@ -322,6 +322,7 @@ Stream-level (`DpdkTcpStream::metric(StreamMetric m)`):
 - `kTcpResetsReceived` — peer-initiated RSTs observed
 - `kTcpOutOfOrderSegments` / `kTcpReorderBufferHits` / `kTcpReorderBufferOverflows` — reorder telemetry
 - `kTcpKeepaliveProbesSent` — keepalive count
+- `kTcpKeepaliveSendFailures` — keepalive tick where the probe couldn't be transmitted (mempool exhausted / tx_burst returned 0)
 - `kTcpMssNegotiationApplied` — SYN-ACK MSS clamp events
 - `kIcmpFragNeededReceived` — path-MTU feedbacks acted on
 - `kRxSessionResets` — stream-layer initiated resets

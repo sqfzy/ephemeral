@@ -356,6 +356,7 @@ TEST(StreamMetrics, KernelTcpReturnsZeroForNewTcpIcmpMetrics) {
             en::StreamMetric::kTcpReorderBufferHits,
             en::StreamMetric::kTcpReorderBufferOverflows,
             en::StreamMetric::kTcpKeepaliveProbesSent,
+            en::StreamMetric::kTcpKeepaliveSendFailures,
             en::StreamMetric::kTcpMssNegotiationApplied,
             en::StreamMetric::kIcmpFragNeededReceived,
         }) {

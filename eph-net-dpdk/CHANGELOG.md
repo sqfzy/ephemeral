@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added — `kTcpKeepaliveSendFailures` StreamMetric (2026-05-03)
+
+`TcpSession::Stats::keepalive_send_failures` (which already existed and
+was tracked / dumped / JSON-serialised since the keepalive subsystem
+landed) is now also surfaced via
+`DpdkTcpStream::metric(StreamMetric::kTcpKeepaliveSendFailures)`. This
+closes an observability gap: previously `kTcpKeepaliveProbesSent`
+counted only successful TX-bursts, so operators could see "we sent N
+probes" but had no metric distinguishing that from "we *tried* to send
+N probes and the NIC TX path was wedged". The new counter is the
+canonical "TX path stuck" signal — pair with the existing probes
+counter to compute the failure ratio.
+
+Disjoint with `kTcpKeepaliveProbesSent`: `tick_keepalive` increments
+exactly one of the two per fired tick. Kernel backends emit 0 (kernel
+stack owns its own keepalive state machine).
+
+OTel name: `net.stream.tcp.keepalive_send_failures`.
+Total `StreamMetric::kCount` is now 25 (was 24).
+
 ### Added — default-NIC resolution (2026-05-02)
 
 Empty `cfg.pci` in `Platform::create({.pci = ""})` now auto-resolves
