@@ -143,6 +143,38 @@ TEST(TcpConfig, MaxRxBurstOneIsValid) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TcpConfig::validate — keepalive_interval bounds
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(TcpConfig, NegativeKeepaliveIntervalFails) {
+    // chrono::milliseconds is signed int64; bypass the public KeepaliveConfig
+    // path by constructing TcpConfig directly with a negative value, then
+    // assert validate() rejects it. Without the rejection,
+    // tick_keepalive's `static_cast<uint64_t>(negative * 3.0)` fallback is
+    // implementation-defined (typically 0 or a huge wrap, both wrong).
+    auto cfg = make_valid_config();
+    cfg.keepalive_interval = std::chrono::milliseconds{-100};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("keepalive_interval"), std::string_view::npos);
+}
+
+TEST(TcpConfig, ZeroKeepaliveIntervalIsValid) {
+    auto cfg = make_valid_config();
+    cfg.keepalive_interval = std::chrono::milliseconds::zero();
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(TcpConfig, KeepaliveZeroProbesWhileEnabledFails) {
+    auto cfg = make_valid_config();
+    cfg.keepalive_interval = std::chrono::milliseconds{5000};
+    cfg.keepalive_probes = 0;
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("keepalive_probes"), std::string_view::npos);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // net::format_mac (canonical formatter; TcpConfig::format_mac was removed)
 // ─────────────────────────────────────────────────────────────────────────────
 

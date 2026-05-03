@@ -120,6 +120,18 @@ struct TcpConfig {
             return "recv_window exceeds 65535 (window scaling not implemented)";
         if (max_rx_burst > 32)
             return "max_rx_burst must be in [0, 32] (0 = auto)";
+        // chrono::milliseconds is a signed int64; a caller building
+        // TcpConfig directly (bypassing the public KeepaliveConfig path)
+        // can plant a negative value. tick_keepalive's TSC-cycle conversion
+        // (`to_cycles(double)` returns nullopt for negatives) then falls
+        // back to `static_cast<uint64_t>(negative * 3.0)`, which is
+        // implementation-defined for negative→unsigned (typically 0 or a
+        // huge wrapped value, both wrong). Reject at the validate boundary
+        // so the misuse surfaces as a clear "invalid config" string rather
+        // than a probe-storm or an infinite-idle window observed weeks
+        // later.
+        if (keepalive_interval.count() < 0)
+            return "keepalive_interval must be >= 0 (use 0 to disable)";
         if (keepalive_interval.count() > 0 &&
             (keepalive_probes == 0 || keepalive_probes > 10))
             return "keepalive_probes must be in [1, 10] when keepalive_interval > 0";
