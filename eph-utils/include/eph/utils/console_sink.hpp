@@ -24,10 +24,26 @@ namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for the console metrics sink.
+///
+/// Catches `spdlog::stdout_color_mt`'s already-registered exception (a
+/// rare race between concurrent first-call paths from two TUs) and
+/// falls back to `spdlog::get` and finally `spdlog::default_logger`.
+/// Mirrors `eph::core::detail::make_logger`'s shape so this stays
+/// crash-free on the rare edge where the registry is contended at
+/// startup. (`make_logger` itself is in `eph-core`; this header sits
+/// in `eph-utils` and predates the shared helper, so it carries the
+/// same race-handling inline.)
 inline const std::shared_ptr<spdlog::logger>& console_sink_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.console_sink");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.console_sink");
+        if (!lg) {
+            try {
+                lg = spdlog::stdout_color_mt("utils.console_sink");
+            } catch (const spdlog::spdlog_ex&) {
+                lg = spdlog::get("utils.console_sink");
+            }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;
