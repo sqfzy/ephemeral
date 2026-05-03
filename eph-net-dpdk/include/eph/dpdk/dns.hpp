@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -989,6 +990,26 @@ public:
         start_tsc_ = eph::utils::TSC::now();
         auto timeout_cycles_opt = eph::utils::TSC::to_cycles(
             std::chrono::nanoseconds{cfg_.timeout}.count());
+        // Saturating ms→cycles fallback for the uncalibrated path.
+        // The naive `3e9 * ms / 1000` overflows uint64 once ms exceeds
+        // ~6.15e9 (~71 days). Beyond that, the multiplied result wraps
+        // and produces a tiny `timeout_cycles_` — the deadline expires
+        // immediately and the resolver fails on the very first poll
+        // tick instead of honoring the (admittedly absurd) configured
+        // timeout. Compute as `ms * 3'000'000` with an early saturation
+        // guard so the cap on extreme inputs is UINT64_MAX (deadline
+        // ≈ never) rather than ~0 (immediate timeout).
+        constexpr uint64_t kCyclesPerMsAt3GHz = 3'000'000ULL;
+        auto saturating_ms_to_cycles = [](int64_t ms_signed) noexcept -> uint64_t {
+            if (ms_signed <= 0) return 0ULL;
+            const uint64_t ms = static_cast<uint64_t>(ms_signed);
+            constexpr uint64_t kMaxMs =
+                std::numeric_limits<uint64_t>::max() / kCyclesPerMsAt3GHz;
+            return ms >= kMaxMs
+                ? std::numeric_limits<uint64_t>::max()
+                : ms * kCyclesPerMsAt3GHz;
+        };
+
         if (!timeout_cycles_opt) {
             // TSC not yet calibrated. Fall back to a generous fixed
             // estimate (3 GHz upper bound) so we still time out
@@ -998,8 +1019,7 @@ public:
             SPDLOG_LOGGER_WARN(log,
                 "AsyncDnsResolver::start: TSC not calibrated, "
                 "using 3GHz fallback for timeout deadline");
-            timeout_cycles_ = static_cast<uint64_t>(3'000'000'000ULL) *
-                              static_cast<uint64_t>(cfg_.timeout.count()) / 1000ULL;
+            timeout_cycles_ = saturating_ms_to_cycles(cfg_.timeout.count());
         } else {
             timeout_cycles_ = *timeout_cycles_opt;
         }
@@ -1014,8 +1034,7 @@ public:
         auto retry_cycles_opt = eph::utils::TSC::to_cycles(
             std::chrono::nanoseconds{retry_ms}.count());
         retry_interval_cycles_ = retry_cycles_opt.value_or(
-            static_cast<uint64_t>(3'000'000'000ULL) *
-            static_cast<uint64_t>(retry_ms.count()) / 1000ULL);
+            saturating_ms_to_cycles(retry_ms.count()));
 
         status_ = ResolveStatus::InProgress;
         // Send the first query NOW. If TX fails (rare — usually transient
