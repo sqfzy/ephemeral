@@ -147,11 +147,14 @@ A measurement window for `lat_tcp` (kernel) looks like this:
    16..24, sends the same buffer back.
 4. Client `recv_exact`s, stamps `client_recv_tsc`. Now the `RttSample`
    has all four TSCs.
-5. `BenchRunner::record_rtt` feeds the four deltas into the four
-   `Recorder` legs.
-6. After `DURATION` seconds, the runner prints the per-leg stats
-   (min/p50/p99/p999/max) via spdlog, resets the recorders, and moves
-   on to the next payload.
+5. The scenario loop in
+   `benchmarks/latency/scenarios/lat_<name>_loop.hpp` computes
+   per-leg deltas via `bench::compute_legs()` and feeds them into
+   the three `eph::utils::Recorder` instances (`rec_rtt`, `rec_tx`,
+   `rec_rx`).
+6. After `duration_seconds` elapses, the loop calls
+   `bench::print_leg_report()` (per-leg p50/p99/p999/max via spdlog)
+   and `bench::export_legs()` (one `_rtt`/`_tx`/`_rx` JSON each).
 
 UDP, WS, and exchange scenarios are variations on this theme with
 different wire formats (JSON vs binary header) and different sweep
@@ -295,9 +298,10 @@ inconsistent state that the next run won't recover from.
 | `lat_ex_order[_dpdk]` | binary      | Exchange order RTT, N-inflight pipeline                    |
 | `lat_ex_md_udp[_dpdk]`| binary      | Exchange UDP market-data RTT                               |
 | `bench::load_bench_conf()` | C++ API | Read bench.conf into a `BenchConfig`                       |
-| `bench::BenchRunner`  | C++ API     | Warmup -> measurement -> report driver                     |
-| `bench::RttScenario`  | C++ concept | Contract scenario classes implement                        |
-| `bench::OneWayScenario` | C++ concept | Contract for oneway scenarios                            |
+| `bench::BenchCtx`     | C++ API     | Per-scenario bring-up context (config + Poller + DPDK env) |
+| `bench::monotonic_raw_ns()` | C++ API | Shared time base for client + mockex (CLOCK_MONOTONIC_RAW) |
+| `bench::export_legs()` | C++ API     | Write `_rtt`/`_tx`/`_rx` JSON files from a `Recorder`      |
+| `mockex --scenario <name>` | binary | Unified kernel-side mock; dispatches to a handler in `mockex/include/mockex/scenarios/<name>.hpp` per `kScenarioTable` |
 
 All public APIs are header-only under `core/`.
 

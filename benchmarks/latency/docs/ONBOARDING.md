@@ -125,20 +125,44 @@ path).
 
 ### Add a new scenario
 
-1. Create `<dir>/lat_<name>.cpp` implementing the scenario. It must:
-   - Call `bench::install_signal_handlers()` and
-     `eph::utils::TSC::init()` in `main`.
-   - Load config via `bench::load_bench_conf()`.
-   - `fork()`; child runs the mock; parent either enters `bench_ns` or
-     brings up `DpdkBenchEnv` (guarded on `EPH_USE_DPDK`).
-   - Define a scenario class satisfying `bench::RttScenario` or
-     `bench::OneWayScenario` (from `core/scenario_concept.hpp`).
-   - Drive it through `bench::BenchRunner::run_rtt_sweep` /
-     `run_rtt_inflight_sweep` / `run_oneway`.
-2. Add the scenario name to the case statement and help text in
-   [`lat`](../lat).
-3. `xmake build lat_<name>` will pick it up automatically via the
-   glob in [`xmake.lua`](../xmake.lua).
+The bench architecture is now **two binaries per scenario**: the
+shared `benchmarks/mockex/mockex` server (kernel-side, `--scenario
+<name>` dispatches to a handler in `mockex/include/mockex/scenarios/`)
+plus a per-scenario client `lat_<name>` / `lat_<name>_dpdk` under
+`benchmarks/latency/<dir>/`. The `lat` wrapper script forks the
+mock, transitions NIC state, then exec's the client.
+
+To add a new scenario:
+
+1. **Mock-side handler** in `benchmarks/mockex/include/mockex/scenarios/<name>.hpp`:
+   - Define `inline int <name>_run(const ScenarioContext& ctx) noexcept`
+     reading `ctx.cfg` (the loaded `bench::BenchConfig`) and
+     `ctx.scenario` (the `[lat_<name>]` section accessor) and looping
+     until `ctx.running` flips false.
+   - Register it in `benchmarks/mockex/include/mockex/dispatch.hpp`'s
+     `kScenarioTable` (one row: CLI keyword, config section, fn ptr).
+2. **Client-side scenario loop** in
+   `benchmarks/latency/scenarios/lat_<name>_loop.hpp`:
+   - Header-only template `run_lat_<name>_loop<EnableTls>(BenchCtx&)`
+     that drives the measurement loop using
+     `bench::monotonic_raw_ns()`, records samples via
+     `eph::utils::Recorder::record_ns()`, and emits one or three
+     `_rtt`/`_tx`/`_rx` JSON files via `bench::export_legs()`.
+3. **Client-side main** in `benchmarks/latency/<dir>/lat_<name>.cpp`:
+   - Read config (`bench::load_bench_conf()` from `core/bench_conf.hpp`).
+   - Bring up `KernelPoller` (kernel) or `DpdkPoller` + `Platform`
+     (DPDK, gated on `#if defined(EPH_USE_DPDK)`).
+   - Build a `BenchCtx`, hand it to the loop function, return its
+     exit code.
+4. **Config section** `[lat_<name>]` in `benchmarks/latency/bench.conf`:
+   - At minimum `port`, `payload_size`, `duration_seconds`. Push
+     scenarios add `mockex_payload`, `mockex_seed`, `mockex_params`.
+5. **`lat` wrapper** dispatch in `benchmarks/latency/lat`:
+   - Add the scenario keyword to the case statement.
+
+The `xmake.lua` glob in `benchmarks/latency/` auto-discovers
+`<dir>/lat_*.cpp` and emits one `lat_<name>` + `lat_<name>_dpdk`
+pair per source file — no xmake edits needed.
 
 ### Tweak a sweep axis
 
