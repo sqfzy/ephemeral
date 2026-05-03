@@ -344,8 +344,28 @@ public:
     ///       has no fixed destination — `send_to` carries dst per call).
     [[nodiscard]] ::eph::net::StreamSnapshot snapshot() const noexcept {
         ::eph::net::StreamSnapshot s{};
-        s.endpoint.src_ip   = bind_addr_.ip.to_be32();
-        s.endpoint.src_port = bind_addr_.port;
+        // Mirror KernelTcpStream::snapshot — prefer getsockname() over
+        // the configured bind address. UDP often binds with port 0 to
+        // let the kernel pick an ephemeral port; the configured value
+        // would surface 0 indefinitely while ss/lsof would show the
+        // real port. Fall back to the configured value when the fd is
+        // closed or getsockname fails (post-close race window).
+        bool src_resolved = false;
+        if (fd_ >= 0) {
+            sockaddr_in addr{};
+            socklen_t   alen = sizeof(addr);
+            if (::getsockname(fd_,
+                              reinterpret_cast<sockaddr*>(&addr), &alen) == 0
+                && addr.sin_family == AF_INET) {
+                s.endpoint.src_ip   = addr.sin_addr.s_addr;
+                s.endpoint.src_port = ntohs(addr.sin_port);
+                src_resolved        = true;
+            }
+        }
+        if (!src_resolved) {
+            s.endpoint.src_ip   = bind_addr_.ip.to_be32();
+            s.endpoint.src_port = bind_addr_.port;
+        }
         if (connected_) {
             s.endpoint.dst_ip   = connected_peer_.ip.to_be32();
             s.endpoint.dst_port = connected_peer_.port;
