@@ -1,17 +1,16 @@
 /// @file test_dpdk_rss_fanout.cpp
 ///
-/// **TODO(daemon-reshape / S5)**: this whole file requires multi-queue
-/// (`nb_rx_queues=4`) + RSS-partitioned dispatch + `pin_to_queue`,
-/// none of which is reachable through the S3 placeholder of
-/// `Platform::create` (queues==1 only). The legacy
-/// `DpdkBenchEnv::create` factory and `Platform::launch` factory are
-/// also gone in the daemon-led reshape. The Environment Setup is
-/// stubbed to always SKIP; both TEST bodies remain verbatim for
-/// reactivation when S5 lands.
-///
 /// Integration test: N concurrent DpdkTcpStream attaches all pinned to
 /// the same RSS queue + same exchange endpoint — the canonical HFT
 /// "fan-out producer" pattern (e.g. 15-path bn_produce_dpdk_real_bn).
+///
+/// Environment requirements (SetUp SKIPs cleanly otherwise):
+///   * NIC bound to vfio-pci with an `eph-nicd` daemon running on the
+///     target BDF and `total_queues >= 4` (this fixture asks for
+///     `pcfg.queues = 4` to drive multi-queue RSS bring-up via the
+///     daemon's S5 QueueAllocator).
+///   * `dispatch_mode == RssPartitioned` after Platform attach — the
+///     per-test SKIP macro guards that.
 ///
 /// What this catches that the existing integration suite missed:
 ///   * Pre-fix `find_src_port_for_queue` was a deterministic linear scan
