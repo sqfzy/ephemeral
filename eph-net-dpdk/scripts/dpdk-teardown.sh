@@ -280,15 +280,33 @@ pre_check() {
 check_running_processes() {
     verbose "检查是否有 DPDK 进程正在使用此网卡。如果有，强制解绑可能导致进程崩溃。"
 
-    # 方法 1：检查 /var/run/dpdk 下的运行时文件
+    # 方法 1：检查 /var/run/dpdk 下的运行时 mmap'd config 文件。
+    #
+    # DPDK runtime layout is /var/run/dpdk/<file_prefix>/config — the
+    # parent dir is the EAL file_prefix (e.g. "eph_0000_28_00_0"), NOT
+    # a PID. The previous code did `basename $(dirname $pidfile)` and
+    # tried to regex-match it as a number; the match always failed and
+    # method 1 silently produced no PIDs. fuser(1) is the right tool
+    # here: every DPDK primary AND secondary mmaps `config`, so its
+    # `m` flag picks them all up.
     local dpdk_pids=()
     if [[ -d /var/run/dpdk ]]; then
-        while IFS= read -r pidfile; do
-            local pid
-            pid=$(basename "$(dirname "$pidfile")")
-            if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-                dpdk_pids+=("$pid")
-            fi
+        while IFS= read -r cfg; do
+            # fuser prints "<file>: <pid>m <pid>m" — strip suffix flags
+            # and dedup. Run with sudo if not root (the dir is 0700 root).
+            local fuser_out pid
+            fuser_out=$(fuser "$cfg" 2>/dev/null || true)
+            for pid in $fuser_out; do
+                pid="${pid%[a-zA-Z]}"  # strip access-mode suffix (m / e / r ...)
+                if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+                    # dedup: a single PID may map both primary's and any
+                    # secondary's config in the same fuser line on multi-NIC
+                    # daemons; keep the array unique.
+                    if ! printf '%s\n' "${dpdk_pids[@]}" 2>/dev/null | grep -qx "$pid"; then
+                        dpdk_pids+=("$pid")
+                    fi
+                fi
+            done
         done < <(find /var/run/dpdk -name 'config' 2>/dev/null)
     fi
 
