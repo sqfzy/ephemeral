@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <new>          // std::bad_alloc
 #include <string>
 #include <vector>
 
@@ -121,8 +122,21 @@ ex_order_handle(IoStream& io, const std::atomic<bool>& running) noexcept {
         // real ns just before sendall) was considered but adds enough
         // code complexity that we deferred it — see git log for
         // history if revisiting.
-        auto patched = detail::ex_order_echo::inject_timestamps(
-            frame->payload, t_recv, bench::monotonic_raw_ns());
+        //
+        // `inject_timestamps` does heap allocation (vector ctor +
+        // reserve + insert). This handler is `noexcept`, so a real
+        // `bad_alloc` would propagate out and call `std::terminate`,
+        // killing the mockex daemon for one connection's misfortune.
+        // Catch and drop just this connection.
+        std::vector<uint8_t> patched;
+        try {
+            patched = detail::ex_order_echo::inject_timestamps(
+                frame->payload, t_recv, bench::monotonic_raw_ns());
+        } catch (const std::bad_alloc&) {
+            SPDLOG_WARN("[ex_order_echo] inject alloc failed (payload={})",
+                        frame->payload.size());
+            return;
+        }
         if (!ws::send_frame(io, ws::kOpcodeBinary,
                             std::span<const uint8_t>(patched))) {
             return;

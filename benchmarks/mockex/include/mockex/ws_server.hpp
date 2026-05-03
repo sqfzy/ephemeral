@@ -23,6 +23,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <new>          // std::nothrow_t / std::bad_alloc
 #include <optional>
 #include <span>
 #include <string>
@@ -226,7 +227,20 @@ decode_frame(IoStream& io) noexcept {
     Frame f;
     f.opcode = static_cast<Opcode>(opcode_raw);
     if (length == 0) return f;
-    f.payload.resize(static_cast<size_t>(length));
+    // `decode_frame` is `noexcept`. Even with `length` already capped at
+    // `kMaxClientFramePayload` (16 MiB) above, a real `vector::resize`
+    // can still fail with `bad_alloc` under memory pressure or a
+    // tightly-constrained cgroup — propagating that through `noexcept`
+    // would call `std::terminate` and tear down the entire mockex
+    // daemon, which is the opposite of what we want for a bench harness
+    // that sees many short-lived connections. Catch and surface as a
+    // clean nullopt so the caller drops just this connection.
+    try {
+        f.payload.resize(static_cast<size_t>(length));
+    } catch (const std::bad_alloc&) {
+        SPDLOG_WARN("[ws_server] payload alloc failed (length={})", length);
+        return std::nullopt;
+    }
     if (!io.read_exact(f.payload.data(), length))
         return std::nullopt;
 
@@ -270,7 +284,20 @@ send_frame(IoStream& io, Opcode opcode,
     // Frame header is at most 10 bytes. One-shot buffer to keep the
     // send atomic (a split send would be visible as two TCP segments,
     // which some clients tolerate but is surprising for a bench).
-    std::vector<uint8_t> buf(payload.size() + 10);
+    //
+    // `send_frame` is `noexcept` because every caller (ws_echo_handle,
+    // ex_order_handle, run_push_loop, …) is also `noexcept`. A real
+    // alloc failure here would otherwise propagate `bad_alloc` through
+    // `noexcept` boundaries and terminate the mockex daemon. Surface
+    // it as a clean false so the caller drops just this connection.
+    std::vector<uint8_t> buf;
+    try {
+        buf.resize(payload.size() + 10);
+    } catch (const std::bad_alloc&) {
+        SPDLOG_WARN("[ws_server] send buffer alloc failed (payload={})",
+                    payload.size());
+        return false;
+    }
     const size_t n = encode_frame(opcode, payload, buf.data());
     return io.write_all(buf.data(), n);
 }

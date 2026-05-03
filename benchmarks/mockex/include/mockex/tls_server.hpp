@@ -263,10 +263,17 @@ public:
             return {};
         }
 
+        // Null-guard the cipher/version strings before formatting.
+        // aws-lc returns non-null after a successful SSL_accept (r==1),
+        // but a stub / mock TLS implementation that returns null would
+        // crash this INFO log via `fmt`. Mirrors the client-side guard
+        // at eph-net/include/eph/net/detail/tls_session.hpp.
+        const char* cipher  = SSL_get_cipher_name(ssl);
+        const char* version = SSL_get_version(ssl);
         SPDLOG_INFO("[tls_server] handshake OK fd={} cipher={} version={}",
                     cfd,
-                    SSL_get_cipher_name(ssl),
-                    SSL_get_version(ssl));
+                    cipher  ? cipher  : "(unknown)",
+                    version ? version : "(unknown)");
         return TlsConn{ssl, cfd};
     }
 
