@@ -186,9 +186,9 @@ namespace detail {
 /// Mirror of the v3 `PlatformConfig` user-facing shape, plus the
 /// role-and-topology fields the bring-up body needs at runtime
 /// (`proc_type`, `mp_topology`, `rx_queue_range`). Public callers see
-/// only `PlatformConfig` (single-process) and `CreateOrJoinConfig`
-/// (autojoin); `BringupConfig` is synthesized internally by the v3
-/// entry points and the `primary_bringup_` / `secondary_bringup_`
+/// only `PlatformConfig` (tenant) and `NicServiceConfig` (daemon);
+/// `BringupConfig` is synthesized internally by `Platform::create` /
+/// `serve_nic` and the `primary_bringup_` / `secondary_bringup_`
 /// helpers.
 ///
 /// @note Queue counts and descriptor counts are automatically clamped
@@ -334,7 +334,9 @@ struct BringupConfig {
     // When set, the library treats this as the source of truth for
     // multi-process resource allocation: the internal bring-up helpers
     // `Platform::primary_bringup_` / `secondary_bringup_` (invoked by
-    // `Platform::create_or_join` once the EAL race resolves the role)
+    // `Platform::create` (tenant secondary attach) and `serve_nic`
+    // (daemon primary bring-up); the previous autojoin entry
+    // `Platform::create_or_join` was removed in the 2026-05-02 reshape)
     // derive the effective `rx_queue_range` from `mp_topology->self()`,
     // register the topology in a shared hugepage memzone
     // (`detail::MpRegistry`) so cross-process disjointness is enforced
@@ -941,18 +943,20 @@ public:
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
-    /// multi-process group — typically because it was created via
-    /// `Platform::create_or_join` (autojoin) and the registry now has
-    /// at least one peer slot, or because the internal `mp_topology`
-    /// machinery was driven directly by an internal helper. Cold
-    /// getter, safe on moved-from instances (returns false). Returns
-    /// false on single-process Platforms produced by
-    /// `Platform::create` / `launch`.
+    /// multi-process group — typically because the daemon's
+    /// `Platform::serve_nic` registered the topology and at least one
+    /// tenant `Platform::create` has attached, or because the internal
+    /// `mp_topology` machinery was driven directly by an internal
+    /// helper. Cold getter, safe on moved-from instances (returns
+    /// false). Returns false on single-process Platforms.
+    /// (The previous autojoin entry `Platform::create_or_join` /
+    /// `Platform::launch` was removed in the 2026-05-02 reshape.)
     [[nodiscard]] bool is_multi_process() const noexcept;
 
     /// @brief This process's `[port_lo, port_hi)` src_port window when
-    /// the multi-process topology has been resolved (autojoin or the
-    /// internal `mp_topology` path); `std::nullopt` otherwise. Stream
+    /// the multi-process topology has been resolved (daemon-led
+    /// `serve_nic`/`create` or the internal `mp_topology` path);
+    /// `std::nullopt` otherwise. Stream
     /// `create_and_attach` consults this to constrain
     /// `find_src_port_for_queue`'s search range — letting the library
     /// auto-pick a non-colliding ephemeral src_port instead of asking
@@ -962,9 +966,10 @@ public:
     port_range() const noexcept;
 
     /// @brief True iff this Platform resolved to the secondary role —
-    /// either because `Platform::create_or_join` lost the EAL race
-    /// (autojoin path), or because the internal `secondary_bringup_`
-    /// helper was invoked directly. Equivalent to
+    /// typically because the application called `Platform::create`
+    /// (the tenant entry, which always attaches as secondary to a
+    /// running `eph-nicd` daemon), or because the internal
+    /// `secondary_bringup_` helper was invoked directly. Equivalent to
     /// `rte_eal_process_type() == RTE_PROC_SECONDARY` for live
     /// Platforms. Cold getter consumed by `Stream::create_and_attach`
     /// to gate the FlowDir IPC-fallback path: only secondaries hit
@@ -1134,8 +1139,8 @@ private:
     primary_bringup_(detail::BringupConfig config);
 
     /// @brief Internal secondary bring-up. After the cooperative-MP
-    /// removal the only entry path is `Platform::create_or_join`'s
-    /// secondary branch, which always pre-claims a slot via
+    /// removal the only entry path is `Platform::create` (the tenant
+    /// secondary attach), which always pre-claims a slot via
     /// `try_claim_free_slot` before dispatch — so `registry_preclaimed`
     /// is always `true` in production. The flag is retained as a
     /// hidden seam for unit tests that want to drive a fresh CAS-claim
@@ -1160,7 +1165,7 @@ struct Platform::Impl {
     static constexpr std::size_t kMaxPools = 256;
 
     /// @brief Cross-process MP registry attachment, populated by
-    /// `Platform::create_or_join` (which dispatches to
+    /// `Platform::create` / `Platform::serve_nic` (which dispatch to
     /// `primary_bringup_` / `secondary_bringup_` internally) when the
     /// resolved `BringupConfig` carries an `mp_topology`. Held in
     /// `std::optional` so the
@@ -1208,10 +1213,11 @@ struct Platform::Impl {
 
     /// @brief RAII handle for the `eph_fd_install` action. Registered
     /// only on primary (via `primary_bringup_`, the impl_ method that
-    /// `Platform::create_or_join` dispatches to when the EAL race
-    /// resolves this peer as primary, and only when mp_topology + IPC
-    /// handler bring-up both succeed). Secondary never registers this
-    /// — it is only the requester side.
+    /// `Platform::serve_nic` (the daemon entry, post-2026-05-02
+    /// reshape) dispatches to when the EAL bring-up resolves this peer
+    /// as primary, and only when mp_topology + IPC handler bring-up
+    /// both succeed). Secondary never registers this — it is only the
+    /// requester side.
     std::optional<::eph::dpdk::detail::MpIpcAction> fd_install_action;
 
     /// @brief RAII handle for `eph_fd_destroy`. Same primary-only
@@ -1346,24 +1352,23 @@ struct Platform::Impl {
     std::shared_ptr<::eph::dpdk::detail::IcmpRegistry> icmp_registry_sp{
         std::make_shared<::eph::dpdk::detail::IcmpRegistry>()};
 
-    /// @brief Typed-pin session guards owned by `Platform::launch`
-    /// (and `create_or_join` via delegation). Empty when EAL was init'd
-    /// externally — i.e. the caller used the bare `Platform::create`
-    /// path and is responsible for managing its own pins via typed
-    /// `EalGuard::init`. Released via
-    /// reverse-order field destruction AFTER `~Impl`'s explicit body
-    /// finishes — pin release only touches the process-wide CPU
-    /// registry global, EAL-independent, so timing relative to
-    /// `eal_cleanup` is harmless.
+    /// @brief Typed-pin session guards owned by `Platform::create`
+    /// (the tenant entry, when caller-supplied `pins` are present).
+    /// Empty for `Platform::serve_nic` (the daemon entry — pin policy
+    /// for the daemon is an OS-level concern, e.g. systemd Slice /
+    /// taskset, not eph's). Released via reverse-order field
+    /// destruction AFTER `~Impl`'s explicit body finishes — pin
+    /// release only touches the process-wide CPU registry global,
+    /// EAL-independent, so timing relative to `eal_cleanup` is
+    /// harmless.
     std::vector<eph::utils::PinGuard> pin_session_guards;
 
-    /// @brief Set to `true` when `Platform::launch` (or
-    /// `create_or_join`) called `eal_init` itself. `~Impl`'s body reads
-    /// this to decide whether to invoke `eal_cleanup` after DPDK
-    /// resource teardown. Single Source of Truth: only one Platform
-    /// per process can have `owns_eal_init=true`; multiple Platforms
-    /// sharing one EAL must use `Platform::create` (which leaves this
-    /// flag at false).
+    /// @brief Set to `true` when `Platform::create` /
+    /// `Platform::serve_nic` (post-2026-05-02 reshape entry points)
+    /// called `eal_init` itself. `~Impl`'s body reads this to decide
+    /// whether to invoke `eal_cleanup` after DPDK resource teardown.
+    /// Both current public factories drive EAL init internally, so
+    /// this is `true` for any Platform produced by the public API.
     bool owns_eal_init{false};
 
     /// True iff MP topology is active and at least one peer (other
@@ -2062,23 +2067,30 @@ inline Platform::Platform(Platform&&) noexcept            = default;
 inline Platform& Platform::operator=(Platform&&) noexcept = default;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Platform::launch — one-shot EAL+Platform factory
+// Platform::bringup_port_ — internal port-bring-up helper
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Cold-path orchestrator over typed-pin validation + eal_init +
-// Platform::create. The returned Platform owns the EAL session: pin
-// guards live in `Impl::pin_session_guards`, the `owns_eal_init` flag
-// directs `~Impl` to call `eal_cleanup` after DPDK resource release.
+// Shared by `primary_bringup_` (driven by `Platform::serve_nic`, the
+// daemon entry) and `secondary_bringup_` (driven by `Platform::create`,
+// the tenant entry). Both public factories internally drive
+// pin validation + `eal_init` + this bring-up; the returned Platform
+// owns the EAL session via `Impl::owns_eal_init`, and the
+// `~Impl` body invokes `eal_cleanup` after DPDK resource release.
 //
-// Failure rollback is staged so each phase only undoes what it set up:
+// Failure rollback in the public factories is staged so each phase
+// only undoes what it set up:
 //
 //   pin_lcores fails    → no eal_init touched, return unexpected
 //   eal_init fails      → pin_guards local-destruct rolls back CPU
 //                          registry, return unexpected
-//   Platform::create    → eal_cleanup() to undo eal_init, then
-//   fails                  pin_guards local-destruct, return unexpected
+//   bring-up fails      → eal_cleanup() to undo eal_init, then
+//                          pin_guards local-destruct, return unexpected
 //
 // On success, pin_guards transfer into Impl and owns_eal_init is set.
+//
+// (The previous one-shot `Platform::launch` factory was removed in the
+// 2026-05-02 daemon reshape — its responsibilities folded into
+// `Platform::create` and `Platform::serve_nic`.)
 
 [[nodiscard]] inline std::expected<Platform, std::string>
 Platform::bringup_port_(const detail::BringupConfig& config) {
@@ -2118,9 +2130,8 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     // v3-only fields stay at default (single-process / auto). The v2
     // dispatcher does not synthesize MP topology — that happens in
     // `primary_bringup_` / `secondary_bringup_` (dispatched from
-    // `Platform::create_or_join` once the EAL race resolves the role),
-    // and the resolved proc_type / rx_queue_range below capture the
-    // outcome.
+    // `Platform::create` / `Platform::serve_nic`), and the resolved
+    // proc_type / rx_queue_range below capture the outcome.
     impl->resolved_proc_type        = config.proc_type;
     impl->resolved_rx_queue_range   = config.rx_queue_range;
 

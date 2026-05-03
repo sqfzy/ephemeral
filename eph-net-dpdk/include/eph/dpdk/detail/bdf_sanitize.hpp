@@ -3,19 +3,20 @@
 /// @file detail/bdf_sanitize.hpp
 /// PCI BDF → MP file_prefix derivation helper.
 ///
-/// The autojoin path (`Platform::create_or_join`) auto-derives a DPDK
-/// `--file-prefix` from the user-supplied PCI BDF so two processes
-/// sharing one NIC naturally agree on the prefix without any explicit
-/// coordination string. The derivation is `"eph_" + sanitize(bdf)`
-/// where sanitize replaces the PCI separator characters (`:` `.`)
-/// with `_` so the output is a valid filename component DPDK will
-/// accept.
+/// The daemon-led model (`Platform::create` / `Platform::serve_nic`,
+/// post-2026-05-02 reshape) auto-derives a DPDK `--file-prefix` from
+/// the user-supplied PCI BDF so the daemon and every tenant attached
+/// to the same NIC naturally agree on the prefix without any
+/// explicit coordination string. The derivation is
+/// `"eph_" + sanitize(bdf)` where sanitize replaces the PCI separator
+/// characters (`:` `.`) with `_` so the output is a valid filename
+/// component DPDK will accept.
 ///
 /// Examples:
 ///   "0000:28:00.0"  -> "0000_28_00_0"   (full domain form)
 ///   "28:00.0"       -> "28_00_0"        (short form)
 ///
-/// Validation rules (precise — the autojoin path won't paper over a typo):
+/// Validation rules (precise — the bring-up path won't paper over a typo):
 ///   - non-empty
 ///   - length 7-12 (covers short `BB:DD.F` and full `DDDD:BB:DD.F`)
 ///   - characters are hex digits, `:`, or `.` (no whitespace, no
@@ -25,14 +26,14 @@
 ///
 /// **Case is preserved, not normalized.** `"0000:AF:BC.D"` and
 /// `"0000:af:bc.d"` validate independently and produce *different*
-/// file_prefixes (`"0000_AF_BC_D"` vs `"0000_af_bc_d"`). Two autojoin
-/// peers that pass the same NIC's BDF in different cases will NOT
-/// agree on the hugepage segment name and will silently fail to
+/// file_prefixes (`"0000_AF_BC_D"` vs `"0000_af_bc_d"`). A daemon
+/// and tenant that pass the same NIC's BDF in different cases will
+/// NOT agree on the hugepage segment name and will silently fail to
 /// rendezvous — callers must normalize their input upstream. Tested
 /// in `test_bdf_sanitize.cpp::HexCaseInsensitive_Accepted`.
 ///
 /// Hot path: NONE. This is invoked exactly once per process during
-/// `Platform::create_or_join`'s cold setup.
+/// the cold setup of `Platform::create` / `Platform::serve_nic`.
 
 #include <cstddef>
 #include <expected>
@@ -58,10 +59,11 @@ inline constexpr size_t kBdfMaxLen = 12;  // "DDDD:BB:DD.F"
 [[nodiscard]] inline std::expected<std::string, core::ErrorInfo>
 sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
     // Cold-path validation: each rule logs the offending input alongside the
-    // typed error so a misconfigured `Platform::create_or_join` surfaces in the
-    // logs even if the caller wraps san.error().detail and never logs the
-    // string form (see platform.hpp line ~2421 — autojoin forwards the detail
-    // back as a `std::string` without a SPDLOG_ call on the failure path).
+    // typed error so a misconfigured `Platform::create` / `Platform::
+    // serve_nic` surfaces in the logs even if the caller wraps
+    // san.error().detail and never logs the string form (the public
+    // factories forward the detail back as a `std::string` without
+    // a SPDLOG_ call on the failure path).
     if (bdf.empty()) {
         SPDLOG_ERROR("sanitize_bdf: BDF must be non-empty");
         return std::unexpected(core::ErrorInfo{

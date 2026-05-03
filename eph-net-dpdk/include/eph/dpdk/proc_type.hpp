@@ -33,9 +33,12 @@ namespace eph::dpdk {
 ///       `--file-prefix` lockfile becomes primary, every later
 ///       peer auto-attaches as secondary. The actual role is
 ///       reported by `rte_eal_process_type()` after init.
-///       Used exclusively by `Platform::create_or_join` (the
-///       autojoin path); declarative-path callers must pass
-///       Primary or Secondary explicitly.
+///       Retained as a serialization target only — the previous
+///       autojoin entry (`Platform::create_or_join`) was removed
+///       in the 2026-05-02 daemon-reshape, so current public APIs
+///       (`Platform::create` / `Platform::serve_nic`) always pass
+///       Primary or Secondary explicitly. See
+///       `eph-net-dpdk/CHANGELOG.md`.
 ///
 /// See `docs/dpdk-multiprocess.md` for startup/teardown ordering,
 /// queue/src_port segmentation rules, and PMD-specific caveats.

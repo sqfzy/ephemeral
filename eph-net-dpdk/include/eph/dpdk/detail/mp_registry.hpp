@@ -32,8 +32,8 @@
 ///
 /// Hot path: NONE. Every operation here is on the cold bring-up path
 /// (`Platform::primary_bringup_` / `secondary_bringup_`, invoked by
-/// `Platform::create` / `launch` / `create_or_join`) or the
-/// `~Platform` teardown path, called at most once per process
+/// `Platform::create` (tenant) / `Platform::serve_nic` (daemon)) or
+/// the `~Platform` teardown path, called at most once per process
 /// lifecycle.
 
 #include <array>
@@ -101,13 +101,17 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///       via kill(pid, 0) detects stale slots from kill-9'd peers
 ///       and CAS-preempts them. Same v2 schema, no further bump.
 ///   v3: API reshape — cooperative-MP entry points removed; multi-
-///       process is reached only via `Platform::create_or_join`. Wire
-///       layout unchanged; bump signals API generation. v3 processes
-///       hard-reject v2 hugepages and vice-versa: a primary running
-///       v2 + secondary launched at v3 is an environment mismatch
-///       that should fail loudly, not silently misbehave. Recovery:
-///       stop all secondaries → upgrade primary (it recreates the
-///       registry) → upgrade secondaries.
+///       process is reached only via the daemon-led model
+///       (`Platform::serve_nic` for the NIC primary running in
+///       `eph-nicd`, `Platform::create` for tenant secondaries; the
+///       previous autojoin entry `Platform::create_or_join` was
+///       removed in the 2026-05-02 reshape). Wire layout unchanged;
+///       bump signals API generation. v3 processes hard-reject v2
+///       hugepages and vice-versa: a primary running v2 + secondary
+///       launched at v3 is an environment mismatch that should fail
+///       loudly, not silently misbehave. Recovery: stop all
+///       secondaries → upgrade primary (it recreates the registry)
+///       → upgrade secondaries.
 inline constexpr uint32_t kMpRegistryVersion = 3;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
@@ -418,8 +422,8 @@ public:
     /// @brief Reserve (or replace) the registry memzone, write a fresh
     /// header from `topo`, and CAS-claim `procs[topo.self_index]`.
     /// Called by `Platform::primary_bringup_` (the internal helper
-    /// invoked by `Platform::create` / `launch` / `create_or_join`
-    /// when this peer resolves to primary).
+    /// invoked by `Platform::serve_nic` — the daemon entry,
+    /// post-2026-05-02 reshape — when bringing up the NIC primary).
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     create_primary(std::string_view file_prefix, MpTopology const& topo) {
         if (!topo.valid()) {
@@ -509,17 +513,18 @@ public:
     /// @brief Look up the primary's registry memzone, cross-validate
     /// magic / version / file_prefix / per-slot topology, and CAS-claim
     /// `procs[topo.self_index]`. Called by `Platform::secondary_bringup_`
-    /// (the internal helper invoked by `Platform::create_or_join` when
-    /// this peer resolves to secondary).
+    /// (the internal helper invoked by `Platform::create` — the tenant
+    /// entry, post-2026-05-02 reshape — to attach this process as a
+    /// DPDK secondary to the daemon's NIC primary).
     ///
     /// @param already_claimed When `true` the CAS-claim step is
     /// skipped — the caller has already preclaimed the slot via
-    /// `try_claim_free_slot()` (autojoin / `Platform::create_or_join`
-    /// path). The returned handle still takes ownership of the slot
-    /// and will release it on destruction, so the caller MUST drop
-    /// the original preclaim handle (or transfer it via move) before
-    /// invoking attach_secondary with `already_claimed=true` to avoid
-    /// double-release at teardown.
+    /// `try_claim_free_slot()` (the daemon-led tenant attach in
+    /// `Platform::create`). The returned handle still takes ownership
+    /// of the slot and will release it on destruction, so the caller
+    /// MUST drop the original preclaim handle (or transfer it via
+    /// move) before invoking attach_secondary with
+    /// `already_claimed=true` to avoid double-release at teardown.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary(std::string_view file_prefix, MpTopology const& topo,
                      bool already_claimed = false) {
@@ -673,13 +678,14 @@ public:
                 declared.queue_lo, declared.queue_hi,
                 declared.port_lo,  declared.port_hi);
             // Caller pre-claimed via try_claim_free_slot before reaching
-            // here (autojoin path). This early-return otherwise leaks the
-            // slot — claimed=1 with the failing process's PID. If the
-            // process exits, pass-2 reclaim self-heals it; but if the
-            // caller retries `Platform::create_or_join` from the same
-            // process, `is_pid_alive` returns true on the stale slot and
-            // every subsequent attach fails with "no free slots". Mirror
-            // the lcore_mask-overlap release pattern below.
+            // here (the daemon-led `Platform::create` tenant attach).
+            // This early-return otherwise leaks the slot — claimed=1
+            // with the failing process's PID. If the process exits,
+            // pass-2 reclaim self-heals it; but if the caller retries
+            // `Platform::create` from the same process,
+            // `is_pid_alive` returns true on the stale slot and every
+            // subsequent attach fails with "no free slots". Mirror the
+            // lcore_mask-overlap release pattern below.
             if (already_claimed) {
                 hdr->procs[topo.self_index].claimed.store(
                     0, std::memory_order_release);
@@ -822,14 +828,16 @@ public:
     /// `header()->total_procs` and per-slot specs before the caller
     /// decides which free slot to claim via `try_claim_free_slot()`.
     ///
-    /// This is the entry point for `Platform::create_or_join` (the
-    /// autojoin path) where the secondary doesn't know its own
-    /// `self_index` until it scans the registry. `attach_secondary`
-    /// (the slot-claim variant on the same handle) was the entry
-    /// point for the pre-v3 cooperative `Platform::create_secondary`
-    /// path; that public API was removed in 2026-05-01's reshape and
-    /// the helper is now used only by `secondary_bringup_` callers
-    /// that have already preclaimed via `try_claim_free_slot`.
+    /// This is the entry point for `Platform::create` (the
+    /// daemon-led tenant attach, post-2026-05-02 reshape; previously
+    /// `Platform::create_or_join`'s autojoin path) where the
+    /// secondary doesn't know its own `self_index` until it scans
+    /// the registry. `attach_secondary` (the slot-claim variant on
+    /// the same handle) was the entry point for the pre-v3
+    /// cooperative `Platform::create_secondary` path; that public API
+    /// was removed in 2026-05-01's reshape and the helper is now used
+    /// only by `secondary_bringup_` callers that have already
+    /// preclaimed via `try_claim_free_slot`.
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     attach_secondary_readonly(std::string_view file_prefix) {
         auto name_r = build_mp_registry_name(file_prefix);
@@ -895,9 +903,9 @@ public:
         // future-schema primary that bumped layout fields BEFORE bumping
         // version, or a corrupted hugepage segment, could let an extreme
         // value slip through. Without this guard the value silently
-        // truncates to uint8_t in `create_or_join[secondary]` and
-        // surfaces as an opaque
-        // "MpTopology::valid() failed" three layers up.
+        // truncates to uint8_t in the secondary bring-up
+        // (`Platform::create` → `secondary_bringup_`) and surfaces as
+        // an opaque "MpTopology::valid() failed" three layers up.
         if (hdr->total_procs == 0
                 || hdr->total_procs > MpTopology::kMaxProcs) {
             SPDLOG_ERROR(

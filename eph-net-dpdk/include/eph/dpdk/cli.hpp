@@ -15,8 +15,8 @@
 /// Why a separate header rather than folding into `eal.hpp`: parsing pulls
 /// in `<string_view>` and atoi-style logic that EAL bring-up itself does
 /// not need. Keeping it isolated means consumers of `EalConfig` /
-/// `Platform::launch` don't pay for the CLI surface unless they
-/// also want it.
+/// `Platform::create` (or the rare in-process consumer of `EalGuard::
+/// init`) don't pay for the CLI surface unless they also want it.
 ///
 /// Typical use:
 ///
@@ -138,9 +138,10 @@ consume_one(EalCliConfig& args, std::string_view flag, char const* next) {
 ///
 /// `--pin` (typed, registry-aware) and `--lcores` (raw EAL spec) drive
 /// disjoint code paths inside `EalGuard::init` (typed-pin overload) /
-/// `Platform::launch`. Allowing both at once would silently
-/// drop one. Surface the conflict at parse time with the same diagnostic
-/// every example used to print by hand.
+/// `Platform::create` (which internally drives `EalGuard::init`).
+/// Allowing both at once would silently drop one. Surface the
+/// conflict at parse time with the same diagnostic every example
+/// used to print by hand.
 [[nodiscard]] inline std::expected<void, std::string>
 validate(EalCliConfig const& a) {
     const bool typed = !a.pins.empty();
@@ -154,14 +155,18 @@ validate(EalCliConfig const& a) {
 }
 
 /// @brief Lower an `EalCliConfig` into an `EalConfig` ready for
-/// `Platform::launch` / `EalGuard::init` (typed-pin overload).
+/// `EalGuard::init` (typed-pin overload). In the daemon-led model
+/// (post-2026-05-02 reshape) public callers normally feed
+/// `EalCliConfig::pci` / `pins` / `lcores_raw` directly into
+/// `PlatformConfig`; this lowering helper remains for in-process
+/// tools that still drive `EalGuard::init` themselves.
 ///
 /// `pci` -> `allowed_devs` (`-a` passthrough). `lcores_raw` -> single
 /// `lcores` entry (only when set; the typed-pin path leaves `lcores`
 /// empty so `EalGuard::init` can emit `--lcores=...` itself).
 ///
 /// `pins` is **not** lowered: the typed pin span is passed alongside
-/// `EalConfig` into `Platform::launch(... , pins, policy)`.
+/// `EalConfig` into `EalGuard::init(... , pins, policy)`.
 /// Pass `args.pins` directly there.
 ///
 /// `port_id` is **not** lowered into `EalConfig` either — it lives on

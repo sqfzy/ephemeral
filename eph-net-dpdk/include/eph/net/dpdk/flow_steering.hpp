@@ -761,8 +761,8 @@ fd_destroy_via_ipc([[maybe_unused]] uint8_t  owner_proc,
 // Thread-safe under `mu_`. The thunks below load the active
 // instance via `g_active_remote_flow_rules` set by
 // `Platform::primary_bringup_` (the impl_ helper invoked by
-// `Platform::create_or_join` when this peer wins the EAL race;
-// cleared in ~Impl).
+// `Platform::serve_nic` — the daemon entry, post-2026-05-02
+// reshape; cleared in ~Impl).
 
 class RemoteFlowRulesMap {
 public:
@@ -850,10 +850,10 @@ private:
 
 /// @brief Process-level pointer to the active RemoteFlowRulesMap.
 /// Set by `Platform::primary_bringup_` (the impl_ helper invoked
-/// by `Platform::create_or_join` when this peer wins the EAL race)
-/// when the eph_fd_install IPC handler is registered; cleared (CAS)
-/// by `~Impl`. Loaded by the static `on_fd_install_thunk` /
-/// `on_fd_destroy_thunk` below.
+/// by `Platform::serve_nic` — the daemon entry, post-2026-05-02
+/// reshape) when the eph_fd_install IPC handler is registered;
+/// cleared (CAS) by `~Impl`. Loaded by the static
+/// `on_fd_install_thunk` / `on_fd_destroy_thunk` below.
 inline std::atomic<RemoteFlowRulesMap*> g_active_remote_flow_rules{nullptr};
 
 /// @brief Reply helper that uses `rte_mp_reply` from the action

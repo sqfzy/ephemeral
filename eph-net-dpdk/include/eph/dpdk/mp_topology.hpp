@@ -336,16 +336,19 @@ struct MpTopology {
 };
 
 // Lock the MpTopology layout. Like ProcSpec above, MpTopology is
-// internal to the autojoin bring-up path: the primary peer in
-// `Platform::create_or_join` synthesizes one from
-// `CreateOrJoinConfig::nic.{max_procs,queues_per_proc}` and writes it
-// into the shared hugepage registry; secondaries read it back. It also
-// surfaces on the deprecated `PlatformConfig::mp_topology` field for
-// internal helpers that still drive `secondary_bringup_` directly. It
-// travels by value through every factory, so the compiler must keep
-// emitting the cheap memcpy-style copy. dump() returning std::string
-// does not affect the struct's data layout — it's a member function,
-// not a member.
+// internal to the multi-process bring-up path: the daemon
+// (`Platform::serve_nic`) synthesizes one from `NicServiceConfig::
+// total_queues` and writes it into the shared hugepage registry;
+// tenants (`Platform::create`) read it back. It also surfaces on
+// `BringupConfig::mp_topology` for internal helpers that drive
+// `primary_bringup_` / `secondary_bringup_` directly. It travels by
+// value through every factory, so the compiler must keep emitting the
+// cheap memcpy-style copy. dump() returning std::string does not
+// affect the struct's data layout — it's a member function, not a
+// member.
+// (The previous autojoin entry — `Platform::create_or_join` driven by
+// `CreateOrJoinConfig::nic.{max_procs,queues_per_proc}` — was removed
+// in the 2026-05-02 daemon-reshape.)
 static_assert(std::is_trivially_copyable_v<MpTopology>,
               "MpTopology must remain trivially copyable so callers "
               "can pass it through factory functions by value without "
