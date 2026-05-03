@@ -60,6 +60,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <spdlog/spdlog.h>
@@ -321,7 +322,17 @@ perform_http_connect(
         auto sr = io.send(std::span<const uint8_t>(req_buf + sent,
                                                      req_len - sent));
         if (!sr) {
-            if (sr.error().code == ::eph::core::Error::WouldBlock) continue;
+            if (sr.error().code == ::eph::core::Error::WouldBlock) {
+                // Yield rather than tight-spin. The CONNECT handshake
+                // is a cold one-time path on a non-blocking socket;
+                // burning a full core re-checking the deadline at
+                // ~1B iter/sec just to wait for kernel TX buffer to
+                // drain helps no one. yield() returns ~immediately
+                // when no other thread wants the CPU (cooperative HFT
+                // host) and unblocks neighbours otherwise.
+                std::this_thread::yield();
+                continue;
+            }
             SPDLOG_WARN("http_connect: ByteSink::send err={}",
                         sr.error().detail);
             return std::unexpected(sr.error());
@@ -361,7 +372,11 @@ perform_http_connect(
         }
         auto rr = io.recv(rx_buf + rx_len, sizeof(rx_buf) - rx_len);
         if (!rr) {
-            if (rr.error().code == ::eph::core::Error::WouldBlock) continue;
+            if (rr.error().code == ::eph::core::Error::WouldBlock) {
+                // Yield — see send-loop note above.
+                std::this_thread::yield();
+                continue;
+            }
             SPDLOG_WARN("http_connect: ByteSink::recv err={}",
                         rr.error().detail);
             return std::unexpected(rr.error());
@@ -369,6 +384,7 @@ perform_http_connect(
         if (*rr == 0) {
             // Treat 0 as WouldBlock (FakeByteSink convention). Real sinks
             // would return Disconnected, which we already propagate above.
+            std::this_thread::yield();
             continue;
         }
         rx_len += *rr;
