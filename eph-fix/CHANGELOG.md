@@ -176,6 +176,16 @@ grouped by the development day for readability.
   terminal state; the reject is treated as informational.
 - **FIX `EncryptMethod` cap** — server-provided `HeartBtInt` values outside
   `(0, 3600]` are rejected as unreasonable.
+- **`OrderManager` over-fill rejection** — `on_execution_report` now rejects
+  any PartialFill / Trade / Fill whose `LastQty` would push cumulative
+  `filled_qty > orig_qty + 1e-9` BEFORE any state mutation. Pre-fix a
+  buggy / hostile `ExecReport` could drive `leaves_qty` negative, then the
+  optional `PositionTracker` would over-attribute the trade and the
+  `RiskChecker` would misread "remaining capacity" for amend/cancel sizing.
+  The 1e-9 epsilon absorbs IEEE-754 round-off on the legitimate exact-fit
+  trailing fill (existing 50 + last_qty 50 == orig_qty 100). Four new tests
+  cover single-shot over-fill, cumulative over-fill, terminal-Fill
+  over-fill, and the exact-fit boundary.
 
 ### Removed
 
