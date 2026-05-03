@@ -746,8 +746,13 @@ public:
                 continue;
             }
             auto parsed = ::eph::dpdk::net::parse_udp_packet(mbufs[i]);
-            // Accept zero-length payloads per RFC 768 — only reject
-            // truly unparseable packets (no UDP header).
+            // Accept zero-length payloads at this layer per RFC 768 —
+            // only reject truly unparseable packets (no UDP header).
+            // The codec downstream may still surface zero-length as an
+            // error of its choosing (e.g. RawDatagramCodec returns
+            // CodecBad on payload_len==0); that lands as kCodecErrors
+            // which is the correct attribution. Don't fold the policy
+            // into the transport layer.
             if (!parsed.udp) {
                 // Attribute the drop cause: parse_ip_header rejected
                 // fragments wholesale, so distinguish "fragment" (operational
