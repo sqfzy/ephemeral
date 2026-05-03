@@ -15,6 +15,19 @@
 --
 -- All lat_*.cpp target the eph-net-kernel / eph-net-dpdk + eph-codec API.
 
+-- `-march=native` is hardcoded (NOT gated on `--native_arch=y` like the
+-- module microbenchmarks under `eph-bench`) because latency benches
+-- exist precisely to characterise the production hot path on this
+-- specific host — running them with a generic baseline would miss
+-- the very tail-cycle effects (NEON / AVX-512 / cache-line layouts)
+-- the measurements are about. The trade-off: lat_* binaries are NOT
+-- portable to a host with a strictly weaker ISA — moving the build
+-- output to a different machine class will SIGILL on first
+-- AES-NI / SVE / AVX-512 instruction. Build per-host or rebuild
+-- after migration; the binary names sort under benchmarks/latency/
+-- so this scope is bounded.
+-- `-fno-omit-frame-pointer` ensures perf record / profilers can
+-- unwind through the bench loop without DWARF-only stacks.
 local bench_latency_flags = {"-fno-omit-frame-pointer", "-march=native"}
 
 for _, file in ipairs(os.files(path.join(os.scriptdir(), "**/lat_*.cpp"))) do
