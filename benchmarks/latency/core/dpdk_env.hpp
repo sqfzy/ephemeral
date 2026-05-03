@@ -79,9 +79,12 @@ synthesize_eal_argv(std::string_view cores_csv,
         argv.emplace_back("-a");
         argv.emplace_back(std::string{pci_bdf});
     }
-    // --proc-type=auto lets EAL detect primary/secondary; for bench this
-    // is always primary. Hardcoded per plan §Encoding-规范 (not exposed
-    // to bench.conf to avoid config sprawl).
+    // --proc-type=auto lets EAL detect primary/secondary at runtime;
+    // for the daemon-led bench shape that resolves to secondary
+    // (eph-nicd is primary). Hardcoded per plan §Encoding-规范 (not
+    // exposed to bench.conf to avoid config sprawl). Argv is only
+    // consumed by the unit test today; the live bring-up path uses
+    // build_eal_argv inside DpdkBenchEnv::create.
     argv.emplace_back("--proc-type=auto");
     // Silence non-warning EAL chatter so the bench report stays readable.
     argv.emplace_back("--log-level=lib.eal:warning");
