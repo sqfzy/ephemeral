@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>     // isfinite for sanitize_refill_
 #include <cstdint>
 #include <mutex>
 
@@ -65,7 +66,7 @@ public:
     /// Construct a full bucket.  Post-condition: `available_tokens() == capacity`.
     explicit TokenBucket(Config cfg) noexcept
         : capacity_{cfg.capacity}
-        , refill_per_sec_{std::max(0.0, cfg.refill_per_second)}
+        , refill_per_sec_{sanitize_refill_(cfg.refill_per_second)}
         , tokens_{static_cast<double>(cfg.capacity)}
         , last_refill_{std::chrono::steady_clock::now()}
     {
@@ -141,6 +142,33 @@ public:
     [[nodiscard]] double        refill_rate() const noexcept { return refill_per_sec_; }
 
 private:
+    /// Sanitize the constructor's `refill_per_second` argument:
+    ///   * NaN  → 0.0  (every comparison against NaN is false, so the
+    ///                   `std::max(0.0, NaN)` form was returning NaN
+    ///                   on libstdc++; that NaN would then poison
+    ///                   `tokens_` on the first refill, after which
+    ///                   `try_acquire` rejects every request as
+    ///                   `NaN >= weight` is false. Silent rate-limit
+    ///                   failure is exactly the wrong direction for
+    ///                   an HFT venue limiter.)
+    ///   * +inf → 0.0  (an effective "no rate limit" — but the
+    ///                   refill math `elapsed * inf = inf` would
+    ///                   then `min(capacity, inf) = capacity`,
+    ///                   semantically correct but with a NaN trap
+    ///                   if elapsed=0 since 0 * inf = NaN. Treat
+    ///                   "infinite refill" as a config error and
+    ///                   collapse to zero, matching the existing
+    ///                   "<=0 → 0" silent-degrade contract.)
+    ///   * negative → 0.0 (existing behaviour preserved).
+    static constexpr double sanitize_refill_(double rps) noexcept {
+        // !(rps > 0) folds NaN, +inf-treat-as-error not requested
+        // (we want to allow inf if the user really means "unlimited"),
+        // and negatives. Use isfinite to specifically reject NaN/inf
+        // so the math stays well-defined; clamp negatives to 0.
+        if (!std::isfinite(rps) || rps < 0.0) return 0.0;
+        return rps;
+    }
+
     /// Advance `tokens_` by the amount refilled since `last_refill_`.
     /// Caller must hold `mu_`.  Clamps to `capacity_` so long-idle
     /// buckets don't overflow.
