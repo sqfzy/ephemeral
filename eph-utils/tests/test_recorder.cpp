@@ -213,6 +213,44 @@ TEST_F(RecorderTest, MergeFromAnotherRecorder) {
     EXPECT_EQ(rec1.count(), 100);
 }
 
+TEST_F(RecorderTest, MergeSaturatesTotalsAgainstWrap) {
+    // record_values already saturates `total_cycles_` at UINT64_MAX on
+    // overflow. Two saturated recorders merged should NOT wrap their
+    // total_cycles_ back near zero (UINT64_MAX + UINT64_MAX = -2 mod 2^64).
+    // Without the saturating-add fix in merge(), `compute_stats` would
+    // divide a tiny wrapped sum by the (saturated count_) and report an
+    // avg orders of magnitude lower than the true value.
+    Recorder rec1("MergeSat1");
+    Recorder rec2("MergeSat2");
+
+    uint64_t cycles = 10000;
+    uint64_t count  = std::numeric_limits<uint64_t>::max() / cycles + 1;
+    EXPECT_TRUE(rec1.record_values(cycles, count));
+    EXPECT_TRUE(rec2.record_values(cycles, count));
+
+    // Pre-merge: each rec's total_cycles_ is at UINT64_MAX (verified by
+    // RecordValuesSaturatesOnCyclesCountOverflow above). The avg the
+    // recorders report should be ~UINT64_MAX/count ns each.
+    auto pre_avg = rec1.compute_stats()->avg_ns;
+    EXPECT_GT(pre_avg, 0.0);
+
+    EXPECT_TRUE(rec1.merge(rec2));
+    auto post_stats = rec1.compute_stats();
+    ASSERT_TRUE(post_stats.has_value());
+    // The post-merge avg is the saturated-total / merged-count ratio.
+    // Without the fix: total wraps to ~0, avg collapses to a tiny number
+    //   << pre_avg / 2.
+    // With the fix: total stays saturated, avg ≈ pre_avg / 2 (count
+    //   merges to 2× while total cap stays the same).
+    //
+    // The merged count is 2 * count (each recorder added `count` events;
+    // the saturating merge keeps it linear because 2*count < UINT64_MAX).
+    // Assert post_avg is at least half the pre-merge avg — without
+    // saturation it would be 18 orders of magnitude lower.
+    EXPECT_GT(post_stats->avg_ns, pre_avg / 4.0)
+        << "merge wrapped total_cycles_ — saturating-add guard missing";
+}
+
 // ============================================================================
 // Recorder — export (JSON, CSV)
 // ============================================================================

@@ -348,12 +348,25 @@ class Recorder {
             return false;
         }
 
-        count_ += other.count_;
-        total_cycles_ += other.total_cycles_;
+        // Saturating adds for the running totals. `record_values` already
+        // saturates `total_cycles_` to UINT64_MAX on per-call overflow; the
+        // hot path keeps that invariant. Without the same guard here, two
+        // saturated recorders merged would wrap their `total_cycles_` sum
+        // back near zero (UINT64_MAX + UINT64_MAX = -2 mod 2^64), and the
+        // subsequent `total_cycles_ / count_` in `compute_stats` would
+        // report an avg orders of magnitude lower than reality. `count_`
+        // and the skipped tallies have the same hazard; cap them to
+        // UINT64_MAX explicitly so the diagnostic counters stay monotone.
+        constexpr auto kSatU64 = std::numeric_limits<uint64_t>::max();
+        auto saturating_add = [](uint64_t a, uint64_t b) noexcept {
+            return (b > kSatU64 - a) ? kSatU64 : a + b;
+        };
+        count_            = saturating_add(count_, other.count_);
+        total_cycles_     = saturating_add(total_cycles_, other.total_cycles_);
+        skipped_invalid_  = saturating_add(skipped_invalid_, other.skipped_invalid_);
+        skipped_overflow_ = saturating_add(skipped_overflow_, other.skipped_overflow_);
         min_cycles_ = std::min(min_cycles_, other.min_cycles_);
         max_cycles_ = std::max(max_cycles_, other.max_cycles_);
-        skipped_invalid_ += other.skipped_invalid_;
-        skipped_overflow_ += other.skipped_overflow_;
 
         return true;
     }
