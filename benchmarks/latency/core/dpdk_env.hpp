@@ -12,9 +12,14 @@
 ///
 /// Daemon-reshape (post-b4fc8969): `DpdkBenchEnv::create` now goes through
 /// `Platform::create(PlatformConfig)` (secondary attach to a daemon-managed
-/// NIC). The `lat` wrapper script is responsible for ensuring an
-/// `eph-nicd@<pci>` daemon is running for `cfg.networking.nic_b_pci`
-/// before each bench invocation. The previous `Platform::launch` /
+/// NIC). An `eph-nicd@<pci>` daemon must already be running for
+/// `cfg.networking.nic_b_pci` — the `lat` wrapper script handles the
+/// vfio-pci binding (via `eph-net-dpdk/scripts/dpdk-setup.sh`) but does
+/// NOT spawn the daemon; the operator is expected to start it (e.g.
+/// `sudo systemctl start eph-nicd@<bdf>` or, in dev settings,
+/// `eph::dpdk::dev::ensure_local_daemon` from `eph/dpdk/dev_helpers.hpp`).
+/// Without a running daemon, `Platform::create` fails with a typed error
+/// pointing at the systemctl command. The previous `Platform::launch` /
 /// `create_via_autojoin` paths (and the `EPH_LAT_AUTOJOIN_*` envvar
 /// diversion) are gone — multi-process bench runs simply launch N
 /// scenario binaries, each one a secondary; the daemon arbitrates queue
