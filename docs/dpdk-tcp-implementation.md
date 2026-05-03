@@ -268,10 +268,12 @@ no silent latency tail from dup-ACK waiting.
 ## 5. ICMP path-MTU feedback
 
 Optional, opt-in via `DpdkTcpStream::create_and_attach(cfg, platform)`
-— that factory registers the stream with `Platform::icmp_registry_`
-so router-originated ICMP Type 3 Code 4 (Fragmentation Needed)
-messages are dispatched to the owning session regardless of which
-RX queue they arrive on.
+— that factory calls `Platform::register_icmp_target` so router-
+originated ICMP Type 3 Code 4 (Fragmentation Needed) messages are
+dispatched to the owning session regardless of which RX queue they
+arrive on. (Internally the registry lives at
+`Platform::Impl::icmp_registry_sp`; the public surface is the
+`register_icmp_target` / `IcmpTargetHandle` pair.)
 
 On receipt, `TcpSession::on_icmp_frag_needed(next_hop_mtu)` clamps
 `effective_mss_` down to `next_hop_mtu - IP_HDR - TCP_HDR`. The

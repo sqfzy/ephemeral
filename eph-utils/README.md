@@ -299,7 +299,7 @@ integration fixtures that need namespace isolation. Requires
 
 ## Tests
 
-23 GoogleTest files under `tests/`, covering every public module plus
+24 GoogleTest files under `tests/`, covering every public module plus
 `test_version`. All tests are `[nodiscard]`-clean and exercise boundary
 conditions:
 

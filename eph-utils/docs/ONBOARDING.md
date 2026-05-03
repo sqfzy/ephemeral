@@ -341,7 +341,7 @@ eph::utils::pin_thread(2, "poll", p);
 
 Don't use `pin_thread` for that — worker lcores are spawned inside
 `rte_eal_init` and the control thread cannot reach them. Use the
-typed `eph::dpdk::LcorePin` + `EalGuard::init_with_pins` API in
+typed `eph::dpdk::LcorePin` + `EalGuard::init` API in
 `eph/dpdk/lcore_pin.hpp` / `eph/dpdk/eal.hpp`. It registers the cpu
 into this same registry pre-EAL, then lets EAL do the actual
 `setaffinity` from `--lcores=N@cpu`. A subsequent strict `pin_thread`

@@ -22,9 +22,10 @@ production.
 > - **Graceful close**: `Stream::close_gracefully(timeout)` exists on
 >   both kernel and DPDK `TcpStream`; the `(close_code, reason,
 >   timeout)` overload below is WS-codec specific.
-> - **Health**: read the latest `StreamMetric::kRxPackets` /
->   `kTxPackets` counter delta; there is no `is_connected()` /
->   `last_rx_tsc` member on `Stream`.
+> - **Health**: read the latest `StreamMetric::kBytesRecv` /
+>   `kBytesSent` (or `kFramesDecoded`) counter delta; there is no
+>   `is_connected()` / `last_rx_tsc` member on `Stream`. The full
+>   enumeration lives in `eph-net/include/eph/net/stream_metrics.hpp`.
 >
 > The Prometheus alert thresholds, playbooks, and shutdown sequencing
 > below are still operationally correct — only the bindings to the
