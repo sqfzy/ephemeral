@@ -227,15 +227,27 @@ int main(int argc, char** argv) {
     // physical state (descriptor depth, RSS key, mempool size, promiscuous,
     // …) lives in `NicServiceConfig` and is the daemon's job.
     //
-    // TODO(daemon-reshape): once `eph-nicd` ships (S4) and `eph::dpdk::dev::
-    // ensure_local_daemon(pci)` lands (S6), this example can call the dev
-    // helper to fork the daemon when running ad-hoc on a dev box. Today
-    // operators must `sudo systemctl start eph-nicd@<pci>.service` (or run
-    // the daemon binary by hand in another terminal) before invoking this.
+    // Daemon prerequisite: the operator must already have an
+    // `eph-nicd@<pci>` daemon running for the target NIC. Production:
+    //     sudo systemctl start eph-nicd@<pci>.service
+    // Dev / ad-hoc: include `eph/dpdk/dev_helpers.hpp` and call
+    //     eph::dpdk::dev::ensure_local_daemon(pci)
+    // before `Platform::create` to fork+exec the daemon if absent.
+    // This example deliberately does NOT call ensure_local_daemon so
+    // its happy-path output matches the production ops story; readers
+    // who want the auto-spawn shortcut can opt in by adding the include
+    // and one call site (~3 lines).
+    //
+    // Default-NIC selection (post-2026-05-02 reshape): pass an empty
+    // `--pci` and `Platform::create({.pci=""})` will scan
+    // `/var/run/dpdk/eph_*/eph-pci.txt` and attach to the unique
+    // running daemon. We still require an explicit `--pci` here so
+    // multi-NIC dev hosts get a deterministic example.
     if (cfg.eal.pci.empty()) {
-        spdlog::error("simple_hft: --pci is required (the daemon model "
-                      "needs an explicit BDF until default-NIC selection "
-                      "from /etc/eph/*.toml lands in S6)");
+        spdlog::error("simple_hft: --pci is required for this example "
+                      "(empty pci on Platform::create works on hosts "
+                      "with exactly one running eph-nicd; this demo "
+                      "asks for a deterministic BDF instead)");
         return 1;
     }
     ed::PlatformConfig pcfg{};

@@ -198,10 +198,13 @@ int main(int argc, char** argv) {
     // explicit pin. The receiver cannot reverse-pick a src_port (it
     // doesn't control the sender) so RSS without FD is unsafe.
     //
-    // TODO(daemon-reshape): operator must `sudo systemctl start
-    // eph-nicd@<pci>.service` before this runs. Until S6 lands the
-    // `dev::ensure_local_daemon` helper, ad-hoc dev-host runs need the
-    // daemon spawned manually.
+    // Daemon prerequisite: an `eph-nicd@<pci>` daemon must be running
+    // for the target NIC. Production: `sudo systemctl start
+    // eph-nicd@<pci>.service`. Dev / ad-hoc: include
+    // `eph/dpdk/dev_helpers.hpp` and call
+    // `eph::dpdk::dev::ensure_local_daemon(pci)` to fork+exec it
+    // automatically. This example deliberately stays manual to keep
+    // its output aligned with the production ops flow.
     if (args.eal.pci.empty()) {
         spdlog::error("dpdk_multicast_md: --pci is required");
         return 1;

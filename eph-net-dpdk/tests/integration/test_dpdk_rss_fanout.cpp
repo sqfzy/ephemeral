@@ -86,12 +86,18 @@ public:
     static ::eph::dpdk::test::DpdkBenchEnv& env() { return *env_; }
 
     void SetUp() override {
-        // TODO(daemon-reshape S5): unconditional SKIP — multi-queue
-        // secondary attach is not yet implemented in the S3
-        // placeholder of `Platform::create`. Reactivate when the
-        // QueueAllocator + RETA-tracking IPC arrives.
-        reason_ = "TODO(daemon-reshape S5): multi-queue secondary "
-                  "attach not yet implemented.";
+        // FIXME(daemon-reshape): the S5 QueueAllocator (in
+        // eph/dpdk/detail/queue_allocator.hpp) and the multi-queue
+        // attach IPC have both landed and are wired in
+        // Platform::create — but this fixture has not been re-validated
+        // against the new path yet. Keeping the unconditional SKIP for
+        // now. Reactivation is `delete this block` + verify against a
+        // running eph-nicd daemon with total_queues >= 4. The original
+        // env setup follows this `return` and is intentionally
+        // preserved to make reactivation a one-line change.
+        reason_ = "FIXME(daemon-reshape): multi-queue secondary attach "
+                  "wired but fixture unverified — remove SKIP and re-run "
+                  "against a 4+ queue eph-nicd daemon to reactivate.";
         ready_ = false;
         return;
 

@@ -321,8 +321,11 @@ int main(int argc, char** argv) {
     // application-side PlatformConfig only carries `pci`, `queues`, and
     // EAL knobs. ~Platform releases the secondary attach atomically.
     //
-    // TODO(daemon-reshape): wire `dev::ensure_local_daemon` (S6) so
-    // ad-hoc dev-host runs can fork a daemon transparently.
+    // Dev-mode shortcut: `dev::ensure_local_daemon(pci)` from
+    // `eph/dpdk/dev_helpers.hpp` will fork+exec a daemon if absent —
+    // intentionally not invoked here so this example exercises the
+    // production-style "operator already started the daemon" flow. Add
+    // one include + one call site if you want auto-spawn in dev runs.
     if (app_cfg.eal.pci.empty()) {
         spdlog::error("binance_latency: --pci is required");
         return 1;
