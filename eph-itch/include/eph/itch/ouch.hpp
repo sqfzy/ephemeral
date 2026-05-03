@@ -381,8 +381,22 @@ public:
     [[nodiscard]] uint64_t order_reference() const noexcept { assert(valid() && "must check valid() before accessing fields"); return read_be64(data_ + 49); }
     /// @brief Capacity: 'O'=agency, 'P'=principal, 'R'=riskless principal.
     [[nodiscard]] char     capacity()       const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[57]); }
+    /// @brief Intermarket sweep eligibility: 'Y'=eligible, 'N'=not eligible.
+    ///
+    /// Operationally consequential — risk / surveillance teams need to know
+    /// whether the accepted order was tagged as an ISO so reg-NMS protections
+    /// can be reconciled later. ReplacedView already exposed this getter; the
+    /// gap on AcceptedView was a copy-paste omission.
+    [[nodiscard]] char     int_mkt_sweep()  const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[58]); }
+    /// @brief Cross type: 'N'=continuous, 'O'=opening, 'C'=closing, 'H'=halted.
+    [[nodiscard]] char     cross_type()     const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[59]); }
     /// @brief Order state: 'L'=live, 'D'=dead.
     [[nodiscard]] char     order_state()    const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[60]); }
+    /// @brief BBO weight indicator (1 byte at offset 61).
+    ///
+    /// Nasdaq sets this to communicate how the order's price relates to the
+    /// NBBO at acceptance time — useful for execution-quality analytics.
+    [[nodiscard]] char     bbo_weight()     const noexcept { assert(valid() && "must check valid() before accessing fields"); return static_cast<char>(data_[61]); }
 
 private:
     const uint8_t* data_ = nullptr;

@@ -264,8 +264,17 @@ TEST(OuchAcceptedView, ParseAllFields) {
     // capacity at offset 57
     buf[57] = 'O';
 
+    // int_mkt_sweep at offset 58
+    buf[58] = 'Y';
+
+    // cross_type at offset 59
+    buf[59] = 'N';  // continuous
+
     // order_state at offset 60
     buf[60] = 'L';  // live
+
+    // bbo_weight at offset 61
+    buf[61] = '1';  // example weight code
 
     AcceptedView view(buf.data(), buf.size());
     ASSERT_TRUE(view.valid());
@@ -283,7 +292,10 @@ TEST(OuchAcceptedView, ParseAllFields) {
     EXPECT_EQ(view.display(), 'Y');
     EXPECT_EQ(view.order_reference(), 123456789ULL);
     EXPECT_EQ(view.capacity(), 'O');
+    EXPECT_EQ(view.int_mkt_sweep(), 'Y');
+    EXPECT_EQ(view.cross_type(), 'N');
     EXPECT_EQ(view.order_state(), 'L');
+    EXPECT_EQ(view.bbo_weight(), '1');
 }
 
 TEST(OuchAcceptedView, TooSmallBufferIsInvalid) {
