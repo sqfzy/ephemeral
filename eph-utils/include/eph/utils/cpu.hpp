@@ -64,7 +64,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& cpu_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.cpu");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.cpu");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.cpu"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.cpu"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         // Inherit level from spdlog global default
         return lg;
     }();

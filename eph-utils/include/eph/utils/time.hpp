@@ -46,7 +46,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& tsc_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.tsc");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.tsc");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.tsc"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.tsc"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         // Inherit level from spdlog global default
         return lg;
     }();

@@ -45,7 +45,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& audit_log_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.audit_log");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.audit_log");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.audit_log"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.audit_log"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

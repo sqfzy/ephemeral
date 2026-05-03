@@ -38,7 +38,11 @@ namespace detail {
 inline const std::shared_ptr<spdlog::logger>& hugepage_logger() {
     static auto l = [] {
         auto lg = spdlog::get("utils.hugepage");
-        if (!lg) lg = spdlog::stdout_color_mt("utils.hugepage");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("utils.hugepage"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.hugepage"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l;

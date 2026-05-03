@@ -43,7 +43,11 @@ namespace detail {
 inline spdlog::logger* binance_rest_logger() {
     static auto l = [] {
         auto lg = spdlog::get("json.binance_rest");
-        if (!lg) lg = spdlog::stdout_color_mt("json.binance_rest");
+        if (!lg) {
+            try { lg = spdlog::stdout_color_mt("json.binance_rest"); }
+            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("json.binance_rest"); }
+        }
+        if (!lg) lg = spdlog::default_logger();
         return lg;
     }();
     return l.get();
