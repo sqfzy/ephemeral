@@ -155,18 +155,27 @@ plan (S6). Until then, daemon health is observable only via
 ### Daemon crash → systemd restart → tenant reconnect
 
 `systemd Restart=on-failure` brings `eph-nicd` back within ~1 s of a
-crash. Tenant applications observe the absence via `rx_burst` /
-`tx_burst` failures; the surfaced error is
-`Error::DaemonDisconnected` (S6 — see TODO note below). The standard
-reconnect pattern is in `docs/dpdk-reconnect-pattern.md`: sleep,
-retry `Platform::create`, rebuild business state.
+crash. The standard reconnect pattern is in
+`docs/dpdk-reconnect-pattern.md`: sleep, retry `Platform::create`,
+rebuild business state.
 
-> **TODO(S6)**: today the foundation commit defines the new factory
-> shape but does **not** yet wire `Error::DaemonDisconnected` into
-> `rx_burst` / `tx_burst`. Until S6 lands, daemon crashes surface as
-> generic `rte_eth_*` failures and tenant code must inspect those
-> directly. The S6 work makes the failure mode a single typed error
-> code with idempotent retry semantics on `Platform::create`.
+> **S6 status (2026-05-02)**: the typed error
+> `Error::DaemonDisconnected`, the read-side `Platform::is_alive()`
+> getter, the public `Platform::mark_daemon_disconnected_()` hook,
+> and the idempotent retry-safe preamble on `Platform::create` are
+> all landed. What is **not** yet wired is automatic detection
+> inside `rx_burst` / `tx_burst` — those still surface generic
+> `rte_eth_*` failures on daemon disappearance. Two recommended
+> work-arounds until the burst-side wire-up lands:
+>
+>   * call `Platform::mark_daemon_disconnected_()` from your own
+>     watchdog thread when external probes (e.g. `rte_eth_link_get`,
+>     `gh ps eph-nicd`, `/proc/net/...`) report the daemon gone, then
+>     have your hot loop poll `Platform::is_alive()` to short-circuit
+>     burst calls;
+>   * inspect raw `rte_eth_*` return codes on the burst path and
+>     classify "secondary lost primary" failures into
+>     `Error::DaemonDisconnected` at your own translation layer.
 
 ### Tenant crash → daemon retains other peers
 
