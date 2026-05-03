@@ -487,45 +487,102 @@ TEST(IcmpRegistryLifecycle, MoveConstructHandleAfterRegistryDies) {
     SUCCEED();
 }
 
-TEST(IcmpRegistryLifecycle, DispatchCallbackCanReenterRegistry) {
-    // Major 2 root-fix: dispatch() now invokes the callback AFTER
-    // releasing `mu_`. This makes it safe for the callback to mutate
-    // the registry (e.g. unregister another entry, inspect size,
-    // query dispatched()) without recursive-lock deadlock.
+TEST(IcmpRegistryLifecycle, DispatchCallbackInvokedUnderLockNonReentrant) {
+    // Pin the post-e085dd41 contract: `dispatch()` invokes the callback
+    // WHILE `mu_` is held. This was a deliberate semantic flip from the
+    // earlier "snapshot (stream, cb) under lock then invoke unlocked"
+    // shape — the unlocked invocation opened a UAF window where
+    // `~Stream` on another thread could remove the slot AND destroy the
+    // stream object between snapshot and invoke. Holding the lock
+    // through the callback closes that window (~Stream blocks at
+    // `Handle::release_()` on `mu_` until the callback returns).
     //
-    // Pin behaviour with a callback that deliberately calls
-    // unregister() for a *different* tuple during dispatch — under
-    // the old in-lock design this was a guaranteed deadlock (the
-    // same mu_ acquired twice on one thread is UB with std::mutex).
+    // Trade-off: the callback MUST NOT call back into the registry
+    // (`register_target`, `unregister`, `size`, `dispatched`) on the
+    // same thread — `mu_` is non-recursive and recursion is UB
+    // (typically deadlock). The single production callback
+    // (`DpdkTcpStream::on_icmp_mtu_thunk_`) only forwards into
+    // `TcpSession::on_icmp_frag_needed`, which is registry-free.
+    //
+    // This test PINs both halves of the contract:
+    //   (a) the callback is observably invoked — sanity that we didn't
+    //       silently drop the dispatch path,
+    //   (b) a *different* thread attempting `register_target` during
+    //       the callback is observably blocked and proceeds only after
+    //       dispatch returns — proving the lock is held through the
+    //       callback.
+    //
+    // The earlier name `DispatchCallbackCanReenterRegistry` and its
+    // recursive-unregister-from-callback body asserted the OPPOSITE
+    // (out-of-lock invocation); they predated e085dd41's fix and
+    // deadlocked when run, hanging the whole test binary. Replaced
+    // here with a contract PIN that actively defends the current shape.
     reset_mocks();
     auto r = make_registry();
-    static IcmpRegistry* g_reg_for_callback = nullptr;  // for static thunk
-    g_reg_for_callback = r.get();
 
-    auto on_mtu_unregister_b = [](void* /*user*/, uint16_t /*mtu*/) noexcept {
-        // Callback reaches back into registry to unregister kTupleB.
-        // If dispatch held mu_ over this call, same-thread recursive
-        // lock attempt → undefined behaviour / deadlock.
-        g_reg_for_callback->unregister(kTupleB, kIpProtoTcp);
+    // Static signalling state — `MtuCallback` is `void(*)(void*, uint16_t)
+    // noexcept` (raw fn pointer; capturing lambda cannot decay to it),
+    // so the callback reads/writes static atomics. Re-initialised at
+    // the start of this test; no other test exercises these symbols.
+    static std::atomic<bool> s_cb_started{false};
+    static std::atomic<bool> s_cb_done{false};
+    static std::atomic<bool> s_peer_returned{false};
+    s_cb_started.store(false);
+    s_cb_done.store(false);
+    s_peer_returned.store(false);
+
+    auto on_mtu_signal = [](void* /*user*/, uint16_t mtu) noexcept {
+        s_cb_started.store(true, std::memory_order_release);
+        // Hold the callback open just long enough for the peer thread
+        // to attempt register_target and observably block on `mu_`.
+        // 50ms is well over the 1-2µs cost of a blocked
+        // std::mutex::lock(); 100% deterministic on busy CI runners
+        // and dev boxes alike.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // While we sleep, the peer's register_target MUST still be
+        // blocked — assert that fact before exiting the callback.
+        EXPECT_FALSE(s_peer_returned.load(std::memory_order_acquire))
+            << "peer register_target completed while callback was still "
+               "running — `mu_` is not held through the callback";
+        g_mock_a.last_mtu.store(mtu, std::memory_order_relaxed);
+        g_mock_a.hits.fetch_add(1, std::memory_order_relaxed);
+        s_cb_done.store(true, std::memory_order_release);
     };
 
     auto ha = r->register_target(kTupleA, kIpProtoTcp,
-                                  &g_mock_a, +on_mtu_unregister_b);
-    auto hb = r->register_target(kTupleB, kIpProtoTcp,
-                                  &g_mock_b, &on_mtu_b);
-    ASSERT_TRUE(ha.has_value());
-    ASSERT_TRUE(hb.has_value());
-    EXPECT_EQ(r->size(), 2u);
+                                  &g_mock_a, +on_mtu_signal);
+    ASSERT_TRUE(ha.has_value()) << ha.error().detail;
 
-    // Dispatch to A → callback unregisters B.
+    std::thread peer([&]{
+        // Spin until the dispatch thread reports it's inside the
+        // callback, then attempt to register a new (kTupleB) target —
+        // that call must take `mu_`, blocking until the callback
+        // returns and dispatch unwinds.
+        while (!s_cb_started.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        auto hb = r->register_target(kTupleB, kIpProtoTcp,
+                                      &g_mock_b, &on_mtu_b);
+        s_peer_returned.store(true, std::memory_order_release);
+        EXPECT_TRUE(hb.has_value()) << hb.error().detail;
+        // hb dtor runs at scope exit → unregister kTupleB; safe by
+        // contract (different thread from dispatch, not callback re-entry).
+    });
+
     r->dispatch(make_icmp(kTupleA, kIpProtoTcp, 1300));
 
-    // If we got here without deadlock, the out-of-lock invocation works.
-    EXPECT_EQ(r->size(), 1u) << "B should have been unregistered by A's callback";
+    // Callback ran, hit count incremented, peer's register_target
+    // observed mu_ contention but eventually succeeded after dispatch
+    // released the lock.
+    peer.join();
+    EXPECT_TRUE(s_cb_done.load(std::memory_order_acquire));
+    EXPECT_EQ(g_mock_a.hits.load(std::memory_order_relaxed), 1);
+    EXPECT_EQ(g_mock_a.last_mtu.load(std::memory_order_relaxed), 1300);
+    EXPECT_TRUE(s_peer_returned.load(std::memory_order_acquire));
 
-    // Handle hb is still engaged_=true even though B is unregistered —
-    // its dtor will weak_ptr.lock() → unregister no-op (B already gone).
-    // Handle ha's dtor will unregister A normally.
+    // After peer's hb dtor + ha dtor below, registry should be empty.
+    // (ha dtor at scope exit.)
+    EXPECT_EQ(r->size(), 1u);  // only kTupleA still registered (ha not yet dtor'd)
 }
 
 TEST(IcmpRegistryLifecycle, ConcurrentRegisterUnregisterDispatch) {
