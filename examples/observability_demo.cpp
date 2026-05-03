@@ -19,7 +19,7 @@
 ///   [COUNTER] net.stream.reasm_overflows         = 0 {venue=demo}
 ///   [COUNTER] net.stream.codec_errors            = 0 {venue=demo}
 ///   [COUNTER] net.stream.tls.cross_record_frames = 0 {venue=demo}
-///   ... 19 more zero-valued counters (TCP-specific, TLS, WS, DPDK) ...
+///   ... 18 more zero-valued counters (TCP-specific, TLS, WS, DPDK) ...
 ///   [COUNTER] net.stream.tls.handshake_count     = 0 {venue=demo}
 /// See docs/observability-guide.md for the full list.
 
