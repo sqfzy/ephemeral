@@ -32,6 +32,17 @@ namespace eph::core::detail {
             lg = spdlog::get(name);
         }
     }
+    // Defense-in-depth: every call site dereferences this raw pointer
+    // via SPDLOG_LOGGER_*(l, ...) without a null guard, so a nullptr
+    // here would crash any first log call. The only path that can
+    // surface nullptr is a race where another thread `spdlog::drop`s
+    // the name between the throwing `stdout_color_mt` and the
+    // recovery `spdlog::get` — vanishingly unlikely but possible.
+    // Fall back to spdlog::default_logger() (always non-null) so the
+    // worst-case outcome is "log to default sink" rather than crash.
+    if (!lg) {
+        lg = spdlog::default_logger();
+    }
     return lg.get();
 }
 
