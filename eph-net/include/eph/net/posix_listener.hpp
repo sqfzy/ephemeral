@@ -54,8 +54,19 @@ tcp_bind_listen(std::string_view ip, uint16_t port, int backlog = 1) {
     }
 
     int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    // SO_REUSEADDR / TCP_NODELAY both legitimately fail on some kernels
+    // (e.g. seccomp-restricted sandboxes) without breaking bind+listen.
+    // Demote to DEBUG instead of silently swallowing — the test fixture
+    // still works, but a strange port-already-in-use error or tail-
+    // latency surprise downstream now has a breadcrumb in the journal.
+    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
+        SPDLOG_DEBUG("posix::tcp_bind_listen: setsockopt(SO_REUSEADDR) failed "
+                     "fd={} errno={} ({})", fd, errno, std::strerror(errno));
+    }
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+        SPDLOG_DEBUG("posix::tcp_bind_listen: setsockopt(TCP_NODELAY) failed "
+                     "fd={} errno={} ({})", fd, errno, std::strerror(errno));
+    }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -99,7 +110,10 @@ udp_bind(std::string_view ip, uint16_t port) {
     }
 
     int one = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
+        SPDLOG_DEBUG("posix::udp_bind: setsockopt(SO_REUSEADDR) failed "
+                     "fd={} errno={} ({})", fd, errno, std::strerror(errno));
+    }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -172,10 +186,29 @@ accept_one(int listen_fd, std::atomic<bool>& running) {
                 std::string("accept() failed: ") + std::strerror(errno));
         }
         int one = 1;
-        ::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        // TCP_NODELAY may legitimately fail on some kernels (rare) — log
+        // at DEBUG instead of silently swallowing so a strange tail
+        // latency in a downstream test has a breadcrumb.
+        if (::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+            SPDLOG_DEBUG("posix::accept_one: setsockopt(TCP_NODELAY) failed "
+                         "cfd={} errno={} ({}) — connection still usable",
+                         cfd, errno, std::strerror(errno));
+        }
 
-        char ip[INET_ADDRSTRLEN];
-        ::inet_ntop(AF_INET, &caddr.sin_addr, ip, sizeof(ip));
+        // Zero-init the scratch buffer so a (theoretical) inet_ntop
+        // failure can't have us SPDLOG_INFO an uninitialized C-string
+        // (UB: spdlog/fmt would read past unmapped memory until a stray
+        // NUL or a SIGSEGV). inet_ntop only returns nullptr for
+        // EAFNOSUPPORT / ENOSPC — both impossible given AF_INET +
+        // INET_ADDRSTRLEN below — but the cost is negligible and the
+        // failure mode is invisible from a journal entry alone.
+        char ip[INET_ADDRSTRLEN] = {};
+        if (::inet_ntop(AF_INET, &caddr.sin_addr, ip, sizeof(ip)) == nullptr) {
+            SPDLOG_WARN("posix::accept_one: inet_ntop failed cfd={} errno={} ({}) "
+                        "— peer IP rendered as '?'", cfd, errno, std::strerror(errno));
+            ip[0] = '?';
+            ip[1] = '\0';
+        }
         SPDLOG_INFO("posix::accept_one: client {}:{} cfd={}",
                     ip, ntohs(caddr.sin_port), cfd);
         return cfd;
