@@ -203,7 +203,10 @@ init_header(Header* hdr, uint16_t total_queues) noexcept {
     }
     pthread_mutexattr_destroy(&attr);
 
-    // bitmap, generation, stale_releases are zero-initialized by memset.
+    // All scalar/bitmap/atomic fields were zeroed in the loops/stores
+    // above (this function deliberately avoids memset on the Header —
+    // see the comment block at the top of init_header for why std::atomic
+    // forbids it). Nothing else to initialize before returning.
     return {};
 }
 
