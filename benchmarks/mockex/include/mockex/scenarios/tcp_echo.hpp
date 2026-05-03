@@ -187,19 +187,61 @@ inline void echo_client_loop(IoStream io,
             [cfd, use_tls, tls = ctx.tls,
              running = ctx.running,
              &active_fds_mu, &active_fds]() {
-                if (use_tls) {
-                    auto conn = tls->accept_tls(cfd);
-                    if (conn.fd() >= 0) {
-                        echo_client_loop(std::move(conn), *running, cfd);
+                // Order matters here. Without the explicit ordering, the
+                // RAII IoStream's destructor closes cfd BEFORE main's
+                // erase happens — opening a tiny window where
+                //   1. worker close()d cfd,
+                //   2. kernel reused that fd for an unrelated socket,
+                //   3. main's shutdown loop sees cfd still in
+                //      active_fds, calls shutdown(cfd, SHUT_RDWR),
+                //      and nukes the unrelated socket.
+                //
+                // C++ destruction order is reverse of declaration order
+                // within the same scope. So we declare the IoStream
+                // FIRST and the Eraser SECOND in the lambda scope: at
+                // function exit, ~Eraser fires first (erases under
+                // mutex), then ~IoStream fires (closes the fd).
+                //
+                // Because the run loop is templated on IoStream
+                // (RawFdStream vs TLS conn), use std::variant to hold
+                // either alternative without forcing the body into the
+                // inner if/else.
+                io::RawFdStream  raw_io{cfd};
+                tls::TlsConn     tls_io{};  // default: fd=-1
+
+                struct Eraser {
+                    std::mutex&        mu;
+                    std::vector<int>&  fds;
+                    int                cfd;
+                    ~Eraser() {
+                        std::lock_guard lk(mu);
+                        fds.erase(std::remove(fds.begin(), fds.end(), cfd),
+                                  fds.end());
                     }
-                    // accept_tls already closed cfd on handshake failure.
+                };
+                Eraser guard{active_fds_mu, active_fds, cfd};
+
+                if (use_tls) {
+                    // accept_tls takes ownership of cfd via the tls
+                    // wrapper; release raw_io first so it doesn't
+                    // double-close. The release() return value is the
+                    // fd we already have; cast to void to acknowledge
+                    // the [[nodiscard]] attribute.
+                    (void)raw_io.release();
+                    tls_io = tls->accept_tls(cfd);
+                    if (tls_io.fd() >= 0) {
+                        echo_client_loop(std::move(tls_io), *running, cfd);
+                    }
+                    // accept_tls closed cfd on handshake failure.
                 } else {
-                    echo_client_loop(io::RawFdStream{cfd}, *running, cfd);
+                    echo_client_loop(std::move(raw_io), *running, cfd);
                 }
-                std::lock_guard lk(active_fds_mu);
-                active_fds.erase(
-                    std::remove(active_fds.begin(), active_fds.end(), cfd),
-                    active_fds.end());
+                // Lambda exits here. Destruction order (reverse decl):
+                //   1. ~Eraser    — removes cfd from active_fds (mutex)
+                //   2. ~tls_io    — closes (or no-op if moved-out)
+                //   3. ~raw_io    — closes (or no-op if released/moved)
+                // Step 1 runs before any close(), so main's shutdown
+                // loop never sees a stale entry pointing at a reused fd.
             });
     }
 
