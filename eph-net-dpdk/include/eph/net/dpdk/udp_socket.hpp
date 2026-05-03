@@ -597,8 +597,9 @@ public:
     ///        sufficient to redirect inbound dispatch.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     connect_to(const SocketAddr& peer) noexcept {
-        // The legacy UdpSender is fixed-peer (built around a precomputed
-        // packet template), so we can't change the TX peer mid-stream.
+        // The underlying wire-level UdpSender is fixed-peer (built around
+        // a precomputed packet template), so we can't change the TX peer
+        // mid-stream.
         // What we CAN do is update the inbound dispatch tuple — the
         // Poller's routing table keys on (src_ip, src_port, dst_ip, dst_port).
         //
