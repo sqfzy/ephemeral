@@ -410,7 +410,23 @@ public:
             SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
         }
 
-        // Load client certificate and key for mutual TLS (mTLS)
+        // Load client certificate and key for mutual TLS (mTLS).
+        //
+        // Both paths are required as a pair — the cert needs the
+        // matching key. An asymmetric config (only one set) was previously
+        // silently ignored: mTLS stayed disabled and the peer rejected
+        // the handshake at runtime with no actionable diagnostic. WARN
+        // up-front so the misconfiguration surfaces at SSL_CTX setup
+        // rather than as an opaque "alert handshake_failure" later.
+        if (config.client_cert_path.empty() != config.client_key_path.empty()) {
+            SPDLOG_LOGGER_WARN(log,
+                "TLS mTLS misconfigured: client_cert_path={} "
+                "client_key_path={} — both must be set together for mTLS, "
+                "or both empty to disable. Ignoring lone field; mTLS will "
+                "be DISABLED for this session.",
+                config.client_cert_path.empty() ? "(empty)" : config.client_cert_path,
+                config.client_key_path.empty()  ? "(empty)" : config.client_key_path);
+        }
         if (!config.client_cert_path.empty() && !config.client_key_path.empty()) {
             if (SSL_CTX_use_certificate_chain_file(
                     ctx, config.client_cert_path.c_str()) != 1) {
