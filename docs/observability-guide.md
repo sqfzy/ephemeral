@@ -303,7 +303,7 @@ xmake run observability_demo
 ```
 
 You'll see roughly this output every 250 ms for 3 seconds (`publish_metrics`
-walks the full enum, so all 25 counters are emitted — the kernel TCP
+walks the full enum, so all 26 counters are emitted — the kernel TCP
 stream legitimately bumps only the first three; the rest stay at zero
 for a non-TLS, non-DPDK, non-WebSocket workload):
 
@@ -320,6 +320,7 @@ for a non-TLS, non-DPDK, non-WebSocket workload):
 [COUNTER] net.stream.tcp.reorder_buffer_hits = 0   {venue=demo, transport=tcp}
 [COUNTER] net.stream.tcp.reorder_buffer_overflows = 0 {venue=demo, transport=tcp}
 [COUNTER] net.stream.tcp.keepalive_probes_sent = 0 {venue=demo, transport=tcp}
+[COUNTER] net.stream.tcp.keepalive_send_failures = 0 {venue=demo, transport=tcp}
 [COUNTER] net.stream.tcp.mss_negotiation_applied = 0 {venue=demo, transport=tcp}
 [COUNTER] net.stream.icmp.frag_needed_received = 0 {venue=demo, transport=tcp}
 [COUNTER] net.stream.tcp.dup_segments        = 0   {venue=demo, transport=tcp}

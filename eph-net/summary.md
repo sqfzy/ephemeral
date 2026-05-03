@@ -359,7 +359,7 @@ enum class StreamMetric : std::size_t {
     kPacketsDropped, kFragmentRejected,
     kWsDeflateBytesIn, kWsDeflateBytesOut,            // RFC 7692
     kTlsResumeCount, kTlsHandshakeCount,              // RFC 8446 §4.6.1
-    kCount   // sentinel — current value: 25
+    kCount   // sentinel — current value: 26
 };
 
 inline constexpr std::array<std::string_view,

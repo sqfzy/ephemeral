@@ -20,7 +20,7 @@ exactly one of the two per fired tick. Kernel backends emit 0 (kernel
 stack owns its own keepalive state machine).
 
 OTel name: `net.stream.tcp.keepalive_send_failures`.
-Total `StreamMetric::kCount` is now 25 (was 24).
+Total `StreamMetric::kCount` is now 26 (was 25).
 
 ### Added — default-NIC resolution (2026-05-02)
 
