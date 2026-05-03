@@ -86,13 +86,24 @@ run_push_loop(IoStream& io,
               const std::atomic<bool>& running,
               const PushConfig& cfg) noexcept {
     uint64_t next_tick_ns = bench::monotonic_raw_ns();
+    // Clamp burst_multiplier to at least 1 so a misconfigured
+    // `burst_size = 0` in [scenarios.<name>] does NOT silently produce
+    // zero frames in the busy regime (the loop still ticks and waits,
+    // but emits nothing — easy to misread as "client lost the
+    // connection" or "sampler stuck in quiet"). The 1 fallback matches
+    // the quiet-regime semantics, so the behavior degrades gracefully
+    // to "no bursting" rather than "no traffic". A WARN here would be
+    // noisy on every legitimate use of ex_market_push (which never sets
+    // burst_multiplier > 1), so we silently clamp.
+    const size_t burst_clamped = (cfg.burst_multiplier == 0)
+        ? size_t{1} : cfg.burst_multiplier;
     while (running.load(std::memory_order_relaxed)) {
         sleep_until_raw_ns(next_tick_ns);
         if (!running.load(std::memory_order_relaxed)) break;
 
         const uint64_t t_send_ns = bench::monotonic_raw_ns();
         const size_t frames = sampler.in_busy_regime()
-            ? cfg.burst_multiplier : 1;
+            ? burst_clamped : 1;
         for (size_t i = 0; i < frames; ++i) {
             auto bytes = pool.stamp_and_next(t_send_ns);
             if (!ws::send_frame(io, ws::kOpcodeBinary, bytes)) {
