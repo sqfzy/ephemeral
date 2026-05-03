@@ -115,10 +115,19 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string_view a = argv[i];
         if (a == "-h" || a == "--help") return print_usage(0);
-        if (a == "--scenario" && i + 1 < argc) {
-            scenario_name = argv[++i];
-        } else if (a == "--config" && i + 1 < argc) {
-            config_path = argv[++i];
+        // Disambiguate "missing value" from "unknown flag": both used to
+        // print "unknown argument: --scenario" because the i+1<argc guard
+        // was folded into the same conditional. Surface a clearer error.
+        if (a == "--scenario" || a == "--config") {
+            if (i + 1 >= argc) {
+                SPDLOG_ERROR("[mockex] {} requires a value", a);
+                return print_usage(2);
+            }
+            if (a == "--scenario") {
+                scenario_name = argv[++i];
+            } else {
+                config_path = argv[++i];
+            }
         } else {
             SPDLOG_ERROR("[mockex] unknown argument: {}", a);
             return print_usage(2);
