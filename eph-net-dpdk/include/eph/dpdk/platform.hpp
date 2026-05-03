@@ -779,9 +779,9 @@ public:
     ///   * `validate(cfg)` rejection (bad queues / pin spec / …)
     ///   * No daemon running on this NIC (no primary on the
     ///     derived file_prefix)
-    ///   * Pool exhausted (post-S5: returns
-    ///     `ErrorInfo{QueuePoolExhausted}`; today the static
-    ///     placeholder may surface a different bring-up error)
+    ///   * Queue pool exhausted — the daemon's S5 QueueAllocator
+    ///     returns "QueuePoolExhausted" in the error string when
+    ///     no contiguous run of `cfg.queues` queues is free.
     [[nodiscard]] static std::expected<Platform, std::string>
     create(PlatformConfig cfg);
 
@@ -2712,10 +2712,12 @@ bringup_from_platform_(const PlatformConfig& cfg,
     BringupConfig bcfg{};
     bcfg.proc_type   = ProcType::Secondary;
     bcfg.file_prefix = file_prefix;
-    // S5 lifts the placeholder: cfg.queues drives a real claim against
-    // the daemon's QueueAllocator, and the daemon hands back the actual
-    // queue range. Today we project naively into a uniform topology so
-    // the existing secondary_bringup_ machinery still works.
+    // Default-good shape — the cfg.queues count seeds a uniform
+    // topology so the secondary_bringup_ machinery has something
+    // sensible to validate. Platform::create later patches
+    // rx_queue_range / nb_rx_queues with the daemon's S5
+    // QueueAllocator-granted [lo, hi) range, so the actual RR
+    // selector operates on the granted slice rather than [0, count).
     bcfg.port_id        = 0;            // single-port today
     bcfg.nb_rx_queues   = cfg.queues;
     bcfg.nb_tx_queues   = cfg.queues;
