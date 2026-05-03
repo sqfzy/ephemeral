@@ -122,8 +122,9 @@ Opt-in headers that utils.hpp does NOT transitively include
 **External edges**:
 
 - `spdlog` — logging. Every module creates a lazy per-subsystem logger
-  in a `detail::xxx_logger()` helper (e.g. `utils.tsc`, `utils.cpu`).
-  Level filtered at compile time via `SPDLOG_ACTIVE_LEVEL`.
+  in a `detail::<name>_logger()` helper (e.g. `detail::tsc_logger()`
+  → `utils.tsc`, `detail::cpu_logger()` → `utils.cpu`). Level filtered
+  at compile time via `SPDLOG_ACTIVE_LEVEL`.
 - `eph-core` — `console_sink.hpp` consumes the `core::MetricsSink`
   concept from `<eph/core/metrics_concept.hpp>`; `hdr_histogram.hpp`
   and `recorder.hpp` consume the JSON-escape utility from

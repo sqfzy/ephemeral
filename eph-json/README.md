@@ -150,19 +150,19 @@ eph-json/
 | `DepthSnapshot` | `{ int64_t last_update_id; vector<DepthLevel> bids, asks; }`. |
 | `ServerTime` | `{ int64_t server_time_ms; }`. |
 
-### Binance REST Client (`eph::json::binance`)
+### Binance REST response parsers (`eph::json::binance`)
+
+The legacy `BinanceRestClient` HTTPS wrapper was removed along with
+`eph-transport`. Callers perform the GET via their own
+`eph-net-kernel` + TLS stack and feed the raw response body into the
+pure-function parsers below — same single-pass `parser.hpp` engine
+the WebSocket adapters use.
 
 | Symbol | Description |
 |--------|-------------|
-| `BinanceRestConfig` | `host` (default `"api.binance.com"`), `port` (443), `timeout` (5000 ms). Provides `validate()`, `dump()`, `to_json()`, `warnings()`, and defaulted `operator==`. |
-| `BinanceRestClient::Config` | Alias for `BinanceRestConfig`. |
-| `BinanceRestClient(Config = {})` | Constructs an `HttpClient` configured for HTTPS with the given host/port/timeout. |
-| `BinanceRestClient::kValidDepthLimits` | `constexpr array<int,8>` = `{5, 10, 20, 50, 100, 500, 1000, 5000}`. |
-| `BinanceRestClient::get_depth(symbol, limit = 20)` | Validates `limit` before request; returns `expected<DepthSnapshot, string>`. |
-| `BinanceRestClient::get_server_time()` | Returns `expected<ServerTime, string>`. |
-| `parse_depth_response(body)` | Free function — parses a raw JSON body. Public for testability. |
-| `parse_server_time_response(body)` | Free function — parses a raw JSON body. Public for testability. |
-| `std::formatter<BinanceRestConfig>` | Delegates to `BinanceRestConfig::dump()`. |
+| `parse_depth_response(body)` | Parse the response body of `GET /api/v3/depth`. Returns `expected<DepthSnapshot, string>` with `last_update_id` + parsed bid/ask `vector<DepthLevel>`. |
+| `parse_server_time_response(body)` | Parse the response body of `GET /api/v3/time`. Returns `expected<ServerTime, string>` with `server_time_ms`. |
+| `parse_depth_levels(...)` | Helper used by `parse_depth_response`; exported for tests. |
 
 ### OKX Adapter (`eph::json::okx`)
 

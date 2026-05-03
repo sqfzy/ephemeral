@@ -172,7 +172,7 @@ Four microbenchmarks on a representative Binance `bookTicker` payload:
 
 ### Logging (spdlog)
 
-- Every adapter has a named logger obtained via a `detail::xxx_logger()` Meyers-singleton.
+- Every adapter has a named logger obtained via a `detail::<name>_logger()` Meyers-singleton (e.g. `detail::okx_logger()`, `detail::binance_logger()`).
 - Use `SPDLOG_LOGGER_DEBUG(log, ...)` / `SPDLOG_LOGGER_WARN(log, ...)` / etc. — these macros compile out below `SPDLOG_ACTIVE_LEVEL`, which is set project-wide via `net_log_level` in the root `xmake.lua` (`SPDLOG_LEVEL_TRACE` in debug mode, `SPDLOG_LEVEL_INFO` otherwise).
 - The parser itself has NO logger — it's on the hot path for every message and must stay allocation- and call-overhead-free.
 

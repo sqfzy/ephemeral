@@ -151,9 +151,9 @@ single-queue receiver cannot guarantee delivery.
   flow. (Pattern parallels `DpdkTcpStream::create_and_attach` in
   `RxDispatchMode::FlowDirector` mode.)
 
-A future iteration may add a typed `MulticastConfig::flow_director_pinned`
-flag and have MulticastReceiver install the FD rule on its own. Out
-of scope for this PR.
+A future iteration may add a typed flow-director-pinned flag on
+MulticastConfig and have MulticastReceiver install the FD rule on its
+own. Out of scope for this PR.
 
 ## Adding new control-plane APIs
 

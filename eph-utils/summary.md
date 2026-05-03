@@ -115,7 +115,8 @@ header, only touched when a consumer calls
 
 All modules emit logs via a per-module spdlog logger name
 (`utils.tsc`, `utils.cpu`, `utils.hugepage`, `utils.ema`, ...), created
-lazily inside a `detail::xxx_logger()` helper. This keeps logger
+lazily inside a `detail::<name>_logger()` helper (e.g.
+`detail::tsc_logger()`, `detail::cpu_logger()`). This keeps logger
 creation out of the hot path while letting operators filter by
 subsystem.
 

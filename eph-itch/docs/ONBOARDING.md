@@ -162,8 +162,9 @@ xmake build eph-itch
    the host-endian value via `read_beNN(msg + offset)`.
 3. Wire the type into `message_size()` and `message_type_name()` in
    `parser.hpp`.
-4. Add a `msg::MyType` tag struct in the `namespace msg` block and a `case`
-   in the `dispatch()` switch.
+4. Add a `msg::<TagName>` tag struct in the `namespace msg` block (one
+   per real ITCH message, e.g. `msg::AddOrder`) and a `case` in the
+   `dispatch()` switch.
 5. Extend `test_itch.cpp`:
    - One test for accessors on a hand-rolled wire buffer.
    - One test for `parse()` happy path.
