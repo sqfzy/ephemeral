@@ -4,11 +4,13 @@
 --
 -- Single binary `mockex` replaces the previous constellation of Python
 -- scripts under benchmarks/latency/mocks/. Dispatch is via `--scenario
--- <name>` matching the bench.conf section `[lat_<name>]`. Phase 1
--- implements the five echo scenarios (tcp/udp/ws/ex_order/ex_md_udp);
--- push scenarios land in Phase 3.
+-- <name>` matching the bench.conf section `[lat_<name>]`. All scenario
+-- families are wired (echo: tcp / udp / ws / ex_order / ex_md_udp;
+-- push: ex_market / ex_market_2p / rss_scaling / rss_scaling_ws). See
+-- include/mockex/scenarios/ for the per-scenario handlers and
+-- include/mockex/dispatch.hpp for the kScenarioTable registration.
 --
--- See .claude/plans/elegant-toasting-popcorn.md for the full blueprint.
+-- See .claude/plans/elegant-toasting-popcorn.md for the original blueprint.
 
 target("mockex")
     set_kind("binary")
