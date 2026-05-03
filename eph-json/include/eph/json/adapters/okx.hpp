@@ -50,7 +50,8 @@ inline spdlog::logger* okx_logger() {
         try {
             return spdlog::stdout_color_mt("json.okx");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("json.okx");
+            auto recovered = spdlog::get("json.okx");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

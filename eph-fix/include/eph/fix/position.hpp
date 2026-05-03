@@ -29,7 +29,8 @@ inline spdlog::logger* position_logger() {
         try {
             return spdlog::stdout_color_mt("fix.position");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("fix.position");
+            auto recovered = spdlog::get("fix.position");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

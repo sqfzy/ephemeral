@@ -53,6 +53,7 @@ inline spdlog::logger* length_prefix_codec_logger() {
                 lg = spdlog::get("codec.length_prefix");
             }
         }
+        if (!lg) lg = spdlog::default_logger();
         return lg.get();
     }();
     return l;

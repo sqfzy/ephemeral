@@ -40,6 +40,7 @@ inline spdlog::logger* raw_datagram_codec_logger() {
                 lg = spdlog::get("codec.raw_datagram");
             }
         }
+        if (!lg) lg = spdlog::default_logger();
         return lg.get();
     }();
     return l;

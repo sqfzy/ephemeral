@@ -47,7 +47,8 @@ inline spdlog::logger* ouch_logger() {
         try {
             return spdlog::stdout_color_mt("itch.ouch");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("itch.ouch");
+            auto recovered = spdlog::get("itch.ouch");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

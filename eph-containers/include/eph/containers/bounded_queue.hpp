@@ -38,7 +38,8 @@ inline spdlog::logger* bounded_queue_logger() {
         try {
             return spdlog::stdout_color_mt("containers.bounded_queue");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("containers.bounded_queue");
+            auto recovered = spdlog::get("containers.bounded_queue");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

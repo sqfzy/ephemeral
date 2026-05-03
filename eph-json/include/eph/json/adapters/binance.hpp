@@ -41,7 +41,8 @@ inline spdlog::logger* binance_logger() {
         try {
             return spdlog::stdout_color_mt("json.binance");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("json.binance");
+            auto recovered = spdlog::get("json.binance");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

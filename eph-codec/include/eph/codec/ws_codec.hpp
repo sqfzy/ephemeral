@@ -64,6 +64,7 @@ inline spdlog::logger* ws_codec_logger() {
                 lg = spdlog::get("codec.ws");
             }
         }
+        if (!lg) lg = spdlog::default_logger();
         return lg.get();
     }();
     return l;

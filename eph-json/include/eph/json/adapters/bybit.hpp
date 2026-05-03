@@ -49,7 +49,8 @@ inline spdlog::logger* bybit_logger() {
         try {
             return spdlog::stdout_color_mt("json.bybit");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("json.bybit");
+            auto recovered = spdlog::get("json.bybit");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

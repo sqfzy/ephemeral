@@ -40,7 +40,8 @@ inline spdlog::logger* array_book_logger() {
         try {
             return spdlog::stdout_color_mt("book.array_book");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("book.array_book");
+            auto recovered = spdlog::get("book.array_book");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

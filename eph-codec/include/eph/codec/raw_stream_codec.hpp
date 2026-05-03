@@ -50,6 +50,11 @@ inline spdlog::logger* raw_stream_codec_logger() {
                 lg = spdlog::get("codec.raw_stream");
             }
         }
+        // Final defense-in-depth: if both `get` paths failed (concurrent
+        // drop racing the create), fall through to the always-non-null
+        // default_logger so the SPDLOG_LOGGER_* macros at every call
+        // site never deref a nullptr.
+        if (!lg) lg = spdlog::default_logger();
         return lg.get();
     }();
     return l;

@@ -22,12 +22,15 @@ namespace detail {
 /// @brief Get or create the SoupBinTCP module logger.
 /// @return Raw pointer to the spdlog logger instance (never null after first call).
 inline spdlog::logger* soupbintcp_logger() {
-    static auto l = [] {
+    static auto l = [] -> std::shared_ptr<spdlog::logger> {
         try {
-            return spdlog::stdout_color_mt("itch.soupbintcp");
+            if (auto p = spdlog::stdout_color_mt("itch.soupbintcp")) return p;
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("itch.soupbintcp");
+            if (auto p = spdlog::get("itch.soupbintcp")) return p;
         }
+        // Last-ditch: never return nullptr — caller dereferences via
+        // SPDLOG_LOGGER_*. spdlog::default_logger is always non-null.
+        return spdlog::default_logger();
     }();
     return l.get();
 }

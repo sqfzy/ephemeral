@@ -30,7 +30,11 @@ inline spdlog::logger* risk_check_logger() {
         try {
             return spdlog::stdout_color_mt("fix.risk_check");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("fix.risk_check");
+            auto recovered = spdlog::get("fix.risk_check");
+            // Last-ditch fallback: if both create AND recovery returned
+            // null (concurrent drop racing the create), default_logger
+            // is always non-null and keeps SPDLOG_LOGGER_* deref-safe.
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

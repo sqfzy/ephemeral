@@ -42,7 +42,8 @@ inline spdlog::logger* map_book_logger() {
         try {
             return spdlog::stdout_color_mt("book.map_book");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("book.map_book");
+            auto recovered = spdlog::get("book.map_book");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

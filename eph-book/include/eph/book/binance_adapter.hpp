@@ -37,7 +37,8 @@ inline spdlog::logger* binance_adapter_logger() {
         try {
             return spdlog::stdout_color_mt("book.binance_adapter");
         } catch (const spdlog::spdlog_ex&) {
-            return spdlog::get("book.binance_adapter");
+            auto recovered = spdlog::get("book.binance_adapter");
+            return recovered ? recovered : spdlog::default_logger();
         }
     }();
     return l.get();

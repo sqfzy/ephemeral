@@ -55,6 +55,7 @@ inline spdlog::logger* mold64_codec_logger() {
                 lg = spdlog::get("codec.mold64");
             }
         }
+        if (!lg) lg = spdlog::default_logger();
         return lg.get();
     }();
     return l;
