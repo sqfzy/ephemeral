@@ -20,6 +20,14 @@
 /// scenario binaries, each one a secondary; the daemon arbitrates queue
 /// allocation.
 ///
+/// JSON output naming under MP: now that the legacy
+/// `EPH_LAT_AUTOJOIN_MAX_PROCS` gate is no longer set by the
+/// orchestrator, `bench::mp_output_suffix` (in `core/bench_ctx.hpp`)
+/// instead defaults to "always emit `_pid<N>`" under `EPH_USE_DPDK`
+/// builds — so multiple secondaries flushing concurrently no longer
+/// silently overwrite each other's results. Tests / debug runs may
+/// override via `EPH_LAT_FORCE_PID=0`.
+///
 /// This header compiles to nothing when `EPH_USE_DPDK` is not defined so
 /// kernel-only bench builds keep working.
 

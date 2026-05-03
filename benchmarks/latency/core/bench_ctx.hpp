@@ -28,28 +28,67 @@ namespace bench {
 /// This helper appends `_pid<getpid()>` so each process gets a unique
 /// filename (e.g. `lat_tcp_dpdk_rtt_pid12345_<ts>.json`).
 ///
-/// Detection: `EPH_LAT_AUTOJOIN_MAX_PROCS` envvar parses as an integer
-/// in `[2, 64]`. This is the same strict-parse contract enforced by
-/// `load_dpdk_env` in `dpdk_env.hpp` (commit `c7989efb`); using the
-/// same predicate here keeps the suffix in lockstep with the autojoin
-/// path. A non-numeric or out-of-range envvar (e.g. `garbage` /
-/// `1` / `99`) yields no suffix — matching what the autojoin path
-/// would produce after rejecting the env value (the bench either
-/// runs single-process or fails fast without writing any output).
+/// Detection (post-daemon-reshape, 2026-05-02 onward): the autojoin
+/// envvar gating (`EPH_LAT_AUTOJOIN_MAX_PROCS`) is gone — under the
+/// daemon model every `lat_*_dpdk` binary is inherently a secondary
+/// peer that the orchestrator may launch in parallel against the same
+/// shared daemon, so there's no negotiable "MP mode" flag to key off.
+/// We therefore append the suffix unconditionally **under DPDK
+/// builds** (`EPH_USE_DPDK` defined at compile time) and never for
+/// kernel-only builds (single-process by construction — kernel
+/// scenarios share no state and a per-PID suffix would just clutter
+/// the output directory). An optional env override `EPH_LAT_FORCE_PID`
+/// is honoured in either build for tests / debug runs that want the
+/// suffix forcibly enabled or disabled (`=0` to disable, anything
+/// else non-empty to force-enable). The legacy
+/// `EPH_LAT_AUTOJOIN_MAX_PROCS` envvar is **also** still honoured
+/// here for the strict-parse `[2,64]` contract: an explicit set of
+/// the legacy var continues to enable the suffix (back-compat for any
+/// outside-the-tree script still exporting it). Setting it to a
+/// rejected value (`garbage` / `0` / `1` / `99`) is a no-op — same
+/// as before the reshape.
 [[nodiscard]] inline std::string mp_output_suffix() noexcept {
-    const char* mp = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
-    if (!mp || !*mp) return {};
-    char* end = nullptr;
-    const unsigned long mp_raw = std::strtoul(mp, &end, 10);
-    if (end == mp || *end != '\0' || mp_raw < 2 || mp_raw > 64) {
-        // Mirrors load_dpdk_env's strict-parse contract — non-numeric
-        // / out-of-range values are not "MP mode", they're misconfigs.
-        // Returning empty here means a kernel-mode bench run with a
-        // typo'd env var won't silently produce a `_pid<n>` suffix
-        // that the user didn't ask for.
-        return {};
+    auto pid_suffix = []() {
+        return std::string{"_pid"} + std::to_string(::getpid());
+    };
+
+    // Hard override — wins over both the build-mode default and the
+    // legacy envvar. `=0` / `=false` / `=no` force-disable; any other
+    // non-empty value force-enables.
+    if (const char* force = std::getenv("EPH_LAT_FORCE_PID");
+            force && *force) {
+        const std::string_view v{force};
+        if (v == "0" || v == "false" || v == "FALSE" || v == "no" || v == "NO") {
+            return std::string{};
+        }
+        return pid_suffix();
     }
-    return std::string{"_pid"} + std::to_string(::getpid());
+
+    // Legacy envvar — strict-parse contract preserved verbatim from the
+    // pre-reshape gate (commit `c7989efb`) for any out-of-tree caller
+    // still exporting it. A non-numeric / out-of-range value is treated
+    // as "not MP" rather than misconfigured-MP, so a typo never
+    // silently injects a `_pid<n>` suffix on a kernel run.
+    if (const char* mp = std::getenv("EPH_LAT_AUTOJOIN_MAX_PROCS");
+            mp && *mp) {
+        char* end = nullptr;
+        const unsigned long mp_raw = std::strtoul(mp, &end, 10);
+        if (end != mp && *end == '\0' && mp_raw >= 2 && mp_raw <= 64) {
+            return pid_suffix();
+        }
+    }
+
+#if defined(EPH_USE_DPDK)
+    // DPDK builds are inherently secondary-attach under the daemon
+    // model — N peers may run in parallel against the same NIC, so
+    // every output file MUST be per-PID to avoid silent overwrites.
+    return pid_suffix();
+#else
+    // Kernel-only build — single-process by construction; suffix
+    // would just be noise. Override available via `EPH_LAT_FORCE_PID`
+    // if a test wants it.
+    return std::string{};
+#endif
 }
 
 
