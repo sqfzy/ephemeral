@@ -254,24 +254,15 @@ public:
     ///       (`DpdkTcpStream::on_icmp_mtu_thunk_`) only forwards into
     ///       `TcpSession::on_icmp_frag_needed`, which is registry-free
     ///       and trivially conforms.
+    /// @note Thin wrapper over `dispatch_returns_hit` — kept as a
+    ///       distinct entry point so callers that don't need the hit
+    ///       boolean (the in-process `Platform::on_icmp_callback_`
+    ///       dispatch closure, the legacy single-process tests) read
+    ///       a clearer call site. Forwarder shape avoids the previous
+    ///       100% body-duplication that drifted the two paths' fix
+    ///       history (see icmp_registry pre-2026-05-03 history).
     void dispatch(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
-        if (!parsed.embedded_valid) return;
-
-        std::lock_guard<std::mutex> g(mu_);
-        for (std::size_t i = 0; i < n_targets_; ++i) {
-            const auto& e = targets_[i];
-            if (e.proto            == parsed.embedded_proto   &&
-                e.tuple.src_ip     == parsed.embedded_src_ip  &&
-                e.tuple.dst_ip     == parsed.embedded_dst_ip  &&
-                e.tuple.src_port   == parsed.embedded_src_port &&
-                e.tuple.dst_port   == parsed.embedded_dst_port) {
-                ++dispatched_;
-                // Invoke under the lock so a concurrent unregister
-                // cannot free the stream out from under us. See @note.
-                if (e.cb) e.cb(e.stream, parsed.next_hop_mtu);
-                return;
-            }
-        }
+        (void)dispatch_returns_hit(parsed);
     }
 
     /// @brief Same dispatch logic as `dispatch()`, but returns whether
@@ -282,12 +273,13 @@ public:
     ///        the message to the owner process via IPC. Returning a
     ///        bool from the existing `dispatch()` would change its
     ///        signature and break the reshape's "IcmpRegistry public
-    ///        API unchanged" invariant — this is a strict superset.
+    ///        API unchanged" invariant — this is a strict superset,
+    ///        and `dispatch()` now thin-forwards to this overload.
     /// @return true iff some entry matched (and its callback was
     ///         invoked); false otherwise (no-op including the
     ///         `embedded_valid==false` short-circuit).
     /// @note Thread-safe under `mu_`. Same UAF-safe callback-under-
-    ///       lock semantics as `dispatch()`.
+    ///       lock semantics as documented on `dispatch()`.
     [[nodiscard]] bool
     dispatch_returns_hit(const ::eph::dpdk::net::ParsedIcmp& parsed) noexcept {
         if (!parsed.embedded_valid) return false;
@@ -301,6 +293,9 @@ public:
                 e.tuple.src_port   == parsed.embedded_src_port &&
                 e.tuple.dst_port   == parsed.embedded_dst_port) {
                 ++dispatched_;
+                // Invoke under the lock so a concurrent unregister
+                // cannot free the stream out from under us. See the
+                // @note on `dispatch()`.
                 if (e.cb) e.cb(e.stream, parsed.next_hop_mtu);
                 return true;
             }
@@ -345,6 +340,23 @@ private:
     std::array<Entry, kMaxTargets> targets_{};
     std::size_t                    n_targets_{0};
     uint64_t                       dispatched_{0};
+
+    // ── Compile-time invariants ──────────────────────────────────────────
+    //
+    // kMaxTargets == 0 would silently turn `register_target` into "always
+    // returns OutOfMemory" and `dispatch` into a no-op; both are
+    // surprising failure modes that can lurk through unit tests. A
+    // future tuner shrinking kMaxTargets to free a few KiB has to
+    // re-affirm the lower bound here.
+    static_assert(kMaxTargets >= 1,
+                  "IcmpRegistry::kMaxTargets must allow at least one slot");
+    // Linear scans on register/dispatch are O(n_targets_); 4096 is a
+    // soft ceiling that keeps the worst-case dispatch latency under a
+    // few µs even on Graviton (~1 ns/entry). Hard fail at compile time
+    // if someone bumps the cap past this without a perf re-evaluation.
+    static_assert(kMaxTargets <= 4096,
+                  "IcmpRegistry::kMaxTargets > 4096 risks µs-class "
+                  "dispatch latency; re-benchmark before raising");
 };
 
 } // namespace eph::dpdk::detail
