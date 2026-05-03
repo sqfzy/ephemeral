@@ -332,6 +332,7 @@ TEST(StreamMetrics, NewTcpIcmpMetricsPresentInNameTable) {
             "net.stream.tcp.reorder_buffer_hits",
             "net.stream.tcp.reorder_buffer_overflows",
             "net.stream.tcp.keepalive_probes_sent",
+            "net.stream.tcp.keepalive_send_failures",
             "net.stream.tcp.mss_negotiation_applied",
             "net.stream.icmp.frag_needed_received",
         }) {
