@@ -64,6 +64,19 @@ struct StreamConfig {
     ///       * FIX Drop Copy / large ITCH message bundle ...... 512 KiB
     ///   - Overflow is visible: monitor `StreamMetric::kReasmOverflows`.
     ///   - Memory footprint: per-Stream — N streams → N × capacity bytes.
+    ///
+    /// Boundary contract (DPDK-specific — diverges from the kernel
+    /// backend):
+    ///   * `0` → silently treated as "use default" (256 KiB) rather
+    ///     than rejected. The kernel `KernelTcpStream::create` rejects
+    ///     `0` outright with `Error::InvalidConfig` ("must be > 0"),
+    ///     so callers porting between backends should set an explicit
+    ///     value rather than relying on the default-on-zero behaviour.
+    ///   * `(0, 4096)` → rejected at `DpdkTcpStream::create` with
+    ///     `Error::InvalidConfig` (would otherwise overflow on the
+    ///     first MSS-sized burst). Use `0` to opt into the 256 KiB
+    ///     default, or pass `>= 4096` explicitly.
+    ///   * `>= 4096` → used verbatim.
     std::size_t reasm_capacity{256 * 1024};
 
     /// @brief TLS 1.3 handshake configuration. Ignored when the template
