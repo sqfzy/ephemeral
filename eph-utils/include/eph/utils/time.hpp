@@ -201,7 +201,13 @@ public:
   ///
   /// @param start TSC value from a previous now() call.
   /// @param end   TSC value from a later now() call (must be >= start).
-  /// @return Elapsed nanoseconds, or `nullopt` if uncalibrated.
+  /// @return Elapsed nanoseconds, or `nullopt` if uncalibrated OR if
+  ///         `end < start` (caller violated the precondition — usually
+  ///         a sign of thread migration across cores with non-coherent
+  ///         TSCs, or a swapped argument order). Returning nullopt
+  ///         instead of letting the unsigned underflow silently produce
+  ///         a multi-second "latency" that pollutes downstream
+  ///         percentile aggregation.
   ///
   /// @code
   ///   auto start = TSC::now();
@@ -212,6 +218,21 @@ public:
   /// @endcode
   [[nodiscard]] static std::optional<double>
   delta_ns(uint64_t start, uint64_t end) noexcept {
+    if (end < start) [[unlikely]] {
+      // Underflow guard: end < start means either (a) the caller
+      // swapped arguments, or (b) the two reads were taken on
+      // different cores whose TSCs are not coherent (modest
+      // unsafe-VM / older-CPU hazard despite rdtscp's serialization).
+      // Both are bugs in caller's measurement setup; surfacing as
+      // nullopt forces the caller to handle it explicitly rather
+      // than getting a 1.8e10 ns "fast" sample.
+      SPDLOG_LOGGER_WARN(detail::tsc_logger(),
+        "TSC::delta_ns: end < start (start={} end={}) — "
+        "thread migrated across cores with non-coherent TSCs, "
+        "or arguments swapped; returning nullopt",
+        start, end);
+      return std::nullopt;
+    }
     return to_ns(end - start);
   }
 
