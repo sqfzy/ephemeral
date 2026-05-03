@@ -280,6 +280,28 @@ public:
             // Replace this symbol's current notional with its projected notional.
             const double projected_exposure =
                 current_exposure - current_notional + projected_symbol_notional;
+            // Fail-safe NaN/inf guard. Both `current_notional` and
+            // `projected_symbol_notional` are computed via floating-
+            // point multiplications that can overflow to +inf when
+            // pos.qty * pos.avg_price or projected_abs_qty * price
+            // exceeds ~1e308, and `current_exposure - inf` can wrap
+            // to NaN. Without this guard `NaN > limit` returns false
+            // and the order PASSES the exposure check — exactly the
+            // wrong direction for a fail-safe risk gate. Treat any
+            // non-finite projected exposure as a hard reject (the
+            // numbers feeding it are pathological anyway; better to
+            // surface the data-quality issue at the trade gate than
+            // let the rocket fly).
+            if (!std::isfinite(projected_exposure)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                    "risk reject: projected total exposure non-finite ({}) "
+                    "for symbol={} (current={} current_notional={} "
+                    "projected_symbol_notional={}) — overflow in "
+                    "qty*price math, treating as exposure breach",
+                    projected_exposure, symbol, current_exposure,
+                    current_notional, projected_symbol_notional);
+                return RiskRejectReason::kTotalExposureExceeded;
+            }
             if (projected_exposure > limits_.max_total_exposure) [[unlikely]] {
                 // Log `current_notional` (the live recompute that drives the
                 // projected_exposure math), not `pos.notional` — the cached
