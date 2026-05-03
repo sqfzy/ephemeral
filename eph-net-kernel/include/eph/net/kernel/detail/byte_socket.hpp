@@ -300,6 +300,25 @@ public:
     /// TCP stream; ciphertext when the Stream layer above is wrapped in
     /// TLS). Retries on EAGAIN/EWOULDBLOCK via poll() with a short
     /// internal budget. Returns bytes written on success, or typed error.
+    ///
+    /// Partial-send contract on error: when the loop fails AFTER one or
+    /// more `::send()` calls already deposited bytes into the kernel TX
+    /// buffer, those bytes ARE on the wire — the syscall succeeded for
+    /// them. The function still returns `unexpected(...)` because the
+    /// REST of the buffer is undelivered, and the typed error doesn't
+    /// carry a partial-progress count. Implications for the caller:
+    ///   * **TLS streams**: the upper layer (`KernelTcpStream::send`) sees
+    ///     this as opaque and latches `tls_corrupt_` so the next call
+    ///     surfaces `Disconnected` — correct, because the AEAD seq has
+    ///     already advanced past what the wire saw.
+    ///   * **Plaintext streams**: a naive retry of the same `wire_bytes`
+    ///     will re-send the prefix that was already delivered, causing
+    ///     application-level duplication. Callers that need at-most-once
+    ///     semantics on top of plaintext TCP must either tear down the
+    ///     connection on every error here or implement their own
+    ///     framing-with-progress (out of scope for this layer).
+    /// The WARN/INFO/ERROR logs below report `sent` so operators can see
+    /// when the wire-side prefix is non-empty.
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> wire_bytes) noexcept {
         if (fd_ < 0) {
@@ -363,15 +382,21 @@ public:
                 continue;
             }
             if (errno == EPIPE || errno == ECONNRESET) {
+                // Include sent / remain so operators can tell whether
+                // any bytes already escaped to the wire before the peer
+                // closed — see the partial-send contract docstring above.
                 SPDLOG_LOGGER_INFO(byte_socket_logger(),
-                    "ByteSocket::send: peer closed ({})", std::strerror(errno));
+                    "ByteSocket::send: peer closed ({}) "
+                    "fd={} sent={} remain={}",
+                    std::strerror(errno), fd_, sent, remain);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
                     "ByteSocket::send: peer closed"});
             }
             SPDLOG_LOGGER_ERROR(byte_socket_logger(),
-                "ByteSocket::send: unexpected errno {} ({})",
-                errno, std::strerror(errno));
+                "ByteSocket::send: unexpected errno {} ({}) "
+                "fd={} sent={} remain={}",
+                errno, std::strerror(errno), fd_, sent, remain);
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "ByteSocket::send: unexpected I/O error"});
