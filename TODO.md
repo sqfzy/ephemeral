@@ -16,19 +16,22 @@ Last verified: 2026-04-30 (none completed at this revision).
   (`ValidatorRejectsRssWithSingleTxQueue`,
   `ValidatorAcceptsMatchedMultiQueue`, `ValidatorAcceptsSingleQueueBoth`).
 
-- [ ] **Document `Platform::launch` in user docs**.
-  Has good doc-comment in `platform.hpp` but no prose in
-  `eph-net-dpdk/docs/`. New page `docs/platform-bringup.md`?
-  Source: api-unify retro.
+- [x] ~~**Document `Platform::launch` in user docs**.~~
+  Obsoleted by the 2026-05-02 daemon reshape. `Platform::launch` /
+  `Platform::create_or_join` were removed; the public bring-up surface
+  is now `Platform::create(PlatformConfig)` (tenant secondary attach)
+  + `Platform::serve_nic(NicServiceConfig)` (daemon-side primary).
+  Prose lives at `eph-net-dpdk/docs/dpdk-daemon-deployment.md` and
+  `dpdk-multiprocess.md`.
 
 ## P2 — medium reshapes (1-3 days)
 
-- [ ] **Extract `PlatformConfig` to its own header**. Resolves the
-  circular include between `platform.hpp` ↔ `create_or_join.hpp`
-  currently bridged by `EPH_DPDK_PLATFORM_CONFIG_DEFINED` sentinel
-  macro. 1-2 hour task; eliminates fragile inclusion-order
-  requirement.
-  Source: api-unify retro.
+- [x] ~~**Extract `PlatformConfig` to its own header**.~~ Obsoleted
+  by the 2026-05-02 daemon reshape. `create_or_join.hpp` was removed
+  along with the autojoin path, so the circular-include issue and the
+  `EPH_DPDK_PLATFORM_CONFIG_DEFINED` sentinel macro it required no
+  longer exist. `PlatformConfig` and `NicServiceConfig` now live
+  inside `platform.hpp` directly with no dependency cycle.
 
 ## P3 — conditional / hardware-dependent
 
