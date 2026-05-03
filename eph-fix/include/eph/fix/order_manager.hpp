@@ -314,6 +314,26 @@ public:
                     return false;
                 }
 
+                // Reject over-fill: the new running filled_qty must not
+                // exceed the original order quantity. A buggy / hostile
+                // exchange ExecReport with `last_qty > leaves_qty` would
+                // otherwise drive `leaves_qty` negative, then PositionTracker
+                // would over-attribute the fill into our notional, and the
+                // RiskChecker downstream would misread "remaining capacity"
+                // for amend/cancel decisions. Guard at the order layer so
+                // every downstream layer sees a consistent invariant
+                // `filled_qty <= orig_qty` and `leaves_qty >= 0`.
+                if (order.filled_qty + fill_qty >
+                        order.orig_qty + 1e-9) [[unlikely]] {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "over-fill rejected for cl_ord_id={}: "
+                        "existing_filled={} + last_qty={} > orig_qty={} "
+                        "(would drive leaves_qty negative)",
+                        order.cl_ord_id, order.filled_qty,
+                        fill_qty, order.orig_qty);
+                    return false;
+                }
+
                 // Compute new running average fill price.
                 double old_total = order.avg_fill_price * order.filled_qty;
                 order.filled_qty += fill_qty;
@@ -377,6 +397,24 @@ public:
                     SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
                         "fill quantity {} exceeds double precision limit (2^53), "
                         "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
+                    return false;
+                }
+
+                // Same over-fill guard as the PartialFill branch above.
+                // For ExecType::Fill (terminal) the invariant is even
+                // stricter — a Fill report's existing_filled + last_qty
+                // SHOULD equal orig_qty (the trailing fill that closes
+                // the order). A peer that overshoots here is sending a
+                // protocol-illegal report; reject before the position
+                // tracker gets the over-attributed quantity.
+                if (order.filled_qty + fill_qty >
+                        order.orig_qty + 1e-9) [[unlikely]] {
+                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                        "over-fill rejected on terminal Fill for "
+                        "cl_ord_id={}: existing_filled={} + last_qty={} "
+                        "> orig_qty={} (illegal terminal ExecReport)",
+                        order.cl_ord_id, order.filled_qty,
+                        fill_qty, order.orig_qty);
                     return false;
                 }
 
