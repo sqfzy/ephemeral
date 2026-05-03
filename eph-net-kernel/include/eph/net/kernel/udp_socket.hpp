@@ -521,8 +521,28 @@ private:
                 core::Error::Disconnected,
                 "KernelUdpSocket::set_membership_: fd closed"});
         }
+        // Validate the address is actually multicast (224.0.0.0/4, i.e.
+        // top-4-bits == 0xE) BEFORE invoking setsockopt. The kernel
+        // rejects non-multicast addresses with EINVAL, but the resulting
+        // diagnostic ("setsockopt failed errno=22 Invalid argument") is
+        // opaque — operators have to consult RFC 1112 to recognise
+        // 192.168.x.y as a class-C unicast that simply can't be joined.
+        // Surfacing the pre-check inline turns the misuse into an
+        // actionable error string at the same call site.
+        const uint32_t ip_he = group.ip.to_be32();
+        if ((ip_he & 0xF0000000u) != 0xE0000000u) {
+            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                "KernelUdpSocket::set_membership_: group={} is not in "
+                "224.0.0.0/4 (IPv4 multicast range) — kernel would reject "
+                "with EINVAL",
+                group.to_string());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelUdpSocket::set_membership_: group is not in "
+                "224.0.0.0/4 (not an IPv4 multicast address)"});
+        }
         struct ip_mreq mreq{};
-        mreq.imr_multiaddr.s_addr = ::htonl(group.ip.to_be32());
+        mreq.imr_multiaddr.s_addr = ::htonl(ip_he);
         mreq.imr_interface.s_addr = htonl(INADDR_ANY);
         if (::setsockopt(fd_, IPPROTO_IP, optname, &mreq, sizeof(mreq)) != 0) {
             SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),

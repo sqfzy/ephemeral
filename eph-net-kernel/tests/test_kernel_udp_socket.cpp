@@ -334,6 +334,47 @@ TEST(KernelUdpSocket, JoinLeaveMulticastApiSurface) {
     }
 }
 
+// Pre-flight check: passing a non-multicast address (anything outside
+// 224.0.0.0/4) must surface as `InvalidConfig` BEFORE the kernel
+// `setsockopt` returns the opaque EINVAL. Operators reading the
+// rejection message immediately see "not in 224.0.0.0/4" rather than
+// "errno=22" with no actionable context.
+TEST(KernelUdpSocket, JoinMulticastRejectsNonMulticastAddress) {
+    ek::UdpConfig cfg{};
+    cfg.bind       = en::SocketAddr{en::Ipv4Addr{0, 0, 0, 0}, 0};
+    cfg.reuse_addr = true;
+    auto s = RawUdp::create(cfg).value();
+
+    // 10.0.0.1 — class-A unicast, far below the 224.0.0.0 multicast band.
+    en::SocketAddr unicast_group{en::Ipv4Addr{10, 0, 0, 1}, 0};
+    auto jr = s->join_multicast(unicast_group);
+    ASSERT_FALSE(jr.has_value());
+    EXPECT_EQ(jr.error().code, eph::core::Error::InvalidConfig);
+
+    // 192.168.1.1 — RFC 1918 unicast, also rejected.
+    en::SocketAddr private_group{en::Ipv4Addr{192, 168, 1, 1}, 0};
+    auto jr2 = s->join_multicast(private_group);
+    ASSERT_FALSE(jr2.has_value());
+    EXPECT_EQ(jr2.error().code, eph::core::Error::InvalidConfig);
+
+    // 223.255.255.255 — last unicast before the multicast range starts.
+    en::SocketAddr just_below{en::Ipv4Addr{223, 255, 255, 255}, 0};
+    auto jr3 = s->join_multicast(just_below);
+    ASSERT_FALSE(jr3.has_value());
+
+    // 224.0.0.0 — first multicast address; pre-flight must pass it
+    // through to setsockopt (which itself may legitimately accept or
+    // reject depending on host config — both outcomes are fine).
+    en::SocketAddr boundary{en::Ipv4Addr{224, 0, 0, 0}, 0};
+    auto jr4 = s->join_multicast(boundary);
+    if (jr4.has_value()) {
+        (void)s->leave_multicast(boundary);
+    }
+    // We deliberately do NOT assert success here — the host kernel may
+    // still reject 224.0.0.0 specifically; what matters is that our
+    // pre-flight didn't reject it.
+}
+
 TEST(KernelUdpSocket, DestructorDetachesFromPoller) {
     auto poller = ek::KernelPoller::create().value();
     {
