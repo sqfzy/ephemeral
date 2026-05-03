@@ -10,10 +10,15 @@
 ///
 /// What's demonstrated:
 ///
-///   * `Platform::launch(PlatformConfig, EalConfig, …)` (one-shot
-///     EAL+Platform factory, single-process) with `enable_rss=true` +
-///     `nb_rx_queues=N`, hard-failing on RSS bring-up (no silent
-///     collapse to queue 0 — see `eph-net-dpdk/CHANGELOG.md`).
+///   * `Platform::create(PlatformConfig)` (the daemon-led secondary
+///     attach factory) with the bring-up shape that exercises the
+///     RSS data plane: `enable_rss=true` (set on the daemon's
+///     `NicServiceConfig`) + `queues=N` on the secondary's
+///     `PlatformConfig`, hard-failing on RSS bring-up (no silent
+///     collapse to queue 0 — see `eph-net-dpdk/CHANGELOG.md`). The
+///     previous one-shot `Platform::launch(PlatformConfig, EalConfig)`
+///     factory was removed in 2026-05-02 along with the rest of the
+///     autojoin shape.
 ///   * The three diagnostic getters that tell you what RSS path resolved:
 ///         `dispatch_mode()` /
 ///         `rss_using_probed_key()` / `effective_rx_queue_range()`.
@@ -271,9 +276,11 @@ int main(int argc, char** argv) {
     // matching field on the daemon's bring-up config. See S5 of the
     // daemon-reshape plan for the full QueueAllocator semantics.
     //
-    // TODO(daemon-reshape): once the QueueAllocator (S5) is wired, the
-    // `cfg.queues` ask drives a real claim against the NIC's queue pool;
-    // today the secondary attach blindly takes queues `0..(queues-1)`.
+    // The `cfg.queues` ask drives a real claim against the daemon's
+    // QueueAllocator (S5, hugepage-backed; see
+    // `detail/queue_allocator.hpp`). Pool-exhausted attaches return
+    // an `unexpected` carrying "QueuePoolExhausted" and the secondary
+    // fails fast rather than racing other tenants for queue 0.
     if (args.eal.pci.empty()) {
         spdlog::error("dpdk_rss_demo: --pci is required");
         return 1;
