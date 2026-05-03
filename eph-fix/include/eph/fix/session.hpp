@@ -54,6 +54,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>     // isfinite for FixSessionConfig::validate()
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -144,6 +145,19 @@ struct FixSessionConfig {
             return "heartbeat_interval_sec must be positive";
         if (begin_string.empty())
             return "begin_string must not be empty";
+        // isfinite check MUST run before the bound comparisons. Both
+        // `<= 1.0` and `> 10.0` return false for NaN (every NaN
+        // comparison is false), so a NaN factor would slip through
+        // and later cause UB inside `tick()` at
+        //   `static_cast<int64_t>(static_cast<double>(hb_sec) *
+        //                         cfg_.heartbeat_timeout_factor)`
+        // — converting a non-finite double to int64_t is UB per
+        // [conv.fpint]/p1 and the optimizer is allowed to assume it
+        // never happens. +inf has the symmetric problem (>10.0 catches
+        // it but only by accident; the conversion would still be UB
+        // if -ffast-math were ever turned on for this TU).
+        if (!std::isfinite(heartbeat_timeout_factor))
+            return "heartbeat_timeout_factor must be finite";
         if (heartbeat_timeout_factor <= 1.0)
             return "heartbeat_timeout_factor must be > 1.0";
         if (heartbeat_timeout_factor > 10.0)
