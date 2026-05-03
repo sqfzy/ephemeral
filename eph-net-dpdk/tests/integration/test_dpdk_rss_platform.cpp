@@ -1,15 +1,15 @@
 /// @file test_dpdk_rss_platform.cpp
 ///
-/// **TODO(daemon-reshape / S5)**: every TEST in this file requires
-/// multi-queue (`nb_rx_queues=4`) + RSS-aware secondary attach. The S3
-/// placeholder of `Platform::create` only supports `cfg.queues == 1`,
-/// and the legacy `DpdkBenchEnv::create` factory used here was
-/// removed with `Platform::launch`. The whole env-level setup is
-/// therefore stubbed to always SKIP at the Environment level —
-/// individual TEST bodies are preserved verbatim so the assertions
-/// can be reactivated when S5 lands the QueueAllocator + RETA-
-/// tracking IPC and `DpdkBenchEnv` is rebuilt over `Platform::create`
-/// (or replaced wholesale by the new daemon-led test fixture).
+/// **Status**: every TEST in this file requires multi-queue
+/// (`nb_rx_queues=4`) + RSS-aware secondary attach against a real
+/// daemon. The Platform::create code path supports both (S5
+/// QueueAllocator is live), but the broader fixture (kernel mock
+/// dispatcher, ARP resolve against bench.conf gw_ip, multi-queue
+/// RX dispatch wiring) hasn't been end-to-end re-verified on this
+/// host. SetUp returns SKIP unconditionally; remove the early
+/// `return` once a reactivation pass confirms each step still works.
+/// Individual TEST bodies are preserved verbatim so reactivation is
+/// a single SetUp diff, not a rewrite.
 ///
 /// Stage 3 integration test for Platform's RSS / multi-queue surface.
 ///
@@ -81,23 +81,24 @@ public:
     static ::eph::dpdk::test::DpdkBenchEnv& env() { return *env_; }
 
     void SetUp() override {
-        // TODO(daemon-reshape S5): unconditional SKIP. The original
-        // setup brought up a multi-queue Platform via
-        // `DpdkBenchEnv::create` + the legacy `Platform::launch`
-        // path. The legacy launch is gone, the daemon-led
-        // `Platform::create` only supports `cfg.queues == 1` in the
-        // S3 placeholder, and multi-queue secondary claims arrive in
-        // S5. The body below is preserved verbatim, projected onto
-        // the new `DpdkBenchEnv::create` signature so it still
-        // type-checks.
-        reason_ = "TODO(daemon-reshape S5): multi-queue secondary "
-                  "attach not yet implemented; reactivate when the "
-                  "QueueAllocator + RETA-tracking IPC lands.";
+        // Multi-queue Platform tests against a real NIC remain gated
+        // off pending end-to-end verification under the post-S5
+        // daemon-led model — the QueueAllocator + RETA-tracking IPC
+        // is live in `Platform::create`, but the broader fixture
+        // (kernel mock dispatcher, ARP resolve against gw_ip from
+        // bench.conf, multi-queue RX dispatch verification) hasn't
+        // been re-validated end-to-end on this host. The body below
+        // is the intended reactivation path and is preserved verbatim;
+        // remove the unconditional SKIP once a separate reactivation
+        // pass confirms each step still works.
+        reason_ = "Multi-queue Platform fixture pending post-S5 "
+                  "reactivation verification (env setup body below "
+                  "is the intended path).";
         ready_ = false;
         return;
 
-        // ── original env setup, dead under S3 but kept for S5
-        //    reactivation; the `return` above makes it unreachable.
+        // ── intended env setup; left unreachable until the
+        //    reactivation pass above clears.
         std::string conf_path;
         if (const char* e = std::getenv("EPH_BENCH_CONF"); e && *e) {
             conf_path = e;
@@ -173,11 +174,11 @@ public:
         // Parent: wait for the mock to bind/listen (7 mocks need a moment).
         std::this_thread::sleep_for(1s);
 
-        // Multi-queue secondary attach. Today (S3 placeholder)
-        // `cfg.queues == 1` is the only supported value, so this
-        // branch is unreachable — but we keep it shape-correct
-        // against the new `DpdkBenchEnv::create` signature for S5
-        // reactivation.
+        // Multi-queue secondary attach. Drives the daemon's S5
+        // QueueAllocator (claims [lo, hi) for `cfg.queues == 4`).
+        // Currently unreachable due to the SetUp guard above; the
+        // shape is kept so the reactivation pass only needs to
+        // remove the early `return`.
         ::eph::dpdk::PlatformConfig pcfg{};
         pcfg.pci          = pci;
         pcfg.queues       = 4;  // S5: multi-queue secondary claim

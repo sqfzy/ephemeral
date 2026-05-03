@@ -143,17 +143,19 @@ private:
         }                                                                \
     } while (0)
 
-/// TODO(daemon-reshape S5): unconditional SKIP for every TEST below.
-/// The S3 placeholder of `Platform::create` only supports
-/// `cfg.queues == 1`, but every test in this file relies on multi-queue
-/// (nb_rx_queues=4) to exercise the RSS bring-up matrix. Reactivate
-/// once S5 lands the QueueAllocator + RETA-tracking secondary attach.
+/// Multi-queue Platform tests against a real NIC remain gated off
+/// pending end-to-end reactivation under the post-S5 daemon model —
+/// the QueueAllocator + RETA-tracking IPC is live in `Platform::create`,
+/// but the broader bring-up matrix (RSS hash key plumbing, RETA
+/// programming, dispatch_mode validation across PMDs) hasn't been
+/// re-verified end-to-end on this host. Remove this macro once a
+/// reactivation pass confirms each step still works.
 #define EPH_DAEMON_RESHAPE_S5_SKIP()                                     \
     GTEST_SKIP()                                                         \
-        << "TODO(daemon-reshape S5): multi-queue secondary attach is "   \
-           "not yet implemented; Platform::create only supports "        \
-           "cfg.queues == 1 in the S3 placeholder. Reactivate this "     \
-           "test once the QueueAllocator + RETA-tracking IPC lands."
+        << "Multi-queue Platform bring-up tests pending post-S5 "        \
+           "reactivation verification (QueueAllocator + IPC are live "   \
+           "in Platform::create; broader RSS bring-up matrix needs "     \
+           "end-to-end re-verification on this host)."
 
 /// Build a baseline `PlatformConfig` for NIC_B. Daemon-reshape note:
 /// the new `PlatformConfig` only carries the application-side knobs

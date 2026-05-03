@@ -254,8 +254,10 @@ public:
 
         // ── 6. Platform::create + ARP in the parent ──────────────────
         // Single-secondary attach against the running daemon. queues=1
-        // is the only value supported by the S3 placeholder; S5 lifts
-        // this when the QueueAllocator + RETA-tracking IPC arrives.
+        // is the simplest fixture default; the daemon's S5
+        // QueueAllocator supports larger asks but every E2E case in
+        // this binary fits inside one queue and avoids interfering
+        // with a multi-tenant daemon.
         auto bundle_r = build_bundle_(nic_b_pci_,
                                       cfg_->networking.server_ip,
                                       cfg_->networking.client_ip,

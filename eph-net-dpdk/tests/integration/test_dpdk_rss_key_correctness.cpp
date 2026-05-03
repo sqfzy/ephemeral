@@ -170,17 +170,17 @@ private:
         if (!RssKeyEnv::ready()) GTEST_SKIP() << RssKeyEnv::reason(); \
     } while (0)
 
-/// TODO(daemon-reshape S5): unconditional SKIP for every TEST below.
-/// The S3 placeholder of `Platform::create` only supports
-/// `cfg.queues == 1`, but every test in this file relies on
-/// `kNbQueues=4` to drive the probe-key correctness check across
-/// multiple RX queues. Reactivate once S5 lands the QueueAllocator
-/// + RETA-tracking secondary attach.
+/// Multi-queue probe-key correctness tests remain gated off pending
+/// end-to-end reactivation under the post-S5 daemon model — the
+/// QueueAllocator + RETA-tracking IPC is live in `Platform::create`,
+/// but the kNbQueues=4 fixture (mock dispatcher + per-queue UDP echo
+/// + Toeplitz-hash queue prediction) hasn't been re-verified end-to-end
+/// on this host. Remove this macro once a reactivation pass confirms
+/// the full path still works.
 #define EPH_DAEMON_RESHAPE_S5_SKIP()                                     \
     GTEST_SKIP()                                                         \
-        << "TODO(daemon-reshape S5): multi-queue secondary attach is "   \
-           "not yet implemented; Platform::create only supports "        \
-           "cfg.queues == 1 in the S3 placeholder."
+        << "Multi-queue probe-key correctness fixture pending post-S5 " \
+           "reactivation verification."
 
 // Fork the gtest env once for the whole binary.
 [[maybe_unused]] auto* g_env = ::testing::AddGlobalTestEnvironment(new RssKeyEnv);
