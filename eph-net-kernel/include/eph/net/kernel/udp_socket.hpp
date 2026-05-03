@@ -471,8 +471,12 @@ public:
     // ── Observability (StreamMetric pull model) ──────────────────────────
     //
     // See eph/net/stream_metrics.hpp. UDP backends do not maintain a
-    // reasm buffer or a TLS state, so kReasmOverflows / kCodecErrors
-    // (TLS-only metric) and kTlsCrossRecordFrames remain at 0.
+    // reasm buffer or a TLS state, so kReasmOverflows and
+    // kTlsCrossRecordFrames stay at 0. kCodecErrors IS active here:
+    // poll_once_ above bumps it on every per-datagram decode failure
+    // (DatagramCodec::decode returning std::unexpected); see also the
+    // KernelUdpSocket::poll_once_ ERROR-log call site for the diagnostic
+    // shape (src + payload_len + delivered_before_err).
 
     [[nodiscard]] std::uint64_t metric(::eph::net::StreamMetric m) const noexcept {
         // Defensive bounds check — see DpdkTcpStream::metric for rationale.

@@ -916,8 +916,13 @@ private:
 
     // ── Hot-path metric counters (pull model — see stream_metrics.hpp) ──
     //
-    // UDP backend N/A entries: kReasmOverflows, kCodecErrors (TLS-only
-    // metric N/A here), kTlsCrossRecordFrames — all stay at 0.
+    // UDP backend N/A entries: kReasmOverflows (no reasm buffer — UDP
+    // is per-datagram), kTlsCrossRecordFrames (TLS-only) — both stay at 0.
+    // kCodecErrors IS active: process_burst_ above bumps it on every
+    // per-datagram decode failure (DatagramCodec::decode returning
+    // std::unexpected); the symmetric KernelUdpSocket::poll_once_ does
+    // the same. The TCP-only kReorderBuffer* / kTcp* / kTls* family also
+    // stays at 0 here.
 
     struct alignas(64) Counter { std::atomic<std::uint64_t> v{0}; };
 
