@@ -33,6 +33,8 @@
 #include <string>
 #include <string_view>
 
+#include <spdlog/spdlog.h>
+
 #include <eph/utils/recorder.hpp>
 
 namespace bench {
@@ -84,9 +86,23 @@ inline void bench_signal_handler(int /*signum*/) noexcept {
 
 /// Install SIGINT/SIGTERM handlers that set `g_shutdown_requested`.
 /// Idempotent — calling twice is harmless; the handler is stateless.
+///
+/// Failure mode: matches `eph::utils::install_shutdown_handlers` —
+/// `std::signal` returning `SIG_ERR` means the handler did not
+/// install and the default disposition (TERMINATE) remains in
+/// effect, so the first SIGINT/SIGTERM kills the bench binary
+/// abruptly without ever flushing the Recorder. WARN-log the
+/// failure rather than silently leaving the bench operator to
+/// guess why "Ctrl-C lost my measurements".
 inline void install_signal_handler() noexcept {
-    std::signal(SIGINT, &bench_signal_handler);
-    std::signal(SIGTERM, &bench_signal_handler);
+    if (std::signal(SIGINT, &bench_signal_handler) == SIG_ERR) {
+        SPDLOG_WARN("install_signal_handler: std::signal(SIGINT) failed — "
+                    "first Ctrl-C will TERMINATE without flushing recorder");
+    }
+    if (std::signal(SIGTERM, &bench_signal_handler) == SIG_ERR) {
+        SPDLOG_WARN("install_signal_handler: std::signal(SIGTERM) failed — "
+                    "first SIGTERM will TERMINATE without flushing recorder");
+    }
 }
 
 /// Print a human-readable bench report to stdout.
