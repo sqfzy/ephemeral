@@ -250,6 +250,11 @@ struct TlsConfig {
         if (hostname.empty())
             w.emplace_back("hostname is empty -- SNI will not be sent, which may "
                            "cause TLS handshake failures with virtual-hosted servers");
+        if (verify_peer && hostname.empty())
+            w.emplace_back("verify_peer=true with empty hostname -- chain is "
+                           "verified but cert identity binding is OFF "
+                           "(any trusted cert for any hostname is accepted; "
+                           "only safe for fixed pinned peers)");
         if (handshake_timeout.count() < 1000)
             w.emplace_back(std::format(
                 "handshake_timeout={}ms is very short -- TLS 1.3 handshake "

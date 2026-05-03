@@ -109,6 +109,26 @@ TEST(TlsConfigWarnings, EmptyHostnameWarns) {
     EXPECT_TRUE(found);
 }
 
+// verify_peer=true with an empty hostname is a security trap: the
+// chain is verified but cert identity binding (SSL_set1_host at
+// runtime) is OFF, so any trusted cert for any hostname is accepted.
+// Surface that explicitly so caller catches it pre-deployment.
+TEST(TlsConfigWarnings, VerifyPeerWithEmptyHostnameWarnsAboutBinding) {
+    TlsConfig cfg;
+    cfg.hostname = "";
+    cfg.verify_peer = true;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("identity binding is OFF") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "expected hostname-binding warning when "
+                          "verify_peer=true && hostname.empty()";
+}
+
 TEST(TlsConfigWarnings, VeryShortTimeoutWarns) {
     TlsConfig cfg;
     cfg.hostname = "example.com";
