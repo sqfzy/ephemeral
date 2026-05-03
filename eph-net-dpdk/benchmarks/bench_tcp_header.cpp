@@ -12,15 +12,11 @@
 
 #include "eph/dpdk/net_header.hpp"
 
+#include "bench_helpers.hpp"
+
 namespace {
 
-void fill_random(uint8_t* buf, size_t len, uint32_t seed = 42) {
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<uint16_t> dist(0, 255);
-    for (size_t i = 0; i < len; ++i) {
-        buf[i] = static_cast<uint8_t>(dist(rng));
-    }
-}
+using eph::dpdk::bench::fill_random;
 
 void PayloadSizeArgs(::benchmark::Benchmark* b) {
     for (int sz : {64, 128, 256, 512, 1024}) b->Arg(sz);

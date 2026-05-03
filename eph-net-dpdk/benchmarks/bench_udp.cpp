@@ -18,17 +18,13 @@
 
 #include "eph/dpdk/net_header.hpp"
 
+#include "bench_helpers.hpp"
+
 namespace {
 
 using namespace eph::dpdk;
 using namespace eph::dpdk::net;
-
-void fill_random(uint8_t* buf, size_t len, uint32_t seed = 42) {
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<uint16_t> dist(0, 255);
-    for (size_t i = 0; i < len; ++i)
-        buf[i] = static_cast<uint8_t>(dist(rng));
-}
+using eph::dpdk::bench::fill_random;
 
 void UdpPayloadSizeArgs(::benchmark::Benchmark* b) {
     for (int sz : {32, 64, 128, 512, 1472}) b->Arg(sz);
