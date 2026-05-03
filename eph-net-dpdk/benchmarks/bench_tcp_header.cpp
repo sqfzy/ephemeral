@@ -535,15 +535,17 @@ static void BM_FlowRuleDump(benchmark::State& state) {
     eph::net::dpdk::FlowRule rule;
     rule.port_id = 1;
     rule.queue_id = 3;
-    // Simulate active rule with fake pointer
-    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    // Simulate active rule with fake pointer (LocalFlowHandle variant arm).
+    rule.handle = eph::net::dpdk::LocalFlowHandle{
+        reinterpret_cast<rte_flow*>(0xDEAD)};
 
     for (auto _ : state) {
         auto s = rule.dump();
         benchmark::DoNotOptimize(s.data());
     }
-    // Prevent destructor from calling rte_flow_destroy
-    rule.handle = nullptr;
+    // Reset to monostate so the dtor does not try rte_flow_destroy on the
+    // synthetic 0xDEAD pointer.
+    rule.handle = std::monostate{};
 }
 BENCHMARK(BM_FlowRuleDump);
 
@@ -551,13 +553,14 @@ static void BM_FlowRuleToJson(benchmark::State& state) {
     eph::net::dpdk::FlowRule rule;
     rule.port_id = 1;
     rule.queue_id = 3;
-    rule.handle = reinterpret_cast<rte_flow*>(0xDEAD);
+    rule.handle = eph::net::dpdk::LocalFlowHandle{
+        reinterpret_cast<rte_flow*>(0xDEAD)};
 
     for (auto _ : state) {
         auto s = rule.to_json();
         benchmark::DoNotOptimize(s.data());
     }
-    rule.handle = nullptr;
+    rule.handle = std::monostate{};
 }
 BENCHMARK(BM_FlowRuleToJson);
 
