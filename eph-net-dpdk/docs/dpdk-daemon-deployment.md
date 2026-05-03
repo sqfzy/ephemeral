@@ -80,10 +80,10 @@ the unique one. Single-NIC hosts get a zero-config call site
 operator to specify `.pci` explicitly. The legacy `default = true/false`
 toml flag is rejected by the parser.
 
-> **Note (S4)**: the toml parser is part of S4 of the daemon-led
-> reshape (the `eph-nicd` binary itself). Until S4 lands, the schema
-> above is a forward spec — `NicServiceConfig` carries the same
-> fields and is fed by hand from test fixtures.
+> **Note**: the toml parser ships with the `eph-nicd` binary
+> (`eph-net-dpdk/tools/eph-nicd.cpp`). Test fixtures that exercise
+> the daemon path without writing to `/etc/eph` populate the same
+> `NicServiceConfig` fields directly via the `serve_nic` API.
 
 ## systemd unit (`eph-nicd@<bdf>.service`)
 
