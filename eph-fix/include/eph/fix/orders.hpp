@@ -273,6 +273,21 @@ enum class TimeInForce : char {
         "build_replace_order: cl_ord_id={}, orig_cl_ord_id={}, symbol={}, side={}, qty={}, price={}",
         cl_ord_id, orig_cl_ord_id, symbol, static_cast<char>(side), qty, price);
 
+    // Mirror build_new_order's qty guard. A replace request with NaN /
+    // negative / zero qty has the same downstream consequences: set_double
+    // would emit "0.00" or "-1.00" and the venue rejects with
+    // BusinessMessageReject seconds later, after the original order is
+    // already in flight. Surface as a build-time failure so the caller
+    // knows immediately that the replace was never sent. The omission
+    // here vs. build_new_order was a copy-paste gap in 2893608f.
+    if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
+        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+            "build_replace_order: rejected qty={} (must be finite and > 0) "
+            "for cl_ord_id={} orig_cl_ord_id={} symbol={}",
+            qty, cl_ord_id, orig_cl_ord_id, symbol);
+        return 0;
+    }
+
     MessageBuilder b(buf, capacity);
 
     b.set_char(tag::MsgType, tag::msg_type::OrderCancelReplace);

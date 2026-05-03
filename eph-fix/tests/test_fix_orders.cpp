@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>     // std::nan
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -380,6 +381,88 @@ TEST(FixOrders, build_new_order_market_with_nonzero_price_omits_price_tag) {
     EXPECT_EQ(result->get_char(tag::OrdType), '1');  // Market
     EXPECT_FALSE(result->has(tag::Price))
         << "Market orders must never emit tag 44, regardless of caller value";
+}
+
+// ---------------------------------------------------------------------------
+// build_new_order / build_replace_order qty validation parity
+//
+// build_new_order and build_replace_order share the same risk path —
+// neither should ever emit a wire message with non-finite or non-positive
+// qty (it would be rejected by the venue with BusinessMessageReject after
+// the round-trip). Both must surface a build-time failure (return 0) so
+// the caller learns immediately that the order was never sent.
+// ---------------------------------------------------------------------------
+
+TEST(FixOrders, build_new_order_rejects_nan_qty) {
+    uint8_t buf[512];
+    size_t len = build_new_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_NAN", "AAPL",
+        Side::Buy, OrdType::Limit,
+        std::nan(""), 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "NaN qty must be rejected at build time";
+}
+
+TEST(FixOrders, build_new_order_rejects_zero_qty) {
+    uint8_t buf[512];
+    size_t len = build_new_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_ZERO", "AAPL",
+        Side::Buy, OrdType::Limit,
+        0.0, 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "qty=0 must be rejected at build time";
+}
+
+TEST(FixOrders, build_new_order_rejects_negative_qty) {
+    uint8_t buf[512];
+    size_t len = build_new_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_NEG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        -50.0, 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "negative qty must be rejected at build time";
+}
+
+TEST(FixOrders, build_replace_order_rejects_nan_qty) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_NAN", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        std::nan(""), 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "NaN qty must be rejected at build time";
+}
+
+TEST(FixOrders, build_replace_order_rejects_zero_qty) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_ZERO", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        0.0, 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "qty=0 must be rejected at build time";
+}
+
+TEST(FixOrders, build_replace_order_rejects_negative_qty) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_NEG", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        -50.0, 100.0,
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u) << "negative qty must be rejected at build time";
 }
 
 // ---------------------------------------------------------------------------
