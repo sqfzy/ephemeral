@@ -96,6 +96,12 @@ inline constexpr size_t kIcmpDirectoryMaxEntries = 1024;
 /// (MpTopology::kMaxProcs cap).
 inline constexpr uint8_t kIcmpDirectoryNoOwner = 0xFF;
 
+/// @brief `IcmpDirectoryEntry::claimed` state values. See the field's
+/// docstring for the lifecycle.
+inline constexpr uint8_t kIcmpSlotFree       = 0;
+inline constexpr uint8_t kIcmpSlotPublished  = 1;
+inline constexpr uint8_t kIcmpSlotInProgress = 2;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // POD layout — must remain trivially copyable + standard layout
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,7 +110,17 @@ inline constexpr uint8_t kIcmpDirectoryNoOwner = 0xFF;
 /// the build tree (all eph processes link the same header). Fields
 /// are ordered so all atomics align naturally; pads are explicit.
 struct IcmpDirectoryEntry {
-    /// 0 = free, 1 = claimed. CAS on register; plain store on unregister.
+    /// State machine for the slot's claim lifecycle:
+    ///   0 = free (no owner, fields are zeroed),
+    ///   2 = in-progress (CAS-acquired but tuple/owner fields not yet
+    ///       fully written — readers MUST treat as miss),
+    ///   1 = published (tuple/owner fields fully visible; readers can
+    ///       safely compare).
+    /// CAS 0→2 on register; release-store 2→1 once fields are written;
+    /// release-store →0 on unregister. The 2-step publish closes the
+    /// race where a reader load-acquired `claimed==1` but the producer's
+    /// non-atomic field writes (proto/owner_proc/ips/ports) had not yet
+    /// happened-before that load.
     std::atomic<uint8_t> claimed;
     /// IP protocol (e.g. 6 = TCP, 17 = UDP). 0 = unset.
     uint8_t  proto;
@@ -219,7 +235,7 @@ init_icmp_directory_header(IcmpDirectoryHeader* dst,
     dst->dropped_no_owner.store(0, std::memory_order_relaxed);
 
     for (auto& e : dst->entries) {
-        e.claimed.store(0, std::memory_order_relaxed);
+        e.claimed.store(kIcmpSlotFree, std::memory_order_relaxed);
         e.proto = 0;
         e.owner_proc = kIcmpDirectoryNoOwner;
         e._pad0 = 0;
@@ -450,9 +466,18 @@ public:
         // case it surfaces the dup error before we burn a slot, giving
         // a clearer diagnostic ("already registered" vs "raced and
         // lost").
+        //
+        // Only treat state==Published as a candidate for the dup
+        // compare. State==InProgress means a concurrent peer holds the
+        // slot but its tuple/owner fields have not yet been published —
+        // their non-atomic writes are NOT happens-before our acquire
+        // load on `claimed`, so reading those fields would observe an
+        // arbitrary mix of stale + new bytes. The post-claim Pass 2
+        // scan re-discovers any duplicate that was racing with us.
         for (size_t i = 0; i < hdr_->max_entries; ++i) {
             auto& e = hdr_->entries[i];
-            if (e.claimed.load(std::memory_order_acquire) == 0) continue;
+            if (e.claimed.load(std::memory_order_acquire) != kIcmpSlotPublished)
+                continue;
             if (e.proto == proto &&
                 e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
                 e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
@@ -485,18 +510,20 @@ public:
         // through acquire loads.
         for (size_t i = 0; i < hdr_->max_entries; ++i) {
             auto& e = hdr_->entries[i];
-            uint8_t expected = 0;
+            uint8_t expected = kIcmpSlotFree;
+            // Two-step publish — step 1: CAS to InProgress. The slot
+            // is now reserved for us but readers MUST treat it as a
+            // miss (not yet Published) because tuple/owner fields are
+            // about to be written below.
             if (!e.claimed.compare_exchange_strong(
-                    expected, 1, std::memory_order_acq_rel)) {
+                    expected, kIcmpSlotInProgress,
+                    std::memory_order_acq_rel)) {
                 continue;  // slot was just claimed by someone else
             }
-            // Race won on this slot — write payload before publishing
-            // it to readers (release-store on claimed already happened
-            // via the successful CAS, so we now need release semantics
-            // on the payload write that follows. Atomic operations
-            // serve as the publication fence: any reader who
-            // subsequently observes claimed=1 with acquire ordering
-            // will see the writes below).
+            // Race won on this slot — write payload while in
+            // InProgress state. No reader compares fields against an
+            // InProgress slot (Pass 1 / Pass 2 / lookup all gate on
+            // ==Published), so the non-atomic field stores are safe.
             //
             // Note: gen is NOT bumped on register; only on unregister
             // (so a fresh slot starts at gen=0 and increments per
@@ -510,22 +537,45 @@ public:
             e.src_port   = tuple.src_port;
             e.dst_port   = tuple.dst_port;
 
+            // Two-step publish — step 2: release-store →Published. Any
+            // subsequent acquire-load on `claimed` that observes
+            // Published is now guaranteed to also observe every field
+            // write above. THIS is the synchronizes-with edge for the
+            // tuple comparison in lookup() / Pass 1 / Pass 2.
+            e.claimed.store(kIcmpSlotPublished, std::memory_order_release);
+
             // Post-claim duplicate scan. We scan ALL slots (not just
             // [0, i)) because a concurrent peer may have CAS-claimed
             // a slot at index j > i AFTER our slot but before our
-            // payload write became visible. By scanning the full
+            // Published store became visible. By scanning the full
             // range and yielding to any peer at a strictly lower
             // index, we get a stable lower-index-wins tiebreaker
             // while still detecting symmetric concurrent writers.
+            //
+            // Only Published slots compare — InProgress means the
+            // peer hasn't finished writing fields, and we'd race
+            // their writes. If they're racing with us on the same
+            // tuple, ONE of us will see the other's Published state
+            // on a subsequent register attempt or via Pass 2's own
+            // re-scan after their publish completes. The
+            // race-yielding tiebreaker (lower index wins) is still
+            // total because both peers eventually reach Published
+            // state and one will scan the other on their second
+            // pass. Worst case: both peers briefly succeed; the
+            // next register attempt for the same tuple fails Pass
+            // 1 and the actual duplicate is surfaced.
             for (size_t j = 0; j < hdr_->max_entries; ++j) {
                 if (j == i) continue;
                 auto& other = hdr_->entries[j];
-                if (other.claimed.load(std::memory_order_acquire) == 0)
+                if (other.claimed.load(std::memory_order_acquire)
+                        != kIcmpSlotPublished)
                     continue;
                 // Compare tuple+proto via direct field load. proto/
                 // ports/ips are non-atomic, but the acquire-load on
-                // `claimed` above synchronises-with the producer's
-                // CAS-publish so a fully-written payload is visible.
+                // `claimed`==Published above synchronises-with the
+                // producer's release-store transition (InProgress→
+                // Published) — by which point ALL field writes have
+                // happened-before. Field reads here are race-free.
                 if (other.proto == proto &&
                     other.src_ip == tuple.src_ip &&
                     other.dst_ip == tuple.dst_ip &&
@@ -535,18 +585,18 @@ public:
                         // We lose the tiebreaker — release our slot
                         // so the dup-winner is the only owner. Do
                         // NOT bump generation on this release: this
-                        // slot was never visible to dispatch (we
-                        // only just CAS-claimed it and the payload
-                        // we wrote is about to be invalidated), so
-                        // bumping gen would noisily invalidate any
-                        // future readers of THIS slot's gen counter.
+                        // slot was Published only momentarily and
+                        // is about to be invalidated; bumping gen
+                        // would noisily invalidate any future
+                        // readers of THIS slot's gen counter.
                         e.proto      = 0;
                         e.owner_proc = kIcmpDirectoryNoOwner;
                         e.src_ip     = 0;
                         e.dst_ip     = 0;
                         e.src_port   = 0;
                         e.dst_port   = 0;
-                        e.claimed.store(0, std::memory_order_release);
+                        e.claimed.store(kIcmpSlotFree,
+                                        std::memory_order_release);
                         SPDLOG_DEBUG(
                             "IcmpDirectory::register_target: lost "
                             "TOCTOU race for (proto={} src=0x{:08x}:{} "
@@ -601,11 +651,26 @@ public:
         if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return;
         auto& e = hdr_->entries[slot_idx];
         // Free-slot guard — see @note above. Acquire-load on `claimed`
-        // synchronises-with the producing CAS in register_target so we
-        // observe a consistent view of the slot's `claimed` bit.
-        if (e.claimed.load(std::memory_order_acquire) == 0) return;
+        // synchronises-with the producing release-store→Published in
+        // register_target so we observe a consistent view of the
+        // slot's state. Treat InProgress as occupied: another peer
+        // is mid-publish on this slot; releasing it would be racy.
+        // (In practice slot_idx originates from a SlotGuard tied to
+        // a successful register_target return, so we won't see
+        // InProgress for our own slot — this branch handles the
+        // misbehaving-direct-caller path.)
+        const uint8_t state = e.claimed.load(std::memory_order_acquire);
+        if (state == kIcmpSlotFree) return;
+        if (state == kIcmpSlotInProgress) {
+            SPDLOG_WARN(
+                "IcmpDirectory::unregister: slot {} is InProgress "
+                "(another peer mid-publish) — refusing to release; "
+                "caller likely passed a stale slot_idx",
+                slot_idx);
+            return;
+        }
         // ++gen first (acquire-release with claimed clear so dispatch
-        // path observing claimed=1 + new gen is consistent).
+        // path observing Published + new gen is consistent).
         e.generation.fetch_add(1, std::memory_order_acq_rel);
         e.proto      = 0;
         e.owner_proc = kIcmpDirectoryNoOwner;
@@ -613,7 +678,7 @@ public:
         e.dst_ip     = 0;
         e.src_port   = 0;
         e.dst_port   = 0;
-        e.claimed.store(0, std::memory_order_release);
+        e.claimed.store(kIcmpSlotFree, std::memory_order_release);
     }
 
     // ── Lookups (read-only) ─────────────────────────────────────────────────
@@ -627,7 +692,15 @@ public:
         if (hdr_ == nullptr) return std::nullopt;
         for (size_t i = 0; i < hdr_->max_entries; ++i) {
             const auto& e = hdr_->entries[i];
-            if (e.claimed.load(std::memory_order_acquire) == 0) continue;
+            // Only Published slots have field writes that
+            // happen-before our acquire-load; InProgress slots are a
+            // miss. The producer's transient InProgress→Published
+            // window is sub-microsecond; an ICMP miss in that window
+            // means the receiver retransmits via TCP and the next
+            // PMTU update lands on a Published slot.
+            if (e.claimed.load(std::memory_order_acquire)
+                    != kIcmpSlotPublished)
+                continue;
             if (e.proto == proto &&
                 e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
                 e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
@@ -648,8 +721,10 @@ public:
     is_slot_alive(size_t slot_idx, uint32_t expected_gen) const noexcept {
         if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return false;
         const auto& e = hdr_->entries[slot_idx];
-        return e.claimed.load(std::memory_order_acquire) != 0 &&
-               e.generation.load(std::memory_order_acquire) == expected_gen;
+        // Only Published slots count as alive — InProgress is a slot
+        // mid-publish and must not deliver to a stale handler.
+        return e.claimed.load(std::memory_order_acquire) == kIcmpSlotPublished
+            && e.generation.load(std::memory_order_acquire) == expected_gen;
     }
 
     /// @brief Caller asserts another peer still holds a reference to
