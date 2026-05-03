@@ -45,6 +45,7 @@
 #include <type_traits>
 
 #include <openssl/aead.h>
+#include <openssl/err.h>     // ERR_get_error  (queue-drain on AEAD failure)
 #include <openssl/mem.h>     // OPENSSL_cleanse
 
 #include "eph/core/error.hpp"
@@ -201,6 +202,16 @@ public:
                                 /*in=*/buf + kHdr,
                                 /*in_len=*/payload_len,
                                 /*ad=*/buf, kHdr)) {
+            // Drain the per-thread OpenSSL error queue on AEAD failure
+            // so a downstream caller (e.g. a subsequent `EVP_AEAD_CTX_open`
+            // on a different stream sharing this thread, or a TLS
+            // handshake routine reading the queue) does not misattribute
+            // a cached "bad record mac" to its own operation. The legacy
+            // `TlsDecryptor::decrypt` already does this drain (see
+            // tls_decryptor.hpp); the in-place hot path was missing it,
+            // creating an asymmetric diagnostic story between kernel
+            // (legacy decryptor) and DPDK (in-place) backends.
+            while (ERR_get_error() != 0) { /* drain */ }
             return false;
         }
 
