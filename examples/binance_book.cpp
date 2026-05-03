@@ -103,6 +103,13 @@ int main(int argc, char** argv) {
     cfg.remote          = eph::net::SocketAddr{*ip, port};
     cfg.reasm_capacity  = 256 * 1024;
     cfg.connect_timeout = 3s;
+    // The WsCodec template parameter alone only frames bytes — the
+    // RFC 6455 handshake itself runs only when `cfg.ws.path` is
+    // non-empty. Without this, mockex's ws_echo scenario (which
+    // requires a real handshake) closes the connection immediately
+    // and on_message never fires. Build the canonical Binance
+    // path `/ws/<symbol>@bookTicker` from the --symbol flag.
+    cfg.ws.path = "/ws/" + symbol + "@bookTicker";
 
     auto sr = Stream::create(std::move(cfg));
     if (!sr) {
