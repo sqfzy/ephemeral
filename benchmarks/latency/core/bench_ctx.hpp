@@ -20,7 +20,9 @@
 namespace bench {
 
 /// Return a per-process JSON output suffix when running in MP mode
-/// (autojoin), else empty string.
+/// (i.e. multiple bench peer processes attaching to a shared
+/// `eph-nicd` daemon), else empty string. The historical "autojoin"
+/// shape is gone — see the daemon-reshape note further down.
 ///
 /// In MP mode, each peer process produces its own JSON output. Without
 /// a per-process discriminator the files collide on disk — the second
