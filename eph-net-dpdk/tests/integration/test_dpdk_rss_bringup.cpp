@@ -3,16 +3,19 @@
 /// reshape: probe-based bring-up + hard-fail when multi-queue is asked
 /// for without a functional RSS path.
 ///
-/// **TODO(daemon-reshape / S5)**: this whole file exercises multi-queue
-/// secondary attach (`nb_rx_queues=4`). Under the daemon-led S3
-/// placeholder, `Platform::create` only supports `cfg.queues == 1`;
-/// the daemon owns the NIC's `total_queues` and dictates the RSS key
-/// /  probe path centrally. Multi-queue secondary claims (and the
-/// associated probe-or-fail bring-up matrix this file asserts) only
-/// arrive in S5, when the QueueAllocator + RETA-tracking IPC protocol
-/// land. Until then every TEST below SKIPs at the env level — the
-/// assertions are preserved verbatim so reactivation in S5 is a one-
-/// line change (drop the `EPH_DAEMON_RESHAPE_S5_SKIP` line).
+/// **FIXME(daemon-reshape)**: the S5 dependencies (QueueAllocator +
+/// multi-queue secondary claim IPC) have all landed in tree
+/// (eph/dpdk/detail/queue_allocator.hpp; Platform::create wires
+/// cfg.queues>1 through the daemon's claim path), but this file's
+/// fork-per-test fixture has not been re-validated against the new
+/// path yet. The architectural concern is that the tests here assert
+/// per-secondary RSS bring-up classification (probe / hard-fail /
+/// silent-collapse), and in the daemon-led model those decisions
+/// move to `Platform::serve_nic` (daemon side) rather than every
+/// secondary individually. Re-deriving the correct assertions for
+/// the daemon-led shape is the remaining work. Until then every TEST
+/// SKIPs at the env level — assertions preserved verbatim under the
+/// `EPH_DAEMON_RESHAPE_S5_SKIP` macro so reactivation is local.
 ///
 /// **Architecture — process-per-test isolation**: each TEST forks a
 /// child process that does its own `rte_eal_init` + `Platform::create`

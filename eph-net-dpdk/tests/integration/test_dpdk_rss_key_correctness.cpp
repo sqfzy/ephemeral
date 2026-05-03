@@ -1,15 +1,16 @@
 /// @file test_dpdk_rss_key_correctness.cpp
 ///
-/// **TODO(daemon-reshape / S5)**: this whole file requires multi-queue
-/// (`kNbQueues=4`) secondary attach + access to the NIC's probed RSS
-/// key + the per-queue `rte_eth_rx_burst` it triggers in the body.
-/// Multi-queue secondary claims are not implemented in the S3
-/// placeholder of `Platform::create` (queues==1 only), and the
-/// daemon-led model puts probe-vs-fail responsibility on
-/// `Platform::serve_nic` (the daemon side) rather than on every
-/// secondary individually. Both TEST bodies are gated below — see
-/// `EPH_DAEMON_RESHAPE_S5_SKIP`. Reactivation in S5 is a one-line
-/// removal once the QueueAllocator + RETA-tracking IPC lands.
+/// **FIXME(daemon-reshape)**: the multi-queue secondary attach
+/// (`cfg.queues>1` on `Platform::create`) and QueueAllocator IPC
+/// dependencies have all landed (eph/dpdk/detail/queue_allocator.hpp;
+/// Platform::create wires the daemon claim path). What hasn't been
+/// re-validated is this test's expectation that each secondary can
+/// directly observe the NIC's probed RSS key — in the daemon-led
+/// model the probe-vs-fail decision lives on `Platform::serve_nic`
+/// (the daemon side) rather than every secondary individually. The
+/// TEST bodies are preserved under `EPH_DAEMON_RESHAPE_S5_SKIP` so
+/// reactivation is local once the secondary-side observation API
+/// is decided.
 ///
 /// Integration test that empirically verifies whether the RSS hash key
 /// returned by `rte_eth_dev_rss_hash_conf_get` on the running NIC actually
