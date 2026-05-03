@@ -129,6 +129,25 @@ TEST(DpdkPoller, PollerConfigDefaults) {
     EXPECT_EQ(cfg.rx_queue_id, 0);
 }
 
+// Pin the typed wrapper's capacity-constant surface against the void
+// specialization. The typed form (`DpdkPoller<P>`) exists to give
+// single-Pollable-typed callers stronger guarantees, but it previously
+// omitted `kBurstSize` / `kMaxConn` / `kMaxConnHard` / `kRouteTableSize`
+// — forcing those callers to reach across to `DpdkPoller<void>::kFoo`,
+// which leaks the type-erasure detail and would silently break a
+// future migration of `DpdkPoller<P>` to non-void-backed storage.
+TEST(DpdkPoller, TypedWrapperReExportsCapacityConstants) {
+    static_assert(edpk::DpdkPoller<SyntheticPollableA>::kBurstSize ==
+                  edpk::DpdkPoller<void>::kBurstSize);
+    static_assert(edpk::DpdkPoller<SyntheticPollableA>::kMaxConn ==
+                  edpk::DpdkPoller<void>::kMaxConn);
+    static_assert(edpk::DpdkPoller<SyntheticPollableA>::kMaxConnHard ==
+                  edpk::DpdkPoller<void>::kMaxConnHard);
+    static_assert(edpk::DpdkPoller<SyntheticPollableA>::kRouteTableSize ==
+                  edpk::DpdkPoller<void>::kRouteTableSize);
+    SUCCEED();
+}
+
 TEST(DpdkPoller, CreateDestroyEmpty) {
     auto p = edpk::DpdkPoller<>::create({});
     ASSERT_TRUE(p.has_value()) << p.error().detail;

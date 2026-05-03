@@ -1262,6 +1262,21 @@ private:
 template <class P>
 class DpdkPoller {
 public:
+    /// @name Capacity constants — re-exported from the void specialization
+    ///       so single-typed users (`DpdkPoller<DpdkTcpStream<...>>`) can
+    ///       size their own arrays / pools against the same compile-time
+    ///       bounds the heterogeneous form exposes. Without these, a
+    ///       caller of the typed form would have to reach across to
+    ///       `DpdkPoller<void>::kMaxConnHard` directly, which leaks the
+    ///       erasure detail and silently breaks callers that switched
+    ///       from typed → void or vice versa.
+    /// @{
+    static constexpr std::size_t kMaxConn       = DpdkPoller<void>::kMaxConn;
+    static constexpr std::size_t kMaxConnHard   = DpdkPoller<void>::kMaxConnHard;
+    static constexpr std::size_t kRouteTableSize = DpdkPoller<void>::kRouteTableSize;
+    static constexpr uint16_t    kBurstSize     = DpdkPoller<void>::kBurstSize;
+    /// @}
+
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkPoller>, core::ErrorInfo>
     create(PollerConfig cfg = {}) noexcept {
         auto impl = DpdkPoller<void>::create(cfg);
