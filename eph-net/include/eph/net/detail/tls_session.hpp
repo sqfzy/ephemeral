@@ -548,7 +548,27 @@ public:
         // BioContext is heap-allocated (unique_ptr), so the pointer
         // stays stable across the TlsSession move at the end of this
         // function.
-        SSL_set_app_data(ssl, bio_ctx.get());
+        //
+        // `SSL_set_app_data` is a macro alias for `SSL_set_ex_data(s, 0,
+        // arg)`, which returns 1 on success and 0 on failure. Failure is
+        // very rare (only on internal allocation failure), but a silent
+        // failure here is particularly nasty: the handshake still
+        // succeeds, but `new_session_cb_` later sees `SSL_get_app_data`
+        // == nullptr and discards every NewSessionTicket → session
+        // resumption is silently broken (`captured_ticket` stays empty
+        // for the connection's lifetime, and tls_resumption_ticket on
+        // the next reconnect is also empty). Fail-fast on the rare case.
+        if (SSL_set_app_data(ssl, bio_ctx.get()) != 1) {
+            auto err = detail::ssl_error_string();
+            SSL_free(ssl);
+            SSL_CTX_free(ctx);
+            SPDLOG_LOGGER_ERROR(log,
+                "SSL_set_app_data failed (likely internal allocation "
+                "failure) — would silently break session resumption: {}",
+                err);
+            return std::unexpected(std::format(
+                "SSL_set_app_data failed: {}", err));
+        }
 
         // Apply caller-supplied resumption ticket BEFORE SSL_do_handshake
         // so the next ClientHello carries the pre_shared_key extension.
