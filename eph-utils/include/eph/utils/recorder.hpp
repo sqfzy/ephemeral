@@ -259,8 +259,16 @@ class Recorder {
             return false;
         }
 
-        count_++;
-        total_cycles_ += cycles;
+        constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+        // count_ saturating-add: see record_values for full rationale.
+        count_ = (count_ == kSatU64) ? kSatU64 : count_ + 1;
+        // total_cycles_ saturating-add: ns_to_cycles_ already saturates
+        // an over-range ns input to UINT64_MAX. Without this guard the
+        // very next record() would wrap total_cycles_ back near 0 and
+        // corrupt the avg downstream.
+        total_cycles_ = (cycles > kSatU64 - total_cycles_)
+                          ? kSatU64
+                          : total_cycles_ + cycles;
         min_cycles_ = std::min(min_cycles_, cycles);
         max_cycles_ = std::max(max_cycles_, cycles);
 
@@ -284,15 +292,32 @@ class Recorder {
             return false;
         }
 
-        count_ += count;
         // Saturate on overflow instead of wrapping to prevent corrupted
         // average calculations. This can happen with very large cycle
         // values recorded many times (e.g., cycles=10^10, count=10^9).
-        if (cycles <= std::numeric_limits<uint64_t>::max() / count) [[likely]] {
-            total_cycles_ += cycles * count;
+        //
+        // Two-phase guard:
+        //   1. multiply: cycles * count must fit in uint64
+        //   2. accumulate: total_cycles_ + product must fit in uint64
+        //
+        // Without the second-phase check, `total_cycles_` could be
+        // pre-saturated by an earlier large call and then wrapped here
+        // by a small one. (count_ uses the same shape — see below.)
+        constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+        if (cycles <= kSatU64 / count) [[likely]] {
+            const uint64_t product = cycles * count;
+            if (product > kSatU64 - total_cycles_) [[unlikely]] {
+                total_cycles_ = kSatU64;
+            } else {
+                total_cycles_ += product;
+            }
         } else {
-            total_cycles_ = std::numeric_limits<uint64_t>::max();
+            total_cycles_ = kSatU64;
         }
+        // Saturating count_ accumulator: same hazard as total_cycles_
+        // — pathological caller could push count_ over UINT64_MAX with
+        // millions of large-count batches.
+        count_ = (count > kSatU64 - count_) ? kSatU64 : count_ + count;
         min_cycles_ = std::min(min_cycles_, cycles);
         max_cycles_ = std::max(max_cycles_, cycles);
 

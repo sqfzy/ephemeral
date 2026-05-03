@@ -117,6 +117,30 @@ TEST_F(RecorderTest, RecordValuesSaturatesOnCyclesCountOverflow) {
     EXPECT_GT(stats->avg_ns, 0.0);
 }
 
+TEST_F(RecorderTest, RecordValuesSaturatingAccumulateAcrossCalls) {
+    // Drive total_cycles_ to saturation via one call, then issue a
+    // SECOND record_values call that would have wrapped the unguarded
+    // `total_cycles_ += product` accumulator (since `total_cycles_` is
+    // already at UINT64_MAX, any positive product wraps it back near 0).
+    Recorder rec("AccumOverflowTest");
+    uint64_t cycles = 10000;
+    uint64_t count1 = std::numeric_limits<uint64_t>::max() / cycles + 1;
+    EXPECT_TRUE(rec.record_values(cycles, count1));
+    auto pre_avg = rec.compute_stats()->avg_ns;
+    EXPECT_GT(pre_avg, 0.0);
+
+    // Second batch: small product but total_cycles_ is already saturated.
+    EXPECT_TRUE(rec.record_values(cycles, 100));
+    auto post_stats = rec.compute_stats();
+    ASSERT_TRUE(post_stats.has_value());
+    // Without the post-multiply-saturate guard: total_cycles_ would
+    // wrap to ~product_2 (i.e. ~10000*100=1e6), avg ≈ 1e6 / count
+    // which is many orders of magnitude below pre_avg.
+    EXPECT_GT(post_stats->avg_ns, pre_avg / 4.0)
+        << "second record_values wrapped total_cycles_ — accumulate-saturate "
+           "guard missing";
+}
+
 // ============================================================================
 // Recorder — compute_stats()
 // ============================================================================
