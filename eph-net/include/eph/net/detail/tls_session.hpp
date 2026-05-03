@@ -447,6 +447,45 @@ public:
             }
         }
 
+        // Hostname verification — `SSL_VERIFY_PEER` alone validates the
+        // chain against the trust store but does NOT bind the cert
+        // identity to `hostname`. Without `SSL_set1_host`, a server
+        // presenting a chain trusted by the local CA store for ANY
+        // hostname is accepted — exactly the "trusted CA, wrong domain"
+        // MITM class. The TlsConfig::verify_peer doc explicitly promises
+        // "Verify server certificate chain AND hostname", so wire it
+        // here. aws-lc / BoringSSL inherit this from upstream OpenSSL
+        // 1.0.2+. We pass the SNI hostname as the expected name; if the
+        // server cert SAN/CN doesn't match, the handshake fails with
+        // X509_V_ERR_HOSTNAME_MISMATCH at SSL_do_handshake time.
+        if (config.verify_peer && !config.hostname.empty()) {
+            if (SSL_set1_host(ssl, config.hostname.c_str()) != 1) {
+                auto host_err = detail::ssl_error_string();
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                SPDLOG_LOGGER_ERROR(log,
+                    "SSL_set1_host('{}') failed with verify_peer=true: {}",
+                    config.hostname, host_err);
+                return std::unexpected(std::format(
+                    "SSL_set1_host('{}') failed: {}",
+                    config.hostname, host_err));
+            }
+            SPDLOG_LOGGER_DEBUG(log,
+                "TLS hostname verification enabled for '{}'",
+                config.hostname);
+        } else if (config.verify_peer && config.hostname.empty()) {
+            // verify_peer=true with empty hostname means the caller has
+            // explicitly opted out of hostname binding (e.g. connecting
+            // by IP literal in test harnesses). Surface a WARN so this
+            // is auditable in logs — the chain is still verified, just
+            // not the identity.
+            SPDLOG_LOGGER_WARN(log,
+                "TLS verify_peer=true but hostname is empty — chain is "
+                "verified, but cert identity binding is OFF (any trusted "
+                "cert for any hostname is accepted; only safe when "
+                "connecting to a fixed pinned peer)");
+        }
+
         // Mark as client-side (required by aws-lc before SSL_do_handshake)
         SSL_set_connect_state(ssl);
 
