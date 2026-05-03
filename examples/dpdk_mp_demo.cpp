@@ -262,12 +262,16 @@ int main(int argc, char** argv) {
     }
 
     // ── DpdkUdpSocket via create_and_attach (turnkey factory) ───────────
-    // Hardcoded demo tuple. With autojoin's mp_topology in place, the
-    // library auto-narrows src_port selection to each role's
-    // `port_lo / port_hi` window inside `find_src_port_for_queue` —
-    // primary and secondary draw from disjoint segments without manual
-    // coordination. This skeleton does not actually drive traffic, so
-    // the tuple values here only need to pass validation.
+    // Hardcoded demo tuple. The library narrows src_port selection to
+    // each role's `port_lo / port_hi` window inside
+    // `find_src_port_for_queue` — primary and secondary draw from
+    // disjoint segments. In the post-2026-05-02 daemon-led model the
+    // operator is responsible for assigning these windows (typically via
+    // toml config consumed by `Platform::serve_nic` / `Platform::create`,
+    // see eph-net-dpdk/docs/dpdk-daemon-deployment.md); the eph library
+    // does not auto-coordinate across tenants. This skeleton does not
+    // actually drive traffic, so the tuple values here only need to pass
+    // validation.
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
