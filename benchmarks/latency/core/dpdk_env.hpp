@@ -280,13 +280,24 @@ load_dpdk_env(const BenchConfig& cfg,
             pcfg.queues, pcfg.queues);
     }
 
-    // TODO(daemon-reshape): the multi-process bench mode (formerly
-    // gated on EPH_LAT_AUTOJOIN_MAX_PROCS) is now the default — every
+    // Multi-process bench mode (formerly gated on
+    // EPH_LAT_AUTOJOIN_MAX_PROCS) is now the default — every
     // lat_*_dpdk binary attaches as a secondary, the daemon arbitrates.
     // The orchestrator just spawns N binaries instead of setting the
-    // envvar. Once S5's QueueAllocator + sub-range partitioning lands,
-    // this fixture should validate that pcfg.queues fits in the daemon's
-    // unclaimed pool before attempting the create call.
+    // envvar.
+    //
+    // FUTURE: S5's QueueAllocator + sub-range partitioning has landed
+    // (commit 7984ad28, 2026-04-30) but the daemon does NOT yet expose
+    // a "peek-free-count" probe API (it would have to be a separate
+    // `eph_queue_peek` IPC since QueueAllocator state lives in the
+    // hugepage memzone behind a pthread_mutex). Without that, this
+    // fixture cannot preflight-validate `pcfg.queues` against the
+    // daemon's unclaimed pool — the only signal is the typed
+    // `Error::QueuePoolExhausted` returned by `Platform::create`
+    // itself, which is propagated as a clean error string below. Add
+    // the preflight only if/when a probe API materialises; until then
+    // the ergonomics of "try and fail with a clear error" are fine
+    // for the bench fixture.
 
     auto env_r = eph::dpdk::test::DpdkBenchEnv::create(
         std::move(pcfg),
