@@ -158,6 +158,15 @@ public:
                 strm_.next_out  = out_.data() + old_size;
                 strm_.avail_out = static_cast<uInt>(out_.size() - old_size);
 
+                // Snapshot avail_in BEFORE inflate so we can detect a
+                // pathological "no forward progress" — neither input
+                // consumed nor output produced — and bail out instead of
+                // spinning. With raw deflate and a non-empty out buffer
+                // this should never fire, but it's the only thing that
+                // bounds the loop on a misbehaving zlib (and keeps a
+                // CodecBad surface that the WsCodec drops the connection
+                // on, just like other inflate failure paths).
+                const uInt avail_in_before = strm_.avail_in;
                 const int ret = ::inflate(&strm_, Z_NO_FLUSH);
                 const std::size_t produced =
                     (out_.size() - old_size) - strm_.avail_out;
@@ -168,6 +177,20 @@ public:
                     // either feed more in the next chunk or surface it
                     // as an error after the tail is fed). Z_OK means
                     // "made progress, may need more output buffer".
+                    if (produced == 0 && strm_.avail_in == avail_in_before) {
+                        // No bytes consumed AND no bytes produced — zlib
+                        // claims it made progress but the stream pointers
+                        // disagree. Treat as a malformed message rather
+                        // than spin: WsCodec will surface CodecBad and
+                        // drop the connection, identical to Z_DATA_ERROR.
+                        SPDLOG_WARN("WsInflater: inflate ret={} made no "
+                                    "forward progress (avail_in={} produced=0)"
+                                    " — treating as malformed deflate",
+                                    ret, avail_in_before);
+                        return std::unexpected(::eph::core::ErrorInfo{
+                            ::eph::core::Error::CodecBad,
+                            "WsInflater: zlib inflate stuck (no progress)"});
+                    }
                     continue;
                 }
                 if (ret == Z_STREAM_END) {
