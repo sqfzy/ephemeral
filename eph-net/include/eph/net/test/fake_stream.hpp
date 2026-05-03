@@ -76,10 +76,20 @@ public:
             return tail_ - head_;
         }
 
-        /// @brief Advance head cursor — skb_pull equivalent.
-        constexpr void trim_front(std::size_t n) noexcept { head_ += n; }
-        /// @brief Pull back tail cursor — skb_trim equivalent.
-        constexpr void trim_back(std::size_t n) noexcept { tail_ -= n; }
+        /// @brief Advance head cursor — skb_pull equivalent. Clamps at
+        ///        `length()` so an over-trim collapses the view to empty
+        ///        rather than underflowing `length()` (matches the
+        ///        production `MbufView` / `SpanView` contract; tests that
+        ///        feed a real codec must see the same behavior the
+        ///        production backends do).
+        constexpr void trim_front(std::size_t n) noexcept {
+            head_ += (n > tail_ - head_) ? (tail_ - head_) : n;
+        }
+        /// @brief Pull back tail cursor — skb_trim equivalent. Symmetric
+        ///        clamp to `trim_front`.
+        constexpr void trim_back(std::size_t n) noexcept {
+            tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
+        }
 
         [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
 

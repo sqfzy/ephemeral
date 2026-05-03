@@ -48,10 +48,24 @@ struct SpanView {
     [[nodiscard]] const uint8_t* data() const noexcept    { return base_ + head_; }
     [[nodiscard]] std::size_t    length() const noexcept  { return tail_ - head_; }
 
-    /// @brief Advance head (consume bytes). Caller guarantees n <= length().
-    constexpr void trim_front(std::size_t n) noexcept { head_ += n; }
-    /// @brief Pull tail back (truncate payload). Caller guarantees n <= length().
-    constexpr void trim_back(std::size_t n)  noexcept { tail_ -= n; }
+    /// @brief Advance head (consume bytes). Clamps at `length()` so an
+    ///        over-trim collapses the view to empty rather than driving
+    ///        `head_` past `tail_` (which would underflow `length()` to a
+    ///        wrap-around huge value and yield UB on the next access).
+    ///
+    /// Aligns with the DPDK sibling `MbufView::trim_front` so codec authors
+    /// can rely on identical PacketView semantics across both backends —
+    /// the previous "caller guarantees n <= length" footgun let a single
+    /// codec slip the kernel path while staying correct on DPDK.
+    constexpr void trim_front(std::size_t n) noexcept {
+        head_ += (n > tail_ - head_) ? (tail_ - head_) : n;
+    }
+    /// @brief Pull tail back (truncate payload). Clamps at `length()` —
+    ///        symmetric to `trim_front`. An over-trim collapses the view
+    ///        to empty rather than driving `tail_` below `head_`.
+    constexpr void trim_back(std::size_t n)  noexcept {
+        tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
+    }
 
     [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
 

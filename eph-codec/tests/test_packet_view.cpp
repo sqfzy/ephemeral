@@ -122,3 +122,58 @@ TEST(PacketViewConcept, SpanPacketViewIsTriviallyMutated) {
     v.writable_data()[1] = 99;
     EXPECT_EQ(bytes[1], 99u);
 }
+
+/// Over-trim must clamp to empty rather than wrap-around. The legacy
+/// "caller guarantees n <= length()" contract was a footgun: a single
+/// codec bug or fuzzed input that called `trim_front(huge)` would drive
+/// `head_` past `tail_` and underflow `length()` to ~2^64, immediately
+/// turning a logic bug into a segfault on the next `data()` access.
+///
+/// The DPDK sibling `MbufView` has always clamped; this test pins
+/// the now-symmetric kernel / fake / codec-internal contract so a
+/// future "optimization" that drops the bounds check has to delete
+/// this test first.
+TEST(PacketViewConcept, SpanPacketViewTrimFrontClampsAtLength) {
+    std::array<uint8_t, 4> bytes{1, 2, 3, 4};
+    ecd::SpanPacketView v(bytes.data(), bytes.size());
+
+    v.trim_front(99);  // grossly overshoots — must NOT wrap length()
+    EXPECT_EQ(v.length(), 0u);
+
+    // Subsequent ops on an empty view must remain well-defined.
+    v.trim_front(1);
+    EXPECT_EQ(v.length(), 0u);
+    v.trim_back(1);
+    EXPECT_EQ(v.length(), 0u);
+}
+
+TEST(PacketViewConcept, SpanPacketViewTrimBackClampsAtLength) {
+    std::array<uint8_t, 4> bytes{1, 2, 3, 4};
+    ecd::SpanPacketView v(bytes.data(), bytes.size());
+
+    v.trim_back(99);  // grossly overshoots — must NOT wrap length()
+    EXPECT_EQ(v.length(), 0u);
+
+    // After collapse, exactly-empty length should be observable.
+    v.trim_back(1);
+    EXPECT_EQ(v.length(), 0u);
+}
+
+TEST(PacketViewConcept, SpanPacketViewMixedTrimsClamp) {
+    std::array<uint8_t, 8> bytes{0, 1, 2, 3, 4, 5, 6, 7};
+    ecd::SpanPacketView v(bytes.data(), bytes.size());
+
+    // Pull head forward 5, then attempt to pull tail back further than
+    // the remaining 3 bytes — must clamp, not invert the slice.
+    v.trim_front(5);
+    EXPECT_EQ(v.length(), 3u);
+    v.trim_back(10);
+    EXPECT_EQ(v.length(), 0u);
+
+    // Reverse case: tail-first pull then over-trim from the head.
+    ecd::SpanPacketView w(bytes.data(), bytes.size());
+    w.trim_back(5);
+    EXPECT_EQ(w.length(), 3u);
+    w.trim_front(10);
+    EXPECT_EQ(w.length(), 0u);
+}

@@ -59,14 +59,25 @@ struct SpanPacketView {
     /// @brief Number of bytes in the current window.
     [[nodiscard]] std::size_t length() const noexcept { return tail_ - head_; }
 
-    /// @brief Advance the head by `n` bytes (skb_pull equivalent).
+    /// @brief Advance the head by `n` bytes (skb_pull equivalent). Clamps
+    ///        at `length()` so an over-trim collapses the view to empty
+    ///        rather than driving `head_` past `tail_` (which would
+    ///        underflow `length()` to a huge wrap-around value and
+    ///        corrupt subsequent codec state).
     ///
-    /// Callers must ensure `n <= length()`. Out-of-range calls would corrupt
-    /// the window; we deliberately do not bounds-check on the hot path.
-    void trim_front(std::size_t n) noexcept { head_ += n; }
+    /// Aligns with the production `MbufView` / `SpanView` contract — codec
+    /// authors can rely on identical PacketView semantics whether they're
+    /// running over the kernel SpanView, the DPDK MbufView, or this
+    /// codec-internal SpanPacketView in unit tests.
+    void trim_front(std::size_t n) noexcept {
+        head_ += (n > tail_ - head_) ? (tail_ - head_) : n;
+    }
 
     /// @brief Pull the tail back by `n` bytes (skb_trim equivalent).
-    void trim_back(std::size_t n) noexcept { tail_ -= n; }
+    ///        Symmetric clamp to `trim_front`.
+    void trim_back(std::size_t n) noexcept {
+        tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
+    }
 
     /// @brief TSC timestamp captured at NIC arrival (0 if untracked).
     [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }

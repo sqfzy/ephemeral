@@ -58,8 +58,16 @@ public:
             return tail_ - head_;
         }
 
-        constexpr void trim_front(std::size_t n) noexcept { head_ += n; }
-        constexpr void trim_back(std::size_t n) noexcept { tail_ -= n; }
+        /// @brief Advance head — clamps at `length()` so an over-trim
+        ///        collapses the view to empty rather than underflowing
+        ///        `length()` (matches `MbufView` / `SpanView` contract).
+        constexpr void trim_front(std::size_t n) noexcept {
+            head_ += (n > tail_ - head_) ? (tail_ - head_) : n;
+        }
+        /// @brief Pull tail back — symmetric clamp to `trim_front`.
+        constexpr void trim_back(std::size_t n) noexcept {
+            tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
+        }
 
         [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
 
