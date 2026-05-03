@@ -3,7 +3,8 @@
 Open follow-ups across the project. Items here are **not yet promised**
 to anyone — promote into `/pax`-driven reshapes when picked up.
 
-Last verified: 2026-04-30 (none completed at this revision).
+Last verified: 2026-05-03. P1 items 1-2 (Platform::launch doc, PlatformConfig
+extraction) marked obsolete by the 2026-05-02 daemon reshape.
 
 ---
 
