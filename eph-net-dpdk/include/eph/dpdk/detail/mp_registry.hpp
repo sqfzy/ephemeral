@@ -1054,7 +1054,9 @@ public:
         return std::unexpected(core::ErrorInfo{
             core::Error::OutOfMemory,
             "MpRegistry: all process slots are claimed "
-            "(max_procs reached — start fewer peers or raise max_procs)"});
+            "(MpTopology::kMaxProcs reached — start fewer peers; "
+            "the cap is a compile-time constant since the 2026-05-02 "
+            "daemon reshape removed the configurable max_procs field)"});
     }
 
 private:

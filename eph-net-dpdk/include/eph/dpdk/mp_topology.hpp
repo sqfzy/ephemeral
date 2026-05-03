@@ -76,8 +76,13 @@ struct ProcSpec {
     /// = lcore N is exclusively held by this proc. Default 0 means
     /// "lcore tracking opted out" — `valid()` and `attach_secondary`
     /// skip lcore cross-checks when ALL slots have lcore_mask == 0.
-    /// Set per-proc by the application that knows its lcore plan
-    /// (e.g. `EPH_LAT_AUTOJOIN_LCORES="0,1"` → bit 0 | bit 1 = 0x3).
+    /// Set per-proc by the application that knows its lcore plan,
+    /// typically derived at bring-up from the `lcores` field of
+    /// `PlatformConfig` (e.g. `lcores={0,1}` → bit 0 | bit 1 = 0x3).
+    /// (The previous `EPH_LAT_AUTOJOIN_LCORES` envvar diversion was
+    /// removed in the 2026-05-02 daemon reshape — every secondary
+    /// now passes its lcore plan via the lean `PlatformConfig` it
+    /// hands `Platform::create`.)
     /// Capped at 64 lcores; any RTE_MAX_LCORE > 64 deployments need
     /// to opt out by leaving this 0 (most production NICs run < 64
     /// per process).
