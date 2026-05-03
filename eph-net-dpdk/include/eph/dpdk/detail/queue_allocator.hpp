@@ -193,8 +193,25 @@ init_header(Header* hdr, uint16_t total_queues) noexcept {
             "QueueAllocator: pthread_mutexattr_init failed"});
     }
     // PROCESS_SHARED: the mutex sits in hugepage shared memory and
-    // any process mapping the memzone can lock it.
-    (void)pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    // any process mapping the memzone can lock it. Silently dropping
+    // the retval here would be a correctness bug — if the call fails
+    // (rare on Linux/glibc but POSIX-permitted on systems without
+    // pshared mutex support), the mutex falls back to PROCESS_PRIVATE
+    // and **cross-process locking silently breaks** — daemon + tenants
+    // would race on the bitmap and double-claim queues. Surface the
+    // failure as a typed error so primary bring-up aborts loud rather
+    // than booting into a known-broken state.
+    if (const int rc =
+            pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+        rc != 0) {
+        pthread_mutexattr_destroy(&attr);
+        return std::unexpected(core::ErrorInfo{
+            core::Error::InvalidConfig,
+            "QueueAllocator: pthread_mutexattr_setpshared(PROCESS_SHARED) "
+            "failed — cross-process mutex sharing is unsupported on this "
+            "platform (would silently fall back to PROCESS_PRIVATE and "
+            "race with secondaries)"});
+    }
     if (pthread_mutex_init(&hdr->mutex, &attr) != 0) {
         pthread_mutexattr_destroy(&attr);
         return std::unexpected(core::ErrorInfo{
