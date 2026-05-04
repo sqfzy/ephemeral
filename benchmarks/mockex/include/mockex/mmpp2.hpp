@@ -156,13 +156,24 @@ public:
         std::uniform_real_distribution<double> u01(
             std::nextafter(0.0, 1.0), 1.0);
         const double u = u01(prng_);
-        const double dt_s = -std::log(u) / std::max(lambda, 1e-12);
+        // `std::max(lambda, 1e-12)` returns NaN when lambda is NaN (libstdc++
+        // <algorithm> definition: `(b < a) ? a : b`, and `1e-12 < NaN` is
+        // false). A NaN lambda comes from a malformed Mmpp2Params (TOML
+        // parse miss, fitter bug, hand-edited params.toml with `nan`).
+        // Without this guard, `dt_ns = NaN` would slip past both the
+        // `<= 0.0` and `>= 1e18` clamp branches (every NaN comparison is
+        // false) and reach `static_cast<uint64_t>(NaN)` which is UB per
+        // [conv.fpint]/p1. Fall back to the 1ms safe interval so the
+        // mock doesn't busy-loop or crash — fitter / config issue
+        // surfaces as a uniform 1kHz cadence in the bench output.
+        const double rate = std::isfinite(lambda) ? std::max(lambda, 1e-12) : 1e-12;
+        const double dt_s = -std::log(u) / rate;
         const double dt_ns = dt_s * 1e9;
         // Regime evolution.
         evolve_regime_();
         // Clamp to u64 range; extremely rare at realistic λ.
-        if (dt_ns <= 0.0) return 0;
-        if (dt_ns >= 1e18) return static_cast<uint64_t>(1e18);
+        if (!(dt_ns > 0.0)) return 0;       // also folds NaN into the zero branch
+        if (!(dt_ns < 1e18)) return static_cast<uint64_t>(1e18);
         return static_cast<uint64_t>(dt_ns);
     }
 
