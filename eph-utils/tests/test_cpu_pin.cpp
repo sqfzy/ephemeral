@@ -329,3 +329,69 @@ TEST(PinGuard, PinThreadReturnsLiveGuardThatUnregistersOnDrop) {
     }  // r out of scope -> registry entry gone
     EXPECT_FALSE(is_cpu_externally_pinned(cpu));
 }
+
+// ---------------------------------------------------------------------------
+// read_cpu_list_file boundary tests — sysfs is normally trusted, but the
+// parse routine is also fed by /proc, container overlays, and any future
+// caller that hands it a runtime-discovered path. A malformed line like
+// "0-2147483647" would otherwise expand into INT_MAX std::set inserts and
+// take the process down with memory exhaustion before the caller saw the
+// result. Negative ids are also nonsensical for every consumer of the API.
+// ---------------------------------------------------------------------------
+
+#include <cstdio>
+#include <fstream>
+
+namespace {
+std::string write_temp_cpu_list(std::string_view contents) {
+    char tmpl[] = "/tmp/eph_cpu_list_test_XXXXXX";
+    int fd = ::mkstemp(tmpl);
+    if (fd < 0) return {};
+    ::close(fd);
+    std::ofstream out(tmpl);
+    out << contents;
+    out.close();
+    return std::string{tmpl};
+}
+} // namespace
+
+TEST(ReadCpuListFile, RejectsRangeWithIntMaxAsHi) {
+    auto path = write_temp_cpu_list("0-2147483647\n");
+    ASSERT_FALSE(path.empty());
+    auto out = detail::read_cpu_list_file(path);
+    // Hi must have been clamped to kMaxCpuId-1 == 8191. So size <= 8192.
+    EXPECT_LE(out.size(), 8192u)
+        << "INT_MAX as range high MUST be clamped — otherwise this test "
+           "would hang or OOM the runner";
+    // Lo=0 must still be present (clamping only narrows the range).
+    EXPECT_TRUE(out.contains(0));
+    ::unlink(path.c_str());
+}
+
+TEST(ReadCpuListFile, NegativeStandaloneIdRejected) {
+    // Singleton "-5" parses successfully via stoi (returns -5) but the
+    // post-fix bound `id >= 0` drops it before insertion. Pre-fix the
+    // negative would have been silently inserted as a -5 entry that
+    // every downstream caller (pin / numa / queue resolution) would
+    // misinterpret as either a missing CPU or a stoi-error sentinel.
+    auto path = write_temp_cpu_list("-5,3,7\n");
+    ASSERT_FALSE(path.empty());
+    auto out = detail::read_cpu_list_file(path);
+    EXPECT_EQ(out.size(), 2u);
+    EXPECT_FALSE(out.contains(-5));
+    EXPECT_TRUE(out.contains(3));
+    EXPECT_TRUE(out.contains(7));
+    ::unlink(path.c_str());
+}
+
+TEST(ReadCpuListFile, RejectsStandaloneOutOfRangeId) {
+    auto path = write_temp_cpu_list("1,99999,3\n");
+    ASSERT_FALSE(path.empty());
+    auto out = detail::read_cpu_list_file(path);
+    // 99999 > kMaxCpuId so it's dropped; 1 and 3 stay.
+    EXPECT_EQ(out.size(), 2u);
+    EXPECT_TRUE(out.contains(1));
+    EXPECT_TRUE(out.contains(3));
+    EXPECT_FALSE(out.contains(99999));
+    ::unlink(path.c_str());
+}

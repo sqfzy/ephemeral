@@ -109,6 +109,15 @@ inline std::set<int> read_cpu_list_file(const std::string& path) {
     }
     if (line.empty()) return out;
 
+    // Sanity bound on individual CPU ids and on range expansion. Linux's
+    // CONFIG_NR_CPUS theoretical maximum is 8192; real-world hosts top out
+    // around 1024. A malformed / hostile sysfs file containing
+    // "0-2147483647" would otherwise expand into INT_MAX inserts here,
+    // a runaway std::set growth that exhausts memory before the caller
+    // even sees the result. The cap also coincidentally rejects negative
+    // CPU ids (stoi handles "-5" but a negative id is meaningless to
+    // every consumer of this API).
+    constexpr int kMaxCpuId = 8192;
     std::stringstream ss(line);
     std::string token;
     while (std::getline(ss, token, ',')) {
@@ -116,10 +125,15 @@ inline std::set<int> read_cpu_list_file(const std::string& path) {
         auto dash = token.find('-');
         try {
             if (dash == std::string::npos) {
-                out.insert(std::stoi(token));
+                int id = std::stoi(token);
+                if (id >= 0 && id < kMaxCpuId) out.insert(id);
             } else {
                 int lo = std::stoi(token.substr(0, dash));
                 int hi = std::stoi(token.substr(dash + 1));
+                if (lo < 0) lo = 0;
+                if (hi >= kMaxCpuId) hi = kMaxCpuId - 1;
+                // Cap inserts per token: a 0..8191 range is 8192 entries
+                // — already larger than any sane inventory but bounded.
                 for (int i = lo; i <= hi; ++i) out.insert(i);
             }
         } catch (...) {
