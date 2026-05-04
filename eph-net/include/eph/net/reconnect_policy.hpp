@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <random>
@@ -90,7 +91,16 @@ public:
     ///     (per [conv.fpint]). Zero is functionally a hot busy-loop —
     ///     same fix.
     ///   - `multiplier <= 1.0` is bumped to `2.0`
+    ///   - `multiplier` non-finite (NaN/Inf) is bumped to `2.0`. Without
+    ///     this guard, NaN slips past `<= 1.0` (NaN comparisons are
+    ///     false), then `current_base_.count() * NaN = NaN` flows into
+    ///     `static_cast<int64_t>(NaN)` inside `next_backoff` which is
+    ///     UB per [conv.fpint]. +Inf has the symmetric problem: it
+    ///     bypasses the bound and explodes the cast.
     ///   - `jitter_factor < 0` is clamped to `0`
+    ///   - `jitter_factor` non-finite (NaN/Inf) is clamped to `0`. Same
+    ///     class of NaN-slip bug — `apply_jitter` then hands NaN to
+    ///     `std::uniform_real_distribution(NaN, NaN)` which is UB.
     ///   - `jitter_factor >= 1` is clamped to `0.999`
     ///   - `max_backoff < initial_backoff` is set to `initial_backoff`
     explicit ReconnectPolicy(ReconnectPolicyConfig cfg) noexcept
@@ -102,8 +112,20 @@ public:
         if (cfg_.initial_backoff.count() <= 0) {
             cfg_.initial_backoff = kFallbackInitial;
         }
-        if (cfg_.multiplier <= 1.0) cfg_.multiplier = 2.0;
-        if (cfg_.jitter_factor < 0.0) cfg_.jitter_factor = 0.0;
+        // NaN-safe clamp: every comparison against NaN returns false,
+        // so `<= 1.0` would NOT trigger on a NaN multiplier and the
+        // poisoned value would reach next_backoff's float→int64 cast
+        // (UB). isfinite catches NaN and ±Inf together; the legacy
+        // `<= 1.0` then handles the finite-but-too-small case.
+        if (!std::isfinite(cfg_.multiplier) || cfg_.multiplier <= 1.0) {
+            cfg_.multiplier = 2.0;
+        }
+        // Same NaN-slip rationale for jitter_factor — apply_jitter calls
+        // std::uniform_real_distribution(low, high) with low/high
+        // computed from jitter_factor, and a NaN distribution is UB.
+        if (!std::isfinite(cfg_.jitter_factor) || cfg_.jitter_factor < 0.0) {
+            cfg_.jitter_factor = 0.0;
+        }
         if (cfg_.jitter_factor >= 1.0) cfg_.jitter_factor = 0.999;
         if (cfg_.max_backoff < cfg_.initial_backoff) {
             cfg_.max_backoff = cfg_.initial_backoff;

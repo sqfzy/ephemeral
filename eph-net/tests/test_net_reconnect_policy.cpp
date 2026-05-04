@@ -300,3 +300,72 @@ TEST(ReconnectPolicy, AttemptsAccessorReflectsExactCount) {
         EXPECT_EQ(p.attempts(), i);
     }
 }
+
+// NaN / Inf clamps. Without these, a NaN multiplier slips past `<=1.0`
+// (NaN comparisons return false), then `current_base.count() * NaN
+// = NaN` flows into `static_cast<int64_t>(NaN)` inside next_backoff,
+// which is UB per [conv.fpint]. Same hazard for jitter_factor —
+// `std::uniform_real_distribution<double>(NaN, NaN)` is also UB.
+// The clamps must use isfinite to catch both NaN and +-Inf.
+TEST(ReconnectPolicy, ClampsNaNMultiplier) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = 10000ms,
+        .multiplier      = nan,
+        .jitter_factor   = 0.0,
+    };
+    en::ReconnectPolicy p{cfg};
+    auto first  = p.next_backoff();
+    auto second = p.next_backoff();
+    auto third  = p.next_backoff();
+    EXPECT_GT(first.count(),  0);
+    EXPECT_GT(second.count(), 0);
+    EXPECT_GT(third.count(),  0);
+    EXPECT_LE(third.count(), 10000);
+}
+
+TEST(ReconnectPolicy, ClampsInfMultiplier) {
+    const double inf = std::numeric_limits<double>::infinity();
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = 10000ms,
+        .multiplier      = inf,
+        .jitter_factor   = 0.0,
+    };
+    en::ReconnectPolicy p{cfg};
+    auto first  = p.next_backoff();
+    auto second = p.next_backoff();
+    EXPECT_LE(first.count(), 10000);
+    EXPECT_LE(second.count(), 10000);
+}
+
+TEST(ReconnectPolicy, ClampsNaNJitterFactor) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = 10000ms,
+        .multiplier      = 2.0,
+        .jitter_factor   = nan,
+    };
+    en::ReconnectPolicy p{cfg};
+    for (int i = 0; i < 5; ++i) {
+        auto v = p.next_backoff();
+        EXPECT_GT(v.count(), 0);
+        EXPECT_LE(v.count(), 10000);
+    }
+}
+
+TEST(ReconnectPolicy, ClampsInfJitterFactor) {
+    const double inf = std::numeric_limits<double>::infinity();
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = 10000ms,
+        .multiplier      = 2.0,
+        .jitter_factor   = inf,
+    };
+    en::ReconnectPolicy p{cfg};
+    auto v = p.next_backoff();
+    EXPECT_GT(v.count(), 0);
+    EXPECT_LE(v.count(), 10000);
+}
