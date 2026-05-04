@@ -191,9 +191,26 @@ public:
             : static_cast<size_t>(it - cdf_.begin());
         const size_t anchor = params_.size_kde_anchors[idx];
         // Gaussian jitter around the anchor. Bandwidth is in bytes.
-        std::normal_distribution<double> jitter(
-            0.0, params_.size_kde_bandwidth);
+        // Sanitise bandwidth: a NaN/Inf/negative `size_kde_bandwidth`
+        // (malformed params.toml — fitter bug, hand-edited file) makes
+        // `std::normal_distribution(0.0, NaN)` UB per [rand.dist]
+        // requirements (sigma must be a positive finite value). Clamp
+        // to 0.0 so jitter degenerates to "always returns mean=0" — the
+        // caller falls back to the bare anchor, which is the safest
+        // possible behaviour for a malformed KDE fit.
+        const double sigma = std::isfinite(params_.size_kde_bandwidth) &&
+                             params_.size_kde_bandwidth >= 0.0
+                                 ? params_.size_kde_bandwidth
+                                 : 0.0;
+        std::normal_distribution<double> jitter(0.0, sigma);
         const double sampled = static_cast<double>(anchor) + jitter(prng_);
+        // `static_cast<long long>(NaN)` is UB; `std::round(NaN) = NaN`.
+        // Defense-in-depth: an anchor that overflowed to inf during
+        // `static_cast<double>(size_t)` would also produce a non-finite
+        // `sampled`. Fold non-finite into the lowest legal frame size
+        // so the bench keeps making progress with the visible-but-
+        // contained anomaly rather than crashing.
+        if (!std::isfinite(sampled)) [[unlikely]] return 1;
         const long long clamped =
             std::clamp<long long>(static_cast<long long>(std::round(sampled)),
                                   1, 65535);
