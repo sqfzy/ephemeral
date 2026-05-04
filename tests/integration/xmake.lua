@@ -6,6 +6,11 @@ target("test_itch_adapter")
     add_files("test_itch_adapter.cpp")
     add_deps("eph-book", "eph-itch")
 
+target("test_itch_mold_book_e2e")
+    add_rules("eph-test")
+    add_files("test_itch_mold_book_e2e.cpp")
+    add_deps("eph-book", "eph-itch")
+
 target("test_binance_adapter")
     add_rules("eph-test")
     add_files("test_binance_adapter.cpp")
