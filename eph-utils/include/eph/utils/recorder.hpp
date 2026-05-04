@@ -653,7 +653,16 @@ class Recorder {
             auto ns_per_cycle = TSC::to_ns(1);
             // Sentinel 1.0 avoids division-by-zero / nullopt branching on
             // the hot path. See comment above.
-            if (!ns_per_cycle || *ns_per_cycle <= 0.0) return 1.0;
+            //
+            // `!(*ns_per_cycle > 0.0)` instead of `*ns_per_cycle <= 0.0`
+            // so a NaN ratio (theoretical: TSC::do_init_ writes the median
+            // of the samples vector, which would be NaN only if every
+            // calibration sample read NaN — impossible on any real x86/ARM
+            // host today, but the fallback path is the contract for "TSC
+            // somehow not usable" so it should also catch NaN). Without
+            // this, `1.0 / NaN = NaN` would feed into every subsequent
+            // ns_to_cycles_() call and saturate the histogram silently.
+            if (!ns_per_cycle || !(*ns_per_cycle > 0.0)) return 1.0;
             return 1.0 / *ns_per_cycle;
         }();
         // Integer truncation: loses at most 1 cycle, which on a 3 GHz
