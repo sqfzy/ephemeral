@@ -260,6 +260,25 @@ public:
                     "total with NaN)", it->second, sym);
                 continue;
             }
+            // Symmetric NaN/Inf defense for the per-position fields. The
+            // `on_fill` isfinite gate keeps `pos.avg_price` / `pos.qty`
+            // finite under normal flow, but `total_realized_pnl` and
+            // `net_exposure` below explicitly defend against a future
+            // Position mutability path (snapshot reload, deserialised
+            // restore) that bypasses on_fill — without the same guard
+            // here, that bypass would silently poison the unrealized
+            // total with NaN while the other two aggregates self-heal.
+            // Skip the symbol with a WARN to keep the rest of the
+            // portfolio aggregating cleanly.
+            if (!std::isfinite(pos.avg_price) ||
+                !std::isfinite(pos.qty)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                    "total_unrealized_pnl: non-finite position state "
+                    "(avg_price={} qty={}) for symbol={}, skipping (would "
+                    "poison the running total with NaN)",
+                    pos.avg_price, pos.qty, sym);
+                continue;
+            }
             // Unrealized = (market - avg) * qty  (works for both signs).
             total += (it->second - pos.avg_price) * pos.qty;
         }
