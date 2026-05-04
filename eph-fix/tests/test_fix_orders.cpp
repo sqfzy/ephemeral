@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <string_view>
 
 #include "eph/fix.hpp"
@@ -427,6 +428,40 @@ TEST(FixOrders, build_new_order_rejects_negative_qty) {
         -50.0, 100.0,
         TimeInForce::Day);
     EXPECT_EQ(len, 0u) << "negative qty must be rejected at build time";
+}
+
+// Limit order with NaN/+Inf price reaches MessageBuilder.set_double which
+// marks overflow and finish() returns 0 — but only if the orders.hpp
+// guard runs BEFORE set_double poisons the buffer. The previous WARN
+// path used `<= 0.0`, which silently slipped past NaN (every NaN
+// comparison is false), producing a confusing "(overflow or error)"
+// log line WITHOUT the actionable "non-positive price" diagnostic.
+// The fixed guard surfaces both finite-non-positive and non-finite
+// in the same warn so log readers know which knob to fix.
+TEST(FixOrders, build_new_order_limit_with_nan_price_returns_zero) {
+    uint8_t buf[512];
+    size_t len = build_new_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_NAN_PX", "AAPL",
+        Side::Buy, OrdType::Limit,
+        100.0, std::nan(""),
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u)
+        << "NaN price on Limit order must surface as build failure "
+           "(set_double marks overflow, finish returns 0)";
+}
+
+TEST(FixOrders, build_new_order_limit_with_inf_price_returns_zero) {
+    uint8_t buf[512];
+    size_t len = build_new_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_INF_PX", "AAPL",
+        Side::Buy, OrdType::Limit,
+        100.0, std::numeric_limits<double>::infinity(),
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u);
 }
 
 TEST(FixOrders, build_replace_order_rejects_nan_qty) {

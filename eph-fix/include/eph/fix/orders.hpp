@@ -172,9 +172,16 @@ enum class TimeInForce : char {
 
     // Price only for Limit orders — Market orders must not include tag 44
     if (ord_type == OrdType::Limit) {
-        if (price <= 0.0) {
+        // isfinite-first ordering: every NaN comparison is false, so a
+        // NaN price slips past `<= 0.0` and the warning never logs —
+        // builder.set_double would still mark overflow downstream, but
+        // the caller would see "Limit order failed (overflow or error)"
+        // without the actionable "non-positive price" diagnostic. Surface
+        // NaN/Inf in the same WARN so log readers can fix the right knob.
+        if (!std::isfinite(price) || price <= 0.0) {
             SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
-                "build_new_order: Limit order with non-positive price={}, cl_ord_id={}",
+                "build_new_order: Limit order with invalid price={} "
+                "(must be finite and > 0), cl_ord_id={}",
                 price, cl_ord_id);
         }
         b.set_double(tag::Price, price);
