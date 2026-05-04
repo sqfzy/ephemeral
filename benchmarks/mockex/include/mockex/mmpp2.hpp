@@ -232,12 +232,35 @@ private:
     enum class Regime : uint8_t { Quiet, Busy };
 
     void precompute_cdf_() {
+        // Defense-in-depth NaN/Inf scrub: a malformed params.toml (hand
+        // edit, fitter bug, accidental `nan` literal) can place NaN or
+        // ±Inf inside `size_kde_weights`. Without this guard:
+        //   * NaN: `sum += NaN` poisons sum → first ternary picks the
+        //     zero branch (sum > 0.0 is false on NaN), so the entire
+        //     CDF stays at 0; `upper_bound(cdf_, u)` returns end and
+        //     `idx = cdf_.size() - 1` always picks the last anchor —
+        //     silent fallback that hides the bad input.
+        //   * Single NaN with otherwise-finite weights summing > 0:
+        //     `w/sum = NaN` poisons `acc`, every subsequent CDF entry
+        //     is NaN, and `upper_bound`'s NaN comparisons (always
+        //     false) collapse to idx=0, silently always picking the
+        //     first anchor.
+        //   * +Inf: `sum = +Inf`, `w/Inf = 0` for finite w but
+        //     `Inf/Inf = NaN` for the inf-weight slot — same NaN
+        //     poisoning chain.
+        // Treat any non-finite weight as 0 (drop it from the
+        // distribution) and recompute sum from the sanitised weights;
+        // matches the fail-soft pattern used elsewhere in this file
+        // (`sigma` clamp, `lambda` clamp).
         double sum = 0.0;
-        for (double w : params_.size_kde_weights) sum += w;
+        for (double w : params_.size_kde_weights) {
+            if (std::isfinite(w) && w > 0.0) sum += w;
+        }
         cdf_.reserve(params_.size_kde_weights.size());
         double acc = 0.0;
         for (double w : params_.size_kde_weights) {
-            acc += (sum > 0.0 ? w / sum : 0.0);
+            const double safe_w = (std::isfinite(w) && w > 0.0) ? w : 0.0;
+            acc += (sum > 0.0 ? safe_w / sum : 0.0);
             cdf_.push_back(acc);
         }
     }
