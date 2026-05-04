@@ -696,7 +696,30 @@ public:
         auto recv_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - last_recv).count();
 
-        if (recv_elapsed >= static_cast<int64_t>(static_cast<double>(hb_sec) * cfg_.heartbeat_timeout_factor)) {
+        // Compute the dead-server timeout budget = hb_sec * factor, then
+        // float→int64 cast for comparison against the seconds counter.
+        // Defense-in-depth NaN/Inf clamp: FixSessionConfig::validate()
+        // catches non-finite `heartbeat_timeout_factor` at config-time,
+        // BUT the FixSession ctor does not enforce validate() — a caller
+        // that constructs a session without checking validate()'s
+        // returned diagnostic would feed NaN/inf into this multiply.
+        // `static_cast<int64_t>(non-finite double)` is UB per
+        // [conv.fpint]/p1 and the optimiser is allowed to assume it
+        // never happens, which would silently corrupt the
+        // server-dead-detection branch (and on x86 GCC actually returns
+        // INT64_MIN, making `recv_elapsed >= INT64_MIN` always true →
+        // every tick disconnects). Fall back to disabling the dead-
+        // server check (treat as effectively-infinite budget) when the
+        // product is non-finite — same fail-soft policy as the
+        // ReconnectPolicy NaN clamp.
+        const double timeout_d =
+            static_cast<double>(hb_sec) * cfg_.heartbeat_timeout_factor;
+        const int64_t timeout_secs =
+            std::isfinite(timeout_d)
+                ? static_cast<int64_t>(timeout_d)
+                : std::numeric_limits<int64_t>::max();
+
+        if (recv_elapsed >= timeout_secs) {
             // Server dead — no response even after TestRequest
             if (test_request_pending_.load(std::memory_order_relaxed)) {
                 SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
