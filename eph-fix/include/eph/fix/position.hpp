@@ -244,6 +244,22 @@ public:
                 SPDLOG_LOGGER_WARN(detail::position_logger(), "total_unrealized_pnl: no market price for symbol={}", sym);
                 continue;
             }
+            // Defense-in-depth: a NaN/+-Inf market price (corrupt feed,
+            // stale snapshot, deserialiser bug) would propagate NaN into
+            // `total` and stay there for every subsequent symbol — the
+            // observability call returns NaN and downstream PnL
+            // dashboards silently lose the entire portfolio's number.
+            // Skip the bad symbol with a WARN so the rest of the
+            // portfolio still aggregates cleanly. (Symmetric to the
+            // isfinite guard inside on_fill which prevents NaN from
+            // entering pos.avg_price in the first place.)
+            if (!std::isfinite(it->second)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                    "total_unrealized_pnl: non-finite market price={} "
+                    "for symbol={}, skipping (would poison the running "
+                    "total with NaN)", it->second, sym);
+                continue;
+            }
             // Unrealized = (market - avg) * qty  (works for both signs).
             total += (it->second - pos.avg_price) * pos.qty;
         }

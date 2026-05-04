@@ -165,6 +165,45 @@ TEST(PositionTracker, UnrealizedPnlMissingPriceSkipsSymbol)
     EXPECT_DOUBLE_EQ(tracker.total_unrealized_pnl(empty_prices), 0.0);
 }
 
+// A NaN / Inf market price for one symbol must NOT poison the running
+// total — without the isfinite skip, `(NaN - avg) * qty = NaN` and
+// `total += NaN = NaN` for the rest of the iteration, silently turning
+// the whole portfolio's PnL display into NaN. on_fill already guards
+// the WRITE side; this is the matching READ-side guard.
+TEST(PositionTracker, UnrealizedPnlSkipsSymbolWithNaNMarketPrice)
+{
+    PositionTracker tracker;
+    tracker.on_fill("AAPL", '1', 100.0, 50.0);   // long 100 @ 50
+    tracker.on_fill("TSLA", '1', 50.0, 200.0);   // long 50 @ 200
+
+    std::unordered_map<std::string, double> prices = {
+        {"AAPL", std::numeric_limits<double>::quiet_NaN()},
+        {"TSLA", 210.0},  // legitimate +10/share = +500 unrealized
+    };
+    auto pnl = tracker.total_unrealized_pnl(prices);
+    EXPECT_TRUE(std::isfinite(pnl))
+        << "NaN price on one symbol must not propagate into total — "
+           "got " << pnl;
+    EXPECT_NEAR(pnl, 500.0, 1e-9)
+        << "TSLA's clean PnL must still aggregate after AAPL is skipped";
+}
+
+TEST(PositionTracker, UnrealizedPnlSkipsSymbolWithInfMarketPrice)
+{
+    PositionTracker tracker;
+    tracker.on_fill("AAPL", '1', 100.0, 50.0);
+    tracker.on_fill("MSFT", '2', 75.0, 300.0);   // short 75 @ 300
+
+    std::unordered_map<std::string, double> prices = {
+        {"AAPL", std::numeric_limits<double>::infinity()},
+        {"MSFT", 290.0},  // short with market down: +10 * 75 = +750
+    };
+    auto pnl = tracker.total_unrealized_pnl(prices);
+    EXPECT_TRUE(std::isfinite(pnl));
+    // MSFT is short (qty=-75), market dropped 10 -> (290-300)*-75 = +750
+    EXPECT_NEAR(pnl, 750.0, 1e-9);
+}
+
 // ---------------------------------------------------------------------------
 // Net exposure
 // ---------------------------------------------------------------------------
