@@ -80,4 +80,31 @@ static void BM_ConcurrentRecorderRecord_MT(benchmark::State& state) {
 }
 BENCHMARK(BM_ConcurrentRecorderRecord_MT)->Threads(1)->Threads(2)->Threads(4);
 
+// ---------------------------------------------------------------------------
+// Recorder::compute_stats() — the per-bench-run output critical path
+// ---------------------------------------------------------------------------
+//
+// Coverage gap (batch 11): every benchmark scenario (`lat_tcp`, `lat_udp`,
+// `lat_ws`, the four `ex_*` scenarios) ends with a `Recorder::compute_stats()`
+// + `export_json` pair to write its run results. That step traverses the
+// HdrHistogram to extract {p50, p90, p99, p99.9} + std-dev. With sample
+// counts in the 10-100k range per run, this isn't free — pinning the cost
+// surfaces any future regression in the histogram percentile-walk.
+
+static void BM_RecorderComputeStats(benchmark::State& state) {
+    Recorder rec("bench_compute_stats");
+    // Pre-load with state.range(0) samples spanning a realistic latency
+    // distribution (a noisy ~100 ns floor up to a 100 us tail).
+    const auto n_samples = static_cast<uint64_t>(state.range(0));
+    for (uint64_t i = 0; i < n_samples; ++i) {
+        const uint64_t cycles = 200 + (i * 17) % 200000;
+        (void)rec.record(cycles);
+    }
+    for (auto _ : state) {
+        auto stats = rec.compute_stats();
+        benchmark::DoNotOptimize(stats);
+    }
+}
+BENCHMARK(BM_RecorderComputeStats)->Arg(1000)->Arg(10000)->Arg(100000);
+
 BENCHMARK_MAIN();
