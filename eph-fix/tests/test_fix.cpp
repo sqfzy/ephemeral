@@ -4814,6 +4814,98 @@ TEST(FixBuilder, set_decimal_rejects_double_dot) {
     EXPECT_TRUE(b.has_overflow());
 }
 
+// FIX 4.4 §6.5 Price/Qty are simple decimals: optional leading '-', digits,
+// optional '.' + digits. NOT permitted: leading '+' (only '-' is the
+// recognised sign character). A regression that silently accepted '+'
+// would still produce a wire-valid Price field but FIX engines on the
+// other side that strictly validate the spec would reject every order
+// — surface the contract here so the validator never drifts.
+TEST(FixBuilder, set_decimal_rejects_leading_plus) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "+123.45");
+    EXPECT_TRUE(b.has_overflow())
+        << "leading '+' must be rejected — FIX 4.4 only recognises '-' "
+           "as a sign character on Price/Qty fields";
+}
+
+// `.5` and `-.5` have no digit before the decimal point. The validator
+// loops with `has_digits=false` until it sees the dot; the post-dot
+// guard requires a digit immediately AFTER the dot but NOT before, so
+// the validator currently accepts ".5". ITCH/FIX 4.4 spec doesn't
+// require the leading zero either, so this is intentional behaviour
+// — pin it so a future "tighten the validator" refactor surfaces.
+TEST(FixBuilder, set_decimal_accepts_no_leading_zero_dot_form) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, ".5");
+    EXPECT_FALSE(b.has_overflow())
+        << "FIX 4.4 spec permits Price/Qty without a leading zero before "
+           "the decimal point; implementation accepts this form. If a "
+           "future change tightens the validator, update this test "
+           "deliberately rather than letting it silently flip.";
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), ".5");
+}
+
+TEST(FixBuilder, set_decimal_accepts_no_leading_zero_negative_dot_form) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "-.5");
+    EXPECT_FALSE(b.has_overflow());
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(*mv->get(tag::Price), "-.5");
+}
+
+// Whitespace-prefix would produce a wire-invalid `Price=  123.45` field
+// that FIX engines reject on the other side. The validator hits ' ' as
+// the first byte and falls into the catch-all else (not '-', not digit,
+// not '.'), which is the expected reject path.
+TEST(FixBuilder, set_decimal_rejects_leading_whitespace) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, " 123.45");
+    EXPECT_TRUE(b.has_overflow())
+        << "leading whitespace must reject — produces wire-invalid Price";
+}
+
+TEST(FixBuilder, set_decimal_rejects_trailing_whitespace) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "123.45 ");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+// Multiple minus signs (`--1` / `1--2`) and lone dot must all reject.
+TEST(FixBuilder, set_decimal_rejects_double_minus) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, "--1");
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, set_decimal_rejects_lone_dot) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_decimal(tag::Price, ".");
+    EXPECT_TRUE(b.has_overflow())
+        << "single '.' has no digits in either half — must reject";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // set_price: integer mantissa + decimals encoding
 // ─────────────────────────────────────────────────────────────────────────────
