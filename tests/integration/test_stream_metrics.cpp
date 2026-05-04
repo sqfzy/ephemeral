@@ -404,6 +404,53 @@ TEST(StreamMetrics, MetricAcceptsEveryValidStreamMetricWithoutCrash) {
     SUCCEED();
 }
 
+// Tcp/Udp metric() out-of-range path. The backend hot-path counter array
+// is fixed-size; any caller that casts an integer outside the enum (e.g.
+// reading from a config file or wire metric query) into StreamMetric and
+// calls metric() must hit the explicit bounds-check branch and receive 0
+// — NOT read past the array end. ASan would surface a buffer-overrun
+// here; without ASan the contract is "documented to return 0", and a
+// silent regression that drops the bounds check would still surface as
+// a non-zero return on a freshly-constructed stream (counters start at 0,
+// so any non-zero is OOB-noise).
+TEST(StreamMetrics, MetricOutOfRangeReturnsZeroOnTcp) {
+    EchoServer srv;
+    ek::StreamConfig cfg{};
+    cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
+    auto stream = PlainTcpStream::create(cfg).value();
+
+    // Probe a handful of clearly-out-of-range values. Cover the immediate
+    // boundary (kCount itself), two well past, and a max-uint8_t value.
+    const auto kCount = static_cast<std::size_t>(en::StreamMetric::kCount);
+    for (std::size_t bad : {kCount, kCount + 1, kCount + 99,
+                             std::size_t{255}}) {
+        const auto m = static_cast<en::StreamMetric>(bad);
+        EXPECT_EQ(stream->metric(m), 0u)
+            << "out-of-range StreamMetric value " << bad
+            << " (kCount=" << kCount << ") must return 0, not OOB-read";
+    }
+}
+
+TEST(StreamMetrics, MetricOutOfRangeReturnsZeroOnUdp) {
+    // UDP backend has its own counter array — verify the symmetric
+    // bounds-check holds. A backend that silently reads the wrong
+    // counter slot would surface inconsistent values across backends
+    // for the same enum, which is the canonical "metric pipeline
+    // entropy" failure mode.
+    auto sock = PlainUdp::create(
+        ek::UdpConfig{.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0}})
+        .value();
+
+    const auto kCount = static_cast<std::size_t>(en::StreamMetric::kCount);
+    for (std::size_t bad : {kCount, kCount + 1, kCount + 99,
+                             std::size_t{255}}) {
+        const auto m = static_cast<en::StreamMetric>(bad);
+        EXPECT_EQ(sock->metric(m), 0u)
+            << "UDP: out-of-range StreamMetric value " << bad
+            << " (kCount=" << kCount << ") must return 0, not OOB-read";
+    }
+}
+
 // ─── T2.11: derived ws.deflate_ratio gauge ────────────────────────────────
 
 namespace {
