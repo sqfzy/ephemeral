@@ -68,6 +68,47 @@ TEST(ErrorName, CoversEveryEnumValue) {
     // not a programming error. DpdkPoller::remove() is the canonical
     // emitter today.
     EXPECT_NAMED(NotFound,             "NOT_FOUND");
+    // DPDK daemon-led model (S6 of daemon-reshape): surfaced when the
+    // eph-nicd primary IPC stops responding (rte_* calls return -EIO,
+    // local port becomes invalid). Distinct from Disconnected (peer-
+    // level TCP) and Timeout (per-request RTT). Was missing from this
+    // sweep when the enumerator was added — silent gap meant a
+    // regression that returned "UNKNOWN" for DaemonDisconnected would
+    // never have surfaced through this test.
+    EXPECT_NAMED(DaemonDisconnected,   "DAEMON_DISCONNECTED");
+}
+
+// Compile-time guarantee that no future enumerator silently slips past
+// the CoversEveryEnumValue sweep. A new enum value added without
+// updating both error_name() AND the sweep above lands here as a
+// static_assert: bumping kKnownErrorCount forces the author to scan
+// the test file and add the matching EXPECT_NAMED line.
+//
+// To bump: count the enum values in eph-core/include/eph/core/error.hpp
+// (excluding Ok if the count tracks "non-Ok errors"; here we count
+// every value including Ok so the math is straightforward).
+TEST(ErrorName, EnumValueCountMatchesCoverageSweep) {
+    // Count of enumerators in Error (including Ok). Update both this
+    // constant AND the CoversEveryEnumValue body together when adding
+    // a new error code.
+    constexpr std::size_t kKnownErrorCount = 22;
+
+    // Verify each integer 0..kKnownErrorCount-1 maps to a non-UNKNOWN
+    // name. A new enum value with no matching error_name() switch case
+    // would return "UNKNOWN" here and fail loudly.
+    for (std::size_t i = 0; i < kKnownErrorCount; ++i) {
+        const char* n = error_name(static_cast<Error>(i));
+        ASSERT_NE(n, nullptr) << "error_name returned nullptr for index " << i;
+        EXPECT_STRNE(n, "UNKNOWN")
+            << "error_name returned UNKNOWN for index " << i
+            << " — likely a new enum value missing from error_name()'s switch";
+    }
+    // And the next-after-last must still be "UNKNOWN" (sentinel-overrun
+    // guard so we know kKnownErrorCount stayed in sync).
+    EXPECT_STREQ(error_name(static_cast<Error>(kKnownErrorCount)), "UNKNOWN")
+        << "if this fires, the enum grew past kKnownErrorCount — bump the "
+           "constant AND add a matching EXPECT_NAMED line in "
+           "CoversEveryEnumValue above";
 }
 
 // ============================================================================
