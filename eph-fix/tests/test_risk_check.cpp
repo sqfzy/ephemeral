@@ -557,15 +557,68 @@ TEST(RiskLimits, WarningsPositionWithoutOrderQty) {
 }
 
 TEST(RiskLimits, WarningsEmptyForCompleteConfig) {
+    // max_orders_per_second is intentionally OMITTED here — RiskChecker does
+    // not enforce it (see WarningsRateLimitNotEnforced below), so configuring
+    // it would deliberately add a warning. "Complete config" for this gate's
+    // purposes therefore means every threshold actually enforced by
+    // check_order().
     RiskLimits limits{
         .max_order_qty = 100.0,
         .max_order_notional = 50000.0,
         .max_position_qty = 1000.0,
         .max_position_notional = 500000.0,
         .max_total_exposure = 1000000.0,
-        .max_orders_per_second = 10,
     };
     EXPECT_TRUE(limits.warnings().empty());
+}
+
+// Regression for the "silently accepted but unimplemented" knob: the
+// max_orders_per_second field stores a threshold, but `RiskChecker::
+// check_order()` deliberately leaves rate-limit enforcement to the caller
+// (see comment at the bottom of check_order()). Without a warning, an
+// operator who sets the field reasonably assumes the gate is enforcing
+// it -- and ships without the external rate limiter, then the venue
+// throttles or bans on first burst. The warnings() helper must surface
+// the gap so production deployments cannot silently rely on a no-op gate.
+TEST(RiskLimits, WarningsRateLimitNotEnforced) {
+    RiskLimits limits{
+        .max_order_qty         = 100.0,
+        .max_order_notional    = 50000.0,
+        .max_position_qty      = 1000.0,
+        .max_position_notional = 500000.0,
+        .max_total_exposure    = 1000000.0,
+        .max_orders_per_second = 10,  // <-- the hazardous knob
+    };
+    auto w = limits.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("max_orders_per_second") != std::string::npos &&
+            msg.find("does NOT enforce") != std::string::npos) {
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found)
+        << "warnings() must surface the rate-limit non-enforcement so "
+           "operators don't ship without an external TokenBucket";
+}
+
+// And conversely: if the operator does NOT configure rate-limit, no
+// warning is emitted on that axis. (Keeps the WarningsAllDisabled
+// baseline behaviour unchanged.)
+TEST(RiskLimits, WarningsRateLimitSilentWhenZero) {
+    RiskLimits limits{
+        .max_order_qty         = 100.0,
+        .max_order_notional    = 50000.0,
+        .max_position_qty      = 1000.0,
+        .max_position_notional = 500000.0,
+        .max_total_exposure    = 1000000.0,
+        // max_orders_per_second omitted -> defaults to 0 -> no warning
+    };
+    auto w = limits.warnings();
+    for (const auto& msg : w) {
+        EXPECT_EQ(msg.find("max_orders_per_second"), std::string::npos)
+            << "rate-limit warning must not fire when the field is 0";
+    }
 }
 
 TEST(RiskLimits, FormatterProducesDump) {

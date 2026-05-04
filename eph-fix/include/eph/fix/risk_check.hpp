@@ -124,6 +124,19 @@ struct RiskLimits {
             w.emplace_back("max_position_qty is set but max_order_qty is "
                            "disabled -- a single large order could fill the "
                            "entire position limit");
+        // Rate-limit field is configured but RiskChecker::check_order does
+        // NOT enforce it -- the in-tree code path leaves rate enforcement
+        // to a caller-owned `eph::utils::TokenBucket` (or equivalent).
+        // A misread of this knob ("I set max_orders_per_second so I'm
+        // covered") leads operators to ship without an actual rate
+        // limiter, then the venue throttles or bans the connection on
+        // first burst. Surface up-front so production deployments don't
+        // silently rely on a no-op gate. See risk_check.hpp comment in
+        // check_order() ("Rate limit check is left to the caller").
+        if (max_orders_per_second > 0)
+            w.emplace_back("max_orders_per_second is set but RiskChecker "
+                           "does NOT enforce it; wire an external rate "
+                           "limiter (eph::utils::TokenBucket) before submit");
         return w;
     }
 
