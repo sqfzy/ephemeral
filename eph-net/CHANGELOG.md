@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added (2026-05-03) — pax loop batch 13
+
+  * `fuzzers/fuzz_http_response.cpp` + 10-input seed corpus —
+    libFuzzer harness for `parse_http_response`. `HttpClient` (REST
+    trading APIs and the WS upgrade handshake) feeds whatever bytes
+    a peer returns straight into the parser, so a hostile or buggy
+    reverse proxy / CDN / intermediate can craft any status line,
+    header block, or body. ASan + UBSan in the harness catch
+    out-of-bounds reads, signed-overflow on the status code, and
+    unsigned-overflow on Content-Length. Seed corpus covers 200 OK
+    / 204 bodyless / 101 WS upgrade / 500 with body / no-reason /
+    HTTP/1.0 / runt / pure-garbage / huge Content-Length / chunked
+    Transfer-Encoding (rejected by design). Follows the same
+    convention as `eph-net-dpdk/fuzzers/` and `eph-core/fuzzers/`:
+    intentionally outside the xmake graph (libFuzzer needs Clang ≥17,
+    project default is GCC 14), built ad-hoc with the clang command
+    in the README. gcc14 syntax-check passes.
+
 ### Fixed (2026-05-03) — pax loop batch 10 closeouts
 
   * `include/eph/net/posix_listener.hpp::accept_one` — the

@@ -30,6 +30,9 @@ All notable changes to `eph-book`. Format loosely follows [Keep a Changelog](htt
 ### Added
 - `signals.hpp` with pure-function templates: `order_imbalance`, `weighted_mid`, `microprice`, `spread_bps`, `vwap`, `depth_ratio`. All generic over any book exposing the expected BBO / total-qty interface, all `noexcept`, and allocation-free on the hot path.
 
+### Fixed
+- `vwap()` now skips non-finite levels in externally-built spans. While `ArrayBook` / `MapBook` reject non-finite price/qty at insert, `vwap` is a pure free function any caller can feed (snapshot reconstruction, replay tools, custom market-data adapters). A single NaN/Inf level previously poisoned both running sums and the `sum_q <= 0.0` guard silently failed (every NaN comparison returns false), so the function returned NaN that propagated into trading-signal pipelines. Mirrors the fail-soft policy used by `PositionTracker::total_unrealized_pnl` for non-finite market prices. Returns `nullopt` only when every level is bad — never NaN. +2 regression tests (mixed-finite span, all-bad span).
+
 ## Feed adapters
 
 ### Added
