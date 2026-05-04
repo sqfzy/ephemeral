@@ -908,3 +908,46 @@ TEST(ReconnectOrchestratorFallbackMath, NextAttemptSaturatesAtBoundary) {
     EXPECT_EQ(compute_next_attempt_tsc(now_tsc, cycles + 1),
               std::numeric_limits<uint64_t>::max());
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enum coverage gates — to_string(ReconnectState) and to_string(ReconnectEvent
+// Kind) had no explicit tests before this commit. ReconnectState::Connecting
+// in particular is a transient state that no in-process scenario settles on,
+// so a regression that returned "UNKNOWN" for it would slip past every
+// state-machine test. Pin every enumerator here so a future addition that
+// forgets the matching switch case fails loudly.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(ReconnectStateToString, EveryEnumeratorHasNonUnknownName) {
+    // Existing test surface only asserts on Idle / Connected / Backoff /
+    // Failed; Connecting is asserted here for the first time.
+    EXPECT_STREQ(en::to_string(en::ReconnectState::Idle),       "Idle");
+    EXPECT_STREQ(en::to_string(en::ReconnectState::Connecting), "Connecting");
+    EXPECT_STREQ(en::to_string(en::ReconnectState::Connected),  "Connected");
+    EXPECT_STREQ(en::to_string(en::ReconnectState::Backoff),    "Backoff");
+    EXPECT_STREQ(en::to_string(en::ReconnectState::Failed),     "Failed");
+}
+
+TEST(ReconnectStateToString, OutOfRangeReturnsUnknownSentinel) {
+    // A reinterpret_cast of an integer outside the enum (or future ABI
+    // drift where caller and callee linked against different enum sizes)
+    // must hit the trailing `return "UNKNOWN"` so logging surfaces the
+    // mismatch instead of dereffing past the switch.
+    EXPECT_STREQ(en::to_string(static_cast<en::ReconnectState>(99)),
+                 "UNKNOWN");
+}
+
+TEST(ReconnectEventKindToString, EveryEnumeratorHasNonUnknownName) {
+    using K = en::ReconnectEventKind;
+    EXPECT_STREQ(en::to_string(K::DisconnectDetected), "DisconnectDetected");
+    EXPECT_STREQ(en::to_string(K::AttemptStarted),     "AttemptStarted");
+    EXPECT_STREQ(en::to_string(K::AttemptFailed),      "AttemptFailed");
+    EXPECT_STREQ(en::to_string(K::AttachFailed),       "AttachFailed");
+    EXPECT_STREQ(en::to_string(K::Connected),          "Connected");
+    EXPECT_STREQ(en::to_string(K::BackoffScheduled),   "BackoffScheduled");
+    EXPECT_STREQ(en::to_string(K::Failed),             "Failed");
+}
+
+TEST(ReconnectEventKindToString, OutOfRangeReturnsUnknownSentinel) {
+    EXPECT_STREQ(en::to_string(static_cast<en::ReconnectEventKind>(99)),
+                 "UNKNOWN");
+}
