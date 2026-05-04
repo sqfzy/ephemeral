@@ -650,3 +650,126 @@ TEST_F(ClientFixture, RequestNullPollFnRejected) {
               std::string_view::npos)
         << "detail: " << rsp.error().detail;
 }
+
+// =============================================================================
+// Peer-side connection-close error injection
+//
+// These cover the "server crashed mid-response" / "ELB cut us off" hot
+// failure modes that the per-field guards do NOT exercise. The existing
+// TimeoutOnHangingServer covers "no bytes ever arrive"; the cases below
+// cover the more pernicious "some bytes, then EOF" path that has bitten
+// every HTTP client at some point in its life. The MiniHttpServer handler
+// sends back a partial wire-format response and the worker thread closes
+// the client fd as soon as the bytes drain.
+//
+// Each test pins a specific cut-point (header CRLF boundary, mid-body
+// after Content-Length, headers + 1 byte) so a regression that drains
+// silently on any of them surfaces as a precise diagnostic instead of
+// a generic "got the wrong error class".
+// =============================================================================
+
+TEST_F(ClientFixture, ResponseClosedMidBodyReturnsConnectionError) {
+    // Server promises Content-Length: 100, sends "HTTP/.../OK\r\n...\r\n\r\n"
+    // + only 50 bytes of body, then hangs up. The client must surface
+    // an error rather than treating the truncated buffer as a complete
+    // response — the Content-Length contract makes this a hard error.
+    setup_with_handler([](std::string_view) -> std::string {
+        std::string r = "HTTP/1.1 200 OK\r\n"
+                        "Content-Length: 100\r\n"
+                        "\r\n";
+        r.append(50, 'x');  // half the promised body
+        return r;
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/short",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value())
+        << "client must reject Content-Length-truncated response, not accept";
+    // PeerClosed (the canonical EOF-mid-stream code) or Disconnected
+    // is acceptable — both surface "connection vanished" to the caller.
+    EXPECT_TRUE(rsp.error().code == eph::core::Error::Disconnected
+             || rsp.error().code == eph::core::Error::Timeout)
+        << "got code=" << static_cast<int>(rsp.error().code)
+        << " detail=" << rsp.error().detail;
+}
+
+TEST_F(ClientFixture, ResponseClosedAfterHeadersReturnsConnectionError) {
+    // Headers complete (with Content-Length: 50) then immediate EOF.
+    // The client cannot fabricate the missing 50 bytes from thin air,
+    // so this must surface as a connection-class error.
+    setup_with_handler([](std::string_view) -> std::string {
+        return "HTTP/1.1 200 OK\r\n"
+               "Content-Length: 50\r\n"
+               "\r\n";  // and nothing else
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/empty-after-headers",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_TRUE(rsp.error().code == eph::core::Error::Disconnected
+             || rsp.error().code == eph::core::Error::Timeout)
+        << "got code=" << static_cast<int>(rsp.error().code)
+        << " detail=" << rsp.error().detail;
+}
+
+TEST_F(ClientFixture, ResponseClosedMidHeadersReturnsConnectionError) {
+    // Server sends only the status line + first header — no terminating
+    // CRLFCRLF, no Content-Length yet — then hangs up. Classic early-
+    // truncation case (proxy died, K8s SIGTERM, etc).
+    setup_with_handler([](std::string_view) -> std::string {
+        return "HTTP/1.1 200 OK\r\n"
+               "Server: died-here";  // no CRLF after this header
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/mid-headers",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_TRUE(rsp.error().code == eph::core::Error::Disconnected
+             || rsp.error().code == eph::core::Error::Timeout)
+        << "got code=" << static_cast<int>(rsp.error().code)
+        << " detail=" << rsp.error().detail;
+}
+
+TEST_F(ClientFixture, ResponseGarbageStatusLineIsCodecBad) {
+    // Wire bytes that are not a valid HTTP/1.1 status line at all.
+    // parse_http_response must reject as CodecBad — silently treating
+    // garbage as a response would let an attacker MITM inject arbitrary
+    // body claims via a downstream proxy that mangled the upstream
+    // bytes. (The chunked case above is similar but more specific.)
+    setup_with_handler([](std::string_view) -> std::string {
+        return "<<<HELLO this is not HTTP>>>\r\n"
+               "more garbage\r\n\r\n";
+    });
+
+    Client::Request req{
+        .method  = "GET",
+        .path    = "/garbage",
+        .headers = { en::HttpHeader{"Host", "127.0.0.1"} },
+        .body    = {},
+    };
+    auto rsp = client->request(req, poll_fn(),
+                               std::chrono::milliseconds{500});
+    ASSERT_FALSE(rsp.has_value());
+    EXPECT_EQ(rsp.error().code, eph::core::Error::CodecBad)
+        << "garbage status line must surface as CodecBad, got code="
+        << static_cast<int>(rsp.error().code)
+        << " detail=" << rsp.error().detail;
+}
