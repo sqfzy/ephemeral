@@ -57,6 +57,30 @@ struct RiskLimits {
     /// A value of 0.0 (or 0) disables the corresponding check, which is valid.
     /// Negative values are invalid.
     [[nodiscard]] constexpr std::string_view validate() const noexcept {
+        // NaN/Inf guards must run BEFORE the `< 0.0` comparisons —
+        // every comparison against NaN returns false, so a NaN limit
+        // would slip past `< 0.0` and reach RiskChecker::check_order
+        // unchanged. There, `if (qty > limits_.max_order_qty)` would
+        // also be false on a NaN limit (silently equivalent to
+        // "limit disabled"), so the operator who set a NaN through a
+        // config-deserialiser bug believes the gate is enforcing the
+        // threshold while it actually permits every order. Reject at
+        // the validate boundary so a hostile / malformed config file
+        // cannot silently disable risk protection.
+        //
+        // std::isfinite is constexpr in C++23 (GCC 13+, Clang 17+),
+        // so the constexpr signature is preserved.
+        if (!std::isfinite(max_order_qty))
+            return "max_order_qty must be finite";
+        if (!std::isfinite(max_order_notional))
+            return "max_order_notional must be finite";
+        if (!std::isfinite(max_position_qty))
+            return "max_position_qty must be finite";
+        if (!std::isfinite(max_position_notional))
+            return "max_position_notional must be finite";
+        if (!std::isfinite(max_total_exposure))
+            return "max_total_exposure must be finite";
+
         if (max_order_qty < 0.0)
             return "max_order_qty must be >= 0 (0 disables)";
         if (max_order_notional < 0.0)

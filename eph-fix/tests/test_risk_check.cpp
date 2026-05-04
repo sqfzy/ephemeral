@@ -572,6 +572,47 @@ TEST(RiskLimits, WarningsEmptyForCompleteConfig) {
     EXPECT_TRUE(limits.warnings().empty());
 }
 
+// NaN/Inf guards. Every `RiskLimits::validate()` field check uses
+// `< 0.0` which returns false against NaN — the previous validator
+// thus silently accepted `RiskLimits{.max_order_qty = NaN}`. Worse,
+// downstream `RiskChecker::check_order()` then runs `qty > NaN`
+// which is also false: the gate behaves as if the limit were disabled
+// while the operator believes it is set. A config-deserialiser bug
+// (or hostile config file) could therefore silently turn off every
+// risk gate. Pin the guard so a future refactor cannot drop it.
+TEST(RiskLimits, ValidateRejectsNaNAndInfinityOnEveryField) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    // Each field independently — establishes that the guard fires per-
+    // field, not as a whole-struct sweep that could mask a missing
+    // check on one specific field.
+    EXPECT_FALSE(RiskLimits{.max_order_qty = nan}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_order_qty = inf}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_order_qty = -inf}.validate().empty());
+
+    EXPECT_FALSE(RiskLimits{.max_order_notional = nan}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_order_notional = inf}.validate().empty());
+
+    EXPECT_FALSE(RiskLimits{.max_position_qty = nan}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_position_qty = inf}.validate().empty());
+
+    EXPECT_FALSE(RiskLimits{.max_position_notional = nan}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_position_notional = inf}.validate().empty());
+
+    EXPECT_FALSE(RiskLimits{.max_total_exposure = nan}.validate().empty());
+    EXPECT_FALSE(RiskLimits{.max_total_exposure = inf}.validate().empty());
+}
+
+// And — the diagnostic string must mention the offending field so
+// operators reading the error log can fix the right knob.
+TEST(RiskLimits, ValidateNaNDiagnosticNamesField) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto msg = RiskLimits{.max_order_qty = nan}.validate();
+    EXPECT_NE(msg.find("max_order_qty"), std::string_view::npos);
+    EXPECT_NE(msg.find("finite"), std::string_view::npos);
+}
+
 // Regression for the "silently accepted but unimplemented" knob: the
 // max_orders_per_second field stores a threshold, but `RiskChecker::
 // check_order()` deliberately leaves rate-limit enforcement to the caller
