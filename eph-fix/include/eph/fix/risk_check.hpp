@@ -281,6 +281,21 @@ public:
             const auto& pos = positions.get(symbol);
             const double signed_qty = (side == '1') ? qty : -qty;
             const double projected_qty = std::abs(pos.qty + signed_qty);
+            // Fail-safe NaN guard, symmetric with path 5 below. PositionTracker::on_fill
+            // rejects non-finite qty before mutating `pos.qty`, so the projection here is
+            // finite under normal flow. But defense-in-depth: a future code path that
+            // exposes pos mutability (rolling-snapshot loader, deserialised position
+            // restore from disk) could leak NaN into pos.qty without re-validating, and
+            // `NaN > limit` is false — the order would silently PASS the position-qty
+            // gate. Treat any non-finite projection as a hard reject so a fail-safe
+            // gate stays fail-safe even when an upstream invariant is bypassed.
+            if (!std::isfinite(projected_qty)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                    "risk reject: projected position qty non-finite ({}) for symbol={} "
+                    "(pos.qty={} signed_qty={}) — treating as position-qty breach",
+                    projected_qty, symbol, pos.qty, signed_qty);
+                return RiskRejectReason::kPositionQtyExceeded;
+            }
             if (projected_qty > limits_.max_position_qty) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position qty {} exceeds limit {} "
                             "for symbol={}", projected_qty, limits_.max_position_qty, symbol);
@@ -295,6 +310,19 @@ public:
             const double projected_qty = std::abs(pos.qty + signed_qty);
             // Use order price as best estimate for projected notional.
             const double projected_notional = projected_qty * price;
+            // Same fail-safe NaN/+inf guard as path 3 / path 5. `pos.qty + signed_qty`
+            // can overflow to ±inf when accumulated qty grows close to 1e308 (rare,
+            // but possible in long-running sessions over many partial fills); the
+            // multiply by `price` then keeps the inf, and `inf > limit` would correctly
+            // reject — but a NaN slip (per path 3 rationale) would silently pass.
+            if (!std::isfinite(projected_notional)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                    "risk reject: projected position notional non-finite ({}) for "
+                    "symbol={} (pos.qty={} signed_qty={} price={}) — treating as "
+                    "position-notional breach",
+                    projected_notional, symbol, pos.qty, signed_qty, price);
+                return RiskRejectReason::kPositionNotionalExceeded;
+            }
             if (projected_notional > limits_.max_position_notional) [[unlikely]] {
                 SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position notional {} exceeds limit {} "
                             "for symbol={}", projected_notional, limits_.max_position_notional,
