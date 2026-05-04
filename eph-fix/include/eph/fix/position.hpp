@@ -267,10 +267,28 @@ public:
     }
 
     /// @brief Sum of realized PnL across all symbols.
+    ///
+    /// Symmetric NaN/Inf defense to `total_unrealized_pnl` above:
+    /// `on_fill` guards against non-finite avg_price entering the
+    /// running PnL recurrence, so under normal flow `pos.realized_pnl`
+    /// is finite. But a future code path that exposes Position
+    /// mutability (deserialised position restore, snapshot reload)
+    /// could leak NaN into one symbol's realized_pnl, and the naïve
+    /// sum would propagate that NaN into `total` and stay there for
+    /// every subsequent symbol — the dashboard read returns NaN and
+    /// the entire portfolio's PnL silently disappears. Skip with WARN
+    /// instead so the rest of the portfolio still aggregates cleanly.
     [[nodiscard]] double total_realized_pnl() const noexcept
     {
         double total = 0.0;
-        for (const auto& [_, pos] : positions_) {
+        for (const auto& [sym, pos] : positions_) {
+            if (!std::isfinite(pos.realized_pnl)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                    "total_realized_pnl: non-finite realized_pnl={} for "
+                    "symbol={}, skipping (would poison the running total "
+                    "with NaN)", pos.realized_pnl, sym);
+                continue;
+            }
             total += pos.realized_pnl;
         }
         return total;
@@ -289,7 +307,25 @@ public:
     [[nodiscard]] double net_exposure() const noexcept
     {
         double total = 0.0;
-        for (const auto& [_, pos] : positions_) {
+        for (const auto& [sym, pos] : positions_) {
+            // Symmetric NaN/Inf defense to `total_unrealized_pnl` and
+            // `total_realized_pnl`. `pos.notional` = |qty|*avg_price
+            // recomputed on every on_fill from finite inputs, so under
+            // normal flow it's finite. Defense-in-depth for any
+            // future Position mutability path that bypasses on_fill —
+            // a NaN notional would silently poison the entire
+            // exposure aggregate (and risk_check.hpp path-5 reads
+            // `current_exposure = positions.net_exposure()` which
+            // already has its own isfinite trap downstream, so this
+            // catches the bad input one layer earlier with the
+            // actionable per-symbol diagnostic).
+            if (!std::isfinite(pos.notional)) [[unlikely]] {
+                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                    "net_exposure: non-finite notional={} for symbol={}, "
+                    "skipping (would poison the running exposure total "
+                    "with NaN)", pos.notional, sym);
+                continue;
+            }
             total += pos.notional;  // notional is already abs(qty) * avg_price
         }
         return total;
