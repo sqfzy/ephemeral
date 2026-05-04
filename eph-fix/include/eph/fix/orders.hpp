@@ -320,9 +320,14 @@ enum class TimeInForce : char {
     b.set_char(tag::TimeInForce, static_cast<char>(tif));
 
     if (ord_type == OrdType::Limit) {
-        if (price <= 0.0) {
+        // Same isfinite-first ordering as build_new_order: NaN slips
+        // past `<= 0.0` and would hide the actionable diagnostic
+        // behind the generic "(overflow or error)" line. See the
+        // matching guard in build_new_order above for the rationale.
+        if (!std::isfinite(price) || price <= 0.0) {
             SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
-                "build_replace_order: Limit order with non-positive price={}, cl_ord_id={}",
+                "build_replace_order: Limit order with invalid price={} "
+                "(must be finite and > 0), cl_ord_id={}",
                 price, cl_ord_id);
         }
         b.set_double(tag::Price, price);

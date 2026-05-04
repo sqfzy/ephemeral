@@ -500,6 +500,32 @@ TEST(FixOrders, build_replace_order_rejects_negative_qty) {
     EXPECT_EQ(len, 0u) << "negative qty must be rejected at build time";
 }
 
+// Mirror of build_new_order_limit_with_nan_price_returns_zero — same
+// NaN-slip pattern and same fix for the replace path.
+TEST(FixOrders, build_replace_order_limit_with_nan_price_returns_zero) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_NAN_PX", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        100.0, std::nan(""),
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u);
+}
+
+TEST(FixOrders, build_replace_order_limit_with_inf_price_returns_zero) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_INF_PX", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        100.0, std::numeric_limits<double>::infinity(),
+        TimeInForce::Day);
+    EXPECT_EQ(len, 0u);
+}
+
 // ---------------------------------------------------------------------------
 // FIX enum formatter tests
 // ---------------------------------------------------------------------------
