@@ -7,6 +7,24 @@ on the `dev` branch touching `eph-utils/`.
 
 ## [Unreleased]
 
+### Fixed (2026-05-03) — pax loop batch 13
+
+- `detail::read_cpu_list_file` (used to ingest
+  `/sys/devices/system/cpu/{isolated,thread_siblings_list,...}`) now
+  rejects out-of-range CPU ids and clamps malformed range endpoints.
+  Pre-fix, a hostile or malformed line like `0-2147483647` would
+  expand into `INT_MAX` `std::set<int>` inserts and OOM the process
+  before the caller saw the result; a singleton `-5` parsed cleanly
+  via `stoi` and silently entered the set as a `-5` entry that every
+  downstream consumer (pin / numa / queue resolution) misread as
+  either a missing CPU or a `stoi` error sentinel. Cap individual
+  ids at 8192 (well above Linux's `CONFIG_NR_CPUS=8192` ceiling, > 8x
+  any real-world max) and clamp negative `lo` / huge `hi` inside
+  ranges. Drops out-of-range standalone ids; clamps range endpoints
+  rather than dropping the whole range so a partially-bad input
+  still yields a useful subset. +3 regression tests
+  (`ReadCpuListFile.{RejectsRangeWithIntMaxAsHi,NegativeStandaloneIdRejected,RejectsStandaloneOutOfRangeId}`).
+
 ### Added
 
 - `eph::utils::lock_memory(LockMemoryOptions, tag)` — `mlockall`
