@@ -15,6 +15,7 @@
 ///   - **Depth ratio**: aggregate buy vs. sell interest
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -128,9 +129,20 @@ template <typename Book>
 vwap(std::span<const PriceLevel> levels) noexcept {
     if (levels.empty()) return std::nullopt;
 
+    // Defense-in-depth: callers normally pass spans from a validated
+    // book (ArrayBook / MapBook reject non-finite price/qty at insert),
+    // but this is a free function — a caller can build any span. A
+    // single NaN/Inf level would poison `sum_pq` / `sum_q` for every
+    // subsequent level, the `sum_q <= 0.0` guard would silently fail
+    // (every NaN comparison is false), and the function would return
+    // a NaN that propagates into trading-signal pipelines downstream.
+    // Skip non-finite levels with the same fail-soft policy applied
+    // by `PositionTracker::total_unrealized_pnl`.
     double sum_pq = 0.0;
     double sum_q  = 0.0;
     for (const auto& lvl : levels) {
+        if (!std::isfinite(lvl.price) || !std::isfinite(lvl.qty)) [[unlikely]]
+            continue;
         sum_pq += lvl.price * lvl.qty;
         sum_q  += lvl.qty;
     }

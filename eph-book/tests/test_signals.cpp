@@ -7,6 +7,8 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
+#include <span>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -226,6 +228,39 @@ TEST(SignalsTest, VwapAskSide) {
     auto v = vwap(book.asks());
     ASSERT_TRUE(v.has_value());
     EXPECT_NEAR(*v, 2035.0 / 20.0, kEps);
+}
+
+// vwap takes a raw std::span<const PriceLevel>. While book inserts reject
+// non-finite price/qty, a caller can build any span (e.g. snapshot
+// reconstruction, replay tools, custom market-data adapter). A single
+// NaN/Inf level pre-fix poisoned both running sums; the `sum_q <= 0.0`
+// guard then silently returned NaN — propagating into trading-signal
+// downstream pipelines. Post-fix: skip non-finite levels, keep aggregating
+// the finite ones; only return nullopt if every level is bad / qty<=0.
+TEST(SignalsTest, VwapSkipsNonFiniteLevelsInExternallyBuiltSpan) {
+    const PriceLevel levels[] = {
+        {100.0, 10.0},
+        {std::nan(""), 5.0},                              // NaN price
+        {99.0, std::numeric_limits<double>::infinity()},  // +Inf qty
+        {98.0, 20.0},
+    };
+    auto v = vwap(std::span<const PriceLevel>{levels});
+    ASSERT_TRUE(v.has_value())
+        << "Span with mixed finite/non-finite levels must aggregate the "
+           "finite subset, not return NaN";
+    EXPECT_TRUE(std::isfinite(*v))
+        << "Result must be finite — NaN slip would poison downstream signals";
+    // Expected: only finite levels {100,10} and {98,20} contribute.
+    EXPECT_NEAR(*v, (100.0 * 10.0 + 98.0 * 20.0) / 30.0, kEps);
+}
+
+TEST(SignalsTest, VwapAllNonFiniteSpanReturnsNullopt) {
+    const PriceLevel levels[] = {
+        {std::nan(""), 5.0},
+        {std::numeric_limits<double>::infinity(), 10.0},
+    };
+    EXPECT_FALSE(vwap(std::span<const PriceLevel>{levels}).has_value())
+        << "If every level is non-finite, sum_q stays 0 → nullopt, not NaN";
 }
 
 TEST(SignalsTest, VwapFromMapBookTopBids) {
