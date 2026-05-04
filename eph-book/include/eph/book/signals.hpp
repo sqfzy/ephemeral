@@ -41,7 +41,20 @@ template <typename Book>
     const double bid_qty = book.total_bid_qty();
     const double ask_qty = book.total_ask_qty();
     const double total   = bid_qty + ask_qty;
-    if (total <= 0.0) return 0.0;
+    // `!(total > 0.0)` instead of `total <= 0.0` so NaN folds into the
+    // empty-book early-return rather than slipping past the guard. The
+    // ArrayBook / MapBook update_side() validators reject non-finite
+    // qty at insert, so `total` is finite under normal flow — but this
+    // function is templated on `Book`, so a future user-supplied book
+    // type that exposes total_bid_qty() / total_ask_qty() without the
+    // same insert-time guards (e.g. a side-loaded snapshot store, a
+    // unit-test fixture, a prototype L3 aggregator) would otherwise let
+    // NaN slip into `(bid-ask)/total = NaN` and silently poison every
+    // downstream trading signal that consumes order_imbalance. Same
+    // defensive pattern as `rate_limiter.hpp::sanitize_refill_` and
+    // `signals.hpp::vwap` (both flag the symmetric NaN-comparison
+    // hazard in their inline rationale).
+    if (!(total > 0.0)) return 0.0;
     return (bid_qty - ask_qty) / total;
 }
 
@@ -67,7 +80,11 @@ template <typename Book>
     if (!bid || !ask) return std::nullopt;
 
     const double total = bid->qty + ask->qty;
-    if (total <= 0.0) return std::nullopt;
+    // `!(total > 0.0)` folds NaN into the nullopt branch — see
+    // `order_imbalance` above for the templated-book defensive rationale.
+    // best_bid()/best_ask() return PriceLevel by value from the book, but a
+    // user-supplied book can synthesise levels without insert-time validation.
+    if (!(total > 0.0)) return std::nullopt;
 
     // Weight each price by the *opposite* side's quantity — a large ask qty
     // pulls the fair value toward the bid and vice versa.
@@ -110,7 +127,10 @@ template <typename Book>
     if (!bid || !ask) return std::nullopt;
 
     const double mid = (bid->price + ask->price) / 2.0;
-    if (mid <= 0.0) return std::nullopt;
+    // `!(mid > 0.0)` folds NaN into the nullopt branch — same templated-book
+    // defensive rationale as `order_imbalance` / `weighted_mid` above. A
+    // negative or zero mid is also undefined for a bps spread.
+    if (!(mid > 0.0)) return std::nullopt;
 
     return (ask->price - bid->price) / mid * 10000.0;
 }
@@ -175,7 +195,14 @@ template <typename Book>
 [[nodiscard]] std::optional<double> depth_ratio(const Book& book) noexcept {
     const double ask_qty = book.total_ask_qty();
     const double bid_qty = book.total_bid_qty();
-    if (ask_qty <= 0.0 || bid_qty <= 0.0) return std::nullopt;
+    // `!(ask_qty > 0.0) || !(bid_qty > 0.0)` folds NaN into the nullopt
+    // branch — same templated-book defensive rationale as `order_imbalance`
+    // / `weighted_mid` / `spread_bps` above. NaN slipping past `<= 0.0`
+    // would silently return NaN/inf to a caller doing `if (depth_ratio
+    // > threshold)` (NaN > anything == false → buy-pressure threshold
+    // never trips), exactly the failure mode the existing nullopt
+    // contract was designed to surface.
+    if (!(ask_qty > 0.0) || !(bid_qty > 0.0)) return std::nullopt;
     return bid_qty / ask_qty;
 }
 
