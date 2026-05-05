@@ -19,7 +19,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
