@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Audited — `tests/legacy/` directory disposition (T3.4, 2026-05-05)
+
+The 2026-05-05 action list called for `tests/legacy/` audit ("23 files,
+build status / 公共面对应 / 决定保留/迁移/删除"). New
+`tests/legacy/AUDIT.md` documents the result:
+
+- **23 files / 720 test cases / 10 803 lines** — all build, all run,
+  no `DISABLED_` prefixes
+- **No duplication** with `tests/test_*.cpp` public surface — every
+  legacy file targets a primitive (`eph::dpdk::*`) that the public
+  surface stream/datagram/poller transitively wraps, but exercises
+  it at the unit level not the integration level
+- **No dead code** — deleting any file removes the only direct unit-
+  level coverage for its primitive
+- **Name is misleading** — "legacy" suggests deprecated; README:333-339
+  already disclaims this, but the directory name overrides the
+  disclaimer
+
+**Recommendation** in AUDIT.md: rename `tests/legacy/` →
+`tests/detail/` to match the source convention
+(`include/eph/dpdk/detail/`). Pure rename + 1-line `xmake.lua` glob
+update; zero behaviour change. Alternative: keep as-is and link
+`AUDIT.md` from `README.md` for newcomer disambiguation.
+
+**Do not delete.** Track item: T3.4 closed via audit-only deliverable.
+
 ### Audited — src_port range library-level guardrail (T2.4) already implemented (2026-05-05)
 
 The 2026-05-05 action list flagged T2.4 ("MpRegistry 增 src_port_range
