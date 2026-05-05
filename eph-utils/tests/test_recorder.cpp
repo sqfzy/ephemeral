@@ -1067,6 +1067,41 @@ TEST(RecorderDetail, EnsureDirectoryNestedPath) {
     fs::remove_all(fs::path(dir).parent_path().parent_path().parent_path());
 }
 
+// ensure_directory must return false (and not throw) when the path it would
+// create is blocked by an existing regular file. fs::create_directories on
+// such a path raises filesystem_error; the helper catches it and surfaces
+// `false`. Without this test the catch-clause is dead code from a coverage
+// perspective.
+TEST(RecorderDetail, EnsureDirectoryFailsWhenPathIsRegularFile) {
+    auto blocking_file =
+        std::string{"/tmp/eph_test_block_"} + recorder_detail::get_timestamp() + ".file";
+    {
+        std::ofstream f(blocking_file);
+        f << "block\n";
+    }
+    ASSERT_TRUE(fs::is_regular_file(blocking_file));
+
+    // Try to "create" a directory at the same path — must fail.
+    EXPECT_FALSE(recorder_detail::ensure_directory(blocking_file));
+    // The blocking file must be untouched.
+    EXPECT_TRUE(fs::is_regular_file(blocking_file));
+    fs::remove(blocking_file);
+}
+
+// Distinct names produce distinct leaf paths even when called back-to-back
+// (i.e. when get_timestamp() resolution is identical). Without this,
+// concurrent benches with different names but overlapping timestamps could
+// silently collide on disk if a future refactor dropped the name prefix.
+TEST(RecorderDetail, MakeOutputPathDistinctNamesProduceDistinctLeaves) {
+    auto p1 = recorder_detail::make_output_path("alpha", "/tmp", ".csv");
+    auto p2 = recorder_detail::make_output_path("beta",  "/tmp", ".csv");
+    EXPECT_NE(p1, p2);
+    EXPECT_EQ(p1.parent_path(), p2.parent_path());
+    // Sanity: extension preserved on both.
+    EXPECT_EQ(p1.extension(), ".csv");
+    EXPECT_EQ(p2.extension(), ".csv");
+}
+
 // ============================================================================
 
 TEST(ConcurrentRecorderRecordValues, bulk_across_threads) {
