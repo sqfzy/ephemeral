@@ -349,7 +349,25 @@ private:
 
     KernelPoller(int epfd, PollerConfig cfg) noexcept
         : epoll_fd_(epfd), cfg_(cfg) {
-        entries_.reserve(cfg.initial_capacity);
+        // The constructor is `noexcept`. `std::vector::reserve` can throw
+        // `std::bad_alloc` if `cfg.initial_capacity` is pathological (e.g.
+        // a misconfigured caller passing SIZE_MAX). Without the guard a
+        // throw here would terminate the process via the noexcept
+        // contract — the factory `create()` would never get a chance to
+        // surface a clean `Error::OutOfMemory`. Catch-and-swallow leaves
+        // entries_ at its default (empty) capacity; subsequent
+        // `entries_.reserve` inside add() will retry on a sane size.
+        try {
+            entries_.reserve(cfg.initial_capacity);
+        } catch (...) {
+            // Best-effort breadcrumb; logger may not be initialized this
+            // early in some test fixtures, hence the explicit access.
+            SPDLOG_LOGGER_WARN(detail::poller_logger(),
+                "KernelPoller: entries_.reserve({}) threw; falling back "
+                "to default capacity (subsequent add() calls will reserve "
+                "lazily on demand)",
+                cfg.initial_capacity);
+        }
     }
 
     /// @brief Shared poll body for both overloads; `timeout_ms` as epoll sees it.
