@@ -892,6 +892,48 @@ TEST(FixSession, ConfigEqualityIgnoresCallbacks) {
     EXPECT_EQ(a, b);
 }
 
+// The on_state_change callback (FixSessionConfig.on_state_change) is
+// fired by set_state() at session.hpp:813. Existing tests cover
+// "callbacks excluded from equality" but never assert that the
+// callback is actually invoked on a state transition. A future
+// refactor that dropped the `if (cfg_.on_state_change)` invocation
+// would silently break every observability dashboard that relies on
+// it (e.g. session-state metrics in operator UIs).
+//
+// Drive the session through Logon (kDisconnected → kLogonSent →
+// kActive) and assert the callback observed both transitions.
+TEST(FixSession, on_state_change_callback_fires_for_each_transition) {
+    MockFixTransport mock;
+    auto cfg = test_config();
+
+    // Capture transition history: each entry is (old, new).
+    std::vector<std::pair<SessionState, SessionState>> history;
+    cfg.on_state_change = [&](SessionState old_s, SessionState new_s) {
+        history.emplace_back(old_s, new_s);
+    };
+
+    FixSession session(mock.send_fn(), cfg);
+    do_logon(session, mock);
+
+    // Logon flow: kDisconnected → kLogonSent → kActive (2 transitions).
+    ASSERT_GE(history.size(), 2u);
+    EXPECT_EQ(history[0].first, SessionState::kDisconnected);
+    EXPECT_EQ(history[0].second, SessionState::kLogonSent);
+    EXPECT_EQ(history[1].first, SessionState::kLogonSent);
+    EXPECT_EQ(history[1].second, SessionState::kActive);
+
+    // Also assert that set_state's "no transition if old == new" guard
+    // is honored — the callback must NOT fire on a redundant
+    // re-invocation of set_state with the current state. We can't
+    // trigger this via the public API directly, but we can confirm
+    // the post-Logon history is exactly 2 entries (no spurious
+    // self-edges from internal bookkeeping).
+    EXPECT_EQ(history.size(), 2u)
+        << "spurious self-edge transitions detected in on_state_change "
+        << "callback — set_state's `if (old != new_state)` guard may "
+        << "have been weakened";
+}
+
 TEST(FixSession, ConfigWarningsDetectsLargeHeartbeat) {
     FixSessionConfig cfg{
         .sender_comp_id = "S", .target_comp_id = "T",
