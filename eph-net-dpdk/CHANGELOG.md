@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Added — Prometheus textfile MetricsSink (T2.6, 2026-05-05)
+
+`eph::net::dpdk::detail::PrometheusTextfileSink` — a concrete `MetricsSink`
+implementation that buffers counters / gauges / histograms in memory and
+flushes them as a single Prometheus exposition-format `.prom` file via
+the atomic write+rename pattern (write to `<path>.tmp`, fsync, rename
+to `<path>`). Closes the observability gap "no push exporter, all
+metrics are pull-model" the 2026-05-05 review flagged as Tier 2.
+
+Header: `eph/net/dpdk/detail/prometheus_textfile_sink.hpp` (~340 LoC,
+header-only). Test: `test_prometheus_textfile_sink` (8 cases — concept
+conformance, counter/gauge/histogram round-trip, tag serialisation +
+escaping, empty-flush, repeated-push overwrite semantics, flush-error
+reporting). All passing.
+
+Usage:
+
+```cpp
+eph::net::dpdk::detail::PrometheusTextfileSink sink{
+    "/var/lib/eph/app-1234.prom"};
+eph::net::publish_metrics(*stream, sink, /*tags*/);
+sink.flush();   // atomic write+rename .tmp → .prom
+```
+
+Pair with `node_exporter --collector.textfile.directory=/var/lib/eph`
+and the metrics scrape into Prometheus within the configured interval
+under `net_stream_*` series names.
+
+Design choices documented in the header docstring:
+- Atomic rename (no partially-written files reach Prometheus parser).
+- Map-keyed by `(name, tags)` — repeated push of same key overwrites,
+  matching textfile-collector "current state" semantics.
+- Tag value escaping per Prometheus spec (backslash + quote doubled).
+- Histograms emit as gauges for now; bucketed `_bucket{le=N}` /
+  `_sum` / `_count` exposition deferred (consumer can do recording-
+  rule-side bucketing).
+- Single-publisher-thread expectation; no internal locking.
+- I/O failures captured in `last_error()` (never thrown).
+
+Track item: T2.6 from the 2026-05-05 action list.
+
 ### Audited — `tests/legacy/` directory disposition (T3.4, 2026-05-05)
 
 The 2026-05-05 action list called for `tests/legacy/` audit ("23 files,
