@@ -3085,6 +3085,32 @@ TEST(FixBuilder, set_raw_empty_data_succeeds) {
     EXPECT_FALSE(b.has_overflow());
 }
 
+// set_raw with a real (non-null) pointer and len==0 must hit the
+// `data == nullptr || len == 0` short-circuit and not enter the
+// SOH-scan loop. Without this test, a refactor that flips the
+// short-circuit to `data == nullptr && len == 0` (which would be
+// wrong — non-null data with len==0 is also a no-op) would slip past.
+TEST(FixBuilder, set_raw_nonnull_data_zero_len_short_circuits) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    const uint8_t backed[] = {'X'};
+    // Pass len=0 even though data is not null.
+    b.set_raw(58, backed, 0);
+    EXPECT_FALSE(b.has_overflow());
+}
+
+// set_raw with non-null data and a length that points at SOH only
+// at the very last byte still triggers rejection (not just at index 0).
+TEST(FixBuilder, set_raw_rejects_soh_at_last_position) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    const uint8_t bad[] = {'A', 'B', 'C', 0x01};  // SOH at position 3
+    b.set_raw(58, bad, sizeof(bad));
+    EXPECT_TRUE(b.has_overflow());
+}
+
 // ---------------------------------------------------------------------------
 // Builder: set_double precision clamping
 // ---------------------------------------------------------------------------
