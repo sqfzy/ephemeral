@@ -987,11 +987,18 @@ private:
         if (ok) {
             test_request_pending_.store(true, std::memory_order_release);
         } else {
+            // Use the same clamped id_len from above. Reusing the raw `n`
+            // here would re-introduce the wrap/over-read bug: a negative
+            // n (snprintf encoding error) would `static_cast<size_t>` to
+            // ~SIZE_MAX and the log formatter would walk off the buffer;
+            // n >= sizeof(id_buf) (truncation) would over-read past the
+            // null terminator. The success branch builds the wire field
+            // from `id_len`; the diagnostic must use the same length.
             SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
                 "send_test_request: TX failed (TestReqID={}) — pending flag "
                 "NOT set; next tick() will re-probe instead of declaring "
                 "the server dead",
-                std::string_view(id_buf, static_cast<size_t>(n)));
+                std::string_view(id_buf, id_len));
         }
         return ok;
     }
