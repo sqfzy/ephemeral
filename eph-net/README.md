@@ -167,10 +167,10 @@ header provides the JWT envelope:
 
 Two-layer observability shared by all four Stream/Datagram backends:
 
-- `StreamMetric` enum (currently 26 entries: bytes / frames / codec /
+- `StreamMetric` enum (currently 27 entries: bytes / frames / codec /
   TLS handshake + resume + cross-record / TCP session + reorder + dup +
   keepalive (probes + send-failures) / ICMP / RX-checksum split / UDP
-  drops / WS deflate in/out) with
+  drops / WS deflate in/out / numerical-anomalies) with
   matching `kStreamMetricNames` (`net.stream.*` OTel-style).
 - `publish_metrics<Stream, Sink>(source, sink, tags)` — `noexcept`
   alloc-free reader that pushes every counter into any

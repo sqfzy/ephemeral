@@ -376,6 +376,18 @@ public:
         /// segment that raced a new one). Distinct from `out_of_order`,
         /// which captures forward gaps.
         uint64_t dup_segments = 0;
+        /// Numerical-anomaly counter (T3.5 from 2026-05-05 action list).
+        /// Bumped whenever a session-level guard observes a saturating /
+        /// non-finite / overflow path that would otherwise silently
+        /// graceful-degrade (e.g. the uncalibrated TSC keepalive_interval
+        /// fallback hit because TSC::ns_per_cycle has not been calibrated
+        /// yet). Should stay at 0 in steady state on a calibrated host;
+        /// non-zero is the canonical "we silently saved the pipeline from
+        /// bad inputs" signal — operators paying attention will want to
+        /// know about it. Surfaced via `DpdkTcpStream::metric(
+        /// kNumericalAnomaliesDetected)` and the matching JSON / dump
+        /// fields below.
+        uint64_t numerical_anomalies = 0;
         /// Log2 gap size histogram: bucket[i] = count of gaps in [2^i, 2^(i+1)).
         /// bucket[0] = [1,2), bucket[1] = [2,4), ..., bucket[31] = [2^31, 2^32).
         /// Recording is O(1) via __builtin_clz / std::countl_zero.
@@ -407,12 +419,14 @@ public:
                 "  fragment_rejected: {}\n"
                 "  dup_segments: {}\n"
                 "  keepalive_probes_sent: {}\n"
-                "  keepalive_send_failures: {}",
+                "  keepalive_send_failures: {}\n"
+                "  numerical_anomalies: {}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size,
                 packets_dropped, fragment_rejected, dup_segments,
-                keepalive_probes_sent, keepalive_send_failures);
+                keepalive_probes_sent, keepalive_send_failures,
+                numerical_anomalies);
 
             // Append non-zero gap histogram buckets
             for (size_t i = 0; i < gap_histogram.size(); ++i) {
@@ -434,12 +448,14 @@ public:
                 "\"packets_dropped\":{},\"fragment_rejected\":{},"
                 "\"dup_segments\":{},"
                 "\"keepalive_probes_sent\":{},"
-                "\"keepalive_send_failures\":{}",
+                "\"keepalive_send_failures\":{},"
+                "\"numerical_anomalies\":{}",
                 tx_packets, rx_packets, rx_bursts, tx_bytes, rx_bytes,
                 acks_sent, out_of_order, resets_received,
                 reorder_hits, reorder_overflows, max_gap_size,
                 packets_dropped, fragment_rejected, dup_segments,
-                keepalive_probes_sent, keepalive_send_failures);
+                keepalive_probes_sent, keepalive_send_failures,
+                numerical_anomalies);
 
             // Append non-zero gap histogram buckets as sparse array
             bool has_gap = false;
@@ -476,6 +492,7 @@ public:
                 .packets_dropped   = lhs.packets_dropped   - rhs.packets_dropped,
                 .fragment_rejected = lhs.fragment_rejected - rhs.fragment_rejected,
                 .dup_segments      = lhs.dup_segments      - rhs.dup_segments,
+                .numerical_anomalies = lhs.numerical_anomalies - rhs.numerical_anomalies,
             };
             for (size_t i = 0; i < 32; ++i) {
                 result.gap_histogram[i] = lhs.gap_histogram[i] - rhs.gap_histogram[i];
@@ -2258,7 +2275,7 @@ private:
     /// keepalive probe storms in tests where TSC::init() had been
     /// skipped (typical mock setups). Production paths call TSC::init()
     /// at startup and never hit the fallback.
-    [[nodiscard]] uint64_t keepalive_interval_cycles_() const noexcept {
+    [[nodiscard]] uint64_t keepalive_interval_cycles_() noexcept {
         const double ns =
             static_cast<double>(config_.keepalive_interval.count()) * 1'000'000.0;
         if (auto opt = eph::utils::TSC::to_cycles(ns)) return *opt;
@@ -2271,6 +2288,11 @@ private:
         // never). TSC::to_cycles already saturates on the calibrated
         // path; mirror that here so the uncalibrated fallback behaves
         // identically and the tick comparator stays well-defined.
+        // Hitting this branch on a calibrated host means TSC::init()
+        // was skipped — bump the numerical-anomaly counter so operators
+        // can detect "we silently used a fallback" via the public metric
+        // surface. (T3.5)
+        ++stats_.numerical_anomalies;
         const double cycles = ns * 3.0;
         if (!(cycles >= 0.0)) return 0ULL;  // NaN-safe (also catches negative)
         if (cycles >= static_cast<double>(std::numeric_limits<uint64_t>::max()))

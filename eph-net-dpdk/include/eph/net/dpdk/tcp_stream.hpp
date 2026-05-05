@@ -1714,6 +1714,12 @@ public:
                 return sess_.tcp_stats().mss_negotiations_applied;
             case SM::kIcmpFragNeededReceived:
                 return sess_.tcp_stats().icmp_frag_needed_received;
+            case SM::kNumericalAnomaliesDetected:
+                // Lazy read from TcpSession::Stats — incremented at any
+                // session-level guard that catches a NaN / overflow /
+                // saturating fallback (e.g. uncalibrated TSC keepalive
+                // interval). T3.5 from the 2026-05-05 action list.
+                return sess_.tcp_stats().numerical_anomalies;
             default:
                 break;
         }

@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Added — `kNumericalAnomaliesDetected` StreamMetric + TcpSession::Stats counter (2026-05-05)
+
+Without this counter the pipeline's "we sanitize bad numerical inputs"
+hardening — accumulated over the 22 NaN-slip fixes captured in the
+2026-05-04 retro — was invisible to operators. A production deployment
+silently traversing a saturating fallback (e.g. `keepalive_interval_cycles_`
+hitting the uncalibrated-TSC branch on a host that skipped `TSC::init()`)
+would see no signal in StreamMetrics. Operators paying attention to
+"unexpected fallback fired" events now have the canonical observable.
+
+Two-layer wiring:
+
+1. `eph::net::StreamMetric::kNumericalAnomaliesDetected` (entry 26 in
+   the enum, after `kTlsHandshakeCount`). `kCount` is now 27.
+   `kStreamMetricNames` extended with `net.stream.numerical_anomalies_detected`.
+
+2. `TcpSession::Stats::numerical_anomalies` — incremented at each
+   session-level guard that catches a NaN / overflow / saturating
+   fallback. Bumped today from `keepalive_interval_cycles_()` when
+   `TSC::to_cycles` returns nullopt (the documented "uncalibrated TSC,
+   3 GHz fallback" path). The function lost its `const` qualifier so
+   it can mutate `stats_`; only `tick_keepalive` calls it (which is
+   already non-const).
+
+`DpdkTcpStream::metric(kNumericalAnomaliesDetected)` lazy-reads
+`sess_.tcp_stats().numerical_anomalies` (same pattern as the other
+TCP-only counters that surface `TcpSession::Stats` via the public
+metric API). Kernel backends and UDP backends emit 0 by default —
+they have no comparable session-level numerical guards in their
+hot path.
+
+`Stats::dump`, `Stats::to_json`, and `operator-` extended to
+include the new field. Stats == comparison and operator- arithmetic
+remain field-by-field correct.
+
+Track item: T3.5 from the 2026-05-05 action list.
+
+OTel name: `net.stream.numerical_anomalies_detected`.
+Total `StreamMetric::kCount` is now 27 (was 26).
+
 ### Fixed — systemd unit: explicit `AmbientCapabilities` + `CapabilityBoundingSet` (2026-05-05)
 
 `etc/eph-nicd@.service` previously ran the daemon as `User=root` with the

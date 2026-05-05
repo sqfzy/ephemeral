@@ -289,6 +289,31 @@ enum class StreamMetric : std::size_t {
     /// rotation or expiry is normal.
     kTlsHandshakeCount,
 
+    /// Backend-agnostic: hot-path numerical-anomaly detector. Bumped
+    /// whenever a guard within stream-level code observes a NaN, Inf,
+    /// non-finite value, signed-overflow saturation, or division-by-zero
+    /// fallback that would otherwise trigger a *silent* graceful-degrade
+    /// path. Without this counter the pipeline's "we sanitize bad
+    /// numerical inputs" hardening is invisible to operators — sustained
+    /// non-zero values are a signal that some upstream is feeding bad
+    /// floats / overflow-prone integer arithmetic into the path, even if
+    /// the stream layer itself remains correct.
+    ///
+    /// Scope is intentionally **stream-level only**: bench-infrastructure
+    /// scrub events (mockex sigma sanitize / KDE weight scrub) are NOT
+    /// counted here — those have their own diagnostics inside the bench
+    /// harness. Production hot path (e.g. an mbuf-arrival timestamp
+    /// converted from cycles to ns yielding a non-finite when TSC
+    /// calibration drifts; a peer-supplied float clamped to a finite
+    /// range; a saturating fallback for keepalive_interval ms→cycles
+    /// conversion that hit the uint64 wrap guard) IS counted.
+    ///
+    /// Semantics: monotonic, never decreases. Operators should alert on
+    /// derivative > 0 sustained over more than a few publish intervals —
+    /// the steady-state target is 0. Backends that have no numerical
+    /// guards in their hot path emit 0.
+    kNumericalAnomaliesDetected,
+
     kCount   ///< Sentinel — always last.
 };
 
@@ -324,6 +349,7 @@ kStreamMetricNames = {
     "net.stream.ws.deflate_bytes_out",
     "net.stream.tls.resume_count",
     "net.stream.tls.handshake_count",
+    "net.stream.numerical_anomalies_detected",
 };
 
 static_assert(kStreamMetricNames.size() ==
