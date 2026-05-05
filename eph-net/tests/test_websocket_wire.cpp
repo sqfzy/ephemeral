@@ -769,6 +769,88 @@ TEST(WsEncodeValidation, EncodeFrameReturnsZeroOnInvalidPayload) {
     EXPECT_EQ(result, 0u);
 }
 
+// Byte-level pin: encode_frame_header MUST emit byte 0 = (FIN | opcode)
+// and byte 1 with the MASK bit set. Without this test, an accidental
+// FIN-bit drop or MASK-bit drop would still pass the size-only checks
+// above (server-side decoders would silently misinterpret the frame).
+TEST(WsEncodeValidation, ByteLayoutForFinBinaryPayload5) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    size_t n = encode_frame_header(buf, opcode::kBinary, /*payload_len=*/5,
+                                    /*fin=*/true, mask);
+    ASSERT_EQ(n, 6u);
+    // Byte 0: FIN=1, RSV=0, opcode=Binary(0x2) → 0x82.
+    EXPECT_EQ(buf[0], 0x82);
+    // Byte 1: MASK=1, len=5 → 0x85.
+    EXPECT_EQ(buf[1], 0x85);
+    // Bytes 2..5: mask key, copied verbatim.
+    EXPECT_EQ(buf[2], 0xAA); EXPECT_EQ(buf[3], 0xBB);
+    EXPECT_EQ(buf[4], 0xCC); EXPECT_EQ(buf[5], 0xDD);
+}
+
+// Byte-level pin: encode_frame_header without FIN must emit byte 0
+// without the FIN bit (used for fragmented messages).
+TEST(WsEncodeValidation, ByteLayoutForNonFinContinuationFrame) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {1, 2, 3, 4};
+    size_t n = encode_frame_header(buf, opcode::kContinuation,
+                                    /*payload_len=*/3,
+                                    /*fin=*/false, mask);
+    ASSERT_EQ(n, 6u);
+    // Byte 0: FIN=0, opcode=Continuation(0x0) → 0x00.
+    EXPECT_EQ(buf[0], 0x00);
+    // Byte 1: MASK=1, len=3 → 0x83.
+    EXPECT_EQ(buf[1], 0x83);
+}
+
+// Byte-level pin: extended-length 126 encoding emits a 2-byte big-endian
+// length following byte 1 with len=126 marker. This is RFC 6455 §5.2.
+TEST(WsEncodeValidation, ByteLayoutExtendedLength126) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0, 0, 0, 0};
+    // payload_len=200 — first value triggering extended-length encoding.
+    size_t n = encode_frame_header(buf, opcode::kBinary, /*payload_len=*/200,
+                                    /*fin=*/true, mask);
+    ASSERT_EQ(n, 8u);
+    EXPECT_EQ(buf[0], 0x82);                  // FIN | binary
+    EXPECT_EQ(buf[1], 0x80 | 126);            // MASK | 126 marker
+    // Bytes 2..3: 16-bit big-endian length.
+    EXPECT_EQ(buf[2], 0x00);
+    EXPECT_EQ(buf[3], 0xC8);                  // 200 in hex
+}
+
+// Byte-level pin: extended-length 127 encoding emits an 8-byte
+// big-endian length following byte 1 with len=127 marker.
+TEST(WsEncodeValidation, ByteLayoutExtendedLength127) {
+    uint8_t buf[20];
+    uint8_t mask[4] = {0, 0, 0, 0};
+    // payload_len=70000 — first value above 65535 triggers 64-bit encoding.
+    size_t n = encode_frame_header(buf, opcode::kBinary, /*payload_len=*/70000ull,
+                                    /*fin=*/true, mask);
+    ASSERT_EQ(n, 14u);
+    EXPECT_EQ(buf[0], 0x82);
+    EXPECT_EQ(buf[1], 0x80 | 127);
+    // Bytes 2..9: 64-bit big-endian length, 70000 = 0x00000000_00011170.
+    EXPECT_EQ(buf[2], 0x00); EXPECT_EQ(buf[3], 0x00);
+    EXPECT_EQ(buf[4], 0x00); EXPECT_EQ(buf[5], 0x00);
+    EXPECT_EQ(buf[6], 0x00); EXPECT_EQ(buf[7], 0x01);
+    EXPECT_EQ(buf[8], 0x11); EXPECT_EQ(buf[9], 0x70);
+}
+
+// Boundary: payload_len == 65535 is the LAST value using the 16-bit
+// extended-length encoding (header == 8 bytes). Pins the `<= 65535`
+// rather than `< 65535` branch boundary in encode_frame_header.
+TEST(WsEncodeValidation, ByteLayoutPayloadLen65535Uses16BitExtended) {
+    uint8_t buf[16];
+    uint8_t mask[4] = {0, 0, 0, 0};
+    size_t n = encode_frame_header(buf, opcode::kBinary, /*payload_len=*/65535ull,
+                                    /*fin=*/true, mask);
+    ASSERT_EQ(n, 8u);
+    EXPECT_EQ(buf[1], 0x80 | 126);            // 16-bit marker
+    EXPECT_EQ(buf[2], 0xFF);
+    EXPECT_EQ(buf[3], 0xFF);
+}
+
 TEST(WsEncodeValidation, IsValidPayloadLen) {
     EXPECT_TRUE(is_valid_payload_len(opcode::kBinary, 0));
     EXPECT_TRUE(is_valid_payload_len(opcode::kBinary, 65536));
