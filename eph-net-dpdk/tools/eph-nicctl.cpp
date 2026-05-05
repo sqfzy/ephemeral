@@ -124,6 +124,7 @@ struct CliArgs {
 
 std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
     CliArgs out{};
+    bool interval_seen = false;
     if (argc < 2) {
         return std::unexpected(
             std::string{"missing subcommand (try --help)"});
@@ -168,6 +169,7 @@ std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
                     std::string{"--interval=<sec> must be 1..86400, got: "} + v);
             }
             out.interval_s = static_cast<unsigned>(n);
+            interval_seen = true;
             continue;
         }
         if (std::strcmp(a, "--help") == 0) {
@@ -182,6 +184,15 @@ std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
     if (out.watch && out.sub != Subcommand::Audit) {
         return std::unexpected(
             std::string{"--watch is only valid with the `audit` subcommand"});
+    }
+    // `--interval` is only meaningful with `--watch` (which is audit-
+    // only), so reject it on every other subcommand path. Catches the
+    // silent-ignore case where an operator types
+    // `eph-nicctl stats --pci=X --interval=10` and assumes it polls.
+    if (interval_seen && (!out.watch || out.sub != Subcommand::Audit)) {
+        return std::unexpected(
+            std::string{"--interval=<sec> requires --watch on the "
+                        "`audit` subcommand"});
     }
     return out;
 }
