@@ -357,6 +357,17 @@ TEST(JsonParseError, FormatWorks) {
     EXPECT_EQ(s, "invalid format");
 }
 
+// Out-of-range cast — pins the switch fallthrough returns "unknown".
+// Without this, a refactor that drops the trailing `return "unknown"`
+// (e.g. converting the switch to a noreturn helper) wouldn't be caught
+// by the existing per-enum tests.
+TEST(JsonParseError, OutOfRangeCastReturnsUnknown) {
+    auto bogus = static_cast<ParseError>(0xFF);
+    EXPECT_EQ(parse_error_name(bogus), "unknown");
+    // ADL-discoverable alias must agree.
+    EXPECT_EQ(error_name(bogus), "unknown");
+}
+
 // ---------------------------------------------------------------------------
 // Number parsing RFC compliance: reject malformed numeric literals
 // ---------------------------------------------------------------------------
