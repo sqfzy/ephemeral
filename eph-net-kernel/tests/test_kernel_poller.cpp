@@ -341,3 +341,41 @@ TEST(KernelPoller, AddRejectsAlreadyAttachedToOtherPoller) {
     // Clean up so ~p1 doesn't dangle past ~ev.
     ASSERT_TRUE(p1->remove(&ev).has_value());
 }
+
+// AddRejectsAlreadyAttachedToOtherPoller covers the cross-poller case
+// (poller2 rejects an obj already attached to poller1) — but the
+// SAME-poller duplicate-add case is a distinct code path: the
+// is_attached_() guard at poller.hpp:192 catches it on the SAME poller
+// too (obj reports as attached because we attached it ourselves), but
+// the symmetric coverage was missing. Without this test, a future
+// refactor that loosened the is_attached_() check (e.g. to allow
+// "re-add to same poller is idempotent") would silently succeed,
+// double-registering the fd in epoll and producing duplicate
+// poll_once_() invocations per event.
+TEST(KernelPoller, AddRejectsSamePollerDuplicate) {
+    auto p = ek::KernelPoller::create().value();
+
+    EventfdPollable ev;
+    ASSERT_GE(ev.fd(), 0);
+
+    // First add succeeds.
+    ASSERT_TRUE(p->add(&ev).has_value());
+    EXPECT_TRUE(ev.is_attached_());
+    EXPECT_EQ(p->size(), 1u);
+
+    // Second add to the SAME poller must reject. The is_attached_()
+    // guard (poller.hpp:192) fires before we get to the duplicate-fd
+    // detection at line 204; either path is fine, but the rejection
+    // contract is what we lock here.
+    auto r = p->add(&ev);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // entries_ size must be unchanged — the duplicate add must NOT
+    // have inserted a second entry behind the rejection log.
+    EXPECT_EQ(p->size(), 1u)
+        << "duplicate add increased entries_ size — the fd is now "
+        << "registered twice in epoll, poll_once_ will fire twice "
+        << "per event";
+
+    ASSERT_TRUE(p->remove(&ev).has_value());
+}
