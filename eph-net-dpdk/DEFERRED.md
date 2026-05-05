@@ -34,12 +34,19 @@ For reference. Each shipped as an independent commit on `main`.
 | **T1.1+T1.2 wire-up** | `ff103c7a` | Platform back-pointer + `is_alive()` at TX-burst entry |
 | **T1.4**     | `271c0f5c` | daemon kill + reattach scenario skeleton (2 unconditional + 1 hardware-gated) |
 
-**Coverage by Tier (final)**:
-- 🔴 Tier 1: T1.1+T1.2 + T1.3 + T1.4 — **all 4 progressed**, 3 fully + 1 (T1.1+T1.2) partial (Unsent path wired; Sent/Uncertain still in DEFERRED)
-- 🟡 Tier 2: T2.1 + T2.2 + T2.3 + T2.4 + T2.5 + T2.6 — **all 6 progressed**, 4 fully + 2 partial (T2.1/T2.2 sub-sections) + 1 skeleton (T2.3 wiring)
+**Coverage by Tier (post-K-P series + commit 3720e44e)**:
+- 🔴 Tier 1: T1.1+T1.2 + T1.3 + T1.4 — **all 4 fully closed** (T1.1+T1.2
+  full Sent/Uncertain wire-up shipped in commit `3720e44e`; T1.4 has
+  3 cases — 2 unconditional + 1 hardware-gated)
+- 🟡 Tier 2: T2.1 + T2.2 + T2.3 + T2.4 + T2.5 + T2.6 — **5 of 6 fully
+  closed**, T2.1/T2.2 partial (2 of 6 sub-section splits done; the
+  remaining 4 are bench-gated reshapes — see "T2.1 + T2.2 sub-section
+  splits" below); **T2.3 fully closed via K-P series** (verify-on-
+  suspicion / daemon hooks / nicctl audit / --watch / bench gate)
 - 🔵 Tier 3: T3.1 + T3.2 + T3.3 + T3.4 + T3.5 + T3.6 — **all 6 fully closed**
 
-Total session commits: **18** (chain `b775310b..271c0f5c`).
+Total commits across the original 18 + K-P + this loop: see
+`git log b775310b..HEAD` for the live chain.
 
 ## Remaining deferred items
 
