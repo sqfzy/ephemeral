@@ -206,6 +206,31 @@ TEST(RxDispatchMode, AllEnumValuesHaveNames) {
     EXPECT_FALSE(rx_dispatch_mode_name(RxDispatchMode::FlowDirector).empty());
 }
 
+// flow_protocol_name was untested in isolation before this commit;
+// only `rx_dispatch_mode_name` had explicit coverage. A copy-paste bug
+// rebinding "TCP" → "TCP_v4" wouldn't be caught unless that exact
+// string appeared in a downstream log assertion.
+TEST(FlowProtocol, NameForKnownValues) {
+    EXPECT_EQ(flow_protocol_name(FlowProtocol::Tcp), "TCP");
+    EXPECT_EQ(flow_protocol_name(FlowProtocol::Udp), "UDP");
+}
+
+TEST(FlowProtocol, NameForOutOfRangeReturnsUnknown) {
+    // Cast a value outside the enum's defined range to trigger the
+    // default "unknown" branch. Pins that the switch's fallthrough is
+    // safe under malformed inputs (e.g. a wire-decoded byte cast to
+    // FlowProtocol).
+    auto bogus = static_cast<FlowProtocol>(0xFF);
+    EXPECT_EQ(flow_protocol_name(bogus), "unknown");
+}
+
+TEST(RxDispatchMode, NameForOutOfRangeReturnsUnknown) {
+    // Same out-of-range coverage for rx_dispatch_mode_name; the
+    // existing test only checks the three enumerators.
+    auto bogus = static_cast<RxDispatchMode>(0xFF);
+    EXPECT_EQ(rx_dispatch_mode_name(bogus), "unknown");
+}
+
 TEST(ConfigureRss, OneQueueReturnsDescriptiveError) {
     auto result = configure_rss(0, 1);
     ASSERT_FALSE(result.has_value());
