@@ -741,3 +741,89 @@ TEST(ItchBookBuilderTest, OrderReplaceCollidingNewRefDoesNotLeakPhantomQty) {
     ASSERT_TRUE(builder.process(del.view()));
     EXPECT_EQ(builder.book().bid_depth(), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Over-execution / over-cancel clamping — defensive bookkeeping under
+// exchange races. The adapter clamps `executed_shares` (and
+// `cancelled_shares`) to `remaining_qty` so a feed bug or cancel/replace
+// race can't drive the per-price aggregation below zero. This was
+// asserted only by inspection; pin the contract so future refactors
+// can't silently regress to "naive subtraction".
+// ---------------------------------------------------------------------------
+
+TEST(ItchBookBuilderTest, OrderExecutedOverExecutionIsClampedToRemaining) {
+    ItchBookBuilder<10> builder;
+
+    AddOrderMsg bid(7001, 'B', 100, 50.00);
+    ASSERT_TRUE(builder.process(bid.view()));
+
+    // Exchange reports 200 executed shares against an order with only 100
+    // remaining — pre-clamp this would have driven the level qty to -100.
+    OrderExecutedMsg over(7001, 200);
+    EXPECT_TRUE(builder.process(over.view()));
+
+    // The order must be fully removed (clamped to 100), not orphaned with
+    // negative remaining. The level should disappear, not show -100 qty.
+    EXPECT_EQ(builder.order_count(), 0u);
+    EXPECT_FALSE(builder.book().best_bid().has_value())
+        << "over-execution must drain the level cleanly, not push qty negative";
+}
+
+TEST(ItchBookBuilderTest, OrderExecutedWithPriceOverExecutionIsClamped) {
+    ItchBookBuilder<10> builder;
+
+    AddOrderMsg ask(7002, 'S', 50, 105.00);
+    ASSERT_TRUE(builder.process(ask.view()));
+
+    // Reported executed_shares > remaining (50). Clamp to 50.
+    OrderExecutedWithPriceMsg over(7002, 75, 104.75);
+    EXPECT_TRUE(builder.process(over.view()));
+
+    EXPECT_EQ(builder.order_count(), 0u);
+    EXPECT_FALSE(builder.book().best_ask().has_value());
+}
+
+TEST(ItchBookBuilderTest, OrderCancelOverCancelIsClampedToRemaining) {
+    ItchBookBuilder<10> builder;
+
+    AddOrderMsg bid(7003, 'B', 80, 99.50);
+    ASSERT_TRUE(builder.process(bid.view()));
+
+    // Cancel asks for 1000 shares against an 80-share order. Without the
+    // clamp the level qty would underflow to -920 in the aggregation map.
+    OrderCancelMsg over(7003, 1000);
+    EXPECT_TRUE(builder.process(over.view()));
+
+    EXPECT_EQ(builder.order_count(), 0u);
+    EXPECT_FALSE(builder.book().best_bid().has_value());
+}
+
+// Mixed-order clamping: when one over-execution drains an order at a
+// price level shared with a sibling order, the sibling's qty must
+// remain intact (clamped over-execution must not steal from neighbors).
+TEST(ItchBookBuilderTest, OverExecutionDoesNotCorruptSiblingAtSamePrice) {
+    ItchBookBuilder<10> builder;
+
+    // Two bids at the same price level
+    AddOrderMsg a(7010, 'B', 30, 75.00);
+    AddOrderMsg b(7011, 'B', 70, 75.00);
+    ASSERT_TRUE(builder.process(a.view()));
+    ASSERT_TRUE(builder.process(b.view()));
+
+    // Aggregate level qty is 100
+    auto bb1 = builder.book().best_bid();
+    ASSERT_TRUE(bb1.has_value());
+    EXPECT_NEAR(bb1->qty, 100.0, kEps);
+
+    // Over-execute order a (30 shares remaining, 999 reported)
+    OrderExecutedMsg over_a(7010, 999);
+    EXPECT_TRUE(builder.process(over_a.view()));
+
+    // Sibling b's 70 shares must still be on the level — over-exec on a
+    // is clamped at 30, not 999, so the aggregation drops by exactly 30.
+    auto bb2 = builder.book().best_bid();
+    ASSERT_TRUE(bb2.has_value());
+    EXPECT_NEAR(bb2->qty, 70.0, kEps)
+        << "clamped over-execution on one order must not steal qty from "
+           "sibling orders sharing the same price level";
+}
