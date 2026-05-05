@@ -3391,7 +3391,27 @@ Platform::serve_nic(NicServiceConfig cfg) {
                             if (!impl_raw->audit_sweeper_running.load(
                                     std::memory_order_acquire)) break;
                             lk.unlock();
+                            // Tick the heartbeat counter on EVERY
+                            // wake (regardless of whether we can
+                            // sweep this iteration) so operators see
+                            // a 10-min "thread is alive" signal even
+                            // if icmp_directory transiently goes
+                            // missing — the heartbeat is "thread
+                            // running", not "sweep ran".
+                            const bool emit_heartbeat =
+                                ++ticks_since_heartbeat >= kHeartbeatTicks;
+                            if (emit_heartbeat) {
+                                ticks_since_heartbeat = 0;
+                            }
                             if (!impl_raw->icmp_directory.has_value()) {
+                                if (emit_heartbeat) {
+                                    SPDLOG_LOGGER_INFO(tlog,
+                                        "audit_sweeper: heartbeat "
+                                        "(cumulative tamper count={}, "
+                                        "10min interval; directory "
+                                        "currently absent)",
+                                        total_mismatches);
+                                }
                                 continue;
                             }
                             const size_t mm = impl_raw->icmp_directory
@@ -3411,9 +3431,7 @@ Platform::serve_nic(NicServiceConfig cfg) {
                                     "(cumulative={})",
                                     mm, total_mismatches);
                             }
-                            if (++ticks_since_heartbeat
-                                    >= kHeartbeatTicks) {
-                                ticks_since_heartbeat = 0;
+                            if (emit_heartbeat) {
                                 SPDLOG_LOGGER_INFO(tlog,
                                     "audit_sweeper: heartbeat "
                                     "(cumulative tamper count={}, "
