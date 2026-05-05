@@ -918,6 +918,13 @@ private:
     size_t                    sweep_cursor_ = 0;
 
 public:
+    /// @brief T2.3 N series — read-only header accessor for the
+    /// `on_nicctl_audit_thunk` (which counts Published entries via
+    /// the wire-format flags). Returns nullptr on inert handles.
+    [[nodiscard]] IcmpDirectoryHeader const* header_() const noexcept {
+        return hdr_;
+    }
+
     /// @brief T2.3 wiring (cold path). Flip the directory to keyed
     /// mode and stash the key for future sign/verify. Idempotent.
     /// Daemon calls this immediately after publishing a registry,

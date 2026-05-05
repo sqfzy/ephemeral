@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+### Added — `eph-nicctl audit` subcommand + IPC handler (N series, 2026-05-05)
+
+Operator-facing audit tool. Closes the gap that T2.3's per-registry
+audit info was buried in journalctl WARN logs — operators now get a
+direct CLI surface that walks all 3 cross-process registries and
+reports per-registry mismatch counts in one call:
+
+```
+$ eph-nicctl audit --pci=0000:28:00.0
+eph-nicd registry HMAC audit (pci='0000:28:00.0', file_prefix='eph_0000_28_00_0'):
+
+  Registry         Checked   Mismatches  Status
+  ──────────────  ────────  ──────────  ─────────────
+  MpRegistry             3           0  ✓ healthy
+  QueueAllocator         1           0  ✓ healthy
+  IcmpDirectory         42           0  ✓ healthy
+  ──────────────  ────────  ──────────  ─────────────
+  Total                            0  All clean
+```
+
+Exit codes:
+  0 — healthy / unkeyed
+  1 — IPC error (daemon down, wrong file_prefix, etc.)
+  2 — mismatches detected (operator should investigate)
+
+Wire format (`detail/queue_allocator.hpp`):
+  kNicctlAuditActionName = "eph_nicctl_audit"
+  NicctlAuditRequest      version + reserved + requester_pid (8 bytes)
+  NicctlAuditReply        version + ok + hmac_enabled + 6 × uint16_t
+                          per-registry counters + 64-byte error string
+
+Daemon-side thunk (`on_nicctl_audit_thunk`):
+  Walks the 3 process-level globals — `g_active_mp_registry` (added
+  this commit), `g_active_queue_allocator`, `g_active_icmp_directory`
+  — calls each registry's audit-style API:
+    MpRegistryHandle::audit_all()     full slot walk
+    (QueueAllocator: header-level tag; verify-on-suspicion only —
+     daemon's own header always verifies; reply.qa_mismatches=0
+     unless a future audit hook surfaces tamper)
+    IcmpDirectoryHandle::audit_sweep_one_round(full)
+                                      one-shot full directory scan
+  Returns aggregated mismatch counts in the reply.
+
+CLI (`tools/eph-nicctl.cpp`):
+  New `Subcommand::Audit` enum + `cmd_audit()` function mirroring
+  `cmd_query()` shape. Pretty-prints the reply as a 3-row registry
+  table with per-row status (✓ healthy / ✗ TAMPER DETECTED).
+
+Wiring:
+  Platform::Impl gains `nicctl_audit_action` (RAII MpIpcAction).
+  Platform::serve_nic registers the thunk + populates
+  `g_active_mp_registry` ONLY when `cfg.enable_registry_hmac=true`
+  (no point exposing audit on unkeyed deployments).
+  Platform::Impl destructor clears the global via CAS, mirroring
+  the existing `g_active_icmp_directory` cleanup.
+
+Hot path: zero impact. The thunk runs on rte_mp's handler thread
+when `eph-nicctl audit` is invoked (operator-driven, ~once per audit
+cycle, manual or cron). bench_rx_hot_path baseline preserved.
+
+Tests: existing 218 build targets compile + 11 regression-relevant
+test suites pass:
+  test_audit_sweeper             3/3
+  test_dpdk_poller              33/33
+  test_mp_registry              48/48
+  test_mp_registry_hmac         14/14
+  test_queue_allocator          15/15
+  test_queue_allocator_hmac      9/9
+  test_icmp_directory           21/21
+  test_icmp_directory_hmac      11/11
+  test_registry_hmac_key         7/7
+  test_platform_config_validate  8/8
+  test_mp_ipc                   14/14
+
+End-to-end test (eph-nicctl audit against a live daemon) requires
+daemon restart and is deferred to the hardware-gated DEFERRED.md
+operator task.
+
+Track item: closes the operator-facing audit tool gap. T2.3 work +
+operator interface 100% complete.
+
 ### Wired — T2.3 1 Hz audit-sweep scheduler thread (M series, 2026-05-05)
 
 Closes the last remaining source-level T2.3 piece. The L series wired

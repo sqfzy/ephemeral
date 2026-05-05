@@ -1354,4 +1354,12 @@ private:
     std::optional<::eph::net::HmacSha256Key> hmac_key_{};
 };
 
+/// @brief T2.3 N series — process-level pointer to the daemon's
+/// MpRegistry handle. Set by `Platform::serve_nic` (primary side)
+/// alongside `g_active_queue_allocator` / `g_active_icmp_directory`;
+/// nullptr on tenants and on hosts running unkeyed mode. The
+/// `on_nicctl_audit_thunk` loads via this global to call
+/// `audit_all()` for the audit reply's mp_registry counters.
+inline std::atomic<MpRegistryHandle*> g_active_mp_registry{nullptr};
+
 } // namespace eph::dpdk::detail

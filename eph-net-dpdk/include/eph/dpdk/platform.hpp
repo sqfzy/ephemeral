@@ -1319,6 +1319,13 @@ struct Platform::Impl {
     /// primary-only contract; secondaries never register.
     std::optional<::eph::dpdk::detail::MpIpcAction> nicctl_query_action;
 
+    /// @brief T2.3 N series ops audit handler. Registered alongside
+    /// nicctl_query_action when the daemon enables HMAC. `eph-nicctl
+    /// audit` sends `NicctlAuditRequest` and reads back per-registry
+    /// mismatch counts. Same primary-only contract; secondaries
+    /// never register.
+    std::optional<::eph::dpdk::detail::MpIpcAction> nicctl_audit_action;
+
     /// @brief S5: secondary-side bookkeeping. Records the queue range
     /// granted by the daemon's QueueAllocator on attach. Used to
     /// drive the `eph_queue_release` IPC on this Platform's
@@ -1524,6 +1531,13 @@ struct Platform::Impl {
             auto* expected_dir = &*icmp_directory;
             ::eph::dpdk::detail::g_active_icmp_directory.compare_exchange_strong(
                 expected_dir, nullptr, std::memory_order_acq_rel);
+        }
+        // T2.3 N: clear MpRegistry global (set in serve_nic if HMAC
+        // enabled; nullptr otherwise — CAS is harmless either way).
+        if (mp_registry.has_value()) {
+            auto* expected_reg = &*mp_registry;
+            ::eph::dpdk::detail::g_active_mp_registry.compare_exchange_strong(
+                expected_reg, nullptr, std::memory_order_acq_rel);
         }
         if (auto* reg = icmp_registry_sp.get()) {
             auto* expected_reg = reg;
@@ -3286,13 +3300,28 @@ Platform::serve_nic(NicServiceConfig cfg) {
                     plat.impl_->icmp_directory->enable_hmac_(
                         ::eph::net::HmacSha256Key{key_bytes});
                 }
+                // T2.3 N series: publish the MpRegistry pointer for
+                // the audit thunk + register the audit IPC action so
+                // `eph-nicctl audit` can query the daemon. Same
+                // race-free ordering: globals first, action second
+                // (matches queue_claim / nicctl_query pattern above).
+                if (plat.impl_->mp_registry.has_value()) {
+                    ::eph::dpdk::detail::g_active_mp_registry.store(
+                        &*plat.impl_->mp_registry,
+                        std::memory_order_release);
+                }
+                plat.impl_->nicctl_audit_action.emplace(
+                    ::eph::dpdk::detail::kNicctlAuditActionName,
+                    &::eph::dpdk::detail::on_nicctl_audit_thunk);
                 SPDLOG_LOGGER_INFO(log,
                     "Platform::serve_nic: registry HMAC enabled "
                     "(key={}, MpRegistry+QueueAllocator+IcmpDirectory "
                     "all signed); tenants must read this key file at "
                     "Platform::create attach time and will verify each "
-                    "registry read against it",
-                    key_path_r->string());
+                    "registry read against it; nicctl_audit_action={}",
+                    key_path_r->string(),
+                    bool(*plat.impl_->nicctl_audit_action)
+                        ? "registered" : "DEGRADED");
 
                 // M series: spawn the 1 Hz audit-sweep scheduler
                 // thread. Loops on `audit_sweeper_running` and
