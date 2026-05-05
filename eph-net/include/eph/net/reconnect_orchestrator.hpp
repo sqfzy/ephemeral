@@ -686,6 +686,17 @@ template <Stream S>
 inline void
 ReconnectOrchestrator<S>::mark_disconnected(eph::core::ErrorInfo reason) noexcept {
     auto* log = detail::reconnect_logger();
+    // After stop(), the orchestrator's `tick()` is a no-op — entering Backoff
+    // here would leave us permanently stuck (dropped stream, no retry path).
+    // The user has signalled they want graceful shutdown; an asynchronously
+    // detected disconnect from a now-irrelevant peer should not silently
+    // tear down the still-Connected stream during shutdown.
+    if (stopped_) [[unlikely]] {
+        SPDLOG_LOGGER_INFO(log,
+            "ReconnectOrchestrator::mark_disconnected ignored after stop() "
+            "(state={}, reason='{}')", to_string(state_), reason.detail);
+        return;
+    }
     if (state_ != ReconnectState::Connected) {
         SPDLOG_LOGGER_WARN(log,
             "ReconnectOrchestrator::mark_disconnected ignored in state {} ({})",

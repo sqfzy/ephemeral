@@ -783,6 +783,48 @@ TEST_F(ReconnectOrchestratorTest, StopHaltsTickProgress) {
     EXPECT_EQ(factory_calls, 1);  // only the initial start() call
 }
 
+TEST_F(ReconnectOrchestratorTest, MarkDisconnectedAfterStopIsIgnored) {
+    // Repro: previously `mark_disconnected` did not check `stopped_`, so a
+    // late-arriving disconnect signal after `stop()` would tear down the
+    // still-Connected stream and transition to Backoff — but `tick()` is
+    // already a no-op after stop(), so the orchestrator was left permanently
+    // stuck (stream dropped, no retry path). The current contract is:
+    // stop() preserves the stream, and any subsequent mark_disconnected is
+    // a no-op (state and stream remain unchanged from the moment of stop()).
+    auto cfg = kDeterministicConfig();
+    int factory_calls = 0;
+    int on_disconnect_calls = 0;
+    Orch orch{
+        cfg,
+        [&]() -> std::expected<StreamPtr, eph::core::ErrorInfo> {
+            ++factory_calls;
+            auto s = ent::FakeStream::create();
+            s->set_state(eph::net::TcpState::Established);
+            s->set_attached(true);
+            return s;
+        },
+        [&](const eph::core::ErrorInfo&) noexcept { ++on_disconnect_calls; },
+    };
+
+    ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
+    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
+    auto* stream_before = orch.current();
+    ASSERT_NE(stream_before, nullptr);
+
+    orch.stop();
+    EXPECT_EQ(orch.state(), en::ReconnectState::Connected) << "stop() preserves Connected";
+    EXPECT_EQ(orch.current(), stream_before) << "stop() preserves the stream pointer";
+
+    // Late-arriving disconnect signal should be a no-op: the orchestrator
+    // is shutting down and tick() is no-op, so dropping the stream here
+    // would leak it into Backoff with no recovery path.
+    orch.mark_disconnected({eph::core::Error::Disconnected, "late peer hangup"});
+    EXPECT_EQ(orch.state(), en::ReconnectState::Connected) << "post-stop mark_disconnected ignored";
+    EXPECT_EQ(orch.current(), stream_before) << "stream still alive after ignored mark_disconnected";
+    EXPECT_EQ(on_disconnect_calls, 0) << "on_disconnect callback also suppressed";
+    EXPECT_EQ(factory_calls, 1) << "no further factory invocations";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Regression tests for r4 commit 1764beb6 — TSC-uncalibrated fallback
 // saturating math.
