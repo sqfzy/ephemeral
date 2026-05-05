@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+### Added — `HmacKeyedEntry<T>` skeleton for cross-process registry tamper protection (T2.3, 2026-05-05)
+
+Skeleton (header + tests, NOT yet wired into the registries) for
+HMAC-SHA256 entry integrity in hugepage-backed cross-process layouts
+(`MpRegistry`, `IcmpDirectory`, `QueueAllocator`).
+
+Threat model addressed (when fully wired): a compromised secondary
+process — or one with a wild-pointer write that lands in the shared
+hugepage segment — can tamper with another secondary's registry
+entry without detection. Single-LP single-strategy deployments
+assume all secondaries in the same trust domain, but multi-LP /
+multi-strategy deployments cannot.
+
+What's in this commit (skeleton):
+
+- `eph/dpdk/detail/hmac_keyed_entry.hpp` (~140 LoC):
+  * `HmacKeyedEntry<T>` POD wrapper: `T data; std::array<uint8_t,32> tag;`
+  * `compute_tag(bytes, key) -> array<u8,32>` (forwards to existing
+    `eph::net::hmac_sha256_sign`)
+  * `verify_tag(bytes, key, expected) -> bool` (constant-time via
+    aws-lc `CRYPTO_memcmp`)
+  * `sign_entry(entry, key)` / `verify_entry(entry, key)` convenience
+- `tests/test_hmac_keyed_entry.cpp` (7 cases, all passing):
+  * Layout: trivially copyable, sizeof = sizeof(T) + 32
+  * sign → verify round-trip
+  * Tampered data fails verification
+  * Tampered tag fails verification
+  * Different keys produce different tags + cross-verify rejects
+  * compute_tag deterministic
+  * verify_tag constant-time match path
+
+What's NOT in this commit (deferred to a `pax --feat --deep` follow-up):
+
+- Wiring into MpRegistry / IcmpDirectory / QueueAllocator (each needs
+  a wire-format bump + redesign of read paths to call verify_entry on
+  every cross-process read)
+- Daemon-distributed key threat model (read-only `/run/eph/<bdf>.key`
+  mode 0440 root-only? Per-NIC vs per-deployment key? Rotation?)
+- Failure semantics (tamper detected → log + tear down secondary?
+  Reset slot? Quarantine the registry entry?)
+- Performance audit: verify-on-every-read is fine for control plane
+  (cold) but ICMP dispatch is hot — likely needs verify-on-suspicion
+  rather than verify-always
+
+The skeleton uses aws-lc's `CRYPTO_memcmp` for tag comparison, matching
+the project-wide aws-lc-only TLS decision.
+
+Track item: T2.3 from the 2026-05-05 action list (skeleton portion;
+full deployment is a separate deep session).
+
 ### Added — `test_queue_allocator_concurrent` (T3.1, 2026-05-05)
 
 Concurrent claim/release stress test for `QueueAllocator`. Existing
