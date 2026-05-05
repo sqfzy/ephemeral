@@ -1382,6 +1382,22 @@ TEST(FixSession, SessionStateFormatterProducesName) {
     EXPECT_EQ(s2, "DISCONNECTED");
 }
 
+// Pin every remaining SessionState enumerator's name + the "UNKNOWN"
+// out-of-range fallthrough. The existing formatter test only checks
+// 2 of 4 states; the other 2 (kLogonSent / kLogoutSent) are dead from
+// a coverage standpoint without this. The default-fallthrough is also
+// unverified — a refactor that drops `return "UNKNOWN"` would slip
+// past.
+TEST(FixSession, SessionStateNameForAllRemainingStates) {
+    EXPECT_EQ(session_state_name(SessionState::kLogonSent),  "LOGON_SENT");
+    EXPECT_EQ(session_state_name(SessionState::kLogoutSent), "LOGOUT_SENT");
+}
+
+TEST(FixSession, SessionStateNameForOutOfRangeReturnsUnknown) {
+    auto bogus = static_cast<SessionState>(0xFF);
+    EXPECT_EQ(session_state_name(bogus), "UNKNOWN");
+}
+
 // ===========================================================================
 // Regression: concurrent send must produce strictly monotonic MsgSeqNum.
 //
