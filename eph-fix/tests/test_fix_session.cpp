@@ -1028,6 +1028,44 @@ TEST(FixSession, ConfigValidateRejectsBadTimeoutFactor) {
     EXPECT_NE(err.find("timeout_factor"), std::string_view::npos);
 }
 
+// Boundary: heartbeat_timeout_factor must be STRICTLY > 1.0. A value
+// below 1.0 (e.g. 0.5) means the timeout is shorter than the heartbeat
+// interval — guaranteed false-positive disconnects on every tick.
+// Pin the `<= 1.0` rejection branch.
+TEST(FixSession, ConfigValidateRejectsBelowOneTimeoutFactor) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor = 0.5};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("timeout_factor"), std::string_view::npos);
+}
+
+// Boundary: heartbeat_timeout_factor exactly 10.0 must be accepted
+// (the cap is `> 10.0`, not `>= 10.0`).
+TEST(FixSession, ConfigValidateAcceptsBoundaryTimeoutFactorTen) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor = 10.0};
+    auto err = cfg.validate();
+    EXPECT_TRUE(err.empty()) << "expected accept at exactly 10.0, got: " << err;
+}
+
+// Empty begin_string must be rejected — without a wire-protocol
+// version, the FIX builder can't write the BeginString tag (8) and
+// downstream parsers will reject the message.
+TEST(FixSession, ConfigValidateRejectsEmptyBeginString) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .begin_string   = ""};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("begin_string"), std::string_view::npos);
+}
+
 // validate()'s isfinite()-first guard exists specifically because both
 // `<= 1.0` and `> 10.0` return false for NaN (every NaN comparison is
 // false). Without the explicit isfinite() check first, a NaN
