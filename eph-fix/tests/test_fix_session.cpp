@@ -167,6 +167,31 @@ TEST(FixSession, logon_timeout_returns_error) {
     EXPECT_EQ(session.state(), SessionState::kDisconnected);
 }
 
+// Calling logon() while the session is already kActive is a programmer
+// error. session.hpp:317 guards with "session not in DISCONNECTED
+// state" — must return error and not mutate any state. Untested.
+TEST(FixSession, logon_when_active_returns_error_unchanged) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+    ASSERT_EQ(session.state(), SessionState::kActive);
+    const uint32_t exp_before  = session.expected_inbound_seq();
+    const uint32_t out_before  = session.next_outbound_seq();
+    const size_t   sent_before = mock.sent.size();
+
+    auto r = session.logon(std::chrono::milliseconds{100});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(std::string_view{r.error()}.find("not in DISCONNECTED"),
+              std::string_view::npos)
+        << "expected 'not in DISCONNECTED' diagnostic, got: " << r.error();
+    // No state mutation on the rejected re-logon.
+    EXPECT_EQ(session.state(), SessionState::kActive);
+    EXPECT_EQ(session.expected_inbound_seq(), exp_before);
+    EXPECT_EQ(session.next_outbound_seq(), out_before);
+    EXPECT_EQ(mock.sent.size(), sent_before)
+        << "rejected re-logon emitted bytes on the wire";
+}
+
 TEST(FixSession, logon_send_failure) {
     MockFixTransport mock;
     mock.set_send_fails(true);
