@@ -191,3 +191,84 @@ TEST(DpdkUdpMulticast, GroupWarningsNominalConfigEmpty) {
     g.group_port = 30000;
     EXPECT_TRUE(g.warnings().empty());
 }
+
+// MulticastConfig::validate covers three reject paths.
+
+TEST(DpdkUdpMulticast, McConfigValidateAcceptsDefault) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    EXPECT_TRUE(cfg.validate().empty()) << cfg.validate();
+}
+
+TEST(DpdkUdpMulticast, McConfigValidateRejectsZeroRxBurst) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_burst = 0;
+    auto err = cfg.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_burst"), std::string_view::npos);
+}
+
+TEST(DpdkUdpMulticast, McConfigValidateRejectsExcessiveRxBurst) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_burst = ::eph::dpdk::kMulticastMaxRxBurst + 1;
+    auto err = cfg.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_burst"), std::string_view::npos);
+}
+
+TEST(DpdkUdpMulticast, McConfigValidateAcceptsBoundaryRxBurstMax) {
+    // rx_burst == kMulticastMaxRxBurst is the LAST accepted value
+    // (the check is `> max`, not `>= max`). Pin the boundary.
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_burst = ::eph::dpdk::kMulticastMaxRxBurst;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+TEST(DpdkUdpMulticast, McConfigValidateRejectsRxCpuBelowMinusOne) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_cpu = -2;
+    auto err = cfg.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("rx_cpu"), std::string_view::npos);
+}
+
+TEST(DpdkUdpMulticast, McConfigValidateAcceptsRxCpuMinusOneNoPinning) {
+    // rx_cpu = -1 is the documented "no pinning" sentinel.
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_cpu = -1;
+    EXPECT_TRUE(cfg.validate().empty());
+}
+
+// MulticastConfig::warnings — three advisory paths.
+TEST(DpdkUdpMulticast, McConfigWarningsRxCpuNoPinning) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_cpu = -1;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("no pinning") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(DpdkUdpMulticast, McConfigWarningsSmallRxBurst) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_burst = 4;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("unusually small") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST(DpdkUdpMulticast, McConfigWarningsLargeRxBurst) {
+    ::eph::dpdk::MulticastConfig cfg{};
+    cfg.rx_burst = 200;
+    cfg.rx_cpu   = 0;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("unusually large") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found);
+}
