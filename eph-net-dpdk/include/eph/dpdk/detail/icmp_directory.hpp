@@ -809,7 +809,12 @@ public:
     ///   * Idempotent unregister also lets retry / cleanup paths
     ///     call `unregister` defensively without bookkeeping.
     void unregister(size_t slot_idx) noexcept {
-        if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return;
+        // Compile-time bound first (silences -Warray-bounds on
+        // statically-determinable OOB call paths); runtime defense-
+        // in-depth check second.
+        if (hdr_ == nullptr ||
+            slot_idx >= hdr_->entries.size() ||
+            slot_idx >= hdr_->max_entries) return;
         auto& e = hdr_->entries[slot_idx];
         // Free-slot guard — see @note above. Acquire-load on `claimed`
         // synchronises-with the producing release-store→Published in
@@ -883,7 +888,18 @@ public:
     /// slot is still claimed AND its generation matches `expected_gen`.
     [[nodiscard]] bool
     is_slot_alive(size_t slot_idx, uint32_t expected_gen) const noexcept {
-        if (hdr_ == nullptr || slot_idx >= hdr_->max_entries) return false;
+        // The compile-time `entries.size()` bound is checked first so
+        // GCC's -Warray-bounds analysis sees the static guard before
+        // the inlined `hdr_->entries[slot_idx]` access. The runtime
+        // `max_entries` check is structurally redundant under the
+        // attach_secondary invariant that `max_entries ==
+        // kIcmpDirectoryMaxEntries`, but kept as defense in depth
+        // (a corrupt header that survives the magic+version+
+        // max_entries gate would still be bounded by the compile-time
+        // array size).
+        if (hdr_ == nullptr ||
+            slot_idx >= hdr_->entries.size() ||
+            slot_idx >= hdr_->max_entries) return false;
         const auto& e = hdr_->entries[slot_idx];
         // Only Published slots count as alive — InProgress is a slot
         // mid-publish and must not deliver to a stale handler.

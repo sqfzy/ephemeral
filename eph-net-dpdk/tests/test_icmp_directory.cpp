@@ -307,7 +307,10 @@ TEST(IcmpDirectory, IsSlotAlive_GenMatchAndMismatch) {
     ASSERT_TRUE(idx.has_value());
     EXPECT_TRUE(h->is_slot_alive(*idx, 0u));
     EXPECT_FALSE(h->is_slot_alive(*idx, 99u));   // wrong gen
-    EXPECT_FALSE(h->is_slot_alive(99999, 0u));   // OOB slot
+    EXPECT_FALSE(h->is_slot_alive(99999, 0u));   // OOB slot (compile-
+                                                  // time bound check
+                                                  // catches before any
+                                                  // entries[] access)
 }
 
 TEST(IcmpDirectory, RegisterFull_ReturnsOom) {
