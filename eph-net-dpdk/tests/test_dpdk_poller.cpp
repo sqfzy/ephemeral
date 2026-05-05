@@ -465,6 +465,51 @@ TEST(DpdkPoller, PickSrcPort_PrivilegedRangeFails) {
               std::string_view::npos);
 }
 
+// Boundary: range_begin == 1024 is exactly the minimum accepted value.
+// Pins that the privileged-range check is `< 1024`, not `<= 1024`.
+TEST(DpdkPoller, PickSrcPort_RangeBeginExactly1024Accepted) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/1024, /*range_end=*/2048);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_GE(*r, 1024);
+    EXPECT_LE(*r, 2048);
+}
+
+// Boundary: range_begin == range_end is a valid single-port range (closed
+// interval). Pins that the inverted-range check is `>`, not `>=`.
+TEST(DpdkPoller, PickSrcPort_SinglePortRangeReturnsThatPort) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/45678,
+                              /*range_end=*/45678);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(*r, 45678);
+}
+
+// Boundary: preferred == range_end (the upper inclusive bound) is in range.
+// Pins that the preferred-out-of-range check uses `>`, not `>=`.
+TEST(DpdkPoller, PickSrcPort_PreferredAtRangeEndAccepted) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/32768,
+                              /*range_end=*/60999,
+                              /*preferred=*/60999);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(*r, 60999);
+}
+
+// Boundary: preferred == range_begin (the lower inclusive bound) is in range.
+TEST(DpdkPoller, PickSrcPort_PreferredAtRangeBeginAccepted) {
+    auto p = edpk::DpdkPoller<>::create({}).value();
+    auto r = p->pick_src_port(0x0A000001, 0x0A000002, 443,
+                              /*range_begin=*/32768,
+                              /*range_end=*/60999,
+                              /*preferred=*/32768);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_EQ(*r, 32768);
+}
+
 TEST(DpdkPoller, PickSrcPort_SkipsRegisteredFourTuple) {
     auto p = edpk::DpdkPoller<>::create({}).value();
 
