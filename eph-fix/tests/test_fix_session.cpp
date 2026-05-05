@@ -1052,6 +1052,36 @@ TEST(FixSession, ConfigEqualityIgnoresCallbacks) {
     EXPECT_EQ(a, b);
 }
 
+// reset() calls set_state(kDisconnected), which triggers
+// on_state_change for transitions (Active→Disconnected,
+// LogonSent→Disconnected, LogoutSent→Disconnected). A future
+// refactor that bypassed set_state() in reset() (e.g. to skip
+// the callback "since the user already knows they reset") would
+// silently break observability dashboards correlating reset events
+// with state transitions.
+TEST(FixSession, on_state_change_fires_on_reset_from_active) {
+    MockFixTransport mock;
+    auto cfg = test_config();
+    std::vector<std::pair<SessionState, SessionState>> history;
+    cfg.on_state_change = [&](SessionState old_s, SessionState new_s) {
+        history.emplace_back(old_s, new_s);
+    };
+    FixSession session(mock.send_fn(), cfg);
+    do_logon(session, mock);
+    // Pre-reset history: 2 transitions (Disc→LogonSent→Active).
+    ASSERT_EQ(history.size(), 2u);
+
+    session.reset();
+
+    // Reset must trigger one more transition: Active → Disconnected.
+    EXPECT_EQ(history.size(), 3u)
+        << "reset() did not fire on_state_change — observability "
+        << "dashboards correlating resets with state transitions "
+        << "would lose visibility";
+    EXPECT_EQ(history[2].first, SessionState::kActive);
+    EXPECT_EQ(history[2].second, SessionState::kDisconnected);
+}
+
 // The on_state_change callback (FixSessionConfig.on_state_change) is
 // fired by set_state() at session.hpp:813. Existing tests cover
 // "callbacks excluded from equality" but never assert that the
