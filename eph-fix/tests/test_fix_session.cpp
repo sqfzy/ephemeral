@@ -750,6 +750,39 @@ TEST(FixSession, poss_dup_flag_does_not_advance_expected_seq) {
     EXPECT_EQ(session.expected_inbound_seq(), 2u);
 }
 
+// PossDupFlag=Y with seq == expected: per FIX 4.4 §4, this is the
+// "next expected message but flagged as a possible duplicate"
+// scenario. The session.hpp handler at line 507-518 treats this as
+// the equal-branch and advances expected — even though PossDup is
+// set. This is intentional: the message IS the next expected, and
+// PossDupFlag is just a hint for the application layer to dedupe.
+//
+// Without this test, a future refactor that "fixed" the equal-branch
+// to also check is_dup would silently break the seq advancement and
+// leave the session expecting the next message at the same seq
+// forever (until it eventually arrived without PossDup, breaking
+// gap-detect monotonicity).
+TEST(FixSession, poss_dup_at_expected_seq_still_advances) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+    ASSERT_EQ(session.expected_inbound_seq(), 2u);
+
+    // PossDupFlag=Y at seq=2 (the expected next).
+    auto poss_dup_at_expected = MockFixTransport::build_msg("X", 2,
+        [](MessageBuilder& b) {
+            b.set_bool(tag::PossDupFlag, true);
+            b.set(tag::MDReqID, "md-dup-at-expected");
+        });
+    session.on_rx(poss_dup_at_expected.data(), poss_dup_at_expected.size());
+
+    // expected_inbound_seq MUST advance to 3 — the message IS the
+    // next expected, regardless of the PossDup hint.
+    EXPECT_EQ(session.expected_inbound_seq(), 3u)
+        << "PossDupFlag=Y at expected seq incorrectly suppressed "
+        << "advancement; gap-detect would now stall at seq 2";
+}
+
 // ---------------------------------------------------------------------------
 // MsgSeqNum boundary handling
 // ---------------------------------------------------------------------------
