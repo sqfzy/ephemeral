@@ -387,8 +387,16 @@ public:
     /// `Error::InvalidConfig` and changes nothing.
     ///
     /// @param now_tsc  Current TSC value (`eph::utils::TSC::now()`).
-    /// @return Empty on success or backoff scheduled; `ErrorInfo` only on
-    ///         programmer-error (called twice / wrong state).
+    /// @return Empty whenever the orchestrator successfully entered any
+    ///         post-Idle state — `Connected`, `Backoff`, or even `Failed`
+    ///         (immediate exhaustion when policy.max_attempts is small).
+    ///         Callers that care about the post-start outcome MUST query
+    ///         `state()` after the call; an empty return alone does NOT
+    ///         imply the stream is live or that retry is in flight. The
+    ///         only `unexpected` return is a programmer-error guard:
+    ///         called outside Idle (double-start / restart-without-stop)
+    ///         or constructed with a null factory — both yield
+    ///         `Error::InvalidConfig`.
     [[nodiscard]] std::expected<void, eph::core::ErrorInfo>
     start(uint64_t now_tsc) noexcept;
 
