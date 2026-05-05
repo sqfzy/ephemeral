@@ -172,6 +172,39 @@ TEST(FixParser, parse_bad_start_returns_invalid_format) {
     EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
 }
 
+// parse_tag_number returns 0 on a leading non-digit (e.g. `=value`,
+// where the tag part is empty). The body-field loop at parser.hpp:851
+// rejects tag==0 with kInvalidFormat. Untested before.
+//
+// A future refactor that loosened the tag==0 reject (e.g. to allow
+// extensions encoding admin tags as 0) would silently accept malformed
+// input that has empty/invalid tag prefixes.
+TEST(FixParser, parse_body_with_zero_tag_returns_invalid_format) {
+    // Build a message where the body has "0=val" — invalid tag.
+    std::string body = "35=D\x01" "0=garbage\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_FALSE(result.has_value())
+        << "tag=0 in body must be rejected; was the parser changed to "
+        << "tolerate it?";
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
+// Sister test: explicit empty tag prefix `=val` (no digits before =).
+// parse_tag_number's first-char digit check at parser.hpp:642 rejects
+// before any number is accumulated, returning 0. Same downstream
+// kInvalidFormat as the explicit "0=" case but via a distinct
+// internal path (zero-digit vs explicit zero).
+TEST(FixParser, parse_body_with_empty_tag_prefix_returns_invalid_format) {
+    std::string body = "35=D\x01" "=val\x01";
+    auto raw = make_fix_msg("FIX.4.4", body);
+    auto result = parse(raw.data(), raw.size());
+    ASSERT_FALSE(result.has_value())
+        << "empty tag prefix must be rejected — would otherwise let "
+        << "a malformed peer slip past the tag-validation gate";
+    EXPECT_EQ(result.error(), ParseError::kInvalidFormat);
+}
+
 TEST(FixParser, parse_checksum_mismatch) {
     std::string body = "35=D\x01";
     auto raw = make_fix_msg("FIX.4.2", body);
