@@ -45,6 +45,7 @@
 #include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
+#include "eph/dpdk/detail/platform_config.hpp" // PlatformConfig + NicServiceConfig (T2.1 partial split)
 #include "eph/dpdk/detail/queue_allocator.hpp" // detail::QueueAllocator + IPC payloads (S5)
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (internal helper)
 #include "eph/dpdk/lcore_pin.hpp"              // LcorePin (typed pin spec for PlatformConfig)
@@ -75,35 +76,10 @@ namespace eph::dpdk {
 
 namespace detail {
 
-/// @brief Check if n is of the form (2^k - 1) for some k >= 1.
-///
-/// DPDK mempool sizes must satisfy this constraint for optimal bucket hashing.
-/// Rejects 0 (which is technically 2^0-1 but not a valid pool size).
-///
-/// @param n  Value to test
-/// @return true if n == 2^k - 1 for some k >= 1
-[[nodiscard]] constexpr bool is_power_of_two_minus_one(uint32_t n) noexcept {
-    if (n == 0) return false;
-    uint32_t m = n + 1;
-    return m > 0 && (m & (m - 1)) == 0;
-}
-
-/// @brief Compute the next valid DPDK mempool size >= n satisfying the 2^k-1 constraint.
-///
-/// @param n  Minimum desired pool size
-/// @return Smallest value >= n of the form 2^k - 1 (k >= 1, so never 0).
-///         `n == 0` promotes to 1 (= 2^1 - 1), matching the "k >= 1"
-///         invariant that `is_power_of_two_minus_one` enforces.
-[[nodiscard]] constexpr uint32_t next_valid_pool_size(uint32_t n) noexcept {
-    if (n == 0) return 1;           // 2^1 - 1 — smallest valid pool size
-    uint32_t m = n + 1;
-    // Round up to next power of 2. m == 0 happens iff n was UINT32_MAX,
-    // in which case 2^32 - 1 is the largest representable 2^k - 1 and
-    // is itself >= n.
-    if (m == 0) return UINT32_MAX;
-    if ((m & (m - 1)) == 0) return m - 1;
-    return (1u << (32 - std::countl_zero(m))) - 1u;
-}
+// is_power_of_two_minus_one + next_valid_pool_size moved to
+// detail/platform_config.hpp (T2.1 partial split, 2026-05-05) so the
+// public Config types' validators don't drag the entire platform.hpp
+// preamble. Re-exported via the include above.
 
 /// @brief Clamp a descriptor count into [nb_min, nb_max], aligned to nb_align.
 ///
@@ -463,31 +439,13 @@ struct BringupConfig {
 // EalConfig (eal.hpp) stays as an internal helper type; it is no longer
 // passed by callers.
 
-/// @brief Default 40-byte symmetric Toeplitz RSS key.
-///
-/// `0x6d, 0x5a` repeated — matches the well-known "Toeplitz default"
-/// used by most PMDs and recommended by Microsoft for symmetric RX/TX
-/// hashing. Ops can override per-NIC via `NicServiceConfig::rss_key`.
-inline constexpr std::array<std::uint8_t, 40> kDefaultRssKey{
-    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
-    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
-    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
-    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
-    0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a, 0x6d, 0x5a,
-};
-
-/// @brief Application-facing Platform config — what an app passes to
-/// `Platform::create` to attach to an already-running NIC daemon.
-///
-/// Lean by design: the only NIC-related field is the PCI BDF (which
-/// also derives the EAL `--file-prefix` deterministically) and the
-/// per-app queue ask. Every other physical NIC knob lives on
-/// `NicServiceConfig` and is owned by the daemon.
-///
-/// Internally derived (caller never sets these):
-///   * `proc_type = Secondary` — apps are always DPDK secondaries
-///   * `file_prefix = "eph_" + sanitize_bdf(pci)`
-///   * `allowed_devs = {pci}`
+// kDefaultRssKey + PlatformConfig + NicServiceConfig + their
+// validate / config_ok overloads moved to detail/platform_config.hpp
+// (T2.1 partial split, 2026-05-05). Re-exported via the include at
+// the top of this file. Stub kept below so legacy `git blame` still
+// finds the move commit; the actual definitions are in the new
+// header.
+#if 0
 struct PlatformConfig {
     // ── NIC selection ────────────────────────────────────────────────
     /// PCI BDF of the NIC to attach (e.g. `"0000:01:00.1"`). Drives
@@ -643,6 +601,7 @@ validate(const NicServiceConfig& cfg) noexcept {
 [[nodiscard]] constexpr bool config_ok(const NicServiceConfig& cfg) noexcept {
     return validate(cfg).empty();
 }
+#endif  // T2.1: definitions moved to detail/platform_config.hpp
 
 namespace detail {
 

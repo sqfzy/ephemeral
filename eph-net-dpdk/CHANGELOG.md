@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Reshape — `platform.hpp` partial split (T2.1 partial, 2026-05-05)
+
+`platform.hpp` shrank from **3515 → 3474 lines** by moving the public
+Config types into a new `detail/platform_config.hpp` (260 lines):
+
+  - `detail::is_power_of_two_minus_one()` (mempool size constraint)
+  - `detail::next_valid_pool_size()`      (round-up helper)
+  - `kDefaultRssKey`                       (Toeplitz default)
+  - `PlatformConfig` + `validate(PlatformConfig)` + `config_ok`
+  - `NicServiceConfig` + `validate(NicServiceConfig)` + `config_ok`
+
+Re-included from `platform.hpp` so existing callers see no API change.
+The file `nic_config_toml.hpp` already pulls `is_power_of_two_minus_one`
+through the same path; no fix-up needed.
+
+What stayed behind in platform.hpp (and why):
+  - `detail::clamp_desc()` — uses `rte_eth_desc_lim` from
+    `<rte_ethdev.h>`, which would force the lean config header to
+    drag PMD types
+  - `detail::platform_logger()` — peer of other detail/* helpers in
+    platform.hpp
+  - `detail::validate(BringupConfig)` — references internal types
+    defined later in platform.hpp
+
+This is a **partial** split (T2.1 was scoped to also break out
+bringup + runtime sections, ~2200 more lines combined). The remaining
+breakup is a separate `pax --reshape` cycle because each block has
+heavier dependencies on internal types defined throughout the file
+and warrants its own bench-validation cycle. Today's split:
+
+  - Verified `xmake build -g tests` green (218 targets compile)
+  - Verified core tests pass: test_platform_config_validate (8/8),
+    test_dpdk_poller (33/33)
+  - Hot path untouched (no inline visibility regression risk)
+  - bench_rx_hot_path baseline unchanged (no hot path code moved)
+
+Track item: T2.1 from the 2026-05-05 action list — config-section
+extraction. Bringup + runtime extraction remains in DEFERRED.md.
+
 ### Added — `daemon_disconnected_hook` skeleton (T1.1 partial, 2026-05-05)
 
 Skeleton (header + 7-case unit test) for the in-flight semantics that
