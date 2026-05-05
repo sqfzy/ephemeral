@@ -43,7 +43,6 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
-#include <functional>
 #include <memory>
 #include <span>
 #include <string>
