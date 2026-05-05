@@ -81,6 +81,20 @@ public:
         Frame frame{dgram.data(), n};
         // Datagram codecs must fully consume the input before returning.
         dgram.trim_front(n);
+        // An empty std::function throws bad_function_call when invoked,
+        // which would terminate the process via this function's noexcept.
+        // Guard so a misconfigured caller (forgot to assign a sink, or
+        // moved-from one) sees a typed error instead of std::terminate.
+        // The DPDK Mold64 sibling already handles this; mirror the
+        // discipline here for cross-backend symmetry.
+        if (!sink) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+                "RawDatagramCodec::decode: sink is empty (caller forgot "
+                "to assign or moved-from); rejecting datagram of {} bytes", n);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "RawDatagramCodec::decode: sink is empty"});
+        }
         sink(frame);
         SPDLOG_LOGGER_TRACE(detail::raw_datagram_codec_logger(),
             "RawDatagramCodec::decode: delivered {} bytes", n);
