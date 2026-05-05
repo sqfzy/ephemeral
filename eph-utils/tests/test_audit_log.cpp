@@ -291,6 +291,37 @@ TEST(AuditLog, DumpLimitedEntries) {
     EXPECT_NE(output.find("showing 3"), std::string::npos);
 }
 
+// dump(0) is a defensive boundary: produce only the header line, no
+// entries. The internal `std::min(max_entries, count())` short-circuits
+// so the loop body never executes — matches the documented contract
+// that dump() with a max of 0 is a no-op observation. Pin so a future
+// refactor accidentally turning the bound into "max_entries == 0 →
+// show all" surfaces here.
+TEST(AuditLog, DumpZeroMaxEntriesProducesHeaderOnly) {
+    TestLog log;
+    for (uint64_t i = 0; i < 5; ++i) {
+        (void)log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+    }
+    std::string output = log.dump(/*max_entries=*/0);
+    EXPECT_NE(output.find("showing 0"), std::string::npos);
+    // No body entries — the header line ends with newline, and the
+    // "5 entries" total is preserved (max_entries doesn't shrink the
+    // accounting count, only the display).
+    EXPECT_NE(output.find("5 entries"), std::string::npos);
+}
+
+// dump() with max_entries >> count() is clamped — never displays more
+// entries than the log holds.
+TEST(AuditLog, DumpExcessiveMaxClampsToCount) {
+    TestLog log;
+    for (uint64_t i = 0; i < 3; ++i) {
+        (void)log.record(AuditEvent::NewOrder, i, 0.0, 0.0, Side::Buy, 0);
+    }
+    std::string output = log.dump(/*max_entries=*/1000);
+    EXPECT_NE(output.find("showing 3"), std::string::npos)
+        << "dump(1000) on a 3-entry log must clamp to 3";
+}
+
 TEST(AuditLog, EntryDumpContainsAllFields) {
     TestLog log;
     (void)log.record(AuditEvent::Fill, 42, 100.25, 5.0, Side::Sell, 3, 100.30, 5.0);
