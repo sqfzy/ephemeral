@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Added — `test_hmac_tamper_simulation` deterministic fuzz (T3.3, 2026-05-05)
+
+5-case deterministic-seed fuzz against `HmacKeyedEntry<T>` from T2.3
+skeleton. Configures a fixed-seed PRNG (so regressions are
+reproducible) and runs ~3000 mutation iterations across:
+
+  - Random `data` byte flips (1000 iter): every flip must be detected
+  - Random `tag` byte flips (1000 iter): every flip must be detected
+  - Multiple simultaneous `data` byte flips, 1-7 bytes (500 iter)
+  - Cross-key tag swap: same data, two keys — swap tags, both must
+    fail verification (500 iter × 2)
+  - Zero-byte flip no-op: sanity that verification accepts unchanged
+    data (rules out a "verify always returns false" false-positive
+    pattern)
+
+Total: 0 undetected tampers across 3500 trials, 5/5 cases passing.
+
+T3.3 in the action list called for "malicious-secondary fuzz" — fully
+exercising that requires the registries (`MpRegistry` / `IcmpDirectory`
+/ `QueueAllocator`) to actually carry HMAC tags, which is deferred
+with the rest of the T2.3 wiring (see `DEFERRED.md`). This skeleton
+exercises the primitive correctness so the future registry-level test
+can focus on the cross-process tamper path instead of re-validating
+the underlying HMAC.
+
+Track item: T3.3 from the 2026-05-05 action list (skeleton portion).
+
 ### Added — `test_src_port_collision` boundary cases (T3.2, 2026-05-05)
 
 13-case boundary test for `MpTopology::valid()`'s pairwise src_port
