@@ -505,6 +505,110 @@ TEST(FixSession, rejects_sequence_reset_with_overrange_new_seq) {
            "bookkeeping (2→3) is allowed to advance.";
 }
 
+// SequenceReset (MsgType=4) — boundary cases not covered by the
+// happy-path or over-range tests above.
+
+// GapFill must reject a NewSeqNo that goes BACKWARD from the current
+// expected sequence — RFC documents (FIX 4.4 Vol 2 §B.5) forbid backward
+// resets in GapFill mode. The session's expected_inbound_seq must NOT
+// be moved backward, even temporarily.
+TEST(FixSession, gap_fill_backward_reset_rejected) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // Move expected_inbound_seq forward to 10 via a legitimate GapFill
+    // (server seq=2, NewSeqNo=10 — accepts).
+    auto step1 = MockFixTransport::sequence_reset_gap_fill(2, 10);
+    EXPECT_TRUE(session.on_rx(step1.data(), step1.size()));
+    ASSERT_EQ(session.expected_inbound_seq(), 10u);
+
+    // Now server sends GapFill with NewSeqNo=5 (< expected=10) at seq=10.
+    // Must be rejected and expected MUST stay at 10.
+    auto step2 = MockFixTransport::sequence_reset_gap_fill(10, 5);
+    EXPECT_TRUE(session.on_rx(step2.data(), step2.size()));
+    EXPECT_EQ(session.expected_inbound_seq(), 11u)
+        << "Backward GapFill must not move expected backward; the only "
+           "advance is the per-message MsgSeqNum bookkeeping (10→11).";
+}
+
+// GapFill with NewSeqNo == expected is a no-op — neither error nor
+// advance. The per-message MsgSeqNum bookkeeping still runs (advances
+// expected by 1), but the SequenceReset handler itself must not
+// double-advance.
+TEST(FixSession, gap_fill_at_expected_seq_no_op) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    ASSERT_EQ(session.expected_inbound_seq(), 2u);
+    // GapFill at seq=2 with NewSeqNo=2 (== expected). The MsgSeqNum
+    // bookkeeping advances 2→3; the SequenceReset NewSeqNo handler is
+    // a no-op (does not advance to anything < or == current).
+    auto gf = MockFixTransport::sequence_reset_gap_fill(2, 2);
+    EXPECT_TRUE(session.on_rx(gf.data(), gf.size()));
+    EXPECT_EQ(session.expected_inbound_seq(), 3u);
+}
+
+// SequenceReset (MsgType=4) without GapFillFlag is "Reset mode" — must
+// unconditionally set expected_inbound_seq, even backward. Distinct
+// from GapFill mode tested above.
+TEST(FixSession, sequence_reset_without_gap_fill_is_unconditional) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // Move expected forward to 50 via GapFill.
+    auto step1 = MockFixTransport::sequence_reset_gap_fill(2, 50);
+    EXPECT_TRUE(session.on_rx(step1.data(), step1.size()));
+    ASSERT_EQ(session.expected_inbound_seq(), 50u);
+
+    // Now build a SequenceReset (no GapFillFlag) with NewSeqNo=20.
+    // In Reset mode this MUST unconditionally set expected to 20,
+    // even though it is below the current expected — the handler is
+    // a session-recovery escape hatch.
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "4");
+    b.set(tag::SenderCompID, "EXCHANGE");
+    b.set(tag::TargetCompID, "CLIENT");
+    b.set_int(tag::MsgSeqNum, 50);
+    b.set_int(tag::NewSeqNo, 20);
+    const size_t len = b.finish("FIX.4.4");
+    std::vector<uint8_t> msg(buf, buf + len);
+
+    EXPECT_TRUE(session.on_rx(msg.data(), msg.size()));
+    EXPECT_EQ(session.expected_inbound_seq(), 20u)
+        << "SequenceReset without GapFillFlag is unconditional Reset mode "
+           "and must set expected exactly to NewSeqNo, even backward.";
+}
+
+// SequenceReset with NewSeqNo<1 must be ignored — sequence numbers
+// in FIX 4.4 are 1-based.
+TEST(FixSession, sequence_reset_new_seq_below_one_ignored) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    ASSERT_EQ(session.expected_inbound_seq(), 2u);
+
+    // Build a SequenceReset with NewSeqNo=0 (illegal, must be ignored).
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "4");
+    b.set(tag::SenderCompID, "EXCHANGE");
+    b.set(tag::TargetCompID, "CLIENT");
+    b.set_int(tag::MsgSeqNum, 2);
+    b.set_int(tag::NewSeqNo, 0);
+    const size_t len = b.finish("FIX.4.4");
+    std::vector<uint8_t> msg(buf, buf + len);
+
+    EXPECT_TRUE(session.on_rx(msg.data(), msg.size()));
+    // Only the per-message MsgSeqNum bookkeeping runs (2 → 3); the
+    // SequenceReset handler must short-circuit without storing 0.
+    EXPECT_EQ(session.expected_inbound_seq(), 3u);
+}
+
 // ===========================================================================
 // ResendRequest from server
 // ===========================================================================
