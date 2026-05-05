@@ -739,7 +739,17 @@ private:
 
         pos_ += tag_len;
         buf_[pos_++] = '=';
-        std::memcpy(buf_ + pos_, value.data(), value.size());
+        // Guard memcpy against `std::memcpy(p, nullptr, 0)`: ISO C requires
+        // both src and dst to be valid pointers even when count==0
+        // (UBSan -fsanitize=undefined catches this). std::string_view::data()
+        // may legitimately return nullptr for an empty view (default-
+        // constructed std::string_view{}), so a `set(tag, std::string_view{})`
+        // call would otherwise trip the trap. Mirrors the same defensive
+        // pattern in eph-utils/cpu.hpp set_thread_name and
+        // eph-net/hmac.hpp HmacSha256Key ctor.
+        if (value.size() > 0) {
+            std::memcpy(buf_ + pos_, value.data(), value.size());
+        }
         pos_ += value.size();
         buf_[pos_++] = '\x01';
         ++field_count_;

@@ -611,6 +611,29 @@ TEST(FixBuilder, finish_rejects_explicit_empty_string_literal) {
     EXPECT_TRUE(b.has_overflow());
 }
 
+// set_trusted's inline memcpy was guarded against memcpy(p, nullptr, 0)
+// UB. A default-constructed std::string_view's data() may legitimately
+// be nullptr — without the guard, set(tag, std::string_view{}) would
+// trip UBSan -fsanitize=undefined. Pin the safe path so a future
+// refactor that reverts the guard surfaces here.
+TEST(FixBuilder, set_with_default_constructed_string_view_is_safe) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    // Default-constructed string_view: data() may be nullptr, size()==0.
+    b.set(tag::Text, std::string_view{});
+
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(b.data(), b.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->msg_type().value(), "D");
+    auto text = result->get(tag::Text);
+    ASSERT_TRUE(text.has_value());
+    EXPECT_TRUE(text->empty()) << "default-constructed string_view → empty Text field";
+}
+
 TEST(FixParser, get_char_single_char_field) {
     std::string body = "35=D\x01" "54=1\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
