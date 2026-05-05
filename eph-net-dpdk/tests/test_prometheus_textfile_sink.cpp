@@ -101,6 +101,44 @@ TEST(PrometheusTextfileSink, GaugeFlushRoundTrip) {
     EXPECT_NE(body.find("42.5"), std::string::npos) << body;
 }
 
+TEST(PrometheusTextfileSink, HistogramFlushRoundTrip) {
+    // The textfile sink emits histograms as gauges in the v1 wire
+    // format (see push_histogram impl). The test docstring claims
+    // "counter / gauge / histogram round-trips" but only counters
+    // and gauges had tests before this case.
+    TmpDir dir;
+    const auto path = dir.file("histograms.prom");
+
+    ed::PrometheusTextfileSink sink{path};
+    sink.push_histogram("rtt_ns", 12345.0);
+    sink.flush();
+    EXPECT_TRUE(sink.last_error().empty());
+
+    const auto body = slurp(path);
+    EXPECT_NE(body.find("rtt_ns"), std::string::npos) << body;
+    EXPECT_NE(body.find("12345"), std::string::npos) << body;
+}
+
+TEST(PrometheusTextfileSink, MixedTypesCoexistInSingleFlush) {
+    // Counters, gauges, and histograms are stored in independent
+    // maps internally; one flush must serialise all three.
+    TmpDir dir;
+    const auto path = dir.file("mixed.prom");
+
+    ed::PrometheusTextfileSink sink{path};
+    sink.push_counter("requests_total", 100);
+    sink.push_gauge("inflight", 7.0);
+    sink.push_histogram("latency_us", 250.5);
+    sink.flush();
+    EXPECT_TRUE(sink.last_error().empty());
+    EXPECT_EQ(sink.sample_count(), 3u);
+
+    const auto body = slurp(path);
+    EXPECT_NE(body.find("requests_total"), std::string::npos) << body;
+    EXPECT_NE(body.find("inflight"),       std::string::npos) << body;
+    EXPECT_NE(body.find("latency_us"),     std::string::npos) << body;
+}
+
 TEST(PrometheusTextfileSink, TagSerialisation) {
     TmpDir dir;
     const auto path = dir.file("tagged.prom");
