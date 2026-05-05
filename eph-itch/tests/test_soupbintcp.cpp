@@ -267,6 +267,51 @@ TEST(SoupBinTcpFramer, encode_at_max_payload_len_succeeds) {
     EXPECT_EQ(wire[2], 'S');
 }
 
+// Decode a packet whose declared length is at the max wire encoding
+// (65535 = 1 type + 65534 payload). Pins the size_t arithmetic
+// `total = 2 + msg_len = 65537` against any 16-bit wraparound.
+TEST(SoupBinTcpFramer, decode_at_max_payload_len_succeeds) {
+    SoupBinTcpFramer framer;
+    // Build the wire: 0xFF 0xFF (msg_len=65535), 'S' (type), 65534 bytes.
+    std::vector<uint8_t> wire(2 + 65535);
+    wire[0] = 0xFF;
+    wire[1] = 0xFF;
+    wire[2] = 'S';
+    for (size_t i = 3; i < wire.size(); ++i) wire[i] = static_cast<uint8_t>(i & 0xFF);
+
+    auto result = framer.decode(wire.data(), wire.size());
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->msg_type, 'S');
+    EXPECT_EQ(result->payload_len, 65534u);
+    EXPECT_EQ(result->total_len, wire.size());
+    EXPECT_EQ(result->payload, wire.data() + 3);
+    EXPECT_FALSE(result->is_control);
+}
+
+// Decode a packet declaring max length (msg_len=65535) but the buffer
+// is one byte short of total. Must return kIncomplete; the comparison
+// `len < total` must use size_t (no uint16_t truncation).
+TEST(SoupBinTcpFramer, decode_at_max_payload_len_minus_one_incomplete) {
+    SoupBinTcpFramer framer;
+    std::vector<uint8_t> wire(2 + 65535 - 1);  // one byte short
+    wire[0] = 0xFF;
+    wire[1] = 0xFF;
+    wire[2] = 'S';
+    auto result = framer.decode(wire.data(), wire.size());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), FrameError::kIncomplete);
+}
+
+// `decode(nullptr, 0)` must return kIncomplete (no UB) — the `len < 2`
+// guard precedes any data dereference. Pin so a refactor that hoisted
+// `data[0]` read above the guard would break loudly.
+TEST(SoupBinTcpFramer, decode_nullptr_zero_len_returns_incomplete) {
+    SoupBinTcpFramer framer;
+    auto result = framer.decode(nullptr, 0);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), FrameError::kIncomplete);
+}
+
 // ─── soupbin::is_heartbeat — constexpr classification ──────────────────────
 //
 // `is_heartbeat` is consumed indirectly by every successful decode (sets
