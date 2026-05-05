@@ -591,3 +591,45 @@ TEST(FixEnumFormatters, OrderStateNameFunction) {
     EXPECT_EQ(order_state_name(OrderState::PartiallyFilled), "PartiallyFilled");
     EXPECT_EQ(order_state_name(OrderState::PendingCancel), "PendingCancel");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unknown-value fallbacks — every *_name() returns "Unknown" sentinel for a
+// value reinterpret_cast'd outside the defined enum range. Without these
+// tests, a future refactor that drops the trailing `return "Unknown";` would
+// silently turn the function into UB territory (control falls off the end
+// of a non-void function) — only Clang's -Wreturn-type would catch it, and
+// only in optimised builds.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FixEnumFormatters, SideNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<Side>(static_cast<char>(0x7E));
+    EXPECT_EQ(side_name(bogus), "Unknown");
+}
+
+TEST(FixEnumFormatters, OrdTypeNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<OrdType>(static_cast<char>('X'));
+    EXPECT_EQ(ord_type_name(bogus), "Unknown");
+}
+
+TEST(FixEnumFormatters, TimeInForceNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<TimeInForce>(static_cast<char>('Z'));
+    EXPECT_EQ(time_in_force_name(bogus), "Unknown");
+}
+
+TEST(FixEnumFormatters, ExecTypeNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<ExecType>(static_cast<char>(0xFE));
+    EXPECT_EQ(exec_type_name(bogus), "Unknown");
+}
+
+TEST(FixEnumFormatters, OrderStateNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<OrderState>(static_cast<uint8_t>(99));
+    EXPECT_EQ(order_state_name(bogus), "Unknown");
+}
+
+// time_in_force_name happy path also worth pinning — it had no test until now.
+TEST(FixEnumFormatters, TimeInForceNameFunction) {
+    EXPECT_EQ(time_in_force_name(TimeInForce::Day), "Day");
+    EXPECT_EQ(time_in_force_name(TimeInForce::GTC), "GTC");
+    EXPECT_EQ(time_in_force_name(TimeInForce::IOC), "IOC");
+    EXPECT_EQ(time_in_force_name(TimeInForce::FOK), "FOK");
+}
