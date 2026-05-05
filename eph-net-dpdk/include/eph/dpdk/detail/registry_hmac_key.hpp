@@ -161,7 +161,26 @@ write_registry_hmac_key(const std::filesystem::path& path) noexcept {
         p += n;
         left -= static_cast<size_t>(n);
     }
-    ::fsync(fd);
+    // Durability: fsync the file, then rename, then fsync the parent
+    // dir. Without the parent-dir fsync the rename can revert under a
+    // crash; without the file fsync the bytes can be lost. A daemon
+    // that believes it wrote a key but actually didn't (and then
+    // crashes + restarts) would mint a fresh key on second boot,
+    // diverging from any tenant that successfully read the original
+    // bytes between the failed write and the restart.
+    if (::fsync(fd) != 0) {
+        const int err = errno;
+        ::close(fd);
+        ::unlink(tmp_str.c_str());
+        SPDLOG_ERROR(
+            "registry_hmac_key: fsync({}) failed: {} — bytes may not "
+            "be durably persisted; refusing to rename to avoid "
+            "publishing a key the daemon cannot reload after crash",
+            tmp_str, std::strerror(err));
+        return std::unexpected(core::ErrorInfo{
+            core::Error::InvalidConfig,
+            "registry_hmac_key: fsync of tmp file failed"});
+    }
     ::close(fd);
 
     if (::rename(tmp_str.c_str(), path.string().c_str()) != 0) {
@@ -173,6 +192,29 @@ write_registry_hmac_key(const std::filesystem::path& path) noexcept {
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "registry_hmac_key: rename failed"});
+    }
+    // Parent-dir fsync to make the rename durable. Best-effort: if it
+    // fails we log but don't roll back — rename already moved the
+    // bytes into place, so a tenant that races a read at this moment
+    // observes a valid key. The parent-dir fsync just protects against
+    // a concurrent crash-then-recover scenario.
+    if (const int dfd = ::open(path.parent_path().string().c_str(),
+                               O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        dfd >= 0) {
+        if (::fsync(dfd) != 0) {
+            SPDLOG_WARN(
+                "registry_hmac_key: parent-dir fsync({}) failed: {} — "
+                "rename may not survive an immediate crash, but the "
+                "key is already visible to readers; daemon will "
+                "rewrite on next boot if reload fails",
+                path.parent_path().string(), std::strerror(errno));
+        }
+        ::close(dfd);
+    } else {
+        SPDLOG_WARN(
+            "registry_hmac_key: open(parent_dir={}) for fsync failed: "
+            "{} — see fsync warning rationale above",
+            path.parent_path().string(), std::strerror(errno));
     }
     SPDLOG_INFO(
         "registry_hmac_key: wrote 32-byte key to {} mode 0440",
