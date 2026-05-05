@@ -297,6 +297,52 @@ TEST(FakeStreamPacketView, WritableDataMatchesData) {
     EXPECT_EQ(v.writable_data(), buf + 1);
 }
 
+// Re-entrancy contract: a callback that calls `inject_rx` on its own
+// stream must NOT have those bytes silently dropped. FakeStream's
+// poll_once_ used to do `on_message(rx_buf_); rx_buf_.clear();` —
+// bytes injected mid-callback got cleared too.
+//
+// FakeDatagram explicitly drains its queue into a local before invoking
+// the callback (see `FakeDatagram::poll_once_`); we expect the same
+// invariant here. Without this test, a regression that re-introduces
+// the post-callback `rx_buf_.clear()` bug would silently break echo
+// patterns in test code.
+TEST(FakeStream, OnMessageReentrantInjectSurvivesIntoNextPoll) {
+    ent::FakeStream fs;
+    fs.set_attached(true);
+    int first_calls = 0;
+    bool reentrant_done = false;
+    const uint8_t late_bytes[] = {0xCA, 0xFE};
+    fs.on_message = [&](std::span<const uint8_t> /*frame*/) {
+        ++first_calls;
+        if (!reentrant_done) {
+            // Re-enter inject_rx during the callback (simulates an
+            // echo-loop test where the callback queues a follow-up
+            // frame for the next poll cycle).
+            fs.inject_rx(late_bytes);
+            reentrant_done = true;
+        }
+    };
+
+    const uint8_t first[] = {0x01, 0x02};
+    fs.inject_rx(first);
+    EXPECT_EQ(fs.poll_once_(), 1u);
+    EXPECT_EQ(first_calls, 1);
+    EXPECT_TRUE(reentrant_done);
+
+    // The re-injected bytes must still be drainable on the NEXT poll.
+    std::vector<uint8_t> next_frame;
+    fs.on_message = [&](std::span<const uint8_t> f) {
+        next_frame.assign(f.begin(), f.end());
+    };
+    EXPECT_EQ(fs.poll_once_(), 1u);
+    EXPECT_EQ(next_frame.size(), 2u);
+    if (next_frame.size() == 2) {
+        EXPECT_EQ(next_frame[0], 0xCA);
+        EXPECT_EQ(next_frame[1], 0xFE);
+    }
+}
+
 // FakeStream test-control recovery sequence: inject_disconnect flips
 // state to Closed and clears rx_buf; tests can simulate reconnect by
 // flipping state back to Established and injecting fresh data. Pin

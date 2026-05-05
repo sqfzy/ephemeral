@@ -269,13 +269,22 @@ public:
         // fires should see exactly that behavior from the mock.
         if (state_ != TcpState::Established) return 0;
         if (rx_buf_.empty()) return 0;
+        // Re-entrancy: `on_message` may call `inject_rx` to enqueue
+        // follow-up bytes (echo-loop tests). A naive
+        // `on_message(rx_buf_); rx_buf_.clear()` would silently drop
+        // those bytes — the post-callback `clear()` would wipe both
+        // the original and the re-injected payload. Swap the buffer
+        // into a local before invoking the callback so re-injected
+        // bytes survive into the next poll cycle. Matches
+        // FakeDatagram::poll_once_'s approach.
+        std::vector<uint8_t> drained;
+        drained.swap(rx_buf_);
         if (on_message) {
             // Emit the buffered payload as one application frame. The span
             // carries the full size_t extent — the OnMessage signature no
             // longer clamps to uint16_t.
-            on_message(std::span<const uint8_t>(rx_buf_.data(), rx_buf_.size()));
+            on_message(std::span<const uint8_t>(drained.data(), drained.size()));
         }
-        rx_buf_.clear();
         return 1;
     }
 
