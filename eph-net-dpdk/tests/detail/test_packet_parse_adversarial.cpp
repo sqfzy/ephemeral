@@ -831,3 +831,167 @@ TEST(PacketParseAdv, SingleSegmentMbufAccepted) {
     EXPECT_TRUE(static_cast<bool>(parse_ip_header(&mbuf)));
     EXPECT_NE(parse_packet(&mbuf).tcp, nullptr);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// parse_tcp_options — RFC 793 / RFC 1323 options walker.
+//
+// Until now this function has had zero direct tests; coverage was
+// implicitly via DpdkTcpStream MSS negotiation. The parser has subtle
+// boundary rules (NOP single-byte, EOL terminates, len<2 malformed,
+// tail-overrun stops cleanly) that warrant explicit pinning.
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+// Build a SYN packet whose TCP options area carries `opts_bytes` after the
+// 20-byte fixed TCP header. Pads the options area to a 4-byte multiple
+// with NOPs so data_off lands on a word boundary, matching real wire
+// frames.
+size_t build_tcp_with_options(uint8_t* buf,
+                               const std::vector<uint8_t>& opts_bytes) {
+    // Round up to multiple of 4 — TCP options area must end on a 4-byte
+    // boundary (data_off is in 32-bit words).
+    std::vector<uint8_t> padded = opts_bytes;
+    while (padded.size() % 4u != 0) padded.push_back(1);  // NOP
+    const uint8_t doff_words = static_cast<uint8_t>(5 + padded.size() / 4u);
+    const size_t total = build_tcp_packet(buf, /*payload_len=*/0,
+                                           /*ihl_words=*/5,
+                                           /*tcp_doff_words=*/doff_words);
+    auto* tcp = reinterpret_cast<rte_tcp_hdr*>(buf + kEtherHeaderLen + 20);
+    tcp->tcp_flags = kTcpSyn;
+    auto* opts_dst = reinterpret_cast<uint8_t*>(tcp) + kTcpHeaderLen;
+    std::memcpy(opts_dst, padded.data(), padded.size());
+    return total;
+}
+} // namespace
+
+TEST(PacketParseAdv, TcpOptionsAbsentReturnsAllFalse) {
+    // doff == 5 → no options area. parse_tcp_options must short-circuit.
+    uint8_t buf[128];
+    size_t len = build_tcp_packet(buf, /*payload_len=*/4,
+                                   /*ihl_words=*/5, /*tcp_doff_words=*/5);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto opts = parse_tcp_options(parsed);
+    EXPECT_FALSE(opts.has_mss);
+    EXPECT_FALSE(opts.has_wscale);
+    EXPECT_FALSE(opts.has_sack_perm);
+    EXPECT_EQ(opts.mss, 0u);
+    EXPECT_EQ(opts.wscale, 0u);
+}
+
+TEST(PacketParseAdv, TcpOptionsNullTcpReturnsAllDefault) {
+    // parse_tcp_options on a synthetically-empty ParsedPacket must not
+    // dereference the null tcp pointer.
+    eph::dpdk::net::ParsedPacket empty{};
+    auto opts = parse_tcp_options(empty);
+    EXPECT_FALSE(opts.has_mss);
+    EXPECT_FALSE(opts.has_wscale);
+    EXPECT_FALSE(opts.has_sack_perm);
+}
+
+TEST(PacketParseAdv, TcpOptionsMssWscaleSackPermAllPresent) {
+    // {kind=2, len=4, MSS=1460} {kind=3, len=3, wscale=7} {kind=4, len=2}
+    std::vector<uint8_t> opts = {
+        2, 4, 0x05, 0xB4,   // MSS = 1460 (0x05B4)
+        3, 3, 7,
+        4, 2,
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_TRUE(out.has_mss);
+    EXPECT_EQ(out.mss, 1460u);
+    EXPECT_TRUE(out.has_wscale);
+    EXPECT_EQ(out.wscale, 7u);
+    EXPECT_TRUE(out.has_sack_perm);
+}
+
+TEST(PacketParseAdv, TcpOptionsEolTerminatesParse) {
+    // NOP, EOL, then a fake MSS that must NOT be parsed because EOL
+    // already terminated the walk.
+    std::vector<uint8_t> opts = {
+        1,                       // NOP
+        0,                       // EOL — terminator
+        2, 4, 0x05, 0xB4,        // would-be MSS=1460, must be ignored
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_FALSE(out.has_mss);
+}
+
+TEST(PacketParseAdv, TcpOptionsLenBelow2StopsParse) {
+    // {kind=99, len=1} is malformed (len must be >= 2). The parser must
+    // stop at this offending byte; subsequent valid options must NOT be
+    // surfaced — bailing on first malformed kind is the documented contract.
+    std::vector<uint8_t> opts = {
+        99, 1,                   // malformed — len < 2
+        2, 4, 0x05, 0xB4,        // a real MSS that must be ignored
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_FALSE(out.has_mss);
+}
+
+TEST(PacketParseAdv, TcpOptionsLenOverrunStopsParse) {
+    // {kind=2, len=10} declares more bytes than the options area
+    // contains — must bail before reading past the buffer.
+    std::vector<uint8_t> opts = {
+        2, 10, 0x05, 0xB4,      // declared len=10, only 2 payload bytes follow
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_FALSE(out.has_mss);
+}
+
+TEST(PacketParseAdv, TcpOptionsUnknownKindSkipped) {
+    // Unknown option kind=99 with proper len-delimited 4 bytes — parser
+    // must skip past it (i += len) and still surface following options.
+    std::vector<uint8_t> opts = {
+        99, 4, 0xAA, 0xBB,       // unknown kind — len=4, must be skipped
+        2, 4, 0x05, 0xB4,        // MSS=1460 — must still be parsed after skip
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_TRUE(out.has_mss);
+    EXPECT_EQ(out.mss, 1460u);
+}
+
+TEST(PacketParseAdv, TcpOptionsMssWrongLengthIgnored) {
+    // {kind=2, len=3} is malformed for MSS — RFC 793 requires len=4.
+    // The parser must skip the malformed option (no MSS surfaced) but
+    // continue to subsequent valid options. Behaviour: the option is
+    // walked over (i += 3) and the next option is parsed normally.
+    std::vector<uint8_t> opts = {
+        2, 3, 0x05,              // MSS with bogus len=3 — silently ignored
+        3, 3, 7,                 // valid wscale=7 follows
+    };
+    uint8_t buf[256];
+    size_t len = build_tcp_with_options(buf, opts);
+    auto mbuf = make_mbuf(buf, len);
+    auto parsed = parse_packet(&mbuf);
+    ASSERT_NE(parsed.tcp, nullptr);
+    auto out = parse_tcp_options(parsed);
+    EXPECT_FALSE(out.has_mss);
+    EXPECT_TRUE(out.has_wscale);
+    EXPECT_EQ(out.wscale, 7u);
+}
