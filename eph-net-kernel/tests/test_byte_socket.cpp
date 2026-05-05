@@ -234,3 +234,35 @@ TEST(ByteSocket, SetKeepaliveZeroProbesRejected) {
     server.join();
     ::close(lfd);
 }
+
+// set_keepalive on a closed (default-constructed) ByteSocket must return
+// InvalidConfig — the function's first guard, but had no direct test.
+TEST(ByteSocket, SetKeepaliveOnClosedFdReturnsInvalidConfig) {
+    ek::ByteSocket bs;  // default-constructed = fd_ < 0
+    auto r = bs.set_keepalive(/*interval_secs=*/30, /*probes=*/3);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+}
+
+// Negative interval_secs is a documented synonym for "disabled" and
+// must short-circuit to {} without touching socket state. Pin the
+// boundary so a future refactor that swaps `<=` for `<` doesn't
+// silently turn a negative value into a setsockopt(EINVAL) on Linux.
+TEST(ByteSocket, SetKeepaliveNegativeIntervalIsNoOpSuccess) {
+    auto [lfd, port] = bind_ephemeral_listener();
+    ASSERT_GE(lfd, 0);
+    std::thread server([lfd] { echo_once(lfd); });
+
+    ek::ByteSocket bs;
+    en::SocketAddr target{en::Ipv4Addr{127, 0, 0, 1}, port};
+    ASSERT_TRUE(bs.connect(target, std::chrono::milliseconds{1000}).has_value());
+
+    auto r = bs.set_keepalive(/*interval_secs=*/-1, /*probes=*/3);
+    EXPECT_TRUE(r.has_value())
+        << "negative interval_secs is documented as the disabled path "
+           "and must return Ok without any setsockopt syscall";
+
+    bs.close();
+    server.join();
+    ::close(lfd);
+}
