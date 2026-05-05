@@ -64,7 +64,15 @@ public:
     /// @return Number of bytes written (always `len`).
     [[nodiscard]] size_t encode(uint8_t* out, const uint8_t* data, size_t len,
                   uint8_t /*msg_type*/) noexcept {
-        std::memcpy(out, data, len);
+        // Guard memcpy(out, nullptr, 0) UB: ISO C requires both src and
+        // dst to be valid pointers even when count==0. A caller passing
+        // (out, nullptr, 0) — possible from a defensive-zero-len encode
+        // path — would otherwise trip UBSan -fsanitize=undefined.
+        // Mirrors the same defensive pattern in eph-itch/ouch.hpp
+        // write_padded and eph-fix/builder.hpp set_trusted (R102/R104).
+        if (len > 0) {
+            std::memcpy(out, data, len);
+        }
         return len;
     }
 

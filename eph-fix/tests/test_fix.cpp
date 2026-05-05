@@ -1178,6 +1178,16 @@ TEST(FixFramer, encode_passthrough) {
     EXPECT_EQ(std::memcmp(out, in, sizeof(in)), 0);
 }
 
+// Pin the len==0 path: encode must short-circuit before memcpy so a
+// caller passing (out, nullptr, 0) cannot trip memcpy(p, nullptr, 0)
+// UB. Returns 0 either way.
+TEST(FixFramer, encode_zero_len_with_null_data_is_safe) {
+    uint8_t out[8]{};
+    FixFramer f;
+    size_t n = f.encode(out, nullptr, 0, 0);
+    EXPECT_EQ(n, 0u);
+}
+
 TEST(FixFramer, satisfies_concept) {
     static_assert(eph::net::MessageFramer<FixFramer>);
 }
