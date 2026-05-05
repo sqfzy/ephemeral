@@ -185,6 +185,9 @@ TEST(FixSession, server_heartbeat_interval_override) {
     cfg.heartbeat_interval_sec = 30;
     FixSession session(mock.send_fn(), cfg);
 
+    // Pre-Logon: runtime hb_int reflects the client config.
+    EXPECT_EQ(session.heartbeat_interval_sec(), 30);
+
     std::thread t([&] { (void)session.logon(std::chrono::milliseconds{500}); });
     while (mock.sent.empty()) std::this_thread::yield();
     // Server responds with HeartBtInt=10 (overrides client's 30)
@@ -192,7 +195,39 @@ TEST(FixSession, server_heartbeat_interval_override) {
     session.on_rx(resp.data(), resp.size());
     t.join();
     EXPECT_EQ(session.state(), SessionState::kActive);
-    // Can't directly read cfg_.heartbeat_interval_sec, but tick() behavior will change
+    // Now verify the override actually landed in the runtime atomic —
+    // the previous "tick() behavior will change" comment was right but
+    // untested. With heartbeat_interval_sec() exposed as a getter, the
+    // post-Logon value must equal the server-supplied 10.
+    EXPECT_EQ(session.heartbeat_interval_sec(), 10)
+        << "Server HeartBtInt override (30 -> 10) did not land in the "
+        << "runtime atomic — tick() / maybe_send_heartbeat() would "
+        << "still pace at the stale client value";
+}
+
+// Symmetric guard: a server HeartBtInt outside the [1, 3600] sanity
+// range must NOT override the runtime value (session.hpp:537-549
+// rejects negatives, zeros, and > 3600 with a WARN). Without this
+// test, a future loosening of the guard would silently let a peer
+// drive HeartBtInt to e.g. 86400, suppressing all proactive
+// heartbeats and risking dead-link silence for a full day.
+TEST(FixSession, unreasonable_server_heartbeat_interval_ignored) {
+    MockFixTransport mock;
+    auto cfg = test_config();
+    cfg.heartbeat_interval_sec = 30;
+    FixSession session(mock.send_fn(), cfg);
+
+    std::thread t([&] { (void)session.logon(std::chrono::milliseconds{500}); });
+    while (mock.sent.empty()) std::this_thread::yield();
+    // Server tries to push HeartBtInt=86400 (one day). Must be ignored.
+    auto resp = MockFixTransport::logon_response(1, 86400);
+    session.on_rx(resp.data(), resp.size());
+    t.join();
+    EXPECT_EQ(session.state(), SessionState::kActive);
+    EXPECT_EQ(session.heartbeat_interval_sec(), 30)
+        << "Unreasonable server HeartBtInt=86400 was accepted; the "
+        << "runtime cap (kMaxHeartbeatSec=3600 in session.hpp) must "
+        << "reject anything above 1 hour to prevent dead-link masking";
 }
 
 // ===========================================================================

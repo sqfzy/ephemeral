@@ -799,6 +799,18 @@ public:
         return expected_inbound_seq_.load(std::memory_order_relaxed);
     }
 
+    /// @brief Get the runtime heartbeat interval in seconds.
+    ///
+    /// Initialised from `cfg_.heartbeat_interval_sec` at construction; the
+    /// server may override via Logon response (FIX 4.4 §B.6). This getter
+    /// returns the *current* effective value — the same one `tick()` and
+    /// `maybe_send_heartbeat()` use for cadence decisions. Useful for
+    /// observability dashboards and for tests verifying the override
+    /// landed (see test_fix_session.cpp::server_heartbeat_interval_override).
+    [[nodiscard]] int heartbeat_interval_sec() const noexcept {
+        return heartbeat_interval_sec_.load(std::memory_order_acquire);
+    }
+
 private:
     // ─────────────────────────────────────────────────────────────────────
     // State transitions
