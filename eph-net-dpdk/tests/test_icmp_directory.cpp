@@ -721,3 +721,73 @@ TEST(IcmpDirectoryHmac, AuditEntry_AfterUnregisterReturnsTrue) {
     EXPECT_TRUE(h->audit_entry(*idx))   // post-unregister: Free → true
         << "Free slot must audit as no-op true regardless of stale tag";
 }
+
+TEST(IcmpDirectoryHmac, AuditEntry_NoFalsePositivesUnderConcurrentChurn) {
+    // Stress test for R9 (seqlock-style gen+claimed re-check):
+    // Register thread churns a single slot via repeated
+    // register/unregister/re-register cycles. Audit thread spins
+    // calling audit_entry on the same slot. With R9's seqlock pattern
+    // every audit_entry call must return TRUE — either healthy
+    // (well-signed) or "raced, try later" (no-op true). A FALSE
+    // anywhere means the seqlock pattern missed a torn-read window
+    // and computed HMAC over a mix of two incarnations.
+    //
+    // Test runs for ~200ms; without the R9 fix this reliably triggers
+    // false-positive false returns. With R9 it should hit zero.
+    auto h_opt = IcmpDirectoryHandle::create_primary("idtest_aerace");
+    ASSERT_TRUE(h_opt.has_value()) << h_opt.error();
+    auto& h = *h_opt;
+    h.enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-race-key"}});
+
+    // Pre-claim slot 0 so we know the index before the race starts.
+    auto idx_r = h.register_target(make_tuple(47000), kProtoTcp, 1);
+    ASSERT_TRUE(idx_r.has_value());
+    const size_t target_idx = *idx_r;
+    EXPECT_EQ(target_idx, 0u);  // first-fit allocates 0 first
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> false_returns{0};
+    std::atomic<uint64_t> total_audits{0};
+    std::atomic<uint64_t> total_cycles{0};
+
+    std::thread churner([&] {
+        // Cycle: unregister → register with same tuple. Each cycle
+        // bumps generation by 1 (only unregister bumps; register
+        // doesn't). The seqlock re-check inside audit_entry must
+        // detect any concurrent cycle and skip.
+        while (!stop.load(std::memory_order_relaxed)) {
+            h.unregister(target_idx);
+            auto r = h.register_target(make_tuple(47000), kProtoTcp, 1);
+            if (r.has_value()) {
+                total_cycles.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    std::thread auditor([&] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            const bool ok = h.audit_entry(target_idx);
+            total_audits.fetch_add(1, std::memory_order_relaxed);
+            if (!ok) {
+                false_returns.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    stop.store(true, std::memory_order_relaxed);
+    churner.join();
+    auditor.join();
+
+    // Sanity: both threads ran enough iterations to actually race.
+    EXPECT_GT(total_cycles.load(), 100u)
+        << "churner did too few cycles to stress the race";
+    EXPECT_GT(total_audits.load(), 100u)
+        << "auditor did too few iterations to stress the race";
+    // The contract: zero false-positive tamper detections.
+    EXPECT_EQ(false_returns.load(), 0u)
+        << "audit_entry returned false " << false_returns.load()
+        << " times across " << total_audits.load() << " calls "
+        << "and " << total_cycles.load() << " churn cycles — the "
+        << "seqlock re-check pattern is leaking torn reads";
+}
