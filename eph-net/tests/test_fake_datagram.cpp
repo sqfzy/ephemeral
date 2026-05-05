@@ -244,3 +244,45 @@ TEST(FakeDatagram, OnDatagramReentrantInjectionDoesNotInvalidateIterator) {
     // Third poll: queue empty.
     EXPECT_EQ(fd.poll_once_(), 0u);
 }
+
+// FakeDatagram::join_multicast preserves duplicates (intentional, per
+// header docstring) — so a test that double-joins the same group then
+// leaves once must still find the group in joined_groups(). The
+// existing JoinAndLeaveMulticast test only covered distinct groups.
+TEST(FakeDatagram, JoinSameGroupTwiceLeaveOnceKeepsOneEntry) {
+    ent::FakeDatagram fd;
+    auto g = addr(239, 7, 7, 7, 6000);
+    ASSERT_TRUE(fd.join_multicast(g).has_value());
+    ASSERT_TRUE(fd.join_multicast(g).has_value());  // intentional dup
+    ASSERT_EQ(fd.joined_groups().size(), 2u)
+        << "fake preserves duplicate joins so tests can detect a bad "
+           "double-join code path in the production caller";
+    EXPECT_EQ(fd.joined_groups()[0], g);
+    EXPECT_EQ(fd.joined_groups()[1], g);
+
+    // leave_multicast removes only the first occurrence.
+    ASSERT_TRUE(fd.leave_multicast(g).has_value());
+    ASSERT_EQ(fd.joined_groups().size(), 1u);
+    EXPECT_EQ(fd.joined_groups()[0], g);
+}
+
+// inject_join_error then a successful join — the queued error fires
+// for the first join only; the second join populates joined_groups()
+// normally. Pins both the FIFO drain semantics and the absence of
+// state mutation on the failed join.
+TEST(FakeDatagram, InjectJoinErrorAffectsOnlyFirstJoinThenDrains) {
+    ent::FakeDatagram fd;
+    fd.inject_join_error(eph::core::Error::InvalidConfig, "first-fail");
+    auto g1 = addr(239, 1, 1, 1, 5001);
+    auto g2 = addr(239, 1, 1, 2, 5002);
+
+    auto r1 = fd.join_multicast(g1);
+    ASSERT_FALSE(r1.has_value());
+    EXPECT_EQ(r1.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_TRUE(fd.joined_groups().empty()) << "first join failed → no record";
+
+    auto r2 = fd.join_multicast(g2);
+    EXPECT_TRUE(r2.has_value()) << "queue drained → second join succeeds";
+    ASSERT_EQ(fd.joined_groups().size(), 1u);
+    EXPECT_EQ(fd.joined_groups()[0], g2);
+}
