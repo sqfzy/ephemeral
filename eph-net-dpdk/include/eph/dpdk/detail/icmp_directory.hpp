@@ -1060,6 +1060,14 @@ public:
             // slot for now, the next sweep cycle will recheck on a
             // stable state. False-positive tamper warns are
             // operationally worse than a one-tick-late detection.
+            //
+            // Order matters: gen0 BEFORE the claimed gate. If we read
+            // claimed first and concurrent unregister fires between
+            // (Published→Free + gen++), gen0 captured AFTER the
+            // claimed check would already be the new gen — gen0 ==
+            // gen1 would falsely pass the seqlock check. Reading
+            // gen0 before claimed-check ensures gen0 is captured
+            // pre-transition.
             const uint32_t gen0 =
                 e.generation.load(std::memory_order_acquire);
             if (e.claimed.load(std::memory_order_acquire) !=
