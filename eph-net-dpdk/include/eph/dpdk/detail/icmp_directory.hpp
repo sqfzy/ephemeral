@@ -143,6 +143,22 @@ struct IcmpDirectoryEntry {
     /// race where a reader load-acquired `claimed==1` but the producer's
     /// non-atomic field writes (proto/owner_proc/ips/ports) had not yet
     /// happened-before that load.
+    ///
+    /// **Multi-field reader contract**: a reader that reads MORE than one
+    /// field after `acquire(claimed)==Published` is exposed to torn
+    /// reads if the slot is unregistered + immediately re-claimed by a
+    /// different (tuple, owner) mid-read. The HMAC audit paths
+    /// (`audit_entry`, `audit_sweep_one_round`) MUST seqlock-style
+    /// snapshot `generation` BEFORE and re-check `generation` + `claimed`
+    /// AFTER, discarding the result on mismatch — otherwise the torn
+    /// HMAC over a mix of two incarnations triggers a false-positive
+    /// tamper warning. `lookup` is also a multi-field reader but
+    /// tolerates the race by design: a torn read either fails a
+    /// component check (no match → caller treats as miss, retransmits
+    /// via TCP) or matches the new incarnation by coincidence (caller
+    /// dispatches to the new owner — semantically correct since the
+    /// old owner has already unregistered). The audit paths use the
+    /// strict seqlock pattern; lookup remains lock-free.
     std::atomic<uint8_t> claimed;
     /// IP protocol (e.g. 6 = TCP, 17 = UDP). 0 = unset.
     uint8_t  proto;
