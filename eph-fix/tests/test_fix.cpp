@@ -86,6 +86,33 @@ TEST(FixTags, msg_type_name_multi_char) {
     EXPECT_EQ(tag::msg_type_name("D"sv), "NewOrderSingle");
 }
 
+TEST(FixTags, msg_type_name_empty_string_view_unknown) {
+    // Empty mt slips past the size-1 fast path; the explicit `if
+    // (mt.empty()) return "Unknown"` short-circuit must catch it.
+    // Without that guard, `mt[0]` on an empty string_view would be UB.
+    using namespace std::string_view_literals;
+    EXPECT_EQ(tag::msg_type_name(""sv), "Unknown");
+    EXPECT_EQ(tag::msg_type_name(std::string_view{}), "Unknown");
+}
+
+TEST(FixTags, msg_type_name_length_three_plus_unknown) {
+    // Anything longer than 2 chars (and not in the 3-entry multi-char
+    // table) falls through to the trailing "Unknown".
+    using namespace std::string_view_literals;
+    EXPECT_EQ(tag::msg_type_name("AEE"sv), "Unknown");
+    EXPECT_EQ(tag::msg_type_name("LongMsgType"sv), "Unknown");
+}
+
+TEST(FixTags, msg_type_name_length_two_lookup_only) {
+    // Verify the multi-char table is consulted in O(N) order — the 3
+    // valid entries match, every other 2-char sequence is "Unknown".
+    using namespace std::string_view_literals;
+    EXPECT_EQ(tag::msg_type_name("XX"sv), "Unknown");
+    EXPECT_EQ(tag::msg_type_name("AB"sv), "Unknown");
+    EXPECT_EQ(tag::msg_type_name("ae"sv), "Unknown")  // case-sensitive
+        << "msg_type_name is case-sensitive — only 'AE' matches TradeCaptureReport";
+}
+
 // ===========================================================================
 // Parser
 // ===========================================================================
