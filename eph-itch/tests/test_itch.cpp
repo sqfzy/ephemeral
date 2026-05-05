@@ -118,6 +118,37 @@ TEST(ItchEndian, ReadBe48_MaxValue) {
     EXPECT_EQ(read_be48(data), 0x0000FFFFFFFFFFFFULL);
 }
 
+// All-zero 6 bytes should produce 0. Symmetric with ReadBe48_MaxValue
+// (and the corresponding zero/max coverage on Be32). Without this,
+// a future refactor that swapped a `<< 8` for `<< 16` in the
+// shift sequence could pass MaxValue (saturated all-ones still
+// looks correct under a wrong shift) but produce non-zero from
+// all-zero input — an asymmetry hard to debug from the
+// MaxValue path alone.
+TEST(ItchEndian, ReadBe48_Zero) {
+    const uint8_t data[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    EXPECT_EQ(read_be48(data), 0ULL);
+}
+
+// MSB-only test: the high byte at offset 0 must shift to bits 40-47.
+// A copy-paste-bug variant that swapped two of the shifts (e.g.
+// `p[0] << 32` instead of `<< 40`) would still pass MaxValue
+// (bits saturate either way) AND Zero (zeros stay zero) — but
+// would fail this test where only one byte is non-zero.
+TEST(ItchEndian, ReadBe48_HighByteOnlyTopOf48bits) {
+    const uint8_t data[] = {0x80, 0x00, 0x00, 0x00, 0x00, 0x00};
+    // 0x80 at offset 0 → must produce 0x800000000000 (bit 47).
+    EXPECT_EQ(read_be48(data), 0x0000800000000000ULL);
+}
+
+// LSB-only test: the low byte at offset 5 must NOT be shifted.
+// A bug that lifted offset 5 by any amount would fail this test
+// while passing the others.
+TEST(ItchEndian, ReadBe48_LowByteOnlyBottomOf48bits) {
+    const uint8_t data[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
+    EXPECT_EQ(read_be48(data), 1ULL);
+}
+
 // ---------------------------------------------------------------------------
 // Test 3: Common header accessors
 // ---------------------------------------------------------------------------
