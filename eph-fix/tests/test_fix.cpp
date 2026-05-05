@@ -649,6 +649,43 @@ TEST(FixBuilder, reset_after_overflow) {
     EXPECT_TRUE(verify_checksum(b.data(), b.size()));
 }
 
+// reset() also clears the `finished_` flag (builder.hpp:510), so a
+// builder can be reused for multiple consecutive messages from the
+// same buffer. Without this clear, the post-finish set() call would
+// hit the `if (finished_)` guard at line 692 and silently no-op,
+// producing a malformed second message that finish() would then
+// re-emit as the previous bytes (or zero-len). Untested before.
+TEST(FixBuilder, reset_after_finish_allows_second_message) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+
+    // First message: succeed and finish.
+    b.set(tag::MsgType, "D").set(tag::Symbol, "AAPL");
+    size_t len1 = b.finish();
+    ASSERT_GT(len1, 0u);
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+
+    // Reset and build a second, distinct message in the same buffer.
+    // If reset() failed to clear finished_, the second set() calls
+    // would silently no-op and finish() would re-emit the first
+    // message OR return 0.
+    b.reset();
+    b.set(tag::MsgType, "F").set(tag::Symbol, "MSFT");
+    size_t len2 = b.finish();
+    ASSERT_GT(len2, 0u)
+        << "reset() did not clear finished_; second finish() returned 0 "
+        << "or set() silently no-op'd";
+    EXPECT_TRUE(verify_checksum(b.data(), b.size()));
+
+    // Verify the second message contains the new fields, not the first.
+    auto mv = parse(b.data(), b.size());
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(mv->msg_type(), std::optional<std::string_view>("F"))
+        << "second message has stale MsgType — finished_ flag was sticky";
+    EXPECT_EQ(mv->get(tag::Symbol), std::optional<std::string_view>("MSFT"))
+        << "second message has stale Symbol — set() no-op'd post-reset";
+}
+
 TEST(FixBuilder, chained_set_calls) {
     uint8_t buf[512];
     MessageBuilder b(buf, sizeof(buf));
