@@ -131,6 +131,20 @@ TEST(ParseNumber, ExponentExceeds308ReturnsNullopt) {
     EXPECT_FALSE(parse_number("1e1000").has_value());
 }
 
+// The exponent-magnitude guard at parser.hpp:89 fires symmetrically
+// for negative exponents — `exp > 308` is checked BEFORE the sign
+// is applied, so `1e-1000` (which IEEE 754 would underflow to +0.0)
+// is rejected with the same nullopt as `1e1000`. The earlier-fix
+// VerySmallNegativeExponent test only covers the in-range case
+// (1e-308 succeeds); a future refactor that splits the magnitude
+// check from the sign handling could regress this rejection
+// silently. Lock it with a focused test.
+TEST(ParseNumber, NegativeExponentExceeds308ReturnsNullopt) {
+    EXPECT_FALSE(parse_number("1e-309").has_value());
+    EXPECT_FALSE(parse_number("1e-1000").has_value());
+    EXPECT_FALSE(parse_number("-1.5e-500").has_value());
+}
+
 TEST(ParseNumber, VerySmallNegativeExponent) {
     auto r = parse_number("1e-308");
     ASSERT_TRUE(r.has_value());
