@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Reshape — `tcp_stream.hpp` ReasmBuffer extraction (T2.2 partial, 2026-05-05)
+
+`tcp_stream.hpp` shrank from **2325 → 2282 lines** by moving the
+`detail::ReasmBuffer` class into a new `detail/reasm_buffer.hpp`
+(76 lines). Same `eph::net::dpdk::detail` namespace, same symbol —
+no client-visible change. The three existing tests that exercise
+ReasmBuffer (`test_dpdk_fault_tolerance`, `test_dpdk_reasm_overflow`,
+`test_dpdk_drain`) all continue to pass:
+
+  - test_dpdk_fault_tolerance: 14/14
+  - test_dpdk_reasm_overflow:   6/6
+  - test_dpdk_drain:            5/5
+  - test_dpdk_tcp_stream:       30/30
+
+ReasmBuffer is the cleanest extraction candidate from tcp_stream.hpp:
+~50 lines, no DPDK / TLS / TcpSession dependencies, only `<vector>`
+and `<cstring>`. The remaining ~2200 lines (DpdkTcpStream class,
+WsByteSink adapters, TLS-handshake glue, hot-path drain) are tightly
+coupled to internal types and warrant individual `pax --reshape`
+cycles each — see DEFERRED.md.
+
+bench_rx_hot_path baseline unchanged (no hot path code moved).
+
+Track item: T2.2 from the 2026-05-05 action list (ReasmBuffer
+extraction portion). Bringup / handshake / hot_drain extractions
+remain in DEFERRED.md.
+
 ### Reshape — `platform.hpp` partial split (T2.1 partial, 2026-05-05)
 
 `platform.hpp` shrank from **3515 → 3474 lines** by moving the public

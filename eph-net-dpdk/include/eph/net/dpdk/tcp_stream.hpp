@@ -50,6 +50,7 @@
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
+#include "eph/net/dpdk/detail/reasm_buffer.hpp"  // ReasmBuffer (T2.2 partial split)
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/stream_metrics.hpp"
 #include "eph/net/stream_snapshot.hpp"
@@ -89,60 +90,10 @@ inline constexpr int kWsHandshakeRecvBurstRetries = 16;
 // TlsState (with aws-lc-backed in-place AEAD) lives in
 // `detail/tls_state.hpp`.
 
-/// @brief Reassembly buffer for the codec decode loop. Bytes dispatched
-///        in from the Poller append here, then the codec drains them
-///        incrementally. Implemented as a simple std::vector<uint8_t>
-///        with a front cursor.
-class ReasmBuffer {
-public:
-    explicit ReasmBuffer(std::size_t cap = 256 * 1024) { buf_.resize(cap); }
-
-    [[nodiscard]] std::size_t readable() const noexcept { return tail_ - head_; }
-    [[nodiscard]] std::size_t capacity() const noexcept { return buf_.size(); }
-    [[nodiscard]] std::size_t writable_capacity() const noexcept {
-        return buf_.size() - tail_;
-    }
-    [[nodiscard]] const uint8_t* read_ptr() const noexcept {
-        return buf_.data() + head_;
-    }
-    [[nodiscard]] uint8_t* writable_ptr() noexcept { return buf_.data() + tail_; }
-
-    void commit_write(std::size_t n) noexcept { tail_ += n; }
-    void consume(std::size_t n) noexcept {
-        if (n >= readable()) {
-            head_ = tail_;  // clamp — never push head_ past tail_
-        } else {
-            head_ += n;
-        }
-    }
-    void compact() noexcept {
-        if (head_ == 0) return;
-        if (readable() == 0) {
-            head_ = tail_ = 0;
-            return;
-        }
-        std::memmove(buf_.data(), buf_.data() + head_, readable());
-        tail_ -= head_;
-        head_  = 0;
-    }
-    /// @brief Append `n` bytes from `src`, compacting first if needed.
-    /// @return true on success, false if there is not enough room even
-    ///         after compaction.
-    [[nodiscard]] bool append(const uint8_t* src, std::size_t n) noexcept {
-        if (writable_capacity() < n) {
-            compact();
-            if (writable_capacity() < n) return false;
-        }
-        std::memcpy(writable_ptr(), src, n);
-        commit_write(n);
-        return true;
-    }
-
-private:
-    std::vector<uint8_t> buf_;
-    std::size_t          head_{0};
-    std::size_t          tail_{0};
-};
+// ReasmBuffer was extracted into detail/reasm_buffer.hpp as part of
+// T2.2's partial split (2026-05-05) — same `eph::net::dpdk::detail`
+// namespace, same symbol, no client-visible change. The include lives
+// at the top of this file alongside the other detail/ headers.
 
 // ---------------------------------------------------------------------------
 // WS-handshake ByteSink adapters
