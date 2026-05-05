@@ -170,10 +170,17 @@ TEST_F(MpOutputSuffix, ForcePid_NonemptyTruthy_EmitsSuffix) {
 }
 
 TEST_F(MpOutputSuffix, ForcePid_DisableValues_EmitsEmpty) {
-    // The disable set must cover the common falsy spellings so a user
-    // typing `EPH_LAT_FORCE_PID=0` actually disables it. Under DPDK
-    // builds this is the only way to opt out of the new default.
-    for (const char* v : {"0", "false", "FALSE", "no", "NO"}) {
+    // The disable set must cover the common falsy spellings — including
+    // ALL casings — so a user typing `EPH_LAT_FORCE_PID=False` (mixed)
+    // gets disable behaviour rather than the opposite. Under DPDK
+    // builds this is the only way to opt out of the new default; a
+    // case-sensitive miss would silently force-ENABLE on a typo, which
+    // mirrors the project-wide config-field-symmetry feedback rule.
+    for (const char* v : {
+            "0",
+            "false", "False", "FALSE", "FaLsE",  // mixed-case must work
+            "no",    "No",    "NO",
+        }) {
         g_force_.set(v);
         EXPECT_EQ(bench::mp_output_suffix(), "") << "v=" << v;
     }

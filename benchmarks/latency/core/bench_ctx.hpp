@@ -55,12 +55,37 @@ namespace bench {
     };
 
     // Hard override — wins over both the build-mode default and the
-    // legacy envvar. `=0` / `=false` / `=no` force-disable; any other
-    // non-empty value force-enables.
+    // legacy envvar. `=0` / `=false` (case-insensitive) / `=no`
+    // (case-insensitive) force-disable; any other non-empty value
+    // force-enables.
+    //
+    // Case-insensitive comparison rather than the historical
+    // {"false","FALSE","no","NO"} explicit list, which silently
+    // accepted lowercase + ALLCAPS but rejected mixed-case
+    // ("False" / "No" → force-ENABLED, surprising). All shells render
+    // env vars verbatim so a user-typed `EPH_LAT_FORCE_PID=False`
+    // would otherwise produce the opposite of the intended effect —
+    // the same bug class as the DNS port-symmetry feedback note (a
+    // config field that silently does the wrong thing on a typo).
     if (const char* force = std::getenv("EPH_LAT_FORCE_PID");
             force && *force) {
         const std::string_view v{force};
-        if (v == "0" || v == "false" || v == "FALSE" || v == "no" || v == "NO") {
+        // ASCII case-insensitive match: spell out the expected lengths
+        // up-front so the comparison is branch-friendly. "0" is its
+        // own special case (single-char, no case variants).
+        auto eq_ci = [](std::string_view a, std::string_view b) noexcept {
+            if (a.size() != b.size()) return false;
+            for (size_t i = 0; i < a.size(); ++i) {
+                char ca = a[i], cb = b[i];
+                // tolower for ASCII letters only — bytes outside
+                // [A-Z] / [a-z] compare exactly as themselves.
+                if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+                if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+                if (ca != cb) return false;
+            }
+            return true;
+        };
+        if (v == "0" || eq_ci(v, "false") || eq_ci(v, "no")) {
             return std::string{};
         }
         return pid_suffix();
