@@ -406,3 +406,40 @@ TEST(MoldUDP64, sequence_number_at_overflow_boundary_succeeds) {
     ASSERT_EQ(seqs.size(), count);
     EXPECT_EQ(seqs.back(), UINT64_MAX - 1);
 }
+
+// A MoldUDP64 message with msg_len=0 is a legitimate (if unusual) wire
+// shape — a 2-byte zero-length prefix and no body. The parser must
+// invoke the callback once per such message with len=0, advance the
+// offset by exactly 2, and continue iterating into the next message.
+// The early-reject lower bound (`kHeaderLen + 2*count`) tolerates this
+// (zero-body messages contribute exactly 2 bytes each), so no special
+// case is needed in the parser — but the callback contract for len=0
+// has never been exercised explicitly. Pin it.
+TEST(MoldUDP64, parse_zero_length_message_invokes_callback_with_len_zero) {
+    std::vector<uint8_t> pkt;
+    constexpr uint64_t base_seq = 100;
+    build_header(pkt, "ZEROLEN", base_seq, 3);
+    append_message(pkt, nullptr, 0);
+    // Sandwich a non-zero message between two zero-length ones to verify
+    // the offset advances correctly across both shapes.
+    const uint8_t body[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    append_message(pkt, body, 4);
+    append_message(pkt, nullptr, 0);
+
+    struct Hit { uint16_t len; uint64_t seq; };
+    std::vector<Hit> hits;
+    size_t delivered = eph::itch::parse_moldudp64(
+        pkt.data(), pkt.size(),
+        [&](const uint8_t*, uint16_t l, uint64_t s) {
+            hits.push_back({l, s});
+        });
+
+    ASSERT_EQ(delivered, 3u);
+    ASSERT_EQ(hits.size(), 3u);
+    EXPECT_EQ(hits[0].len, 0u);
+    EXPECT_EQ(hits[0].seq, base_seq);
+    EXPECT_EQ(hits[1].len, 4u);
+    EXPECT_EQ(hits[1].seq, base_seq + 1);
+    EXPECT_EQ(hits[2].len, 0u);
+    EXPECT_EQ(hits[2].seq, base_seq + 2);
+}
