@@ -2,6 +2,88 @@
 
 ## [Unreleased]
 
+### Wired — T2.3 MpRegistry HMAC tamper protection (2026-05-05, follow-up)
+
+Closes the major piece of the previously-deferred T2.3. The
+`HmacKeyedEntry<T>` skeleton (commit `f2733623`) plus the tamper
+fuzz (commit `c7ba595b`) are now joined by the actual wiring of
+HMAC tags into the `MpRegistry` cross-process layout — the registry
+that carries each tenant's queue range, src_port range, lcore mask,
+and PID, and which up to now had **no integrity check** against
+tampering by a compromised secondary or a wild-pointer write into
+the shared hugepage segment.
+
+Changes (all opt-in via `NicServiceConfig::enable_registry_hmac`,
+default `false` so single-tenant deployments see no behavioural
+change):
+
+  - `NicServiceConfig::enable_registry_hmac` — new boolean field;
+    documents the threat model + the `/run/eph/<bdf>.key` filesystem
+    convention.
+  - `eph/dpdk/detail/registry_hmac_key.hpp` — daemon writes a
+    32-byte CSPRNG key (aws-lc `RAND_bytes`) to
+    `/run/eph/<sanitize_bdf(pci)>.key` with mode `0440 root:root`
+    via atomic `<path>.tmp` + `fchmod` + `rename`. Tenants read the
+    same path. `registry_hmac_key_path` resolves the canonical
+    location; `write_registry_hmac_key_at` is a test-only overload
+    so unit tests can run without root.
+  - **MpRegistry wire format v3 → v4**:
+    * `MpRegistryHeader::hmac_enabled` (1 byte + 3 bytes pad) —
+      flips between unkeyed and keyed mode.
+    * `ProcSlot::hmac_tag[32]` — HMAC-SHA256 of the slot's
+      authenticated payload (everything except `claimed` and the
+      tag itself). Added at the end of ProcSlot to keep prior fields
+      at their v3 offsets.
+  - `pack_slot_for_hmac(slot, out)` — explicit little-endian byte
+    packing (so the tag is portable across hosts).
+    Authenticated payload = `tag[]` + `queue_lo` + `queue_hi` +
+    `port_lo` + `port_hi` + `lcore_mask` + `pid` = **56 bytes**.
+    The `claimed` atomic flag is intentionally NOT in the payload —
+    a slot is signed once at write time, and claim/release
+    transitions must not invalidate the tag.
+  - `sign_slot_in_place(slot, key)` — daemon-side at write time.
+  - `verify_slot(slot, key)` — secondary-side at read time;
+    constant-time comparison via aws-lc `CRYPTO_memcmp`.
+  - `init_mp_registry_header_with_hmac(...)` — keyed alternative to
+    `init_mp_registry_header`; flips the flag and signs every
+    populated slot. Free slots stay zero-tagged; readers gate
+    verification on `claimed=1 && hmac_enabled=1`.
+
+Tests:
+
+  - `test_mp_registry_hmac` — 13 cases all passing:
+    * Wire-format invariants (`kSlotAuthBytes == 56`).
+    * Sign/verify round-trip; deterministic packing.
+    * Tamper detection on every authenticated field
+      (queue_lo, port_hi, lcore_mask, pid, tag string, hmac_tag).
+    * `claimed` not in authenticated payload (claim/release
+      transitions don't invalidate the tag).
+    * Different keys produce different tags.
+    * `init_mp_registry_header` (unkeyed) leaves `hmac_enabled=0`
+      and all hmac_tag bytes zero.
+    * Keyed init flips the flag + signs every populated slot;
+      unpopulated slots remain zero-tagged.
+    * Keyed init + tamper round-trip: sign → tamper → verify fails.
+  - `test_registry_hmac_key` — 7 cases all passing:
+    * Path sanitization (BDF → file_prefix → /run/eph/<x>.key).
+    * Write-then-read round-trip.
+    * Mode `0440` enforced via `fchmod`.
+    * Read on missing file returns `InvalidConfig`.
+    * Read on truncated file returns `InvalidConfig`.
+    * Two consecutive writes give different keys (CSPRNG sanity).
+    * Atomic rename leaves no `.tmp` behind.
+
+Existing `test_mp_registry` 48-case suite continues to pass —
+adjusted only the `V3VersionConstantBumped` test to expect `v4`.
+
+Track item: T2.3 from the 2026-05-05 action list — closes the
+**MpRegistry** wiring portion. Two follow-ups remain (see
+DEFERRED.md):
+  1. Wire HMAC into `IcmpDirectory` (separate cross-process layout).
+  2. Wire HMAC into `QueueAllocator` (same).
+  3. End-to-end Platform::serve_nic + Platform::create attaching
+     under HMAC (needs daemon-equipped host).
+
 ### Wired — full T1.1+T1.2 InFlightStatus three-state classification (2026-05-05, follow-up)
 
 Closes the previously-deferred Sent / Uncertain paths. The pre-burst

@@ -92,34 +92,46 @@ into detail/tcp_stream_hot_drain.hpp; mandatory bench validation"
 
 ---
 
-### T2.3 full HMAC wiring into registries (Tier 2, partial)
+### T2.3 HMAC wiring into IcmpDirectory + QueueAllocator (Tier 2, partial)
 
-**Status**: `HmacKeyedEntry<T>` skeleton (commit `f2733623`) +
-deterministic-tamper fuzz (commit `c7ba595b`) shipped. The registries
-themselves (`MpRegistry` / `IcmpDirectory` / `QueueAllocator`) do not
-yet carry HMAC tags.
+**Status**: MpRegistry wiring **fully shipped**. The two remaining
+hugepage-backed cross-process layouts (`IcmpDirectory` carrying
+5-tuple → owner_proc mappings; `QueueAllocator` carrying queue claim
+bitmap + generation counters) still do not carry HMAC tags.
 
 **What's still missing**:
-- Wire-format bump on each registry to insert tag bytes after each
-  entry's data
-- Daemon-distributed key threat model (read-only `/run/eph/<bdf>.key`
-  mode 0440? Per-NIC vs per-deployment? Rotation?)
-- Failure semantics on tamper (log + tear down secondary? reset slot?
-  quarantine entry?)
-- Performance audit: verify-on-every-read is fine for control plane
-  (cold) but ICMP dispatch is hot — likely needs verify-on-suspicion
+- Wire-format bump on `IcmpDirectory` (insert tag-per-entry).
+- Wire-format bump on `QueueAllocator::Header` (insert tag-per-bitmap-
+  word, or coarser-grained tag over the whole header).
+- Performance audit: `IcmpDirectory::lookup` runs on the per-mbuf RX
+  path (when an ICMP arrives). verify-every-lookup adds an HMAC-SHA256
+  cost that on aarch64 is ~150-300ns, far above the budget for a hot
+  RX dispatch. Likely needs verify-on-suspicion (only when an
+  unexpected ICMP-class mbuf reaches the fallback path).
+- End-to-end Platform::serve_nic + Platform::create attaching under
+  HMAC (needs daemon-equipped host with hugepages + vfio-pci).
 
-**Why deferred**: requires deep cross-process trust model design that
-genuinely needs `--deep` adversarial discussion; the threat model
-choices have multi-tenant security implications.
+**Why deferred**: each registry has different access patterns —
+`MpRegistry` is cold-path (attach + claim only), so verify-on-every-
+read was free. `IcmpDirectory` is hot-path-adjacent and needs perf-
+aware design. `QueueAllocator` is closer to MpRegistry's pattern but
+the bitmap layout requires a different tag granularity decision
+(per-word vs per-header). Each warrants its own focused pax cycle.
 
-**Recommended next step**:
+**Recommended next steps**:
 ```
-/pax --feat --deep "T2.3 full HMAC wiring: registry wire format bump
-+ key distribution + tamper failure semantics + perf audit"
+/pax --feat --deep "T2.3 IcmpDirectory HMAC: per-entry tag, verify-
+on-suspicion vs verify-always perf audit"
+
+/pax --feat "T2.3 QueueAllocator HMAC: header-level tag covering
+bitmap + generation; verify on claim/release"
+
+/pax --test "T2.3 end-to-end: real Platform::serve_nic with
+enable_registry_hmac=true; tenant Platform::create reads the file
++ verifies; SIGKILL-induced tamper detection scenario"
 ```
 
-**Estimated effort**: 1-2 weeks design + 1 week施工 + 1 week testing.
+**Estimated effort**: 3-5 days each.
 
 ---
 

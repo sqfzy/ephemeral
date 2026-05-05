@@ -232,6 +232,35 @@ struct NicServiceConfig {
     /// EAL lcore the daemon's primary process runs on. Single-lcore
     /// daemon today; future versions may take a list.
     std::uint16_t daemon_lcore = 0;
+
+    /// @brief T2.3: enable HMAC-SHA256 entry tags on the cross-process
+    /// MpRegistry. Default `false` to preserve byte-for-byte single-
+    /// tenant behaviour.
+    ///
+    /// When `true`:
+    ///   - Daemon generates a 32-byte CSPRNG key at `serve_nic` time and
+    ///     writes it to `/run/eph/<sanitize_bdf(pci)>.key` (mode 0440,
+    ///     root:root by default — operators can chown to a dedicated
+    ///     `eph` group via the systemd unit's `ExecStartPost=`).
+    ///   - Daemon sets `header.hmac_enabled=1` and signs every
+    ///     `ProcSlot` write with HMAC-SHA256 over the slot's data field.
+    ///   - Tenants on attach read the header's `hmac_enabled` bit; if
+    ///     set, they read the key file and verify every cross-process
+    ///     read. A tamper or missing key file surfaces as
+    ///     `Error::InvalidConfig` with a "registry-hmac-mismatch"
+    ///     diagnostic.
+    ///
+    /// Threat model: protects against a compromised secondary tampering
+    /// with another secondary's slot (or accidental wild-pointer writes
+    /// landing in the shared hugepage segment). Single-LP single-tenant
+    /// deployments do not need this — every secondary is in the same
+    /// trust domain. Multi-LP / multi-strategy deployments SHOULD enable
+    /// it.
+    ///
+    /// Performance: cold path only (registry read/write happens at
+    /// attach + on rare slot-claim events). Hot path (rx/tx burst) is
+    /// not affected.
+    bool          enable_registry_hmac = false;
 };
 
 /// @brief Structural validator for `NicServiceConfig`. Empty
