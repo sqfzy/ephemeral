@@ -227,7 +227,31 @@ private:
         auto low  = count * (1.0 - cfg_.jitter_factor);
         auto high = count * (1.0 + cfg_.jitter_factor);
         std::uniform_real_distribution<double> dist(low, high);
-        auto picked = static_cast<int64_t>(dist(rng));
+        const double sample = dist(rng);
+        // Saturated FP→int64 conversion: when `current_base_` is at
+        // saturation (INT64_MAX, see the `scaled` clamp in next_backoff)
+        // the upper jitter end is `INT64_MAX * 1.25 ≈ 1.15e19`, which is
+        // representable as a double but overflows int64_t. A naked
+        // `static_cast<int64_t>(huge)` is UB per [conv.fpint] — typical
+        // x86 GCC returns INT64_MIN, after which the `< 0` clamp below
+        // turns the negative into 0 — defeating the backoff entirely
+        // (the orchestrator then sees delay_ms <= 0 and schedules an
+        // immediate retry, exactly opposite to the documented "saturate"
+        // intent). Mirror the same kInt64MaxAsDouble clamp used in
+        // next_backoff so both the `current_base_` advance and the
+        // jitter draw share one saturating-cast policy.
+        constexpr double kInt64MaxAsDouble =
+            static_cast<double>(std::numeric_limits<int64_t>::max());
+        constexpr double kInt64MinAsDouble =
+            static_cast<double>(std::numeric_limits<int64_t>::min());
+        int64_t picked;
+        if (sample >= kInt64MaxAsDouble) {
+            picked = std::numeric_limits<int64_t>::max();
+        } else if (sample <= kInt64MinAsDouble) {
+            picked = 0;  // negative-going drift → clamp to 0 (next branch handles)
+        } else {
+            picked = static_cast<int64_t>(sample);
+        }
         // Never return a negative duration even if floating-point ever drifts.
         if (picked < 0) picked = 0;
         return std::chrono::milliseconds{picked};

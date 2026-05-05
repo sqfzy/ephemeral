@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <limits>
 #include <gtest/gtest.h>
 
 #include "eph/net/reconnect_policy.hpp"
@@ -68,6 +70,50 @@ TEST(ReconnectPolicy, ClampsZeroInitialBackoff) {
     en::ReconnectPolicyConfig cfg{.initial_backoff = 0ms};
     en::ReconnectPolicy p{cfg};
     EXPECT_GT(p.config().initial_backoff.count(), 0);
+}
+
+TEST(ReconnectPolicy, UnboundedMaxBackoffWithJitterDoesNotOverflow) {
+    // Sister test to UnboundedMaxBackoffDoesNotOverflow but with jitter
+    // ON. The earlier saturating-cast in next_backoff covers the
+    // current_base_ advance, but apply_jitter has its own
+    // `static_cast<int64_t>(dist(rng))` that the cap did not yet
+    // protect: once `current_base_` reaches INT64_MAX, the upper
+    // jitter end is `INT64_MAX * 1.25 ≈ 1.15e19`, representable as a
+    // double but UB to cast to int64_t. On x86 GCC the typical UB
+    // outcome is INT64_MIN, which the `< 0` clamp turns into 0 ms —
+    // defeating the backoff (orchestrator sees delay <= 0 and
+    // schedules an immediate retry, the exact opposite of "saturate
+    // to forever"). Verify monotonicity and non-negativity hold under
+    // the jitter path too.
+    en::ReconnectPolicyConfig cfg{
+        .initial_backoff = 100ms,
+        .max_backoff     = std::chrono::milliseconds::max(),
+        .multiplier      = 2.0,
+        .jitter_factor   = 0.25,  // exercise apply_jitter at saturation
+    };
+    en::ReconnectPolicy p{cfg};
+    int64_t max_seen = -1;
+    for (int i = 0; i < 100; ++i) {
+        auto v = p.next_backoff();
+        // Jitter draws are non-monotonic per-call (random), so we
+        // cannot assert v >= prev. We CAN assert non-negativity
+        // (the saturating cast must never produce a negative or UB
+        // value) and that the saturation ceiling is approached
+        // (max_seen monotonically grows toward INT64_MAX).
+        EXPECT_GE(v.count(), 0)
+            << "iteration " << i << " produced a negative backoff "
+            << v.count() << "ms — apply_jitter saturating cast "
+            << "missed an out-of-int64 sample";
+        if (v.count() > max_seen) max_seen = v.count();
+    }
+    // After 100 doublings the base saturates at INT64_MAX and
+    // jitter samples should land near it (at least in the
+    // INT64_MAX/2 ballpark). If the cap leaks, max_seen would be
+    // small (indistinguishable from initial_backoff variance).
+    EXPECT_GT(max_seen, std::numeric_limits<int64_t>::max() / 4)
+        << "max_seen=" << max_seen
+        << " — saturation ceiling appears not to be reached, jitter "
+        << "may be silently clamping to 0";
 }
 
 TEST(ReconnectPolicy, UnboundedMaxBackoffDoesNotOverflow) {
