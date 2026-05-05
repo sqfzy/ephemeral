@@ -421,6 +421,28 @@ TEST(ItchParser, MessageTypeNameKnownTypes) {
     EXPECT_EQ(message_type_name(kAddOrderMPID), "AddOrderMPID");
 }
 
+// Pin every remaining ITCH 5.0 message type so a future refactor that
+// drops or rebinds a case in the switch above is caught immediately.
+// Without this, only 8 of 22 types were named-checked — a copy-paste
+// bug like rebinding kStockDirectory → "StockDirector_y" would slip
+// past unless that exact type was being parsed end-to-end.
+TEST(ItchParser, MessageTypeNameAllRemainingTypes) {
+    EXPECT_EQ(message_type_name(kStockDirectory),            "StockDirectory");
+    EXPECT_EQ(message_type_name(kStockTradingAction),        "StockTradingAction");
+    EXPECT_EQ(message_type_name(kRegSHORestriction),         "RegSHORestriction");
+    EXPECT_EQ(message_type_name(kMarketParticipantPosition), "MarketParticipantPosition");
+    EXPECT_EQ(message_type_name(kMWCBDeclineLevel),          "MWCBDeclineLevel");
+    EXPECT_EQ(message_type_name(kMWCBStatus),                "MWCBStatus");
+    EXPECT_EQ(message_type_name(kIPOQuotingPeriod),          "IPOQuotingPeriod");
+    EXPECT_EQ(message_type_name(kLULDAuctionCollar),         "LULDAuctionCollar");
+    EXPECT_EQ(message_type_name(kOperationalHalt),           "OperationalHalt");
+    EXPECT_EQ(message_type_name(kOrderExecutedWithPrice),    "OrderExecutedWithPrice");
+    EXPECT_EQ(message_type_name(kOrderCancel),               "OrderCancel");
+    EXPECT_EQ(message_type_name(kOrderReplace),              "OrderReplace");
+    EXPECT_EQ(message_type_name(kNonCrossTrade),             "NonCrossTrade");
+    EXPECT_EQ(message_type_name(kBrokenTrade),               "BrokenTrade");
+}
+
 TEST(ItchParser, MessageTypeNameUnknownReturnsUnknown) {
     EXPECT_EQ(message_type_name(0x00), "Unknown");
     EXPECT_EQ(message_type_name(0xFF), "Unknown");
