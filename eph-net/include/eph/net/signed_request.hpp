@@ -69,7 +69,6 @@
 /// the views remain valid until the caller is done splicing them into the
 /// outgoing request.
 
-#include <array>
 #include <cstdint>
 #include <cstring>
 #include <span>
