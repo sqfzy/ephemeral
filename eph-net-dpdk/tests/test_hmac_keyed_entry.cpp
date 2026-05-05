@@ -128,3 +128,51 @@ TEST(HmacKeyedEntry, VerifyTagConstantTimeMatches) {
     bad_tag[31] ^= 0x80;  // flip last byte's high bit
     EXPECT_FALSE(ed::verify_tag(bytes, key, bad_tag));
 }
+
+TEST(HmacKeyedEntry, ComputeTagOnEmptySpan) {
+    // Boundary: empty input is valid HMAC-SHA256 (RFC 2104 allows
+    // zero-length data; aws-lc handles it). The tag is well-defined
+    // and deterministic; verify the round-trip works for empty input.
+    eph::net::HmacSha256Key key{std::string_view{"empty-key"}};
+    const std::array<uint8_t, 0> bytes{};
+    std::span<const uint8_t> span_empty{bytes};
+    const auto t1 = ed::compute_tag(span_empty, key);
+    const auto t2 = ed::compute_tag(span_empty, key);
+
+    EXPECT_EQ(t1, t2)
+        << "empty-input HMAC must be deterministic";
+    EXPECT_TRUE(ed::verify_tag(span_empty, key, t1))
+        << "empty-input verify_tag must round-trip";
+}
+
+TEST(HmacKeyedEntry, ComputeTagOnSingleByte) {
+    // Smallest non-empty input. Some HMAC implementations had bugs
+    // around 1-byte inputs (block-padding off-by-one); pinning the
+    // round-trip catches a future regression.
+    eph::net::HmacSha256Key key{std::string_view{"single-byte-key"}};
+    const std::array<uint8_t, 1> bytes = {0x42};
+    std::span<const uint8_t> span_one{bytes};
+    const auto good = ed::compute_tag(span_one, key);
+
+    EXPECT_TRUE(ed::verify_tag(span_one, key, good));
+
+    // Different single byte ⇒ different tag.
+    const std::array<uint8_t, 1> bytes2 = {0x43};
+    const auto good2 = ed::compute_tag(std::span<const uint8_t>{bytes2}, key);
+    EXPECT_NE(good, good2);
+}
+
+TEST(HmacKeyedEntry, EmptyInputDifferentKeysDifferentTags) {
+    // Even with empty input, different keys MUST produce different
+    // tags (key is the only entropy source). Catches a hypothetical
+    // regression where empty input short-circuits past the key
+    // material entirely.
+    eph::net::HmacSha256Key key_a{std::string_view{"keyA"}};
+    eph::net::HmacSha256Key key_b{std::string_view{"keyB"}};
+    const std::array<uint8_t, 0> bytes{};
+    std::span<const uint8_t> empty_span{bytes};
+    const auto ta = ed::compute_tag(empty_span, key_a);
+    const auto tb = ed::compute_tag(empty_span, key_b);
+    EXPECT_NE(ta, tb)
+        << "empty-input HMAC under different keys must differ";
+}
