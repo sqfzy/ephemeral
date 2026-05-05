@@ -115,6 +115,20 @@ public:
         const std::size_t len = dgram.length();
         const uint8_t*    data = dgram.data();
 
+        // An empty std::function throws bad_function_call when invoked
+        // inside the parse_moldudp64 callback below, terminating the
+        // process via this function's noexcept. Surface the misuse as a
+        // typed InvalidConfig before we touch any datagram bytes.
+        // Mirrors the same defense applied to RawDatagramCodec (R56).
+        if (!sink) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+                "Mold64Codec::decode: sink is empty (caller forgot to "
+                "assign or moved-from); rejecting datagram of {} bytes", len);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "Mold64Codec::decode: sink is empty"});
+        }
+
         // Parse header first so we can surface a typed error on malformed
         // datagrams (parse_moldudp64 silently returns 0 on bad headers).
         auto hdr = eph::itch::parse_moldudp64_header(data, len);
