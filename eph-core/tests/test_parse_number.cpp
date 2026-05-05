@@ -194,6 +194,34 @@ TEST(ParseNumber, ManyFractionDigits) {
 // parse_number — error paths (malformed input)
 // ============================================================================
 
+// parse_number rejects leading/trailing whitespace because RFC 8259
+// §6 prohibits it inside `number` tokens (whitespace is only allowed
+// between elements of the surrounding object/array). The integer-part
+// loop hits ' ' / '\t' / '\n' as the first non-digit and returns
+// nullopt; trailing whitespace fails the "input fully consumed"
+// check. Untested before — a future refactor that called skip_ws()
+// at the entry point would silently flip the contract.
+TEST(ParseNumber, RejectsLeadingWhitespace) {
+    EXPECT_FALSE(parse_number(" 1.5").has_value());
+    EXPECT_FALSE(parse_number("\t42").has_value());
+    EXPECT_FALSE(parse_number("\n3.14").has_value());
+}
+
+TEST(ParseNumber, RejectsTrailingWhitespace) {
+    EXPECT_FALSE(parse_number("1.5 ").has_value());
+    EXPECT_FALSE(parse_number("42\t").has_value());
+    EXPECT_FALSE(parse_number("3.14\n").has_value());
+}
+
+TEST(ParseNumber, RejectsInternalWhitespace) {
+    // " 1 . 5" / "1 .5" / "1.5e 10" — all have whitespace mid-number.
+    // The parser hits the space at the wrong byte position and bails.
+    EXPECT_FALSE(parse_number("1 .5").has_value());
+    EXPECT_FALSE(parse_number("1. 5").has_value());
+    EXPECT_FALSE(parse_number("1.5e 10").has_value());
+    EXPECT_FALSE(parse_number("1.5 e10").has_value());
+}
+
 TEST(ParseNumber, EmptyStringReturnsNullopt) {
     EXPECT_FALSE(parse_number("").has_value());
 }
