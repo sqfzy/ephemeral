@@ -630,6 +630,52 @@ TEST(FixSession, responds_to_resend_request_with_gap_fill) {
     EXPECT_EQ(msg->get(tag::GapFillFlag), std::optional<std::string_view>("Y"));
 }
 
+// FIX 4.4 §A.4: a server-issued ResendRequest with EndSeqNo=0 means
+// "send everything from BeginSeqNo to infinity". The journal-less
+// session must still respond with a SequenceReset-GapFill (returning
+// `true` from on_rx) — pre-fix, an integer-overflow guard or an
+// "EndSeqNo must be > BeginSeqNo" check would have rejected this
+// legitimate wire shape and the session would have silently dropped
+// it, leaving the server waiting forever for the resent range.
+TEST(FixSession, resend_request_end_zero_is_open_range) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    size_t before = mock.sent.size();
+    auto rr = MockFixTransport::resend_request(2, 5, 0);  // FIX 4.4 "infinity"
+    EXPECT_TRUE(session.on_rx(rr.data(), rr.size()));
+
+    EXPECT_GT(mock.sent.size(), before)
+        << "ResendRequest with EndSeqNo=0 (FIX 4.4 'to infinity') must "
+           "still elicit a GapFill response — silently swallowing it "
+           "leaves the counterparty waiting for retransmits forever";
+    auto msg = mock.parse_last_sent();
+    ASSERT_TRUE(msg.has_value());
+    EXPECT_EQ(msg->msg_type(), std::optional<std::string_view>("4"));
+    EXPECT_EQ(msg->get(tag::GapFillFlag), std::optional<std::string_view>("Y"));
+}
+
+// Defensive contract: a malformed ResendRequest where BeginSeqNo >
+// EndSeqNo (range inversion) must not crash or hang the session.
+// The handler treats this the same as any other ResendRequest — emit
+// a GapFill and continue. This pins the no-validation behavior so a
+// future "stricter" refactor can't silently start dropping such
+// frames; if the policy ever does change the test will flag it.
+TEST(FixSession, resend_request_inverted_range_does_not_crash) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    size_t before = mock.sent.size();
+    auto rr = MockFixTransport::resend_request(2, 100, 50);
+    EXPECT_TRUE(session.on_rx(rr.data(), rr.size()));
+
+    // Session must still be alive and responsive
+    EXPECT_EQ(session.state(), SessionState::kActive);
+    EXPECT_GT(mock.sent.size(), before);
+}
+
 // ===========================================================================
 // Logout
 // ===========================================================================
