@@ -156,8 +156,14 @@ public:
         const std::string tmp_str = tmp_path.string();
         const std::string final_str = output_path_.string();
 
+        // O_CLOEXEC: a Prometheus textfile sink that lives inside a
+        // long-running daemon may co-exist with subprocess fork+execs
+        // (test harnesses, eph-nicd watchdog, future supervisor
+        // logic). Without CLOEXEC the fd would leak into every
+        // child until close-after-exec, exhausting fd budget and
+        // confusing fd-aware diagnostics.
         const int fd = ::open(tmp_str.c_str(),
-                              O_WRONLY | O_CREAT | O_TRUNC,
+                              O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
                               0644);
         if (fd < 0) {
             record_errno_("open(tmp)");
