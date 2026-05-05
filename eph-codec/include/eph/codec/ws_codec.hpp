@@ -29,7 +29,6 @@
 /// The codec is a thin stateful shell on top of the underlying
 /// wire-format helpers.
 
-#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
