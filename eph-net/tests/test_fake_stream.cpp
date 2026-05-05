@@ -296,3 +296,43 @@ TEST(FakeStreamPacketView, WritableDataMatchesData) {
     EXPECT_EQ(v.writable_data(), v.data());
     EXPECT_EQ(v.writable_data(), buf + 1);
 }
+
+// FakeStream test-control recovery sequence: inject_disconnect flips
+// state to Closed and clears rx_buf; tests can simulate reconnect by
+// flipping state back to Established and injecting fresh data. Pin
+// this flow so reconnect-orchestration tests have a stable contract
+// for "simulate disconnect then reconnect on the same fake".
+TEST(FakeStream, RecoveryAfterInjectDisconnectViaSetState) {
+    ent::FakeStream fs;
+    std::vector<uint8_t> captured;
+    fs.on_message = [&](std::span<const uint8_t> app_frame) {
+        captured.assign(app_frame.begin(), app_frame.end());
+    };
+
+    // 1. Active stream, deliver a frame.
+    const uint8_t before[] = {0x01, 0x02};
+    fs.inject_rx(before);
+    EXPECT_EQ(fs.poll_once_(), 1u);
+    ASSERT_EQ(captured, std::vector<uint8_t>(before, before + 2));
+
+    // 2. Simulated disconnect — state Closed, rx cleared, queued data
+    //    that hadn't been polled is dropped per the helper docstring.
+    captured.clear();
+    const uint8_t orphaned[] = {0xFF, 0xFE};
+    fs.inject_rx(orphaned);
+    fs.inject_disconnect();
+    EXPECT_EQ(fs.state(), en::TcpState::Closed);
+    EXPECT_EQ(fs.poll_once_(), 0u);
+    EXPECT_TRUE(captured.empty());
+
+    // 3. Recovery: flip state back to Established and inject a fresh
+    //    payload. poll_once_ must dispatch the new data — the prior
+    //    `orphaned` bytes stay dropped.
+    fs.set_state(en::TcpState::Established);
+    const uint8_t after[] = {0x77, 0x88};
+    fs.inject_rx(after);
+    EXPECT_EQ(fs.poll_once_(), 1u);
+    EXPECT_EQ(captured, std::vector<uint8_t>(after, after + 2))
+        << "post-recovery dispatch must deliver the fresh payload, "
+           "not the pre-disconnect orphaned bytes";
+}
