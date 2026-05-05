@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### Added — `daemon_disconnected_hook` skeleton (T1.1 partial, 2026-05-05)
+
+Skeleton (header + 7-case unit test) for the in-flight semantics that
+the rx/tx burst paths will surface when `Platform::is_alive()` flips
+to false mid-burst.
+
+What's in this commit:
+
+- `eph/net/dpdk/detail/daemon_disconnected_hook.hpp`:
+  * `enum InFlightStatus { Unsent, Sent, Uncertain }` — three-state
+    classification per the action list (T1.1)
+  * `DaemonDisconnectedDetail` POD: status, bytes_observed,
+    bytes_confirmed, phase tag, detected_at_ns
+  * `last_daemon_disconnected_detail()` — thread_local accessor
+    (per-thread isolation; main thread ≠ child thread)
+  * `set_daemon_disconnected_detail(...)` / `clear_*()` helpers
+- `tests/test_daemon_disconnected_hook.cpp` — 7 cases all passing:
+  * InFlightStatus to_string round-trip
+  * Default detail is Unsent / 0 / 0 / "" / 0
+  * Set → read round-trip
+  * Clear resets to default
+  * Consecutive sets advance detected_at_ns
+  * thread_local isolation (cross-thread leak test)
+  * Null phase clamps to ""
+
+What's NOT in this commit (deferred to a `pax --feat --deep` follow-up):
+
+- Wire-up into `DpdkTcpStream::send` / `DpdkUdpSocket::send_to` /
+  `DpdkPoller::poll`. Adding a `Platform*` back-pointer to Stream
+  for the is_alive() check has lifetime implications (who keeps
+  the Platform alive past Stream destruction?) and a cold-path
+  atomic load per send is a small but real hot-path cost that
+  should be bench-validated against `bench_rx_hot_path` baseline.
+- `Sent` status detection in actual TX-burst — needs the burst
+  path to surface partial-success-then-died, which the additive
+  design here does not provide for free. The skeleton supports
+  the eventual API; the wire-up will populate it.
+
+The skeleton lets application code that already calls
+`Platform::is_alive()` from a watchdog populate the thread_local
+detail manually before propagating the error to its own state
+machine — this is documented in `docs/dpdk-reconnect-pattern.md`
+as the workaround pattern.
+
+Track item: T1.1 + T1.2 from the 2026-05-05 action list (skeleton
+portion; rx/tx_burst wire-up deferred — see DEFERRED.md).
+
 ### Added — NUMA-aware bench helper + `EPH_BENCH_NUMA_NODE` hook (T3.6, 2026-05-05)
 
 `benchmarks/bench_helpers.hpp` grew three NUMA helpers:
