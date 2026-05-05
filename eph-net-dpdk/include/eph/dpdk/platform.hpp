@@ -3364,6 +3364,15 @@ Platform::serve_nic(NicServiceConfig cfg) {
                             "audit_sweeper: thread started "
                             "(interval=1s, batch=64)");
                         size_t total_mismatches = 0;
+                        // Heartbeat every 10 minutes so operators can
+                        // see "thread is alive AND finding 0
+                        // mismatches" without enabling DEBUG. Healthy
+                        // production runs have no per-mismatch WARN
+                        // lines; without this heartbeat journalctl is
+                        // silent and an operator can't distinguish
+                        // "audit ran clean" from "audit thread died".
+                        constexpr size_t kHeartbeatTicks = 600;  // 10 min @ 1 Hz
+                        size_t ticks_since_heartbeat = 0;
                         while (impl_raw->audit_sweeper_running.load(
                                    std::memory_order_acquire)) {
                             std::unique_lock<std::mutex> lk{
@@ -3401,6 +3410,15 @@ Platform::serve_nic(NicServiceConfig cfg) {
                                     "tampered entries this round "
                                     "(cumulative={})",
                                     mm, total_mismatches);
+                            }
+                            if (++ticks_since_heartbeat
+                                    >= kHeartbeatTicks) {
+                                ticks_since_heartbeat = 0;
+                                SPDLOG_LOGGER_INFO(tlog,
+                                    "audit_sweeper: heartbeat "
+                                    "(cumulative tamper count={}, "
+                                    "10min interval)",
+                                    total_mismatches);
                             }
                         }
                         SPDLOG_LOGGER_INFO(tlog,
