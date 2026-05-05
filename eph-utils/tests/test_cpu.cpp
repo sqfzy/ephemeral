@@ -83,6 +83,41 @@ TEST(CpuTest, CpuRelax) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// spin_for_ns — busy-wait helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(CpuTest, SpinForNsZeroIsNoOp) {
+  // ns <= 0 must short-circuit; the function should return immediately
+  // without consuming meaningful CPU time.
+  EXPECT_NO_THROW(spin_for_ns(0));
+  EXPECT_NO_THROW(spin_for_ns(-1));
+  EXPECT_NO_THROW(spin_for_ns(-1'000'000));
+}
+
+TEST(CpuTest, SpinForNsBlocksApproximately) {
+  // TSC must be initialized for spin_for_ns to do real work.
+  if (!TSC::is_initialized()) {
+    ASSERT_TRUE(TSC::init()) << "TSC init must succeed for this test";
+  }
+  // Measure that a 1ms spin actually waits at least ~500us. We're
+  // intentionally lax on the upper bound — CI/VM hosts can be jittery —
+  // but the lower bound of ~half the requested time guards against the
+  // function silently returning early on a TSC mis-conversion.
+  const auto start = std::chrono::steady_clock::now();
+  spin_for_ns(1'000'000);  // 1 ms
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto elapsed_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+  EXPECT_GE(elapsed_us, 500)
+      << "spin_for_ns(1ms) returned in only " << elapsed_us
+      << "us — well under the requested duration; check TSC calibration";
+  // Loose upper bound — VM jitter may push a 1ms spin into low-tens-of-ms.
+  EXPECT_LE(elapsed_us, 100'000)
+      << "spin_for_ns(1ms) took " << elapsed_us
+      << "us — wildly over budget; possible thread-suspend or measurement bug";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // set_thread_realtime
 // ─────────────────────────────────────────────────────────────────────────────
 
