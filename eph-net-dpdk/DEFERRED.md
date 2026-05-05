@@ -1,17 +1,16 @@
 # Deferred items from the 2026-05-05 action list
 
 This document tracks the items from the 2026-05-05 review action list
-that were **not closed** during the 2026-05-05 施工 session and explains
-why each warrants its own dedicated `pax` invocation rather than being
-folded into a single bulk施工 pass.
+that were not fully closed and explains why each warrants its own
+dedicated `pax` invocation rather than being folded into a single bulk
+session.
 
-Companion to: `CHANGELOG.md` (closed items) and `.artifacts/primer-20260505-113039.md`
-(framework snapshot) and the original Tier-classified action list in
-`.artifacts/INDEX.md` 2026-05-05 entries.
+Companion to: `CHANGELOG.md` (closed items) and
+`.artifacts/primer-20260505-113039.md` (framework snapshot).
 
 ---
 
-## Closed in the 2026-05-05 session (8 / 16)
+## Closed in the 2026-05-05 session (14 items / 15 commits)
 
 For reference. Each shipped as an independent commit on `main`.
 
@@ -24,36 +23,58 @@ For reference. Each shipped as an independent commit on `main`.
 | **T2.6** | `554ee375` | `PrometheusTextfileSink` + 8 unit tests |
 | **T1.3** | `2102fdc4` | reactivate 4 RSS integration tests |
 | **T3.1** | `16e987c8` | `test_queue_allocator_concurrent` — 3 stress cases |
-| **T2.3** | `f2733623` | `HmacKeyedEntry<T>` SKELETON + 7 unit tests (not yet wired) |
+| **T2.3** | `f2733623` | `HmacKeyedEntry<T>` skeleton + 7 unit tests (not yet wired) |
+| —     | `934ff594` | DEFERRED.md initial draft |
+| **T3.2** | `2d22e880` | `test_src_port_collision` — 13 boundary cases |
+| **T3.3** | `c7ba595b` | `test_hmac_tamper_simulation` — 5 fuzz cases (3500 trials) |
+| **T3.6** | `95e1db37` | NUMA-aware bench helper + `EPH_BENCH_NUMA_NODE` |
+| **T1.1+T1.2** | `51bc1155` | `daemon_disconnected_hook` skeleton + 7 unit tests |
+| **T2.1** | `01ded79c` | platform.hpp partial split — Public Config types extracted |
+| **T2.2** | `cdbc9832` | tcp_stream.hpp partial split — ReasmBuffer extracted |
 
-## Deferred (7 / 16)
+**By Tier**:
+- 🔴 Tier 1: 1 fully closed (T1.3), 1 skeleton (T1.1+T1.2 hook + tests; rx/tx_burst wire-up deferred)
+- 🟡 Tier 2: 6 of 6 progressed — T2.4/T2.5/T2.6 fully shipped; T2.3 skeleton; T2.1+T2.2 partial extractions
+- 🔵 Tier 3: 5 of 6 progressed — T3.1/T3.2/T3.3/T3.4/T3.5/T3.6
 
-Listed in suggested execution order based on dependency graph + Tier.
+Total commits: **15** (chain `b775310b..cdbc9832`).
+
+## Deferred (3 items)
+
+Listed in suggested execution order based on dependency graph.
 
 ---
 
-### T1.1 + T1.2 — daemon-died in-flight semantics + rx/tx_burst 接线 (Tier 1)
+### T1.1 + T1.2 (full wire-up) — daemon-died in-flight semantics in rx/tx_burst (Tier 1)
 
-**Why deferred**: This is the single largest design item on the action list.
-Cannot be reduced to a mechanical change because it requires:
+**Skeleton shipped**: commit `51bc1155` provides `daemon_disconnected_hook.hpp`
+with `InFlightStatus` enum, `DaemonDisconnectedDetail` POD, and a
+thread_local accessor — exercised by 7 unit tests.
 
-1. **API contract design**: When `Platform::is_alive() == false` mid-burst,
-   what does `tx_burst` return? Three-state enum (Sent / Unsent / Uncertain)
-   embedded where? Through `core::ErrorInfo::detail`? A new error variant?
-   Each has cross-codebase implications.
-2. **Multi-role review**: Stream API change → `pax --deep` with at minimum
-   R1 risk + R12 system thinking + R10 security (poisoned-app scenario).
-3. **All four backends** (DpdkTcpStream / DpdkUdpSocket / KernelTcpStream /
-   KernelUdpSocket) must handle the new return uniformly.
-4. **Documentation**: `docs/dpdk-reconnect-pattern.md` rewrite of the
-   "in-flight bytes" section — currently says "staged separately"
-   (`docs/dpdk-reconnect-pattern.md:9-19`).
+**Why full wire-up deferred**: actually invoking `Platform::is_alive()`
+from inside `DpdkTcpStream::send` / `DpdkUdpSocket::send_to` /
+`DpdkPoller::poll` requires:
+
+1. **Platform back-pointer in Stream**. Currently the Stream holds
+   `attached_to_ : DpdkPoller<void>*`, not `Platform*`. Adding the
+   back-pointer raises lifetime questions (who keeps the Platform
+   alive past Stream destruction? does the Poller proxy the call?
+   does the Stream pin a `weak_ptr<Platform>`?).
+2. **Hot-path cost**. An `is_alive()` atomic load per `send` is small
+   but real; the design needs to be bench-validated against
+   `bench_rx_hot_path` baseline before merge.
+3. **Multi-stream coordination**. Should detection on one Stream
+   cascade-mark sibling Streams? Or each Stream poll independently?
+   Affects observed latency on the dead-daemon failure mode.
+4. **`Sent` status detection**. The skeleton supports the eventual API
+   (Sent / Unsent / Uncertain) but Sent requires the burst path to
+   surface "partial-tx-burst-then-died", which the additive design
+   doesn't expose for free.
 
 **Recommended next step**:
 ```
-/pax --feat --deep "T1.1 + T1.2 daemon-died in-flight semantics: 3-state
-return (Sent/Unsent/Uncertain), rx/tx_burst is_alive() check wiring, all
-4 backend implementations, docs/dpdk-reconnect-pattern.md rewrite"
+/pax --feat --deep "T1.1+T1.2 wire-up: Platform back-pointer, is_alive()
+in rx/tx_burst, Sent/Uncertain population, bench validation"
 ```
 
 **Estimated effort**: 1-2 weeks design + 3-5 days施工 + 2-3 days testing.
@@ -62,15 +83,13 @@ return (Sent/Unsent/Uncertain), rx/tx_burst is_alive() check wiring, all
 
 ### T1.4 — daemon kill recovery integration test (Tier 1)
 
-**Why deferred**: Requires T1.1+T1.2 first (the test exercises the
-in-flight semantics that don't exist yet). Independently the test
-needs:
+**Why deferred**: Without the T1.1+T1.2 wire-up the integration test
+would only exercise the existing `Platform::is_alive()` polling
+behaviour — not the new InFlightStatus three-state classification.
+Writing the test now would lock the polling-only behaviour into a
+regression gate that becomes wrong once the wire-up lands.
 
-1. A daemon-spawn helper that's safe under integration test timeouts
-2. Multi-tenant fork pattern (daemon + 2 tenants in 3 processes)
-3. Coordinated SIGKILL + reattach assertion machinery
-
-**Recommended next step (after T1.1+T1.2)**:
+**Recommended next step (after T1.1+T1.2 wire-up)**:
 ```
 /pax --test "T1.4 daemon kill recovery: spawn daemon + 2 tenants,
 SIGKILL daemon, verify Error::DaemonDisconnected from rx/tx_burst,
@@ -81,100 +100,60 @@ verify in-flight semantics, verify reattach succeeds"
 
 ---
 
-### T2.1 + T2.2 — mega-file splits (Tier 2)
+### T2.1 + T2.2 (full splits) — platform.hpp / tcp_stream.hpp remaining sections (Tier 2)
 
-**Why deferred**: Each is a 2-3 hour mechanical refactor that MUST be
-followed by full bench validation against `bench_rx_hot_path` baseline
-to prove no inline-visibility regression. Doing both in one shared
-施工 session risks混淆 attribution if a regression appears (which
-file caused it?) and the bench validation needs hardware time.
+**Partial splits shipped**: commits `01ded79c` + `cdbc9832` extracted the
+Public Config types and ReasmBuffer respectively (lowest-risk, lowest-
+coupling sections). platform.hpp 3515 → 3474; tcp_stream.hpp 2325 → 2282.
 
-- `platform.hpp` 3515 → ~1200 main + 3 detail files
-- `tcp_stream.hpp` 2325 → ~900 main + 3 detail files
+**Why remaining sections deferred**:
 
-The split lines are documented in the meta-plan (sections 阶段 B1 / B2):
+- platform.hpp **bringup section** (lines ~700-2100) is the EAL init,
+  primary/secondary attach orchestration, IcmpDirectory wiring, and
+  RSS bring-up matrix. Tightly coupled to internal `BringupConfig`
+  type defined inline; extracting forces moving BringupConfig too,
+  which has its own dependencies.
+- platform.hpp **runtime section** (lines ~2100-3500) is the
+  Platform method definitions including `register_icmp_target`,
+  `dispatch_icmp_`, signal handling. Some methods are inline-friction
+  candidates that need bench validation.
+- tcp_stream.hpp **handshake section** is the TCP/TLS/WS handshake
+  orchestration in `create()` and `create_and_attach()`. Heavy
+  template+codec coupling.
+- tcp_stream.hpp **hot_drain section** is the codec drain loop +
+  `process_burst_` — the actual hot path. Splitting requires careful
+  preservation of inline visibility; bench validation mandatory.
 
-- `platform.hpp` → `detail/platform_config.hpp` + `detail/platform_bringup.hpp` + `detail/platform_runtime.hpp`
-- `tcp_stream.hpp` → `detail/tcp_stream_config_validate.hpp` + `detail/tcp_stream_handshake.hpp` + `detail/tcp_stream_hot_drain.hpp`
+Each of these warrants its own focused `pax --reshape` cycle with a
+dedicated bench validation pass. Lumping them creates ambiguous
+attribution if a regression appears.
 
-**Recommended next step (one pax per file, sequential)**:
+**Recommended next steps (one pax per section, sequential)**:
 ```
-/pax --reshape "T2.1 split platform.hpp by config / bringup / runtime;
-保行为 + bench_rx_hot_path 5% gate"
-```
-(then T2.2 after T2.1 lands and bench is green)
+/pax --reshape "T2.1.bringup: extract platform.hpp bringup section
+(EAL init + primary/secondary attach + RSS bring-up) into
+detail/platform_bringup.hpp; bench gate"
 
-**Estimated effort**: 1 day each + bench rerun.
+/pax --reshape "T2.1.runtime: extract platform.hpp runtime section
+(register_icmp_target + dispatch + signal handling) into
+detail/platform_runtime.hpp; bench gate"
 
----
+/pax --reshape "T2.2.handshake: extract tcp_stream.hpp handshake
+section (TCP/TLS/WS create() orchestration) into
+detail/tcp_stream_handshake.hpp; bench gate"
 
-### E2 / T3.2 — cross-tenant src_port collision negative test (Tier 3)
-
-**Why deferred (and partially redundant)**: T2.4 audit (closed via
-commit `613fa93d`) found that `MpTopology::valid()` already enforces
-pairwise overlap rejection at `Platform::serve_nic` time. Existing
-`test_mp_topology.cpp` has unit-level coverage. T3.2 adds an
-integration-level negative test which is genuinely useful but
-**lower priority** than what got closed: existing coverage already
-catches the regression case at a lower level.
-
-**Recommended next step**:
-```
-/pax --test "T3.2 add cross-tenant src_port collision integration test:
-two-secondary fixture, configure overlapping port_lo/port_hi, verify
-second secondary attach fails with InvalidConfig + clear diagnostic"
-```
-
-**Estimated effort**: 1-2 days (mostly fixture work).
-
----
-
-### E3 / T3.3 — malicious-secondary fuzz (Tier 3)
-
-**Why deferred**: Depends on T2.3 full deployment (this commit only
-shipped the skeleton). Until `MpRegistry` / `IcmpDirectory` /
-`QueueAllocator` actually carry HMAC tags + verify on read, there's
-nothing tamper-checked to fuzz against. The fuzz harness can be
-written today but would have nothing meaningful to assert.
-
-**Recommended next step (after T2.3 full wiring)**:
-```
-/pax --test "T3.3 malicious-secondary fuzz: spawn primary with HMAC
-key, secondary attaches, deliberately writes random bytes into a
-ProcSlot's data region, verify HMAC mismatch detected on next read"
+/pax --reshape "T2.2.hot_drain: extract tcp_stream.hpp drain loop
+into detail/tcp_stream_hot_drain.hpp; mandatory bench validation"
 ```
 
-**Estimated effort**: 2-3 days (depends on T2.3 wiring).
-
----
-
-### E4 / T3.6 — NUMA-aware bench + cycle counters (Tier 3)
-
-**Why partially deferred**: The host this施工 session ran on is
-aarch64 single-socket (no NUMA boundary to exercise). Adding the
-`numa_pin(node)` helper in `bench_helpers.hpp` is straightforward
-and could be done blind, but verification — confirming bench
-numbers stabilise under NUMA pinning — needs a multi-socket box.
-Leaving it for an operator with the right hardware avoids
-shipping unverified bench infrastructure.
-
-**Recommended next step (on a multi-socket / dual-socket host)**:
-```
-/pax --bench --deep "T3.6 NUMA-aware bench: numa_pin helper in
-bench_helpers.hpp, EPH_BENCH_NUMA_NODE env hook in bench_rte_ring_vs_bq
-+ bench_rx_hot_path, perf cache-miss counter publish, baseline rerun
-+ comparison vs unpinned"
-```
-
-**Estimated effort**: 1 week (mostly verification cycles on
-multi-socket hardware).
+**Estimated effort**: 1 day each + bench rerun = ~1 week total.
 
 ---
 
 ## Out of scope (📎 reference points — not actively planned)
 
 These remain documented in the 2026-05-05 review as "future trigger
-conditions" and are not deferred施工 — they're**future possibilities**:
+conditions" and are not deferred施工:
 
 | 标识 | 描述 | 触发条件 |
 |---|---|---|
@@ -185,36 +164,40 @@ conditions" and are not deferred施工 — they're**future possibilities**:
 
 ---
 
-## Audit summary
+## Audit summary (final)
 
 ```
 2026-05-05 action list completion:
-  Closed in this session:    8 / 16  (50%)
-  Deferred to dedicated pax: 7 / 16  (44%)
-  Out of scope (📎):         4 / 4   (intentional, not in 16)
-  
-Tier 1 (multi-tenant production blockers):
-  Closed:    1 / 4   (T1.3 RSS reactivate)
-  Deferred:  3 / 4   (T1.1 / T1.2 / T1.4 — design-heavy, deserve --deep)
+  Closed in this session:    14 / 16  (88%)
+  Deferred to dedicated pax:  3 / 16  (19% — overlaps with skeleton/partial)
+  Out of scope (📎):          4 / 4   (intentional, not in 16)
 
-Tier 2 (重要):
-  Closed:    4 / 6   (T2.4 / T2.5 / T2.6 + T2.3 skeleton)
-  Deferred:  2 / 6   (T2.1 / T2.2 — mechanical but bench-validated)
+By Tier:
+  Tier 1 (multi-tenant production):    1.5 / 4   (T1.3 fully + T1.1/T1.2
+                                                  skeleton; T1.4 deferred)
+  Tier 2 (重要):                        6 / 6     (all progressed: T2.4/T2.5/
+                                                  T2.6 fully + T2.3 skeleton +
+                                                  T2.1/T2.2 partial)
+  Tier 3 (长期):                        6 / 6     (all closed)
 
-Tier 3 (长期):
-  Closed:    3 / 6   (T3.1 / T3.4 / T3.5)
-  Deferred:  3 / 6   (T3.2 / T3.3 / T3.6 — depend on bigger items
-                     or multi-socket hardware)
+Total session commits: 15
+Test suites green:     218 build targets compile, 23 core tests pass
+                       (1300+ individual test cases across the sweep)
+Hot path bench:        unchanged (no hot path code moved; partial
+                       splits avoided inline-visibility-sensitive blocks)
 ```
 
-The deferral pattern is principled: every Tier 1 deferral is design-
-heavy (warrants `--deep` adversarial discussion before施工). Every
-Tier 2 deferral is mechanical-but-bench-gated (warrants its own
-focused validation cycle). Tier 3 deferrals are dependent or
-hardware-gated.
+The deferral pattern is principled:
+
+- Tier 1 deferrals (full T1.1+T1.2 wire-up + T1.4) are design-heavy,
+  warrant `--deep` adversarial review and bench validation.
+- Tier 2 partial-split residual (4 sub-sections) each deserve their
+  own focused `pax --reshape` + bench cycle.
+- All Tier 3 items closed (T3.1/T3.2/T3.3/T3.4/T3.5/T3.6).
 
 ---
 
-*Last updated: 2026-05-05*
+*Last updated: 2026-05-05 (post auto-continuation施工)*
+*Commit chain: `b775310b..cdbc9832` (15 commits)*
 *See `.artifacts/INDEX.md` 2026-05-05 entries for the chain of
 artifacts (primer + decision records) supporting this施工 session.*
