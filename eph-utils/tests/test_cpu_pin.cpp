@@ -395,3 +395,41 @@ TEST(ReadCpuListFile, RejectsStandaloneOutOfRangeId) {
     EXPECT_FALSE(out.contains(99999));
     ::unlink(path.c_str());
 }
+
+// Reversed range "5-3": the for-loop body `for (i=lo; i<=hi; ++i)` skips
+// silently when lo > hi (no iterations at all), so no entries are
+// inserted for this token. Adjacent tokens still parse normally — a
+// reversed range must NOT poison the rest of the list.
+TEST(ReadCpuListFile, ReversedRangeProducesNoEntriesNonPoisoning) {
+    auto path = write_temp_cpu_list("5-3,7\n");
+    ASSERT_FALSE(path.empty());
+    auto out = detail::read_cpu_list_file(path);
+    // The "5-3" token contributes nothing (lo > hi → loop iter count 0);
+    // "7" still contributes. Asserting both: that we correctly produce
+    // 0 entries from the reversed range AND that the parser keeps going
+    // through the comma-separated list rather than aborting.
+    EXPECT_EQ(out.size(), 1u);
+    EXPECT_TRUE(out.contains(7))
+        << "Reversed range '5-3' must not abort parsing of subsequent "
+        << "tokens — '7' is the regression guard";
+    EXPECT_FALSE(out.contains(3));
+    EXPECT_FALSE(out.contains(4));
+    EXPECT_FALSE(out.contains(5));
+    ::unlink(path.c_str());
+}
+
+// Empty token between commas (",,") — a real-world artifact of trailing
+// commas or hand-edited cpu lists. The parser must skip the empty token
+// without throwing or inserting a sentinel. The line 124-125 guard
+// (`if (token.empty()) continue;`) handles this; the test ensures a
+// future refactor that drops the guard would surface immediately.
+TEST(ReadCpuListFile, EmptyTokenBetweenCommasIsSkipped) {
+    auto path = write_temp_cpu_list("1,,3,,,5\n");
+    ASSERT_FALSE(path.empty());
+    auto out = detail::read_cpu_list_file(path);
+    EXPECT_EQ(out.size(), 3u);
+    EXPECT_TRUE(out.contains(1));
+    EXPECT_TRUE(out.contains(3));
+    EXPECT_TRUE(out.contains(5));
+    ::unlink(path.c_str());
+}
