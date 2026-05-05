@@ -63,7 +63,13 @@ public:
     /// @brief Emit exactly one frame spanning the whole datagram.
     ///
     /// Zero-length datagrams are rejected with `CodecBad` — there is no
-    /// meaningful frame to emit. The datagram is fully consumed on return.
+    /// meaningful frame to emit. Empty `sink` (default-constructed
+    /// `std::function`) is rejected with `InvalidConfig` so that an
+    /// unwired caller surfaces a typed error instead of std::terminate
+    /// via bad_function_call. Both rejection paths consume zero bytes
+    /// from the datagram so the caller can either retry with a wired
+    /// sink (in the InvalidConfig case) or fail-and-drop (in the
+    /// CodecBad case). On success the datagram is fully consumed.
     ///
     /// @return the number of frames emitted (always 1 on success).
     template <class PacketView>
