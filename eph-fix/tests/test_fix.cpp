@@ -5051,6 +5051,40 @@ TEST(FixBuilder, set_decimal_rejects_lone_dot) {
 // set_price: integer mantissa + decimals encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
+// set_bool encodes Y/N per FIX 4.4 §5 (PossDupFlag, ResetSeqNumFlag,
+// GapFillFlag, etc.). Untested before — a future refactor that
+// flipped the Y/N mapping or used a different encoding (e.g. "1"/"0")
+// would silently break every session-layer message that uses booleans.
+TEST(FixBuilder, set_bool_true_encodes_Y) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set_bool(tag::ResetSeqNumFlag, true);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(mv->get(tag::ResetSeqNumFlag),
+              std::optional<std::string_view>("Y"))
+        << "set_bool(true) must produce 'Y' on the wire (FIX 4.4 §5)";
+}
+
+TEST(FixBuilder, set_bool_false_encodes_N) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "A");
+    b.set_bool(tag::ResetSeqNumFlag, false);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    EXPECT_EQ(mv->get(tag::ResetSeqNumFlag),
+              std::optional<std::string_view>("N"))
+        << "set_bool(false) must produce 'N' on the wire (FIX 4.4 §5)";
+}
+
 TEST(FixBuilder, set_price_basic) {
     uint8_t buf[256];
     MessageBuilder b(buf, sizeof(buf));
