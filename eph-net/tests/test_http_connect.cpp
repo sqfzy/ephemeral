@@ -452,3 +452,113 @@ TEST(HttpConnect, MaxLenTargetHostAccepted) {
     ASSERT_TRUE(r.has_value()) << (r ? "" : r.error().detail);
     EXPECT_FALSE(sink.tx.empty());
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// try_parse_connect_response — direct unit tests for the standalone
+// parser. Previously the only coverage was indirect via
+// `perform_http_connect`'s success/failure paths; this exercise pins
+// the parser's six rejection branches directly.
+// ─────────────────────────────────────────────────────────────────────
+
+namespace {
+std::span<const uint8_t> from_str(std::string_view s) noexcept {
+    return std::span<const uint8_t>{
+        reinterpret_cast<const uint8_t*>(s.data()), s.size()};
+}
+} // namespace
+
+TEST(TryParseConnectResponse, HappyPath200) {
+    constexpr std::string_view raw =
+        "HTTP/1.1 200 Connection established\r\n\r\n";
+    auto r = eph::net::detail::try_parse_connect_response(from_str(raw));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->status_code, 200u);
+    EXPECT_EQ(r->consumed, raw.size());
+}
+
+TEST(TryParseConnectResponse, HappyPath407WithProxyAuthHeaders) {
+    // The header_block_len includes everything up to and including the
+    // \r\n\r\n terminator — extra bytes beyond that are body / leftover.
+    constexpr std::string_view raw =
+        "HTTP/1.1 407 Proxy Authentication Required\r\n"
+        "Proxy-Authenticate: Basic\r\n\r\n";
+    auto r = eph::net::detail::try_parse_connect_response(from_str(raw));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->status_code, 407u);
+    EXPECT_EQ(r->consumed, raw.size());
+}
+
+TEST(TryParseConnectResponse, BufferTooSmallReturnsNullopt) {
+    // < 16 bytes — return early without touching the prefix.
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str("HTTP/1.1 200")).has_value());
+}
+
+TEST(TryParseConnectResponse, NonHttpPrefixRejected) {
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str("ICAP/1.1 200 OK\r\n\r\nfiller-bytes")).has_value());
+}
+
+TEST(TryParseConnectResponse, MissingTerminatorReturnsNullopt) {
+    // > 16 bytes, valid HTTP prefix, but no \r\n\r\n.
+    constexpr std::string_view raw = "HTTP/1.1 200 OK\r\nServer: foo";
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, NonDigitStatusRejected) {
+    constexpr std::string_view raw =
+        "HTTP/1.1 OK_ not_a_digit\r\n\r\n12345";  // padding
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, ShortStatusRejectedTwoDigits) {
+    // Two-digit status — must reject (HTTP/1.1 mandates exactly 3 digits).
+    constexpr std::string_view raw =
+        "HTTP/1.1 99 NotEnough\r\n\r\nfiller-bytes";
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, FourDigitStatusRejected) {
+    // Four-digit status — `digits > 3` short-circuit must fire.
+    constexpr std::string_view raw =
+        "HTTP/1.1 1000 BogusFourDigits\r\n\r\nfiller-bytes";
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, OutOfRangeStatusBelow100Rejected) {
+    // 099 has 3 digits but parses to < 100; must reject (no 1xx-2xx-3xx-
+    // 4xx-5xx range hit).
+    constexpr std::string_view raw =
+        "HTTP/1.1 099 BadRangeLow\r\n\r\nfiller-bytes";
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, OutOfRangeStatusAbove599Rejected) {
+    constexpr std::string_view raw =
+        "HTTP/1.1 600 BadRangeHigh\r\n\r\nfiller-bytes";
+    EXPECT_FALSE(eph::net::detail::try_parse_connect_response(
+        from_str(raw)).has_value());
+}
+
+TEST(TryParseConnectResponse, BoundaryStatus100Accepted) {
+    // 100 is the LOWEST accepted code (`code < 100` rejects).
+    constexpr std::string_view raw =
+        "HTTP/1.1 100 Continue\r\n\r\n";
+    auto r = eph::net::detail::try_parse_connect_response(from_str(raw));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->status_code, 100u);
+}
+
+TEST(TryParseConnectResponse, BoundaryStatus599Accepted) {
+    // 599 is the HIGHEST accepted code (`code > 599` rejects).
+    constexpr std::string_view raw =
+        "HTTP/1.1 599 NetworkConnectTimeoutError\r\n\r\n";
+    auto r = eph::net::detail::try_parse_connect_response(from_str(raw));
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->status_code, 599u);
+}
