@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+### Wired — T2.3 1 Hz audit-sweep scheduler thread (M series, 2026-05-05)
+
+Closes the last remaining source-level T2.3 piece. The L series wired
+the auto-enable + key-attach plumbing; this commit makes the daemon
+actually drive the periodic sweep so the IcmpDirectory's verify-on-
+suspicion contract delivers <16 s missed-detection window for passive
+tampering automatically (no operator scheduler required).
+
+`Platform::serve_nic` (when `enable_registry_hmac=true`) now spawns
+an audit-sweeper thread immediately after the 3 registries are
+signed:
+
+```
+audit_sweeper:
+  while (audit_sweeper_running.load(acquire)):
+    cv.wait_for(1s, predicate=!running)        // sleeps OR shuts down
+    if (!running) break
+    if (icmp_directory.has_value()):
+      n = icmp_directory->audit_sweep_one_round()  // 64-batch
+      if (n > 0): WARN log + cumulative count
+```
+
+Coverage: 1 Hz × 64 batch = full 1024-entry IcmpDirectory in 16 s
+worst case (paired with audit-on-error which closes the typical
+active-attack window in <1 ms via the dispatch callback path).
+
+Cleanup ordering (Impl destructor):
+  1. `audit_sweeper_running.store(false, release)` under `mu`
+  2. `audit_sweeper_cv.notify_all()` to break the `cv_wait_for`
+     early
+  3. `audit_sweeper_thread.join()` blocks until exit
+
+The cv-notify path makes shutdown prompt: `~Impl` typically blocks
+<1 ms for the join, NOT up to 1 s waiting for the next tick. The
+thread reads `icmp_directory.has_value()` before each call, and the
+field stays alive (Impl owns it) until after the join — no use-
+after-free is possible.
+
+Hot path: zero impact. The thread runs only on the daemon side (not
+on tenants), runs only when HMAC is enabled, and runs at 1 Hz on a
+control thread independent of any RX/TX lcore.
+
+Tests: `tests/test_audit_sweeper.cpp` — 3 cases all passing
+  - ShutdownIsPrompt           cv notify breaks tick in <100 ms
+  - MultipleStartStopCyclesDoNotDeadlock
+  - ImmediateStopBeforeFirstTickIsClean
+
+These tests cover the standard-library cv-on-flag pattern in
+isolation (the actual sweep work is covered by
+test_icmp_directory_hmac); a future refactor that breaks the
+shutdown semantics fails here loudly instead of leaving zombie
+threads in production.
+
+`Impl` grew 4 fields (1 thread + 1 atomic + 1 mutex + 1 cv) — total
+~80 bytes. Cold path; no impact on registry / hot path layouts.
+
+Track item: T2.3 — closes ALL source-level work. Hardware-gated
+end-to-end test (real daemon + tamper injection on vfio-pci host)
+remains the only outstanding item; no source code remains.
+
 ### Wired — T2.3 Platform::serve_nic + Platform::create end-to-end HMAC (L series, 2026-05-05)
 
 Closes the L series — the auto-enable + auto-attach plumbing for

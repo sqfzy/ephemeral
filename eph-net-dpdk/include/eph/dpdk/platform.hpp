@@ -21,7 +21,9 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
+#include <mutex>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -1248,6 +1250,27 @@ struct Platform::Impl {
     /// capable Platform requires successful key read.
     std::optional<::eph::net::HmacSha256Key> registry_hmac_key;
 
+    /// T2.3 audit-sweep scheduler thread (M series, 2026-05-05).
+    /// `Platform::serve_nic` spawns this thread when
+    /// `cfg.enable_registry_hmac == true`. It loops at 1 Hz calling
+    /// `IcmpDirectoryHandle::audit_sweep_one_round(64)`, dripping
+    /// the verify-on-suspicion sweep across the directory's 1024
+    /// entries (full coverage in 16 s worst-case). Empty / unjoinable
+    /// when HMAC is disabled or this Impl is a tenant secondary
+    /// (only the daemon owns the sweep cadence; tenants run their
+    /// own audit on demand via `Platform::audit_registries()`).
+    /// Cleanup ordering:
+    ///   1. ~Impl flips `audit_sweeper_running.store(false)`
+    ///   2. notify_all on the cv to break the cv_wait_for early
+    ///   3. thread.join() blocks until it exits
+    /// Since the thread reads `icmp_directory.has_value()` before
+    /// each call and the `~Impl` body destroys the directory AFTER
+    /// joining the thread, no use-after-free is possible.
+    std::thread             audit_sweeper_thread;
+    std::atomic<bool>       audit_sweeper_running{false};
+    std::mutex              audit_sweeper_mu;
+    std::condition_variable audit_sweeper_cv;
+
     /// @brief Primary-side bookkeeping of rules installed on behalf
     /// of secondaries via the eph_fd_install IPC fallback path.
     /// Populated only on the primary; secondary processes leave it
@@ -1424,6 +1447,22 @@ struct Platform::Impl {
     }
 
     ~Impl() {
+        // ── T2.3 audit sweeper: ask the thread to exit + join ─────────────
+        // The audit sweeper thread (spawned by Platform::serve_nic when
+        // enable_registry_hmac=true) loops on `audit_sweeper_running` and
+        // sleeps via a condition_variable so destruction notifies it
+        // immediately rather than waiting for the next 1 Hz tick. join()
+        // blocks until the thread exits — at most one tick of latency
+        // since the cv_wait_for unblocks on either timeout or notify.
+        if (audit_sweeper_thread.joinable()) {
+            {
+                std::lock_guard<std::mutex> g{audit_sweeper_mu};
+                audit_sweeper_running.store(false, std::memory_order_release);
+            }
+            audit_sweeper_cv.notify_all();
+            audit_sweeper_thread.join();
+        }
+
         // ── S5: secondary-side queue release ────────────────────────────
         // If this Platform was an application-side secondary that
         // claimed queues from the daemon's QueueAllocator, fire-and-
@@ -3254,6 +3293,62 @@ Platform::serve_nic(NicServiceConfig cfg) {
                     "Platform::create attach time and will verify each "
                     "registry read against it",
                     key_path_r->string());
+
+                // M series: spawn the 1 Hz audit-sweep scheduler
+                // thread. Loops on `audit_sweeper_running` and
+                // sleeps via cv with 1 s timeout — destruction
+                // notifies the cv to break out promptly.
+                // 1 Hz × 64-batch sweeps = 16 s full coverage of
+                // 1024-entry IcmpDirectory in worst case (paired
+                // with audit-on-error which closes the typical
+                // active-attack window in <1 ms).
+                plat.impl_->audit_sweeper_running.store(
+                    true, std::memory_order_release);
+                Impl* impl_raw = plat.impl_.get();
+                plat.impl_->audit_sweeper_thread = std::thread(
+                    [impl_raw]() noexcept {
+                        auto* tlog = detail::platform_logger();
+                        SPDLOG_LOGGER_INFO(tlog,
+                            "audit_sweeper: thread started "
+                            "(interval=1s, batch=64)");
+                        size_t total_mismatches = 0;
+                        while (impl_raw->audit_sweeper_running.load(
+                                   std::memory_order_acquire)) {
+                            std::unique_lock<std::mutex> lk{
+                                impl_raw->audit_sweeper_mu};
+                            // cv_wait_for releases the lock while
+                            // sleeping; predicate re-checked on
+                            // wake. Returns no_timeout if cv was
+                            // notified (during shutdown) — we exit
+                            // the loop on the next condition check.
+                            impl_raw->audit_sweeper_cv.wait_for(
+                                lk, std::chrono::seconds(1),
+                                [impl_raw]() {
+                                    return !impl_raw->audit_sweeper_running
+                                        .load(std::memory_order_acquire);
+                                });
+                            if (!impl_raw->audit_sweeper_running.load(
+                                    std::memory_order_acquire)) break;
+                            lk.unlock();
+                            if (!impl_raw->icmp_directory.has_value()) {
+                                continue;
+                            }
+                            const size_t mm = impl_raw->icmp_directory
+                                ->audit_sweep_one_round();
+                            if (mm > 0) {
+                                total_mismatches += mm;
+                                SPDLOG_LOGGER_WARN(tlog,
+                                    "audit_sweeper: detected {} "
+                                    "tampered entries this round "
+                                    "(cumulative={})",
+                                    mm, total_mismatches);
+                            }
+                        }
+                        SPDLOG_LOGGER_INFO(tlog,
+                            "audit_sweeper: thread exiting "
+                            "(cumulative tamper count={})",
+                            total_mismatches);
+                    });
             }
         }
     }

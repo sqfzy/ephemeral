@@ -119,10 +119,12 @@ write):
 - Tamper injection: dd random bytes into the hugepage backing file
   for a populated slot offset → audit_registries() returns >0 +
   WARN log appears in journalctl
-- Daemon control-loop wiring: schedule
+- ~~Daemon control-loop wiring: schedule
   `icmp_audit_sweep_one_round()` at ~1 Hz from a thread inside
   `Platform::join()`'s SIGTERM-wait loop (or a separate timerfd-
-  driven thread)
+  driven thread)~~ ✅ **Done** in M series — `Platform::serve_nic`
+  spawns an audit-sweeper thread when HMAC is enabled; `~Impl`
+  joins cleanly via cv-notify.
 - Bench gate: confirm bench_rx_hot_path baseline unchanged with
   HMAC enabled vs disabled
 
