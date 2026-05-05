@@ -158,6 +158,23 @@ write_registry_hmac_key(const std::filesystem::path& path) noexcept {
                 core::Error::InvalidConfig,
                 "registry_hmac_key: write failed"});
         }
+        // POSIX: a 0-byte return when we asked for >0 bytes means
+        // "no bytes written; errno indicates cause". Treat as a
+        // hard failure rather than spinning on the same offset (the
+        // naive `p += 0; left -= 0;` retry would be an infinite
+        // loop). Rare in practice for regular files but possible on
+        // pipes/sockets/odd fs types.
+        if (n == 0) {
+            ::close(fd);
+            ::unlink(tmp_str.c_str());
+            SPDLOG_ERROR(
+                "registry_hmac_key: write returned 0 with {} bytes "
+                "remaining — refusing to spin",
+                left);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "registry_hmac_key: write returned 0 (no progress)"});
+        }
         p += n;
         left -= static_cast<size_t>(n);
     }
