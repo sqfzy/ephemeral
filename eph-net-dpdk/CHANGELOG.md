@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Added — NUMA-aware bench helper + `EPH_BENCH_NUMA_NODE` hook (T3.6, 2026-05-05)
+
+`benchmarks/bench_helpers.hpp` grew three NUMA helpers:
+
+  - `numa_node_count()` — returns 1 on single-socket / no-libnuma hosts,
+    actual count otherwise.
+  - `numa_pin(node)` — `numa_run_on_node` + `numa_set_preferred(node)`,
+    out-of-range / no-libnuma is a graceful no-op.
+  - `apply_env_numa_pin()` — one-shot bench-prologue helper that
+    consumes `EPH_BENCH_NUMA_NODE` and pins (or no-ops with diagnostic
+    on single-socket).
+
+Wired into `bench_rx_hot_path` and `bench_rte_ring_vs_bq` by replacing
+`BENCHMARK_MAIN()` with explicit `main()` that calls
+`apply_env_numa_pin()` before `benchmark::Initialize`. Other benches
+unchanged for now (incremental rollout).
+
+`xmake.lua` bench loop conditionally links `libnuma` when
+`/usr/include/numa.h` is present so hosts without libnuma still build
+the benches (helpers compile to no-ops via `__has_include` gate).
+
+Single-socket verification on aarch64 EC2 (this host):
+
+```
+$ EPH_BENCH_NUMA_NODE=0 ./bench_rx_hot_path
+[eph::dpdk::bench] EPH_BENCH_NUMA_NODE=0 on a single-NUMA-node host;
+skipping pin (no-op)
+... [bench output]
+```
+
+Multi-socket end-to-end verification (e.g. dual-socket Xeon / AMD)
+is deferred to whoever has that hardware — see `DEFERRED.md`.
+
+Track item: T3.6 from the 2026-05-05 action list (helper portion;
+multi-socket validation deferred).
+
 ### Added — `test_hmac_tamper_simulation` deterministic fuzz (T3.3, 2026-05-05)
 
 5-case deterministic-seed fuzz against `HmacKeyedEntry<T>` from T2.3

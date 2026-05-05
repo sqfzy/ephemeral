@@ -219,6 +219,10 @@ target("test_dpdk_rss_fanout")
 
 -- Module benchmarks — low-level DPDK primitive microbenchmarks migrated
 -- over from eph-dpdk/benchmarks. Need PMD whole-archive linking.
+-- libnuma is linked when present (T3.6 NUMA-aware pin helper in
+-- benchmarks/bench_helpers.hpp gates on __has_include(<numa.h>) at
+-- compile time; this matches at link time so benches that include
+-- bench_helpers.hpp don't fail with "DSO missing from command line").
 for _, file in ipairs(os.files("benchmarks/*.cpp")) do
     target(path.basename(file))
         add_rules("eph-bench")
@@ -226,6 +230,9 @@ for _, file in ipairs(os.files("benchmarks/*.cpp")) do
         add_deps("eph-net-dpdk")
         add_includedirs(path.join(os.scriptdir(), "benchmarks"))
         apply_dpdk_pmd_linkgroups()
+        if os.exists("/usr/include/numa.h") then
+            add_syslinks("numa")
+        end
 end
 
 -- Module fuzzers — INTENTIONALLY NOT WIRED INTO XMAKE.

@@ -35,8 +35,11 @@
 #include <cstring>
 #include <vector>
 
+#include <cstdio>
+
 #include <benchmark/benchmark.h>
 
+#include "bench_helpers.hpp"
 #include "eph/dpdk/net_header.hpp"
 #include "eph/dpdk/packet_parse.hpp"
 
@@ -301,4 +304,19 @@ static void BM_IsIpFragment_Fragment(benchmark::State& state) {
 }
 BENCHMARK(BM_IsIpFragment_Fragment);
 
-BENCHMARK_MAIN();
+// Opt-in NUMA pin via `EPH_BENCH_NUMA_NODE` (T3.6 from the 2026-05-05
+// action list). Single-socket hosts: env var ignored (no-op + warn).
+// Multi-socket hosts: pin allocator + sched affinity to the named node
+// before the benchmark loop runs.
+int main(int argc, char** argv) {
+    if (auto pinned = ::eph::dpdk::bench::apply_env_numa_pin()) {
+        std::fprintf(stderr,
+            "[bench_rx_hot_path] pinned to NUMA node %d via "
+            "EPH_BENCH_NUMA_NODE\n", *pinned);
+    }
+    benchmark::Initialize(&argc, argv);
+    if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}

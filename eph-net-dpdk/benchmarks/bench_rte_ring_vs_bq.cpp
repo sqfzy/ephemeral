@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@
 #include <rte_eal.h>
 #include <rte_ring.h>
 
+#include "bench_helpers.hpp"
 #include "eph/containers/bounded_queue.hpp"
 #include "eph/utils/cpu.hpp"
 
@@ -477,4 +479,17 @@ REGISTER_MATRIX(BM_RteRing_Batch);
 REGISTER_MATRIX(BM_BQ_TryPushFull);
 REGISTER_MATRIX(BM_RteRing_TryEnqueueFull);
 
-BENCHMARK_MAIN();
+// Opt-in NUMA pin via `EPH_BENCH_NUMA_NODE` (T3.6 from the 2026-05-05
+// action list).
+int main(int argc, char** argv) {
+    if (auto pinned = ::eph::dpdk::bench::apply_env_numa_pin()) {
+        std::fprintf(stderr,
+            "[bench_rte_ring_vs_bq] pinned to NUMA node %d via "
+            "EPH_BENCH_NUMA_NODE\n", *pinned);
+    }
+    benchmark::Initialize(&argc, argv);
+    if (benchmark::ReportUnrecognizedArguments(argc, argv)) return 1;
+    benchmark::RunSpecifiedBenchmarks();
+    benchmark::Shutdown();
+    return 0;
+}
