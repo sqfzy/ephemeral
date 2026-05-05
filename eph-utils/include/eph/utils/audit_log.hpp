@@ -24,7 +24,6 @@
 #include <atomic>
 #include <bit>
 #include <cassert>
-#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
