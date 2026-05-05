@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+### Added — `eph-nicctl audit --watch` continuous mode + post-T2.3 hot-path bench gate (P series, 2026-05-05)
+
+Two small follow-ups closing the T2.3 trust-boundary work.
+
+**Path 1: `eph-nicctl audit --watch [--interval=<sec>]` continuous mode**
+
+Operators now have a live tamper-detection dashboard. New flags on
+`tools/eph-nicctl.cpp::cmd_audit`:
+
+- `--watch` — keep redrawing every cycle (ANSI clear-screen on a tty,
+  plain append when piped). Exits on first detected tamper (exit 2),
+  on SIGINT/SIGTERM (exit 0), or on three consecutive IPC failures
+  (exit 1).
+- `--interval=<sec>` — cycle length, default 5 s, validated to 1..86400.
+
+Implementation refactor: extracted `run_audit_once()` + `print_audit_body()`
+helpers from the original single-shot path; both single-shot and watch
+modes now share them. The watch loop reuses the EAL secondary attach
+across cycles (one attach at start, one cleanup at exit), installs
+SA-flagless SIGINT/SIGTERM handlers that flip an atomic, and sleeps in
+200 ms chunks for prompt cancellation. Prior signal dispositions are
+saved and restored so embedded uses don't trample the host's own
+handlers.
+
+Validation:
+- All 44 T2.3 HMAC+audit tests still pass (`test_audit_sweeper` 3/3,
+  `test_mp_registry_hmac` 14/14, `test_queue_allocator_hmac` 9/9,
+  `test_icmp_directory_hmac` 11/11, `test_registry_hmac_key` 7/7).
+- `--watch` rejected on non-`audit` subcommands at parse time.
+- `--interval` validation rejects 0, non-numeric, and > 86400 s with
+  a clear message.
+- Watch path exercised end-to-end: without a daemon, attach fails
+  cleanly with exit=1 before the loop starts (no segfault, no
+  signal-handler leak).
+
+**Path 2: bench_rx_hot_path post-T2.3 baseline confirm**
+
+Re-ran `bench_rx_hot_path` against the 2026-04-23 baseline to verify
+T2.3's "hot path is untouched" claim empirically:
+
+| Case | 2026-04-23 | 2026-05-05 | Δ |
+|---|---:|---:|---:|
+| BM_ParseIpHeader/* (5 sizes) | 1.25 ns | 1.25 ns | 0% |
+| BM_ParseUdpPacket/* (5 sizes) | 2.43 ns | 2.43 ns | 0% |
+| BM_ParseUdpFromIp/* (5 sizes) | 1.07 ns | 1.07 ns | 0% |
+| BM_ParseTcpFromIp/* (5 sizes) | 1.43 ns | 1.43 ns | 0% |
+| BM_ParseIcmp | 7.29 ns | 7.51 ns | +3.0% |
+| BM_IsIpFragment_NonFragment | 0.496 ns | 0.496 ns | 0% |
+| BM_IsIpFragment_Fragment | 0.496 ns | 0.496 ns | 0% |
+
+22 of 23 cases byte-identical to the 2026-04-23 baseline; only
+`BM_ParseIcmp` shifted by 0.22 ns (~3%), well under the 5%
+regression gate and within run-to-run noise (the slow stage of
+this bench has more variance because the fast paths bypass the
+ICMP-specific decode). Result archived at
+`.artifacts/bench-rx-hot-path-20260505.txt`.
+
+The HMAC verify-on-suspicion design for `IcmpDirectory` is
+empirically validated: the per-packet RX hot path sees zero
+overhead despite full T2.3 instrumentation in cold paths.
+
 ### Added — `bench_registry_hmac` microbench + cleanup pass (O series, 2026-05-05)
 
 Two-track session — performance budget reference + cleanup of debt

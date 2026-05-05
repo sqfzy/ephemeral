@@ -1,0 +1,36 @@
+2026-05-05T17:25:15+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_rx_hot_path
+Run on (16 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x16)
+  L1 Instruction 64 KiB (x16)
+  L2 Unified 2048 KiB (x16)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.20, 0.49, 0.92
+***WARNING*** ASLR is enabled, the results may have unreproducible noise in them.
+--------------------------------------------------------------------------------------
+Benchmark                            Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------
+BM_ParseIpHeader/64               1.25 ns         1.25 ns    559146362 bytes_per_second=78.8943Gi/s
+BM_ParseIpHeader/128              1.25 ns         1.25 ns    559352534 bytes_per_second=126.521Gi/s
+BM_ParseIpHeader/256              1.25 ns         1.25 ns    559429816 bytes_per_second=221.801Gi/s
+BM_ParseIpHeader/512              1.25 ns         1.25 ns    559432011 bytes_per_second=412.324Gi/s
+BM_ParseIpHeader/1024             1.25 ns         1.25 ns    559329869 bytes_per_second=793.351Gi/s
+BM_ParseUdpPacket/64              2.43 ns         2.43 ns    288182336 bytes_per_second=40.6108Gi/s
+BM_ParseUdpPacket/128             2.43 ns         2.43 ns    288084241 bytes_per_second=65.1149Gi/s
+BM_ParseUdpPacket/256             2.43 ns         2.43 ns    287932810 bytes_per_second=114.12Gi/s
+BM_ParseUdpPacket/512             2.43 ns         2.43 ns    287889550 bytes_per_second=212.161Gi/s
+BM_ParseUdpPacket/1024            2.43 ns         2.43 ns    288057571 bytes_per_second=408.356Gi/s
+BM_ParseUdpFromIp/64              1.07 ns         1.07 ns    651327343 bytes_per_second=91.959Gi/s
+BM_ParseUdpFromIp/128             1.07 ns         1.07 ns    652352177 bytes_per_second=147.532Gi/s
+BM_ParseUdpFromIp/256             1.07 ns         1.07 ns    652344773 bytes_per_second=258.623Gi/s
+BM_ParseUdpFromIp/512             1.07 ns         1.07 ns    652360707 bytes_per_second=480.783Gi/s
+BM_ParseUdpFromIp/1024            1.07 ns         1.07 ns    652269543 bytes_per_second=924.939Gi/s
+BM_ParseTcpFromIp/64              1.43 ns         1.43 ns    489410407 bytes_per_second=76.8358Gi/s
+BM_ParseTcpFromIp/128             1.43 ns         1.43 ns    489437710 bytes_per_second=118.509Gi/s
+BM_ParseTcpFromIp/256             1.43 ns         1.43 ns    489420419 bytes_per_second=201.869Gi/s
+BM_ParseTcpFromIp/512             1.43 ns         1.43 ns    489467858 bytes_per_second=368.557Gi/s
+BM_ParseTcpFromIp/1024            1.43 ns         1.43 ns    489420197 bytes_per_second=701.935Gi/s
+BM_ParseIcmp                      7.51 ns         7.51 ns     93250391 bytes_per_second=8.68617Gi/s
+BM_IsIpFragment_NonFragment      0.496 ns        0.496 ns   1412260660 bytes_per_second=199.16Gi/s
+BM_IsIpFragment_Fragment         0.496 ns        0.496 ns   1412006315 bytes_per_second=199.146Gi/s

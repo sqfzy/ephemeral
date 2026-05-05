@@ -20,7 +20,12 @@
 ///       Pretty-prints the QueueAllocator PoolState dump:
 ///       total / free / largest_free_run / generation / stale_releases.
 ///
-/// Both subcommands take `--pci=<bdf>` to identify the target daemon.
+///   eph-nicctl audit --pci=<bdf> [--watch] [--interval=<sec>]
+///       T2.3 HMAC tamper-detection scan. With `--watch`, redraws on
+///       every cycle (default 5 s); exits 0 on signal, 2 on first
+///       detected tamper, 1 on persistent IPC failure (≥3 in a row).
+///
+/// All subcommands take `--pci=<bdf>` to identify the target daemon.
 /// The file_prefix is derived deterministically from pci, matching
 /// what `Platform::serve_nic` / `Platform::create` use.
 ///
@@ -37,14 +42,18 @@
 ///       daemon-replied error
 ///   2 — usage error
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <expected>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -71,7 +80,7 @@ void print_usage(FILE* out) {
         "Usage:\n"
         "  eph-nicctl peers  --pci=<bdf>\n"
         "  eph-nicctl stats  --pci=<bdf>\n"
-        "  eph-nicctl audit  --pci=<bdf>\n"
+        "  eph-nicctl audit  --pci=<bdf> [--watch] [--interval=<sec>]\n"
         "  eph-nicctl --help | --version\n"
         "\n"
         "Connects to the eph-nicd daemon for the given pci as a DPDK\n"
@@ -81,7 +90,12 @@ void print_usage(FILE* out) {
         "  audit         — T2.3 HMAC tamper-detection scan across\n"
         "                  MpRegistry + QueueAllocator + IcmpDirectory.\n"
         "                  Returns 0 mismatches in healthy / unkeyed mode;\n"
-        "                  non-zero on detected tampering.\n",
+        "                  non-zero on detected tampering.\n"
+        "\n"
+        "  --watch       — keep auditing in a loop, redrawing each cycle.\n"
+        "                  Exits on first non-zero mismatch (exit 2) or\n"
+        "                  on SIGINT/SIGTERM (exit 0). Use with `audit`.\n"
+        "  --interval=N  — seconds between watch cycles (default: 5).\n",
         kVersion);
 }
 
@@ -104,6 +118,8 @@ struct CliArgs {
     std::string  pci;
     bool         show_help    = false;
     bool         show_version = false;
+    bool         watch        = false;
+    unsigned     interval_s   = 5;
 };
 
 std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
@@ -140,6 +156,20 @@ std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
             out.pci = v;
             continue;
         }
+        if (std::strcmp(a, "--watch") == 0) {
+            out.watch = true;
+            continue;
+        }
+        if (auto* v = match_long_eq(a, "--interval")) {
+            char* end = nullptr;
+            unsigned long n = std::strtoul(v, &end, 10);
+            if (*v == '\0' || (end && *end != '\0') || n == 0 || n > 86400) {
+                return std::unexpected(
+                    std::string{"--interval=<sec> must be 1..86400, got: "} + v);
+            }
+            out.interval_s = static_cast<unsigned>(n);
+            continue;
+        }
         if (std::strcmp(a, "--help") == 0) {
             out.show_help = true; return out;
         }
@@ -148,6 +178,10 @@ std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
     if (out.pci.empty()) {
         return std::unexpected(
             std::string{"--pci=<bdf> is required for this subcommand"});
+    }
+    if (out.watch && out.sub != Subcommand::Audit) {
+        return std::unexpected(
+            std::string{"--watch is only valid with the `audit` subcommand"});
     }
     return out;
 }
@@ -272,16 +306,34 @@ int cmd_query(const CliArgs& args) {
 
 // ─────────────────────────────────────────────────────────────────────
 // T2.3 N: audit subcommand — query daemon for per-registry mismatches.
-// Exit code 0 = healthy / unkeyed; 1 = IPC error; 2 = mismatches found.
+// Single-shot: exit 0 healthy/unkeyed, 1 IPC error, 2 tamper detected.
+// --watch    : redraw on every cycle; exit 0 on signal, 2 on first
+//              non-zero mismatch, 1 on persistent IPC failure.
 // ─────────────────────────────────────────────────────────────────────
-int cmd_audit(const CliArgs& args) {
-    auto attach_r = attach_as_secondary(args.pci);
-    if (!attach_r) {
-        std::fprintf(stderr, "%s\n", attach_r.error().c_str());
-        return 1;
-    }
-    const std::string& file_prefix = *attach_r;
 
+// SIGINT/SIGTERM flag used by the watch loop. async-signal-safe writes only.
+std::atomic<int> g_stop_signal{0};
+
+extern "C" void watch_signal_handler(int signo) noexcept {
+    g_stop_signal.store(signo, std::memory_order_relaxed);
+}
+
+enum class AuditStatus {
+    Ok,            // hmac_enabled and total_mm == 0
+    Unkeyed,       // hmac_enabled == false
+    Tamper,        // total_mm > 0
+    IpcError,      // mp_ipc_request_sync failed
+    DaemonError,   // reply.ok == false
+};
+
+struct AuditOutcome {
+    AuditStatus status = AuditStatus::Ok;
+    ::eph::dpdk::detail::NicctlAuditReply reply{};
+    std::string err_detail;  // populated for IpcError / DaemonError
+};
+
+AuditOutcome run_audit_once() {
+    AuditOutcome out{};
     ::eph::dpdk::detail::NicctlAuditRequest req{};
     req.version       = 1;
     req.requester_pid = static_cast<int32_t>(::getpid());
@@ -293,25 +345,32 @@ int cmd_audit(const CliArgs& args) {
         req,
         std::chrono::milliseconds{2000});
     if (!reply_r) {
-        std::fprintf(stderr,
-            "eph-nicctl: audit IPC failed: %s\n"
-            "(file_prefix='%s'; daemon may be unresponsive or this "
-            "daemon predates T2.3 — confirm `eph-nicd` was rebuilt)\n",
-            reply_r.error().detail, file_prefix.c_str());
-        (void)::eph::dpdk::eal_cleanup();
-        return 1;
+        out.status     = AuditStatus::IpcError;
+        out.err_detail = reply_r.error().detail
+            ? reply_r.error().detail : "(no detail)";
+        return out;
     }
-    const auto& reply = *reply_r;
-    if (!reply.ok) {
-        std::fprintf(stderr, "eph-nicctl: daemon error: %s\n", reply.error);
-        (void)::eph::dpdk::eal_cleanup();
-        return 1;
+    out.reply = *reply_r;
+    if (!out.reply.ok) {
+        out.status     = AuditStatus::DaemonError;
+        out.err_detail = out.reply.error;
+        return out;
     }
+    if (!out.reply.hmac_enabled) {
+        out.status = AuditStatus::Unkeyed;
+        return out;
+    }
+    const unsigned total_mm = out.reply.mp_registry_mismatches
+                            + out.reply.queue_allocator_mismatches
+                            + out.reply.icmp_directory_mismatches;
+    out.status = (total_mm == 0) ? AuditStatus::Ok : AuditStatus::Tamper;
+    return out;
+}
 
-    std::printf("eph-nicd registry HMAC audit (pci='%s', "
-                "file_prefix='%s'):\n",
-                args.pci.c_str(), file_prefix.c_str());
-    if (!reply.hmac_enabled) {
+// Render the audit reply table to stdout. Header line is caller's job —
+// in watch mode we want a timestamp + cycle counter above the table.
+void print_audit_body(const AuditOutcome& o) {
+    if (o.status == AuditStatus::Unkeyed) {
         std::printf("\n  hmac_enabled: 0  (daemon running in unkeyed "
                     "mode — single-tenant deployment;\n"
                     "                    no tamper protection active. "
@@ -320,12 +379,11 @@ int cmd_audit(const CliArgs& args) {
                     "in /etc/eph/<bdf>.toml\n"
                     "                    and restart `eph-nicd@<bdf>` "
                     "to enable.)\n");
-        (void)::eph::dpdk::eal_cleanup();
-        return 0;
+        return;
     }
-
-    const unsigned mp_mm  = reply.mp_registry_mismatches;
-    const unsigned qa_mm  = reply.queue_allocator_mismatches;
+    const auto& reply = o.reply;
+    const unsigned mp_mm   = reply.mp_registry_mismatches;
+    const unsigned qa_mm   = reply.queue_allocator_mismatches;
     const unsigned icmp_mm = reply.icmp_directory_mismatches;
     const unsigned total_mm = mp_mm + qa_mm + icmp_mm;
 
@@ -348,15 +406,168 @@ int cmd_audit(const CliArgs& args) {
     std::printf("  Total                     %10u  %s\n",
                 total_mm,
                 total_mm == 0 ? "All clean" : "TAMPER — investigate");
+}
 
-    (void)::eph::dpdk::eal_cleanup();
-    if (total_mm > 0) {
-        std::fprintf(stderr,
-            "\n[WARN] %u mismatches detected. Check daemon journalctl "
-            "for per-slot tamper details.\n", total_mm);
-        return 2;
+// Format current wall-clock as "YYYY-MM-DD HH:MM:SS" into a fixed buffer.
+void format_now(char (&buf)[32]) noexcept {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm_buf{};
+    ::localtime_r(&now, &tm_buf);
+    if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf) == 0) {
+        buf[0] = '?';
+        buf[1] = '\0';
     }
-    return 0;
+}
+
+// Sleep up to `total` milliseconds in 200 ms chunks so SIGINT/SIGTERM
+// observed via g_stop_signal can interrupt within ~200 ms. Returns true
+// if a stop signal was observed during the wait.
+bool sleep_interruptible(std::chrono::milliseconds total) {
+    using namespace std::chrono;
+    const auto deadline = steady_clock::now() + total;
+    while (steady_clock::now() < deadline) {
+        if (g_stop_signal.load(std::memory_order_relaxed) != 0) return true;
+        const auto remaining = duration_cast<milliseconds>(
+            deadline - steady_clock::now());
+        const auto chunk = std::min(remaining, milliseconds{200});
+        if (chunk.count() <= 0) break;
+        std::this_thread::sleep_for(chunk);
+    }
+    return g_stop_signal.load(std::memory_order_relaxed) != 0;
+}
+
+int cmd_audit(const CliArgs& args) {
+    auto attach_r = attach_as_secondary(args.pci);
+    if (!attach_r) {
+        std::fprintf(stderr, "%s\n", attach_r.error().c_str());
+        return 1;
+    }
+    const std::string& file_prefix = *attach_r;
+
+    if (!args.watch) {
+        // Single-shot path: one request, print, cleanup, exit.
+        const auto out = run_audit_once();
+        if (out.status == AuditStatus::IpcError) {
+            std::fprintf(stderr,
+                "eph-nicctl: audit IPC failed: %s\n"
+                "(file_prefix='%s'; daemon may be unresponsive or this "
+                "daemon predates T2.3 — confirm `eph-nicd` was rebuilt)\n",
+                out.err_detail.c_str(), file_prefix.c_str());
+            (void)::eph::dpdk::eal_cleanup();
+            return 1;
+        }
+        if (out.status == AuditStatus::DaemonError) {
+            std::fprintf(stderr, "eph-nicctl: daemon error: %s\n",
+                         out.err_detail.c_str());
+            (void)::eph::dpdk::eal_cleanup();
+            return 1;
+        }
+        std::printf("eph-nicd registry HMAC audit (pci='%s', "
+                    "file_prefix='%s'):\n",
+                    args.pci.c_str(), file_prefix.c_str());
+        print_audit_body(out);
+        (void)::eph::dpdk::eal_cleanup();
+        if (out.status == AuditStatus::Tamper) {
+            const unsigned total_mm = out.reply.mp_registry_mismatches
+                                    + out.reply.queue_allocator_mismatches
+                                    + out.reply.icmp_directory_mismatches;
+            std::fprintf(stderr,
+                "\n[WARN] %u mismatches detected. Check daemon journalctl "
+                "for per-slot tamper details.\n", total_mm);
+            return 2;
+        }
+        return 0;
+    }
+
+    // Watch mode: redraw every interval until SIGINT/SIGTERM or first
+    // detected tamper. Install handlers; preserve the prior disposition so
+    // we don't trample tests/process owners that have their own handlers.
+    struct sigaction sa_new{};
+    sa_new.sa_handler = &watch_signal_handler;
+    sigemptyset(&sa_new.sa_mask);
+    sa_new.sa_flags = 0;  // intentionally NOT SA_RESTART — we want the
+                           // sleep loop to observe the flag promptly.
+    struct sigaction sa_old_int{};
+    struct sigaction sa_old_term{};
+    ::sigaction(SIGINT,  &sa_new, &sa_old_int);
+    ::sigaction(SIGTERM, &sa_new, &sa_old_term);
+
+    std::printf("eph-nicd registry HMAC audit (pci='%s', "
+                "file_prefix='%s')\n"
+                "watch mode: interval=%us  (Ctrl+C to stop)\n",
+                args.pci.c_str(), file_prefix.c_str(), args.interval_s);
+
+    int exit_code = 0;
+    unsigned cycle = 0;
+    unsigned consecutive_ipc_errors = 0;
+    constexpr unsigned kMaxConsecutiveIpcErrors = 3;
+
+    while (g_stop_signal.load(std::memory_order_relaxed) == 0) {
+        ++cycle;
+        const auto out = run_audit_once();
+        char ts[32];
+        format_now(ts);
+        // ANSI clear-screen + home; harmless on cooked terminals, but we
+        // gate it behind isatty() to keep piped output clean.
+        if (::isatty(::fileno(stdout))) {
+            std::fputs("\x1b[2J\x1b[H", stdout);
+        }
+        std::printf("eph-nicd registry HMAC audit (pci='%s')\n"
+                    "watch cycle #%u  at %s  (interval=%us, Ctrl+C to stop)\n",
+                    args.pci.c_str(), cycle, ts, args.interval_s);
+
+        if (out.status == AuditStatus::IpcError) {
+            ++consecutive_ipc_errors;
+            std::fprintf(stderr,
+                "\n[WARN] IPC failure (%u/%u): %s\n",
+                consecutive_ipc_errors, kMaxConsecutiveIpcErrors,
+                out.err_detail.c_str());
+            if (consecutive_ipc_errors >= kMaxConsecutiveIpcErrors) {
+                std::fprintf(stderr,
+                    "[ERROR] %u consecutive IPC failures; daemon "
+                    "appears down. Exiting.\n", consecutive_ipc_errors);
+                exit_code = 1;
+                break;
+            }
+        } else if (out.status == AuditStatus::DaemonError) {
+            std::fprintf(stderr, "\n[ERROR] daemon error: %s\n",
+                         out.err_detail.c_str());
+            exit_code = 1;
+            break;
+        } else {
+            consecutive_ipc_errors = 0;
+            print_audit_body(out);
+            std::fflush(stdout);
+            if (out.status == AuditStatus::Tamper) {
+                const unsigned total_mm =
+                      out.reply.mp_registry_mismatches
+                    + out.reply.queue_allocator_mismatches
+                    + out.reply.icmp_directory_mismatches;
+                std::fprintf(stderr,
+                    "\n[WARN] %u mismatches detected — exiting watch.\n",
+                    total_mm);
+                exit_code = 2;
+                break;
+            }
+        }
+
+        if (sleep_interruptible(
+                std::chrono::seconds{args.interval_s})) {
+            break;  // signal arrived during sleep
+        }
+    }
+
+    // Restore prior signal dispositions before tearing down EAL.
+    ::sigaction(SIGINT,  &sa_old_int,  nullptr);
+    ::sigaction(SIGTERM, &sa_old_term, nullptr);
+
+    if (exit_code == 0
+        && g_stop_signal.load(std::memory_order_relaxed) != 0) {
+        std::printf("\n[INFO] stopped on signal %d after %u cycle(s).\n",
+                    g_stop_signal.load(std::memory_order_relaxed), cycle);
+    }
+    (void)::eph::dpdk::eal_cleanup();
+    return exit_code;
 }
 
 } // namespace
