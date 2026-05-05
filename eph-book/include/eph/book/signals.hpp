@@ -14,7 +14,6 @@
 ///   - **VWAP**: volume-weighted average price across depth levels
 ///   - **Depth ratio**: aggregate buy vs. sell interest
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <optional>
