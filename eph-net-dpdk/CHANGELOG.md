@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added — `test_src_port_collision` boundary cases (T3.2, 2026-05-05)
+
+13-case boundary test for `MpTopology::valid()`'s pairwise src_port
+overlap rejection. Companion to T2.4 (commit `613fa93d` — doc audit
+showed the architectural enforcement was already in place via
+`MpTopology::valid()`'s O(N²) pairwise overlap pass). Existing
+`test_mp_topology.cpp` had one OverlappingPorts test (single
+partial-overlap case); this file exhaustively covers:
+
+  - non-overlapping with gap (accepted)
+  - full containment (rejected)
+  - off-by-one at lo edge (rejected)
+  - off-by-one at hi edge (rejected)
+  - adjacent half-open intervals — `[a,b)`, `[b,c)` (accepted; pins
+    half-open semantics)
+  - identical ranges (rejected)
+  - single-port collision `[p, p+1)` (rejected)
+  - 3-way pairwise overlap with adjacent neighbors (rejected)
+  - port_hi == 65536 (full ephemeral window, accepted)
+  - port_hi > 65536 (rejected — would silently wrap on uint16_t cast)
+  - port_lo == port_hi empty range (rejected)
+  - 8-slot disjoint scaling sanity
+  - 8-slot one-overlap detection
+
+All 13 cases passing locally.
+
+A future refactor that switches to closed intervals would require
+updating every test here — the file pins the half-open contract.
+
+Track item: T3.2 from the 2026-05-05 action list.
+
 ### Added — `HmacKeyedEntry<T>` skeleton for cross-process registry tamper protection (T2.3, 2026-05-05)
 
 Skeleton (header + tests, NOT yet wired into the registries) for
