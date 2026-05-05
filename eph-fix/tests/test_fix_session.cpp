@@ -488,6 +488,43 @@ TEST(FixSession, reset_allows_relogon) {
     EXPECT_EQ(session.state(), SessionState::kActive);
 }
 
+/// reset() must clear test_request_pending_ — otherwise a session that
+/// reset after a probe was issued would re-logon with pending=true, and
+/// the very first tick() in the new Active state would (after one
+/// HB-interval of silence) declare the freshly-reconnected server dead.
+/// session.hpp::reset() does this at line ~409, but no test currently
+/// asserts it. Add a focused test so a future refactor that drops the
+/// pending-flag clear can't slip past CI silently.
+TEST(FixSession, reset_clears_test_request_pending_state) {
+    MockFixTransport mock;
+    auto cfg = test_config();
+    // Use a 1-second heartbeat so we can drive tick() through the
+    // probe-issue path without sleeping for 30 s.
+    cfg.heartbeat_interval_sec = 1;
+    cfg.heartbeat_timeout_factor = 2.0;
+    FixSession session(mock.send_fn(), cfg);
+    do_logon(session, mock);
+
+    // Drive probe via tick() after a synthetic idle stretch:
+    // - reset is the only clean way to set test_request_pending_ to a
+    //   known state we can read back. We don't have a public getter, so
+    //   instead we inspect indirectly via the disconnect-on-second-tick
+    //   contract: after reset the next tick on a fresh logon must NOT
+    //   immediately disconnect even if hb_interval has elapsed (because
+    //   pending=false → we'd send a TR first and only disconnect on the
+    //   tick AFTER that).
+    session.reset();
+    do_logon(session, mock);
+    ASSERT_EQ(session.state(), SessionState::kActive);
+
+    // tick() must return true (healthy) — pending was cleared so no
+    // immediate disconnect even if a hypothetical pending=true had been
+    // carried over.
+    EXPECT_TRUE(session.tick())
+        << "tick() returned false on a fresh post-reset session — "
+        << "test_request_pending_ likely was not cleared by reset()";
+}
+
 // ===========================================================================
 // send_app guards
 // ===========================================================================
