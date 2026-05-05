@@ -344,6 +344,10 @@ public:
         sock->set_strict_rx_checksum_(platform.strict_rx_checksum());
         // T1.1+T1.2 wire-up — see DpdkTcpStream::create_and_attach.
         sock->platform_ = &platform;
+        if (auto* poller = platform.poller_for_queue(target_qid);
+            poller != nullptr) {
+            poller->set_alive_flag_(platform.alive_flag_addr_());
+        }
 
         // Attach BEFORE installing the flow rule (see tcp_stream.hpp's
         // create_and_attach for the race-window rationale).
@@ -497,11 +501,29 @@ public:
         }
         if (!sender_.send(app_payload.data(),
                            static_cast<uint16_t>(app_payload.size()))) {
+            // T1.1+T1.2 post-burst: UdpSender::send failed; if daemon
+            // also died during the burst, surface DaemonDisconnected with
+            // Unsent status (UDP is single-packet — binary outcome).
+            if (auto e = check_post_burst_(
+                    ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                    app_payload.size(), 0,
+                    "DpdkUdpSocket::send_to(post-burst-failed)")) {
+                return std::unexpected(*e);
+            }
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
                 "DpdkUdpSocket::send_to: UdpSender::send failed"});
         }
         inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
+        // T1.1+T1.2 post-burst: full payload through; if daemon died after
+        // the burst, status is `Sent` (the datagram is committed; reconnect
+        // path should NOT retransmit).
+        if (auto e = check_post_burst_(
+                ::eph::net::dpdk::detail::InFlightStatus::Sent,
+                app_payload.size(), app_payload.size(),
+                "DpdkUdpSocket::send_to(post-burst)")) {
+            return std::unexpected(*e);
+        }
         return app_payload.size();
     }
 
@@ -676,6 +698,27 @@ public:
 
     void notify_attached_(DpdkPoller<void>* p) noexcept { attached_to_ = p; }
     void notify_detached_() noexcept { attached_to_ = nullptr; }
+
+    /// @brief T1.1+T1.2 post-burst classification helper. Mirrors
+    /// `DpdkTcpStream::check_post_burst_`; called from `send_to()`
+    /// after the underlying `sender_.send` returns. UDP is single-
+    /// packet so the classification is binary (Sent on success, Unsent
+    /// on failure) — there's no Uncertain partial-burst path the way
+    /// TCP can have.
+    [[nodiscard]] std::optional<core::ErrorInfo>
+    check_post_burst_(::eph::net::dpdk::detail::InFlightStatus presumed_status,
+                      std::size_t bytes_observed,
+                      std::size_t bytes_confirmed,
+                      const char* phase) noexcept {
+        if (platform_ == nullptr) [[likely]] return std::nullopt;
+        if (platform_->is_alive()) [[likely]] return std::nullopt;
+        ::eph::net::dpdk::detail::set_daemon_disconnected_detail(
+            presumed_status, bytes_observed, bytes_confirmed, phase);
+        return core::ErrorInfo{
+            core::Error::DaemonDisconnected,
+            "post-burst is_alive() observed daemon disconnected — "
+            "see last_daemon_disconnected_detail() for InFlightStatus"};
+    }
 
     /// @brief Supplies the registered 5-tuple to the Poller at add-time.
     ///        `*proto` is set to `kIpProtoUdp` so the poller routing table

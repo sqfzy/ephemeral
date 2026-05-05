@@ -401,6 +401,19 @@ public:
     ///
     /// @note Hot path — must stay noexcept and allocation-free.
     std::size_t poll() noexcept {
+        // T1.1+T1.2 cycle-boundary is_alive check. When the daemon is
+        // dead, skip rte_eth_rx_burst entirely — the per-queue ring is
+        // mid-teardown by the primary process and a burst issued here
+        // could race against `rte_eth_dev_close` on the daemon side.
+        // Returning 0 dispatched is the documented dead-daemon idle
+        // behaviour; the application reads `Platform::is_alive()` to
+        // decide when to tear down attached streams. Single relaxed
+        // atomic load on the healthy path; [[unlikely]] keeps the
+        // fast path linear.
+        if (alive_flag_ != nullptr &&
+            !alive_flag_->load(std::memory_order_relaxed)) [[unlikely]] {
+            return 0;
+        }
         // Always drain the NIC ring, even when no streams are currently
         // attached. A registered-but-empty Poller can still be the
         // destination of unsolicited ICMP (Type 3 Code 4), late-arriving
@@ -678,6 +691,21 @@ public:
         // Publish: acquire-loaders of state == 2 now see the write
         // above as-if it had happened before their load.
         icmp_cb_state_.store(kIcmpCbStateReady, std::memory_order_release);
+    }
+
+    /// @brief T1.1+T1.2 rx-side wire-up. Set the pointer to the owning
+    /// Platform's `is_alive` atomic flag; `poll()` will short-circuit
+    /// at the cycle boundary when the daemon dies, returning 0
+    /// dispatched without calling `rte_eth_rx_burst`. Application
+    /// code can then observe the disconnect via `Platform::is_alive()`
+    /// and unwind the affected streams.
+    ///
+    /// `nullptr` (default) disables the check — used by tests and by
+    /// callers that construct a Poller outside a Platform.
+    /// Idempotent: repeated calls overwrite the previous pointer
+    /// (same lifetime contract as the Platform).
+    void set_alive_flag_(std::atomic<bool> const* flag) noexcept {
+        alive_flag_ = flag;
     }
 
     /// @brief Diagnostic counter — number of ICMP Type 3 Code 4 messages
@@ -1225,6 +1253,16 @@ private:
     }
 
     PollerConfig                            cfg_{};
+    /// @brief Pointer to the owning Platform's `is_alive` atomic flag.
+    /// Populated by `Platform::register_poller` (T1.1+T1.2 wire-up,
+    /// 2026-05-05) so `poll()` can short-circuit at the cycle boundary
+    /// when the daemon dies, mirroring the pre-burst is_alive check
+    /// already present in Stream/Datagram send paths. `nullptr` for
+    /// Pollers created outside a Platform (test fixtures, plain
+    /// `DpdkPoller::create()` users) — the check then no-ops.
+    /// Lifetime: the Platform must outlive the Poller (same contract
+    /// the registration already imposes).
+    std::atomic<bool> const*                alive_flag_{nullptr};
     /// @brief Packed entry storage. Sized at compile time to the hard
     ///        upper bound; the runtime cap is enforced via
     ///        `cfg_.max_connections` so callers staying at the default
@@ -1358,6 +1396,10 @@ public:
     }
     [[nodiscard]] uint64_t icmp_frag_needed_dispatched() const noexcept {
         return impl_->icmp_frag_needed_dispatched();
+    }
+    /// @brief T1.1+T1.2 rx-side wire-up — see DpdkPoller<void>::set_alive_flag_.
+    void set_alive_flag_(std::atomic<bool> const* flag) noexcept {
+        impl_->set_alive_flag_(flag);
     }
 
 private:

@@ -866,6 +866,15 @@ public:
         // watchdog. Platform must outlive every attached Stream (same
         // contract the Poller already requires).
         stream->platform_ = &platform;
+        // T1.1+T1.2 rx-side wire-up: install the alive-flag address
+        // on the Poller so its cycle-boundary check can short-circuit.
+        // (Platform::register_poller cannot do this directly because
+        // platform.hpp only forward-declares DpdkPoller — same reason
+        // the ICMP callback is installed here, not at register time.)
+        if (auto* poller = platform.poller_for_queue(target_qid);
+            poller != nullptr) {
+            poller->set_alive_flag_(platform.alive_flag_addr_());
+        }
 
         // Attach the Pollable BEFORE installing any flow rule, so the
         // moment the NIC starts steering matching packets to target_qid
@@ -1169,6 +1178,18 @@ public:
                         "advanced; reconnect required",
                         sr.error().detail, off, tls_send_buf_.size(),
                         chunk, mss);
+                    // T1.1+T1.2 post-burst: if daemon died during the
+                    // partial send, surface DaemonDisconnected + status
+                    // (off > 0 → Uncertain; off == 0 → Unsent). Otherwise
+                    // pass through the original session error.
+                    if (auto e = check_post_burst_(
+                            off > 0
+                                ? ::eph::net::dpdk::detail::InFlightStatus::Uncertain
+                                : ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                            tls_send_buf_.size(), off,
+                            "DpdkTcpStream::send(TLS,post-burst-error)")) {
+                        return std::unexpected(*e);
+                    }
                     return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
@@ -1179,6 +1200,16 @@ public:
                         "0 bytes (off={}/{}, chunk={}) — latching "
                         "tls_corrupt_",
                         off, tls_send_buf_.size(), chunk);
+                    // T1.1+T1.2 post-burst classification — same shape as
+                    // the !sr branch above.
+                    if (auto e = check_post_burst_(
+                            off > 0
+                                ? ::eph::net::dpdk::detail::InFlightStatus::Uncertain
+                                : ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                            tls_send_buf_.size(), off,
+                            "DpdkTcpStream::send(TLS,post-burst-zero)")) {
+                        return std::unexpected(*e);
+                    }
                     return std::unexpected(core::ErrorInfo{
                         core::Error::BufferFull,
                         "DpdkTcpStream::send: TcpSession::send returned 0"});
@@ -1186,6 +1217,16 @@ public:
                 off += *sr;
             }
             inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
+            // T1.1+T1.2 post-burst: TLS path sent every byte successfully;
+            // if the daemon died between our pre-burst check and now,
+            // status is `Sent` (bytes are committed; reconnect path
+            // should NOT retransmit lest the peer dedupe).
+            if (auto e = check_post_burst_(
+                    ::eph::net::dpdk::detail::InFlightStatus::Sent,
+                    app_payload.size(), app_payload.size(),
+                    "DpdkTcpStream::send(TLS,post-burst)")) {
+                return std::unexpected(*e);
+            }
             // API contract: report plaintext byte count.
             return app_payload.size();
         } else {
@@ -1220,6 +1261,15 @@ public:
                         "DpdkTcpStream::send: {} "
                         "(off={}/{}, chunk={}, mss={})",
                         sr.error().detail, off, app_payload.size(), chunk, mss);
+                    // T1.1+T1.2 post-burst classification.
+                    if (auto e = check_post_burst_(
+                            off > 0
+                                ? ::eph::net::dpdk::detail::InFlightStatus::Uncertain
+                                : ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                            app_payload.size(), off,
+                            "DpdkTcpStream::send(plain,post-burst-error)")) {
+                        return std::unexpected(*e);
+                    }
                     return std::unexpected(sr.error());
                 }
                 if (*sr == 0) {
@@ -1230,6 +1280,14 @@ public:
                         "DpdkTcpStream::send: TcpSession::send returned 0 "
                         "bytes (off={}/{}, chunk={})",
                         off, app_payload.size(), chunk);
+                    if (auto e = check_post_burst_(
+                            off > 0
+                                ? ::eph::net::dpdk::detail::InFlightStatus::Uncertain
+                                : ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                            app_payload.size(), off,
+                            "DpdkTcpStream::send(plain,post-burst-zero)")) {
+                        return std::unexpected(*e);
+                    }
                     return std::unexpected(core::ErrorInfo{
                         core::Error::BufferFull,
                         "DpdkTcpStream::send: TcpSession::send returned 0"});
@@ -1237,6 +1295,14 @@ public:
                 off += *sr;
             }
             inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
+            // T1.1+T1.2 post-burst: full payload through; status `Sent`
+            // when daemon died after the burst.
+            if (auto e = check_post_burst_(
+                    ::eph::net::dpdk::detail::InFlightStatus::Sent,
+                    app_payload.size(), app_payload.size(),
+                    "DpdkTcpStream::send(plain,post-burst)")) {
+                return std::unexpected(*e);
+            }
             return app_payload.size();
         }
     }
@@ -1730,6 +1796,37 @@ public:
     /// effective Platform strict flag into the stream so the hot path
     /// can branch on a cheap stack-local `bool`. Not for user code.
     void set_strict_rx_checksum_(bool v) noexcept { strict_rx_cksum_ = v; }
+
+    /// @brief T1.1+T1.2 post-burst classification helper. Called from
+    /// `send()` at each return point AFTER the underlying
+    /// `sess_.send()` has completed (success, partial, or error).
+    /// Returns `nullopt` when the daemon is still alive — caller
+    /// returns its normal value. Returns a populated `ErrorInfo`
+    /// (and stamps `last_daemon_disconnected_detail()`) when the
+    /// daemon has died during this send — caller should propagate
+    /// `DaemonDisconnected` upstream.
+    ///
+    /// `presumed_status` is what the caller infers from the burst
+    /// result:
+    ///   - All bytes acknowledged sent → `InFlightStatus::Sent`
+    ///   - Partial bytes (off > 0 < total) → `InFlightStatus::Uncertain`
+    ///   - Zero bytes through → `InFlightStatus::Unsent`
+    /// Caller is responsible for picking the right one based on its
+    /// branch.
+    [[nodiscard]] std::optional<core::ErrorInfo>
+    check_post_burst_(::eph::net::dpdk::detail::InFlightStatus presumed_status,
+                      std::size_t bytes_observed,
+                      std::size_t bytes_confirmed,
+                      const char* phase) noexcept {
+        if (platform_ == nullptr) [[likely]] return std::nullopt;
+        if (platform_->is_alive()) [[likely]] return std::nullopt;
+        ::eph::net::dpdk::detail::set_daemon_disconnected_detail(
+            presumed_status, bytes_observed, bytes_confirmed, phase);
+        return core::ErrorInfo{
+            core::Error::DaemonDisconnected,
+            "post-burst is_alive() observed daemon disconnected — "
+            "see last_daemon_disconnected_detail() for InFlightStatus"};
+    }
 
     /// @brief Invoked by `DpdkPoller::remove` and `~DpdkPoller`.
     void notify_detached_() noexcept { attached_to_ = nullptr; }

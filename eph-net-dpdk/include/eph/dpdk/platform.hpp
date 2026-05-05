@@ -925,6 +925,15 @@ public:
     /// call `is_alive()` (the read side) instead.
     void mark_daemon_disconnected_() noexcept;
 
+    /// @brief Address of the underlying `is_alive` atomic flag, exposed
+    /// for the rx-side wire-up of T1.1+T1.2 — `Stream::create_and_attach`
+    /// passes this pointer to `DpdkPoller::set_alive_flag_(...)` so the
+    /// Poller's `poll()` can short-circuit at the cycle boundary when
+    /// the daemon dies. Returns nullptr on moved-from instances.
+    /// Trailing underscore reflects the helper's "internal-but-publicly-
+    /// reachable-from-eph-net-dpdk-glue" status.
+    [[nodiscard]] std::atomic<bool> const* alive_flag_addr_() const noexcept;
+
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
@@ -3264,6 +3273,11 @@ inline bool Platform::is_alive() const noexcept {
     return impl_->is_alive.load(std::memory_order_acquire);
 }
 
+inline std::atomic<bool> const* Platform::alive_flag_addr_() const noexcept {
+    if (!impl_) return nullptr;
+    return &impl_->is_alive;
+}
+
 inline void Platform::mark_daemon_disconnected_() noexcept {
     if (!impl_) return;
     // Idempotent: only log on the first transition true → false so a
@@ -3348,7 +3362,10 @@ Platform::register_poller(uint16_t queue_id,
     // point (platform.hpp sits below poller.hpp in the dep graph).
     // `DpdkTcpStream::create_and_attach` installs the callback as part
     // of its attach sequence — by the time any stream attaches, both
-    // headers are fully included.
+    // headers are fully included. The T1.1+T1.2 alive-flag wire-up
+    // (`poller->set_alive_flag_(...)`) follows the same pattern; see
+    // `Platform::alive_flag_addr_()` below for the accessor that
+    // Stream::create_and_attach reaches for.
     SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
         "Poller registered: port={}, queue={}, ptr={:p}",
         impl_->config.port_id, queue_id, static_cast<void*>(poller));

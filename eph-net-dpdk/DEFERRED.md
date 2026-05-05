@@ -47,45 +47,7 @@ Listed in suggested execution order based on dependency graph + value.
 
 ---
 
-### T1.1+T1.2 Sent / Uncertain InFlightStatus paths (Tier 1, partial)
-
-**Status**: Unsent path is fully wired (commit `ff103c7a`). Pre-burst
-`is_alive()` check populates `DaemonDisconnectedDetail` with
-`InFlightStatus::Unsent` and bytes_observed == app payload size.
-
-**What's still missing**:
-- `Sent` — bytes already on the wire when daemon dies; app should
-  treat as committed and dedupe via higher-layer sequence number.
-- `Uncertain` — partial-tx-burst-then-died; bytes may or may not be
-  on the wire.
-
-**Why deferred**: detection requires hooking inside `rte_eth_tx_burst`
-itself, which means either:
-
-  (a) Burst-of-1 mode for sensitive sends (latency regression — the
-      DPDK PMD batches dramatically improve throughput; one-by-one
-      would be a 2-5× hit on the hot path)
-  (b) Polling alive *between* sub-burst chunks if we split the
-      send into multiple `rte_eth_tx_burst` calls of size N (better
-      compromise — adds 1 extra atomic load per N packets but
-      preserves throughput); this needs design + bench.
-  (c) Externally-driven "post-burst is_alive" — verify after the
-      burst completed. The sub-burst result already gives confirmed
-      packet count from `rte_eth_tx_burst` return, so combining
-      that with a post-burst is_alive check classifies Sent vs
-      Uncertain correctly. No mid-burst hook needed; the cost is
-      one extra atomic load per app `send()` call.
-
-**Recommended next step**:
-```
-/pax --feat --deep "T1.1+T1.2 Sent/Uncertain wiring: post-burst
-is_alive() classification (option c above), bench validation against
-bench_rx_hot_path baseline"
-```
-
-**Estimated effort**: 2-3 days design + 2-3 days施工 + 1 day bench.
-
----
+<!-- T1.1+T1.2 Sent/Uncertain CLOSED in follow-up commit; see CHANGELOG. -->
 
 ### T2.1 + T2.2 sub-section splits (Tier 2, partial)
 

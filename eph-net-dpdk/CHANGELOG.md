@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Wired — full T1.1+T1.2 InFlightStatus three-state classification (2026-05-05, follow-up)
+
+Closes the previously-deferred Sent / Uncertain paths. The pre-burst
+check (commit `ff103c7a`) only ever produced `Unsent`; this follow-up
+adds the post-burst classification at every send return point and
+the rx-side cycle-boundary check, completing the InFlightStatus
+three-state contract documented in
+`detail/daemon_disconnected_hook.hpp`.
+
+Changes:
+
+  - `DpdkTcpStream::check_post_burst_(presumed_status, observed,
+    confirmed, phase)` — private helper invoked at each return point
+    in `send()`. Returns `nullopt` when the daemon is still alive
+    (caller proceeds with normal return); otherwise stamps
+    `last_daemon_disconnected_detail()` and returns a
+    `DaemonDisconnected` ErrorInfo. One relaxed atomic load on the
+    healthy path.
+  - All 6 return points in `DpdkTcpStream::send` (TLS path: success +
+    partial-error + zero-byte; plaintext path: success + partial-
+    error + zero-byte) now invoke the helper with the appropriate
+    `presumed_status`:
+      - full-success → `Sent`
+      - partial-error with `off > 0` → `Uncertain`
+      - error with `off == 0` → `Unsent`
+  - `DpdkUdpSocket::check_post_burst_` — same helper. UDP is single-
+    packet so classification is binary: success → `Sent`, failure →
+    `Unsent` (no Uncertain partial-burst path).
+  - `DpdkPoller::set_alive_flag_(std::atomic<bool> const*)` — public
+    setter that installs an alive-flag pointer; `poll()` now
+    short-circuits at the cycle boundary when the flag is non-null
+    and false. `[[unlikely]]` to keep the fast path linear.
+  - `Platform::alive_flag_addr_()` — new public accessor returning
+    the address of the underlying `is_alive` atomic. Exposed because
+    `Platform::register_poller` cannot wire the alive flag directly
+    (DpdkPoller is only forward-declared at that point in
+    platform.hpp; same constraint as the ICMP callback).
+  - `DpdkTcpStream::create_and_attach` and
+    `DpdkUdpSocket::create_and_attach` now call
+    `poller->set_alive_flag_(platform.alive_flag_addr_())` after the
+    Poller attach, mirroring how the ICMP callback is wired.
+
+New test: `tests/test_inflight_classification.cpp` — 8 cases all
+passing, exercising the decision table for every (presumed_status,
+post_alive) combination plus Poller alive-flag setter contract.
+
+Verified:
+  - test_dpdk_tcp_stream             30/30
+  - test_dpdk_udp_socket             24/24
+  - test_dpdk_poller                 33/33
+  - test_inflight_classification      8/8 (new)
+  - test_daemon_disconnected_hook     7/7
+  - test_dpdk_fault_tolerance        14/14
+  - test_dpdk_drain                   5/5
+  - test_dpdk_reasm_overflow          6/6
+  - All 218 build targets compile
+
+Hot path cost: 2 relaxed atomic loads per `send()` (pre-burst +
+post-burst on success path), 1 atomic load per `poll()` cycle.
+`[[unlikely]]` on every check; healthy path is a single never-taken
+branch each. bench_rx_hot_path baseline preserved.
+
+Track item: T1.1+T1.2 Sent/Uncertain wire-up — closes the last
+remaining piece of the in-flight semantics contract. The deferred
+"Sent during partial-burst inside rte_eth_tx_burst" sub-case is
+now the only Sent-side gap (DpdkTcpStream's chunked send already
+converts that into the Uncertain bucket correctly).
+
 ### Added — `test_dpdk_daemon_recovery` integration scenario (T1.4, 2026-05-05)
 
 Pairs with the T1.1+T1.2 wire-up. Two test cases run unconditionally:
