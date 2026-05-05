@@ -232,3 +232,67 @@ TEST(FakeStream, InjectSendErrorRichOverloadCarriesDetail) {
     EXPECT_EQ(r.error().code, eph::core::Error::TlsHandshakeFailed);
     EXPECT_STREQ(r.error().detail, "tls record decrypt failed: bad mac");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PacketView trim_front / trim_back / arrival_tsc — production-parity
+// surface that the FakeStream PacketView exposes so tests can compose a
+// real codec over the mock. Until now no unit test pinned the clamp
+// behaviour — a regression in `trim_front(n > length)` would silently
+// underflow `length()` and any codec test would observe an enormous
+// span.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(FakeStreamPacketView, TrimFrontClampsAtLength) {
+    uint8_t buf[] = {0xAA, 0xBB, 0xCC, 0xDD};
+    ent::FakeStream::PacketView v(buf, sizeof(buf));
+    EXPECT_EQ(v.length(), 4u);
+    v.trim_front(10);  // way more than 4
+    EXPECT_EQ(v.length(), 0u);
+    EXPECT_EQ(v.data(), buf + 4);
+}
+
+TEST(FakeStreamPacketView, TrimBackClampsAtLength) {
+    uint8_t buf[] = {0x11, 0x22, 0x33};
+    ent::FakeStream::PacketView v(buf, sizeof(buf));
+    v.trim_back(99);
+    EXPECT_EQ(v.length(), 0u);
+    // tail_ pulled back to head_; data() still points at the start.
+    EXPECT_EQ(v.data(), buf);
+}
+
+TEST(FakeStreamPacketView, TrimFrontThenTrimBackDoesNotUnderflow) {
+    // After a partial trim_front, trim_back must clamp on the remaining
+    // window — not on the original length. A pre-clamp version would
+    // wrap `tail_ -= n` when `n` exceeded the residual window.
+    uint8_t buf[] = {0x01, 0x02, 0x03, 0x04, 0x05};
+    ent::FakeStream::PacketView v(buf, sizeof(buf));
+    v.trim_front(3);   // window now [3, 5) → length 2
+    EXPECT_EQ(v.length(), 2u);
+    v.trim_back(7);    // request more than 2 — must clamp
+    EXPECT_EQ(v.length(), 0u);
+}
+
+TEST(FakeStreamPacketView, ArrivalTscPropagatesFromCtor) {
+    uint8_t buf[] = {0x42};
+    ent::FakeStream::PacketView v(buf, sizeof(buf), /*tsc=*/0xDEADBEEFCAFEBABEull);
+    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEFCAFEBABEull);
+    // trim ops do NOT touch the timestamp — it pinpoints arrival, not
+    // the post-decode window.
+    v.trim_front(1);
+    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEFCAFEBABEull);
+}
+
+TEST(FakeStreamPacketView, ArrivalTscDefaultsToZero) {
+    uint8_t buf[] = {0x00};
+    ent::FakeStream::PacketView v(buf, sizeof(buf));
+    EXPECT_EQ(v.arrival_tsc(), 0u);
+}
+
+TEST(FakeStreamPacketView, WritableDataMatchesData) {
+    uint8_t buf[] = {0x10, 0x20, 0x30};
+    ent::FakeStream::PacketView v(buf, sizeof(buf));
+    EXPECT_EQ(v.writable_data(), v.data());
+    v.trim_front(1);
+    EXPECT_EQ(v.writable_data(), v.data());
+    EXPECT_EQ(v.writable_data(), buf + 1);
+}
