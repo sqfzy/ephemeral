@@ -416,6 +416,21 @@ public:
             overflow_ = true;
             return 0;
         }
+        // Reject empty begin_string up-front. FIX parsers reject "8=\x01" at
+        // the wire level (BeginString is mandatory and must match the
+        // negotiated session version), so emitting an empty value produces
+        // a message that no peer will accept. The same caller bug also
+        // exposes a UBSan trip on the line-447 memcpy below: a default-
+        // constructed std::string_view's data() may legitimately be nullptr,
+        // and memcpy(p, nullptr, 0) is technically UB per ISO C. Reject
+        // here so neither failure mode reaches the wire.
+        if (begin_string.empty()) [[unlikely]] {
+            SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+                "FIX builder: begin_string must be non-empty "
+                "(use \"FIX.4.4\" or another negotiated version literal)");
+            overflow_ = true;
+            return 0;
+        }
 
         // Hardening: reject begin_string containing SOH (0x01) or NUL (0x00).
         // SOH is the FIX field delimiter — embedding it terminates the

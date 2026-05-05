@@ -582,6 +582,35 @@ TEST(FixBuilder, finish_rejects_begin_string_with_nul) {
     EXPECT_TRUE(b.has_overflow());
 }
 
+// Empty begin_string is rejected at finish(). Two failure modes the
+// guard prevents: (1) FIX parsers reject "8=\x01" because BeginString
+// is mandatory and cannot be empty per FIX spec; (2) the inline memcpy
+// at the size-0 path can hit memcpy(p, nullptr, 0) UB when callers pass
+// a default-constructed string_view (UBSan flags this).
+TEST(FixBuilder, finish_rejects_empty_begin_string) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // Default-constructed string_view: data() may be nullptr, size() == 0.
+    size_t len = b.finish(std::string_view{});
+
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
+TEST(FixBuilder, finish_rejects_explicit_empty_string_literal) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+
+    // "" — non-null data() but size() == 0. Same empty-rejection path.
+    size_t len = b.finish("");
+
+    EXPECT_EQ(len, 0u);
+    EXPECT_TRUE(b.has_overflow());
+}
+
 TEST(FixParser, get_char_single_char_field) {
     std::string body = "35=D\x01" "54=1\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
