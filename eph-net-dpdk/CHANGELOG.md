@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Generalised — InFlightStatus shared with kernel backend (J series, 2026-05-05)
+
+The InFlightStatus three-state classification (Unsent/Sent/Uncertain)
+introduced in T1.1+T1.2 (commits `ff103c7a`/`3720e44e`) was originally
+DPDK-namespaced. The kernel backend has the same in-flight-bytes
+question on `EBADF`/`EPIPE`/`ECONNRESET`/partial-send paths — apps
+that switch backends or use both should get the same recovery
+semantics.
+
+This commit:
+  - Adds a shared `eph::net::in_flight_status.hpp` carrying the
+    enum, detail struct, and thread_local accessor.
+  - Reduces `eph-net-dpdk/.../daemon_disconnected_hook.hpp` to a
+    backwards-compat shim re-exporting the shared symbols. All
+    existing DPDK call sites compile unchanged.
+  - Wires the kernel `KernelTcpStream::send` (TLS + non-TLS paths,
+    including pre-condition guards) and `KernelUdpSocket::send_to`
+    (every error branch including EAGAIN/EMSGSIZE/ENOBUFS/
+    unreachable + success path) to populate the same thread_local.
+  - Cross-backend invariant: in-process apps using both backends
+    share the same thread_local — a reconciliation routine reads
+    `last_in_flight_detail()` and sees the most-recent
+    classification regardless of which backend produced it.
+
+The kernel-side classification rules:
+  - NotAttached / fd_<0 / not-Established → Unsent (pre-burst)
+  - sendto EAGAIN/EMSGSIZE/ENOBUFS/unreachable → Unsent (pre-enqueue)
+  - non-TLS send error → Unsent (ByteSocket::send is all-or-nothing)
+  - TLS encrypt error → Unsent (no socket call yet)
+  - TLS sock send error → Uncertain (AEAD seq advanced but bytes
+    might be partially on wire)
+  - non-TLS partial return (`*sr < requested`) → Uncertain
+  - successful sendto/send → Sent (kernel committed)
+
+No behavioural change on the DPDK side.
+
 ### Wired — T2.3 QueueAllocator HMAC tamper protection (2026-05-05, follow-up)
 
 Second of the two cold-path registry HMAC wirings (the first was

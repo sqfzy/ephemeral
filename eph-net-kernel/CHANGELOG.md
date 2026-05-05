@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added — InFlightStatus three-state classification on send paths (J series, 2026-05-05)
+
+`KernelTcpStream::send` and `KernelUdpSocket::send_to` now populate
+`eph::net::last_in_flight_detail()` with one of `Unsent` / `Sent` /
+`Uncertain` on every error path (and in the partial-success TCP
+branch). This brings the kernel backend to behavioural symmetry with
+the DPDK backend's daemon-died classification (DpdkTcpStream commit
+`3720e44e`), so HFT apps that switch backends — or use both in the
+same process — share the same recovery state machine.
+
+Classification rules:
+  - NotAttached / fd_<0 / not-Established → Unsent (pre-burst)
+  - sendto EAGAIN/EMSGSIZE/ENOBUFS/unreachable → Unsent (pre-enqueue)
+  - non-TLS send error → Unsent (ByteSocket::send is all-or-nothing)
+  - TLS encrypt error → Unsent (no socket call yet)
+  - TLS sock send error → Uncertain (AEAD seq advanced; bytes might
+    be partially on wire)
+  - non-TLS partial return (`*sr < requested`) → Uncertain
+  - successful sendto / sock_.send (full bytes) → Sent (kernel
+    committed; do NOT retransmit on later EPIPE/ECONNRESET)
+
+`eph::net::in_flight_status.hpp` (in eph-net) is the canonical shared
+header. The DPDK-side `daemon_disconnected_hook.hpp` is now a thin
+alias re-export for backwards compatibility.
+
+New test: `tests/test_kernel_inflight_status.cpp` — 7 cases all
+passing; verifies cross-backend thread_local sharing, every kernel
+phase tag, and thread-isolation invariants.
+
+Hot path cost: zero — populate calls fire only on error paths, which
+are already cold. bench_kernel baselines preserved.
+
 ### Tests — symmetric concept conformance for WS / Mold64 codecs
 
 Mirrors a parallel commit on the DPDK backend. The kernel-side

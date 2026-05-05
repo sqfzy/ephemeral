@@ -48,6 +48,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/in_flight_status.hpp"   // T1.1+T1.2 cross-backend symmetry (J series)
 #include "eph/utils/time.hpp"
 #include "eph/net/detail/http_connect.hpp"   // HTTP CONNECT proxy
 #include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
@@ -714,11 +715,20 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send(std::span<const uint8_t> app_payload) noexcept {
         if (attached_to_ == nullptr) [[unlikely]] {
+            // J series: pre-condition failure; no bytes ever left.
+            ::eph::net::set_in_flight_detail(
+                ::eph::net::InFlightStatus::Unsent,
+                app_payload.size(), 0,
+                "KernelTcpStream::send(NotAttached)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "KernelTcpStream::send called before attach"});
         }
         if (state_ != TcpState::Established) [[unlikely]] {
+            ::eph::net::set_in_flight_detail(
+                ::eph::net::InFlightStatus::Unsent,
+                app_payload.size(), 0,
+                "KernelTcpStream::send(NotEstablished)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelTcpStream::send: state != Established"});
@@ -758,6 +768,13 @@ public:
                     "({}) — latching tls_corrupt_; AEAD write seq may have "
                     "partially advanced past wire, reconnect required",
                     enc.error().detail);
+                // J series: encrypt failure is pre-socket; no bytes
+                // left this process → Unsent.
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Unsent,
+                    /*bytes_observed=*/app_payload.size(),
+                    /*bytes_confirmed=*/0,
+                    /*phase=*/"KernelTcpStream::send(TLS,encrypt)");
                 return std::unexpected(enc.error());
             }
             // `encrypt_for_send` advanced the TLS write sequence number
@@ -781,6 +798,17 @@ public:
                     "({}) — latching tls_corrupt_ since TLS write seq "
                     "was already advanced; reconnect required",
                     sr.error().detail);
+                // J series: TLS encrypt advanced the AEAD seq for the
+                // full plaintext, but the underlying socket send
+                // failed. Some ciphertext may have hit the wire
+                // before EAGAIN/EPIPE-induced abort → Uncertain, not
+                // Unsent. Application should treat as "may have been
+                // received" and dedupe via higher-layer sequence.
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Uncertain,
+                    /*bytes_observed=*/app_payload.size(),
+                    /*bytes_confirmed=*/0,
+                    /*phase=*/"KernelTcpStream::send(TLS,sock)");
                 return std::unexpected(sr.error());
             }
             inc_<::eph::net::StreamMetric::kBytesSent>(app_payload.size());
@@ -788,8 +816,45 @@ public:
             return app_payload.size();
         } else {
             auto sr = sock_.send(app_payload);
-            if (!sr) [[unlikely]] return std::unexpected(sr.error());
+            if (!sr) [[unlikely]] {
+                // J series cross-backend symmetry: stamp the
+                // thread_local InFlightDetail so the recovery state
+                // machine sees the same three-state classification it
+                // would on the DPDK side. ByteSocket::send is an
+                // all-or-nothing wrapper today (it loops internally
+                // until the full payload is queued or an error fires
+                // — partial returns are NOT possible on this path),
+                // so failure means bytes never left this process →
+                // status is `Unsent`.
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Unsent,
+                    /*bytes_observed=*/app_payload.size(),
+                    /*bytes_confirmed=*/0,
+                    /*phase=*/"KernelTcpStream::send");
+                return std::unexpected(sr.error());
+            }
             inc_<::eph::net::StreamMetric::kBytesSent>(*sr);
+            // Successful return — bytes are committed to the kernel
+            // TX buffer. From the application's perspective they're
+            // committed; do NOT retransmit on a subsequent
+            // EPIPE/ECONNRESET (the kernel TCP stack will deliver or
+            // diagnose). Stamp `Sent` proactively so a watchdog that
+            // observes the stream go bad next can confirm the prior
+            // call completed cleanly.
+            //
+            // Note: `*sr` may equal less than `app_payload.size()`
+            // only if ByteSocket::send is later changed to allow
+            // partial returns; today it loops internally and only
+            // returns on full success or hard error. If the contract
+            // changes, the partial-success branch should classify as
+            // `Uncertain` and populate bytes_confirmed = *sr.
+            if (*sr < app_payload.size()) [[unlikely]] {
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Uncertain,
+                    /*bytes_observed=*/app_payload.size(),
+                    /*bytes_confirmed=*/*sr,
+                    /*phase=*/"KernelTcpStream::send(partial)");
+            }
             return *sr;
         }
     }

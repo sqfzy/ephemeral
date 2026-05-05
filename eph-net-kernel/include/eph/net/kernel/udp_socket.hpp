@@ -41,6 +41,7 @@
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
+#include "eph/net/in_flight_status.hpp"   // J series cross-backend symmetry
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/span_view.hpp"
 #include "eph/net/kernel/poller.hpp"
@@ -218,11 +219,20 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     send_to(std::span<const uint8_t> app_payload, const SocketAddr& dst) noexcept {
         if (attached_to_ == nullptr) [[unlikely]] {
+            // J series: pre-condition failure; bytes never left.
+            ::eph::net::set_in_flight_detail(
+                ::eph::net::InFlightStatus::Unsent,
+                app_payload.size(), 0,
+                "KernelUdpSocket::send_to(NotAttached)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "KernelUdpSocket::send_to called before attach"});
         }
         if (fd_ < 0) [[unlikely]] {
+            ::eph::net::set_in_flight_detail(
+                ::eph::net::InFlightStatus::Unsent,
+                app_payload.size(), 0,
+                "KernelUdpSocket::send_to(fd_closed)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelUdpSocket::send_to: fd closed"});
@@ -240,6 +250,12 @@ public:
         if (n < 0) [[unlikely]] {
             const int err = errno;
             if (err == EAGAIN || err == EWOULDBLOCK) {
+                // J series: WouldBlock means the kernel-side send queue
+                // is full but our payload was NOT enqueued — Unsent.
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Unsent,
+                    app_payload.size(), 0,
+                    "KernelUdpSocket::send_to(EAGAIN)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::WouldBlock,
                     "KernelUdpSocket::send_to: would block"});
@@ -255,12 +271,21 @@ public:
             // lumped into Disconnected, which hid the actionable
             // causes behind a generic "unexpected I/O error" string.
             if (err == EMSGSIZE || err == EINVAL) {
+                // Kernel rejected the payload before enqueue — Unsent.
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Unsent,
+                    app_payload.size(), 0,
+                    "KernelUdpSocket::send_to(EMSGSIZE)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "KernelUdpSocket::send_to: payload rejected by kernel "
                     "(EMSGSIZE/EINVAL)"});
             }
             if (err == ENOBUFS || err == ENOMEM) {
+                ::eph::net::set_in_flight_detail(
+                    ::eph::net::InFlightStatus::Unsent,
+                    app_payload.size(), 0,
+                    "KernelUdpSocket::send_to(ENOBUFS)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::BufferFull,
                     "KernelUdpSocket::send_to: kernel buffer exhausted "
@@ -270,11 +295,23 @@ public:
             // fall through to Disconnected since from the caller's
             // perspective the datagram cannot be delivered and the
             // reconnect policy is the right recovery action.
+            // For these, sendto returns -1 immediately without
+            // enqueueing — bytes never left → Unsent.
+            ::eph::net::set_in_flight_detail(
+                ::eph::net::InFlightStatus::Unsent,
+                app_payload.size(), 0,
+                "KernelUdpSocket::send_to(unreachable)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
                 "KernelUdpSocket::send_to: sendto failed (see log for errno)"});
         }
         inc_<::eph::net::StreamMetric::kBytesSent>(static_cast<std::uint64_t>(n));
+        // Successful sendto — kernel committed the datagram to its TX
+        // buffer. UDP is fire-and-forget so from app perspective this
+        // is `Sent` (the only "Uncertain" pathway in UDP would be the
+        // datagram getting silently dropped after enqueue, which
+        // sendto's return value cannot detect — that's the inherent
+        // UDP unreliability the application already designs around).
         return static_cast<std::size_t>(n);
     }
 
