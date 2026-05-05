@@ -175,6 +175,33 @@ TEST(FixSession, logon_send_failure) {
     EXPECT_FALSE(r.has_value());
 }
 
+// logout() error-state contract (documented in R80): on TX failure
+// the state is LEFT AT kActive — we don't pretend the session is
+// dead because a transient TLS desync / EPIPE may be recoverable.
+// Without this test, a future refactor that "fixed" the asymmetry
+// (e.g. forcing kDisconnected on TX failure) would silently break
+// reconnect logic that depends on the kActive-on-TX-fail contract.
+TEST(FixSession, logout_send_failure_leaves_state_active) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+    ASSERT_EQ(session.state(), SessionState::kActive);
+
+    // Now poison the transport so the Logout send fails.
+    mock.set_send_fails(true);
+    auto r = session.logout(std::chrono::milliseconds{100});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(std::string_view{r.error()}.find("failed to send"),
+              std::string_view::npos)
+        << "error message must mention send failure: " << r.error();
+    // The state must NOT have been forced to kDisconnected — the
+    // contract is "TX-fail leaves state Active so caller can decide".
+    EXPECT_EQ(session.state(), SessionState::kActive)
+        << "logout() TX failure incorrectly transitioned state to "
+        << session_state_name(session.state())
+        << " — breaks the documented R80 asymmetry contract";
+}
+
 // ===========================================================================
 // Server HeartBtInt override
 // ===========================================================================
