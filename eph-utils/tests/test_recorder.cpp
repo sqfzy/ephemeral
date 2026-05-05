@@ -237,6 +237,28 @@ TEST_F(RecorderTest, MergeFromAnotherRecorder) {
     EXPECT_EQ(rec1.count(), 100);
 }
 
+TEST_F(RecorderTest, MergeIncompatibleHistogramReturnsFalse) {
+    // Recorder::merge delegates the histogram step to HdrHistogram::merge,
+    // which rejects pairs with mismatched lowest/highest trackable
+    // values via is_compatible(). When that step fails, Recorder::merge
+    // must return false WITHOUT mutating any of `this`'s counters —
+    // otherwise a hostile or misconfigured recorder pair could partially
+    // corrupt accumulated stats.
+    Recorder rec1("Rec1", /*lowest_cycles=*/1,    /*highest_cycles=*/1'000'000);
+    Recorder rec2("Rec2", /*lowest_cycles=*/100,  /*highest_cycles=*/1'000'000);
+
+    EXPECT_TRUE(rec1.record(500));
+    EXPECT_TRUE(rec2.record(500));
+    auto pre_count_1 = rec1.count();
+    auto pre_count_2 = rec2.count();
+
+    EXPECT_FALSE(rec1.merge(rec2))
+        << "differing lowest_trackable_value must reject the merge";
+    EXPECT_EQ(rec1.count(), pre_count_1)
+        << "rejected merge must not bump count_ on either side";
+    EXPECT_EQ(rec2.count(), pre_count_2);
+}
+
 TEST_F(RecorderTest, MergeSaturatesTotalsAgainstWrap) {
     // record_values already saturates `total_cycles_` at UINT64_MAX on
     // overflow. Two saturated recorders merged should NOT wrap their
