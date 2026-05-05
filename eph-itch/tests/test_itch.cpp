@@ -1793,6 +1793,61 @@ TEST(ItchParserStats, equality_compares_all_fields) {
     EXPECT_NE(a, b);
 }
 
+// ParserStats::throughput / error_rate had no direct tests — both are
+// monitoring derivatives that callers compute on a delta snapshot
+// (`delta = t2 - t1; delta.throughput(elapsed_ns)`). Pin both the
+// non-zero math and the safe div-by-zero guard.
+
+TEST(ItchParserStats, throughput_messages_per_second) {
+    ParserStats s{};
+    s.messages_parsed = 1'000'000;
+    // 1M messages over 1s = 1M msg/s
+    EXPECT_DOUBLE_EQ(s.throughput(1'000'000'000ULL), 1'000'000.0);
+    // 1M messages over 500ms = 2M msg/s
+    EXPECT_DOUBLE_EQ(s.throughput(500'000'000ULL), 2'000'000.0);
+}
+
+TEST(ItchParserStats, throughput_zero_duration_returns_zero) {
+    // Zero-duration division-by-zero guard — must return 0.0 rather
+    // than +inf / NaN, otherwise downstream dashboards alert on
+    // "infinite throughput".
+    ParserStats s{};
+    s.messages_parsed = 1234;
+    EXPECT_EQ(s.throughput(0), 0.0);
+}
+
+TEST(ItchParserStats, throughput_zero_messages_returns_zero) {
+    ParserStats s{};  // messages_parsed == 0
+    EXPECT_EQ(s.throughput(1'000'000'000ULL), 0.0);
+}
+
+TEST(ItchParserStats, error_rate_zero_total_returns_zero) {
+    ParserStats s{};  // both counters 0
+    EXPECT_EQ(s.error_rate(), 0.0);
+}
+
+TEST(ItchParserStats, error_rate_all_errors_returns_one) {
+    ParserStats s{};
+    s.messages_parsed = 0;
+    s.parse_errors = 10;
+    EXPECT_DOUBLE_EQ(s.error_rate(), 1.0);
+}
+
+TEST(ItchParserStats, error_rate_all_clean_returns_zero) {
+    ParserStats s{};
+    s.messages_parsed = 100;
+    s.parse_errors = 0;
+    EXPECT_EQ(s.error_rate(), 0.0);
+}
+
+TEST(ItchParserStats, error_rate_proper_fraction) {
+    // 10 errors out of 100 total = 0.1 error rate.
+    ParserStats s{};
+    s.messages_parsed = 90;
+    s.parse_errors = 10;
+    EXPECT_DOUBLE_EQ(s.error_rate(), 0.1);
+}
+
 // ===========================================================================
 // Aggregate message size helpers
 // ===========================================================================
