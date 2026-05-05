@@ -46,7 +46,6 @@
 /// copy in the test path, see `test_tls_in_place_decrypt` which feeds
 /// raw records into `TlsInPlaceDecryptor::open_in_place()` directly.
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>

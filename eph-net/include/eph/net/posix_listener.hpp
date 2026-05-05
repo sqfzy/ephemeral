@@ -16,7 +16,6 @@
 
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstring>
 #include <expected>
 #include <string>
