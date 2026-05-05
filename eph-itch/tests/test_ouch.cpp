@@ -453,3 +453,84 @@ TEST(OuchRoundTrip, EnterOrderToAccepted) {
     EXPECT_EQ(view.firm(), "MYMP");
     EXPECT_EQ(view.order_reference(), 999888777ULL);
 }
+
+// ---------------------------------------------------------------------------
+// ReplacedView tests (the previous batch had zero coverage for this view —
+// every field accessor went untested and there was no too-small boundary
+// guard. ReplacedView is the only OUCH outbound view that exposes
+// `previous_token`, which downstream order-state-machine consumers use to
+// reconcile Replace echoes back to the original order.)
+// ---------------------------------------------------------------------------
+
+TEST(OuchReplacedView, ParseAllFields) {
+    std::array<uint8_t, ReplacedView::kSize> buf{};
+    // Pre-fill with spaces so the string fields decode cleanly without
+    // relying on uninitialized memory landing on a printable byte.
+    std::memset(buf.data(), ' ', buf.size());
+
+    buf[0] = 'U';
+    const uint64_t ts = 34200000000000ULL;
+    write_be64(buf.data() + 1, ts);
+
+    // Replacement token at offset 9..22
+    std::memcpy(buf.data() + 9, "REPL_TOKEN_001", 14);
+
+    buf[23] = 'B';                                   // side
+    write_be32(buf.data() + 24, 750);                // shares
+    std::memcpy(buf.data() + 28, "MSFT    ", 8);     // symbol (right-padded)
+    write_be32(buf.data() + 36, 4205000);            // $420.50
+    write_be32(buf.data() + 40, 60);                 // tif (60s)
+    std::memcpy(buf.data() + 44, "MPID", 4);         // firm
+    buf[48] = 'Y';                                   // display
+    write_be64(buf.data() + 49, 246813579ULL);       // order_reference
+    buf[57] = 'P';                                   // capacity (principal)
+    buf[58] = 'Y';                                   // intermarket sweep
+    buf[59] = 'N';                                   // cross_type
+    buf[60] = 'L';                                   // order_state (live)
+
+    // Previous token at offset 61..74
+    std::memcpy(buf.data() + 61, "PREV_TOKEN_001", 14);
+
+    ReplacedView view(buf.data(), buf.size());
+    ASSERT_TRUE(view.valid());
+
+    EXPECT_EQ(view.msg_type(), 'U');
+    EXPECT_EQ(view.timestamp(), ts);
+    EXPECT_EQ(view.replacement_token(), "REPL_TOKEN_001");
+    EXPECT_EQ(view.side(), 'B');
+    EXPECT_EQ(view.shares(), 750u);
+    EXPECT_EQ(trim(view.symbol()), "MSFT");
+    EXPECT_EQ(view.price(), 4205000u);
+    EXPECT_EQ(view.time_in_force(), 60u);
+    EXPECT_EQ(view.firm(), "MPID");
+    EXPECT_EQ(view.display(), 'Y');
+    EXPECT_EQ(view.order_reference(), 246813579ULL);
+    EXPECT_EQ(view.capacity(), 'P');
+    EXPECT_EQ(view.int_mkt_sweep(), 'Y');
+    EXPECT_EQ(view.cross_type(), 'N');
+    EXPECT_EQ(view.order_state(), 'L');
+    EXPECT_EQ(view.previous_token(), "PREV_TOKEN_001");
+}
+
+TEST(OuchReplacedView, TooSmallBufferIsInvalid) {
+    // 79 bytes is one short of kSize (80) — caller passing a partially-
+    // received frame must not be tricked into thinking it has data.
+    std::array<uint8_t, 79> buf{};
+    ReplacedView view(buf.data(), buf.size());
+    EXPECT_FALSE(view.valid());
+}
+
+TEST(OuchReplacedView, ExactBoundarySizeAccepted) {
+    // Exactly kSize must be valid — the boundary is `>=` not `>`.
+    std::array<uint8_t, ReplacedView::kSize> buf{};
+    ReplacedView view(buf.data(), buf.size());
+    EXPECT_TRUE(view.valid());
+}
+
+TEST(OuchCanceledView, TooSmallBufferIsInvalid) {
+    // CanceledView previously lacked a too-small guard test even though
+    // every other outbound view had one. Pin the contract.
+    std::array<uint8_t, 27> buf{};  // one byte shy of kSize (28)
+    CanceledView view(buf.data(), buf.size());
+    EXPECT_FALSE(view.valid());
+}
