@@ -501,6 +501,27 @@ TEST(ItchParser, ParseErrorNames) {
     EXPECT_EQ(parse_error_name(ParseError::kTruncated), "truncated message");
 }
 
+// std::formatter<itch::ParseError> specialization had no direct test —
+// the parser's std::format("{}", err) path runs through parse_error_name,
+// but a future refactor that swaps the underlying formatter to a
+// different impl would silently lose coverage of the wire-format.
+TEST(ItchParser, ParseErrorFormatterMatchesParseErrorName) {
+    EXPECT_EQ(std::format("{}", ParseError::kIncomplete),  "incomplete");
+    EXPECT_EQ(std::format("{}", ParseError::kUnknownType), "unknown message type");
+    EXPECT_EQ(std::format("{}", ParseError::kTruncated),   "truncated message");
+    // Verify it composes inside a larger format string too — the
+    // common diagnostic-log pattern.
+    EXPECT_EQ(std::format("error={}", ParseError::kIncomplete),
+              "error=incomplete");
+}
+
+TEST(ItchParser, ParseErrorNameUnknownReturnsSentinel) {
+    // Unknown values (cast outside the enum range) must hit the
+    // trailing "unknown" return — UB territory if dropped.
+    auto bogus = static_cast<ParseError>(static_cast<uint8_t>(99));
+    EXPECT_EQ(parse_error_name(bogus), "unknown");
+}
+
 // ---------------------------------------------------------------------------
 // Test: parse() with extra data succeeds (only consumes expected size)
 // ---------------------------------------------------------------------------
