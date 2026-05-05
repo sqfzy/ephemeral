@@ -316,9 +316,17 @@ static_assert(!std::is_copy_assignable_v<HmacSha256Key>,
               "HmacSha256Key must be non-copy-assignable");
 static_assert(std::is_nothrow_move_constructible_v<HmacSha256Key>,
               "HmacSha256Key move must be noexcept for HFT use");
+static_assert(std::is_nothrow_move_assignable_v<HmacSha256Key>,
+              "HmacSha256Key move-assign must be noexcept for HFT use "
+              "(operator=(&&) is `noexcept` and the only call inside it "
+              "— OPENSSL_cleanse + memcpy — is also noexcept; pin that)");
 static_assert(std::is_nothrow_destructible_v<HmacSha256Key>,
               "HmacSha256Key destructor must be noexcept");
 static_assert(sizeof(HmacSha256Tag) == 32,
               "HmacSha256Tag must be exactly 32 bytes (no padding)");
+static_assert(std::is_trivially_copyable_v<HmacSha256Tag>,
+              "HmacSha256Tag must be trivially copyable so it can pass "
+              "through value returns / std::array storage / atomics without "
+              "implicit ctor invocations");
 
 } // namespace eph::net
