@@ -341,6 +341,54 @@ TEST(FixOrders, build_new_order_limit_zero_price_emits_with_warning_only) {
     EXPECT_DOUBLE_EQ(*px, 0.0);
 }
 
+// build_new_order's limit-zero-price WARN-only branch had a parallel
+// build_replace_order limit-negative-price test below, but the symmetric
+// limit-zero-price case for replace was missing. Pin both shapes so a
+// future tightening that turns either into a hard reject is an
+// intentional API break rather than an accidental one.
+TEST(FixOrders, build_replace_order_limit_zero_price_emits_with_warning_only) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_ZERO", "ORD_ORIG", "AAPL",
+        Side::Buy, OrdType::Limit,
+        50.0, 0.0,            // <-- price=0 on Limit replace
+        TimeInForce::Day);
+
+    EXPECT_GT(len, 0u) << "build_replace_order must still emit (warn-only contract)";
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_char(tag::OrdType), '2');  // Limit
+    EXPECT_TRUE(result->has(tag::Price));
+    auto px = result->get_double(tag::Price);
+    ASSERT_TRUE(px.has_value());
+    EXPECT_DOUBLE_EQ(*px, 0.0);
+}
+
+// build_replace_order Market with non-zero price must drop the Price
+// tag entirely — symmetric to build_new_order_market_with_nonzero_price.
+TEST(FixOrders, build_replace_order_market_with_nonzero_price_omits_price_tag) {
+    uint8_t buf[512];
+    size_t len = build_replace_order(
+        buf, sizeof(buf),
+        "SENDER", "TARGET",
+        "ORD_REPL_MKT_PX", "ORD_ORIG", "TSLA",
+        Side::Sell, OrdType::Market,
+        50.0,
+        9999.99,              // <-- ignored for Market replace
+        TimeInForce::FOK);
+
+    ASSERT_GT(len, 0u);
+
+    auto result = parse(buf, len);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->get_char(tag::OrdType), '1');  // Market
+    EXPECT_FALSE(result->has(tag::Price))
+        << "Market replace must never emit tag 44, regardless of caller value";
+}
+
 // Parallel coverage for build_replace_order — same WARN-only contract on
 // Limit + non-positive price (line 282 of orders.hpp).
 TEST(FixOrders, build_replace_order_limit_negative_price_emits_with_warning_only) {
