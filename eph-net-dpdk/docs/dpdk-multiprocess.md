@@ -146,20 +146,51 @@ processes. The `create_and_attach` paths take the source port from
 the caller-supplied `cfg.dpdk.wire.tuple.src_port` (TCP) or
 `cfg.dpdk.wire.src_port` (UDP), or rebind it to one that hashes to
 the desired queue (RSS-pinned mode via `find_src_port_for_queue`).
-The library has no global view across processes and cannot enforce
-src_port disjointness.
 
-In multi-tenant setups the operator MUST allocate src_port from a
-sub-range that is disjoint from every other tenant sharing the NIC.
-Re-using the same `(src_ip, src_port)` across tenants makes
-exchange-grade peers see duplicate connection 4-tuples and trigger
-anti-abuse disconnects.
+### Library-enforced disjointness (post-2026-05-02 daemon-led model)
 
-A reasonable convention: partition the ephemeral port range
-`[32768, 65535]` by tenant ahead of time and hardcode the
-sub-range in each tenant's `bench.conf` / app config. The exact
-partition lives outside eph — typically alongside the tenant CPU
-layout in `/etc/eph/<bdf>.cpu-layout.md`.
+In the daemon-led architecture, src_port partitioning across tenants
+is **library-enforced** by the wire-level registry, not the
+"operator's responsibility" the pre-reshape docs warned about. The
+mechanism (T2.4 in the 2026-05-05 action list — verified during
+audit, found to already be implemented):
+
+1. The daemon's `MpTopology` carries a `[port_lo, port_hi)` window
+   per process slot (held as `uint32_t` in `detail/mp_registry.hpp`'s
+   `ProcSlot` so `port_hi=65536` exclusive can be expressed without
+   wrap).
+2. `MpTopology::valid()` enforces pairwise disjointness across slots
+   *before* the primary writes the topology into the hugepage memzone
+   (see `mp_topology.hpp` — the `for (size_t i; i < total_procs;
+   ++i) for (size_t j = i+1; j < total_procs; ++j)` overlap pass).
+   Overlapping ranges fail validation; the daemon refuses to start.
+3. A tenant's `Platform::create` resolves the topology via the
+   daemon's registry handshake and exposes its window via
+   `Platform::port_range()`. `DpdkTcpStream::create_and_attach` /
+   `DpdkUdpSocket::create_and_attach` consult this window when
+   running `find_src_port_for_queue`, so auto-picked ephemeral
+   src_ports are always inside the tenant's allocated window.
+4. If the caller passes an *explicit* `cfg.dpdk.wire.tuple.src_port`
+   outside `Platform::port_range()`, the stream-attach path emits a
+   WARN with the conflict — operator override is allowed (escape
+   hatch for legacy configs) but no longer silent.
+
+So in steady state on the post-reshape architecture, the operator
+declares per-tenant `port_lo` / `port_hi` exactly once in the
+daemon's `NicServiceConfig`-derived `MpTopology`, and the library
+prevents collisions thereafter. The pre-reshape "hardcode the
+sub-range in each tenant's bench.conf" workaround is no longer
+necessary — though the convention (partition by tenant ahead of
+time) remains a good operational hygiene practice.
+
+### Manual override (legacy / hand-managed paths)
+
+Single-process Platforms (no daemon) still have no global view; in
+that mode the library can only enforce disjointness within one
+process and the cross-process contract reverts to the operator-
+managed convention. Code that builds `EalConfig` + `MpTopology`
+by hand should call `MpTopology::valid()` before `serve_nic` to
+get the pre-reshape "hardcoded sub-range" check at library level.
 
 ## PMD compatibility
 

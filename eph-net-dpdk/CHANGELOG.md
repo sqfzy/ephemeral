@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Audited — src_port range library-level guardrail (T2.4) already implemented (2026-05-05)
+
+The 2026-05-05 action list flagged T2.4 ("MpRegistry 增 src_port_range
+字段 / secondary CAS-claim 时声明 port range / 重叠拒绝") as a Tier 2
+must-do. Audit during施工 found this is **already implemented** in the
+post-2026-05-02 daemon-led architecture:
+
+- `detail/mp_registry.hpp::ProcSlot` already carries `port_lo` / `port_hi`
+  (uint32_t so `port_hi=65536` is expressible without wrap; v1 of the
+  schema). `MpTopology::valid()` already enforces pairwise disjointness
+  via the O(N²) overlap pass before the primary writes the topology
+  into hugepage memzone.
+- `Platform::port_range()` exposes the current process's `[lo, hi)`
+  window. `DpdkTcpStream` / `DpdkUdpSocket` `create_and_attach` paths
+  use this to constrain `find_src_port_for_queue` so auto-picked
+  ephemeral src_ports always stay inside the tenant's window.
+- An explicit `cfg.dpdk.wire.tuple.src_port` outside that window
+  surfaces as a stream-attach WARN (operator override allowed but
+  not silent).
+
+What was missing was the **doc**: `docs/dpdk-multiprocess.md` still
+described the pre-reshape "operator's responsibility" model. Updated
+to call out the library-enforced contract; the operator-managed
+convention is now positioned as a single-process / hand-managed
+fallback path only.
+
+No code change. Track item: T2.4 from the 2026-05-05 action list,
+closed via doc + audit.
+
 ### Added — `kNumericalAnomaliesDetected` StreamMetric + TcpSession::Stats counter (2026-05-05)
 
 Without this counter the pipeline's "we sanitize bad numerical inputs"
