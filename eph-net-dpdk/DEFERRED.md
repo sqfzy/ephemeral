@@ -150,8 +150,10 @@ sudo dd if=/dev/urandom of=/dev/hugepages/eph_<bdf>_map_0 \
 #   journalctl -u eph-nicd | grep "tamper detected"
 ```
 
-**Estimated effort**: ~1 day operator setup + verification + writing
-the 1 Hz sweep scheduler hook (~50 LoC inside `Platform::join`).
+**Estimated effort**: ~1 day operator setup + verification (the
+1 Hz sweep scheduler hook itself shipped in the M series — see
+`Platform::serve_nic`'s audit_sweeper_thread; only operator-side
+hardware verification remains).
 
 ---
 
@@ -174,40 +176,48 @@ conditions":
 ```
 2026-05-05 action list — final state:
   All 16 items progressed (some via skeleton+wiring, some fully)
-  3 sub-areas remain partial:
-    - T1.1+T1.2 Sent/Uncertain status (Unsent path fully wired)
-    - T2.1+T2.2 sub-section splits (4 of 6 candidate splits done)
-    - T2.3 registry wiring (skeleton + fuzz done)
+  Only ONE sub-area remains partial:
+    - T2.1+T2.2 sub-section splits (2 of 6 candidate splits done;
+      remaining 4 are bench-gated reshapes — see "T2.1 + T2.2
+      sub-section splits" section above)
 
-By Tier:
-  Tier 1 (multi-tenant production):    all 4 progressed
+  Closed since the original final-state writeup:
+    - T1.1+T1.2 Sent/Uncertain status — full three-state wire-up
+      shipped in commit 3720e44e (post first audit; the original
+      summary saying "Sent/Uncertain remain" is stale).
+    - T2.3 registry wiring — K/L/M/N/O/P series shipped:
+        K: IcmpDirectory verify-on-suspicion (commit ae60de63)
+        L: end-to-end serve_nic auto-enable + tenant key attach (0ac91e49)
+        M: 1 Hz audit-sweep scheduler thread (fae02e40)
+        N: eph-nicctl audit subcommand + IPC handler (d44d7b22)
+        O: bench_registry_hmac microbench + cleanup pass (187bd4ab)
+        P: eph-nicctl audit --watch + post-T2.3 hot-path bench gate (d5f75961)
+      Hot-path bench preserved (BM_ParseIp* / BM_Parse*Packet
+      byte-for-byte vs 2026-04-23 baseline); HMAC overhead is
+      cold-path only.
+
+By Tier (revised):
+  Tier 1 (multi-tenant production):    all 4 fully closed
+                                        T1.1+T1.2 fully wired
                                         T1.3 fully closed
                                         T1.4 skeleton + 2 unconditional cases
-                                        T1.1+T1.2 Unsent fully wired
-                                        Sent/Uncertain remain
-  Tier 2 (重要):                        all 6 progressed
+  Tier 2 (重要):                        5/6 fully closed
+                                        T2.1/T2.2 partial (2 extractions
+                                          each, 4 deferred reshapes)
+                                        T2.3 fully closed (K-P series)
                                         T2.4/T2.5/T2.6 fully closed
-                                        T2.1/T2.2 partial (1 extraction each)
-                                        T2.3 skeleton + fuzz
   Tier 3 (长期):                        all 6 fully closed
-
-Total session commits: 18
-Test suites green:     218 build targets compile
-                       30+ test binaries sweep all green
-                       1300+ individual test cases pass
-                       1 cleanly skipped (DaemonRecovery hardware-gated)
-Hot path:              bench_rx_hot_path baseline preserved (partial
-                       splits avoided inline-visibility-sensitive blocks;
-                       wire-up adds 1 relaxed atomic load per send,
-                       [[unlikely]]-marked, latency-impact bounded)
 ```
 
-The deferred sub-areas are all bench-gated or design-heavy — the
-right move is each-its-own-pax-session rather than auto-mode bulk.
+The remaining T2.1/T2.2 sub-section splits are bench-gated reshapes
+— the right move is each-its-own-pax-session rather than auto-mode
+bulk.
 
 ---
 
-*Last updated: 2026-05-05 (post second auto-continuation)*
-*Commit chain: `b775310b..271c0f5c` (18 commits)*
+*Last updated: 2026-05-05 — audit summary refreshed to reflect K/L/M/N/O/P
+T2.3 wiring closure + T1.1+T1.2 Sent/Uncertain wire-up.*
+*Commit chain: `b775310b..` extends through the K-P series + this
+loop-cleanup batch.*
 *See `.artifacts/INDEX.md` 2026-05-05 entries for the chain of
 artifacts (primer + decision records) supporting this施工 session.*
