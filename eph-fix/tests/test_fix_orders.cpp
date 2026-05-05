@@ -563,6 +563,33 @@ TEST(FixEnumFormatters, OrdStatusFormatsCorrectly) {
     EXPECT_EQ(std::format("{}", OrdStatus::PartiallyFilled), "PartiallyFilled");
 }
 
+// Direct ord_status_name() coverage — the std::format specialisation
+// already round-trips through this function, but pinning the function
+// itself lets a future refactor that swaps the formatter to a different
+// path (e.g. integer-stringify) catch missing renames here. Also covers
+// the Unknown sentinel branch which the format test cannot reach.
+TEST(FixEnumFormatters, OrdStatusNameFunction) {
+    EXPECT_EQ(ord_status_name(OrdStatus::New),             "New");
+    EXPECT_EQ(ord_status_name(OrdStatus::PartiallyFilled), "PartiallyFilled");
+    EXPECT_EQ(ord_status_name(OrdStatus::Filled),          "Filled");
+    EXPECT_EQ(ord_status_name(OrdStatus::DoneForDay),      "DoneForDay");
+    EXPECT_EQ(ord_status_name(OrdStatus::Canceled),        "Canceled");
+    EXPECT_EQ(ord_status_name(OrdStatus::Replaced),        "Replaced");
+    EXPECT_EQ(ord_status_name(OrdStatus::PendingCancel),   "PendingCancel");
+    EXPECT_EQ(ord_status_name(OrdStatus::Stopped),         "Stopped");
+    EXPECT_EQ(ord_status_name(OrdStatus::Rejected),        "Rejected");
+    EXPECT_EQ(ord_status_name(OrdStatus::Suspended),       "Suspended");
+    EXPECT_EQ(ord_status_name(OrdStatus::PendingNew),      "PendingNew");
+    EXPECT_EQ(ord_status_name(OrdStatus::Calculated),      "Calculated");
+    EXPECT_EQ(ord_status_name(OrdStatus::Expired),         "Expired");
+    EXPECT_EQ(ord_status_name(OrdStatus::PendingReplace),  "PendingReplace");
+}
+
+TEST(FixEnumFormatters, OrdStatusNameUnknownReturnsSentinel) {
+    auto bogus = static_cast<OrdStatus>(static_cast<char>('X'));
+    EXPECT_EQ(ord_status_name(bogus), "Unknown");
+}
+
 TEST(FixEnumFormatters, OrderStateFormatsCorrectly) {
     EXPECT_EQ(std::format("{}", OrderState::PendingNew), "PendingNew");
     EXPECT_EQ(std::format("{}", OrderState::New), "New");
