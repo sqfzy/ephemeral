@@ -189,6 +189,18 @@ TEST(RiskChecker, RejectReasonNames)
               "TotalExposureExceeded");
     EXPECT_EQ(risk_reject_name(RiskRejectReason::kRateLimitExceeded),
               "RateLimitExceeded");
+    // kInvalidInput was missing from the original sweep — pin it here so a
+    // future enum reorder doesn't silently drop the mapping.
+    EXPECT_EQ(risk_reject_name(RiskRejectReason::kInvalidInput),
+              "InvalidInput");
+}
+
+TEST(RiskChecker, RejectReasonUnknownReturnsSentinel) {
+    // Trailing `return "Unknown";` is the safety net for cast values
+    // outside the enum range. Pin so a future refactor that drops it
+    // doesn't fall off the end of a non-void function (UB).
+    auto bogus = static_cast<RiskRejectReason>(static_cast<uint8_t>(99));
+    EXPECT_EQ(risk_reject_name(bogus), "Unknown");
 }
 
 // ---------------------------------------------------------------------------
