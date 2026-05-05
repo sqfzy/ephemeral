@@ -211,3 +211,64 @@ TEST(ErrorInfo, UsableAsExpectedError) {
     EXPECT_EQ(err.error().code, Error::InvalidConfig);
     EXPECT_STREQ(err.error().detail, "bad port");
 }
+
+// ============================================================================
+// Formatter / streaming surface — three distinct rendering paths must produce
+// identical output:
+//   - operator<< (std::ostream)        — gtest streaming, generic ostream sinks
+//   - format_as(ErrorInfo) / Error     — spdlog/fmt's ADL hook (bundled fmt
+//                                        cannot see std::formatter specs)
+//   - std::formatter<ErrorInfo> / Error — direct std::format users
+//
+// Lockstep across all three is doc'd at the formatter spec definition; until
+// now no test pinned it, so a future drift (e.g. renaming OK to "kOk")
+// would only surface in production logs.
+// ============================================================================
+
+#include <sstream>
+
+TEST(ErrorFormatter, OstreamWithDetailRendersCodeColonDetail) {
+    std::ostringstream os;
+    os << ErrorInfo{Error::Disconnected, "peer hung up"};
+    EXPECT_EQ(os.str(), "DISCONNECTED: peer hung up");
+}
+
+TEST(ErrorFormatter, OstreamWithoutDetailRendersCodeOnly) {
+    std::ostringstream os;
+    os << ErrorInfo{Error::Timeout};  // default detail = ""
+    EXPECT_EQ(os.str(), "TIMEOUT");
+}
+
+TEST(ErrorFormatter, OstreamWithEmptyDetailRendersCodeOnly) {
+    std::ostringstream os;
+    os << ErrorInfo{Error::CodecBad, ""};  // explicit empty
+    EXPECT_EQ(os.str(), "CODEC_BAD");
+}
+
+TEST(ErrorFormatter, FormatAsErrorInfoMatchesOstream) {
+    // The ADL `format_as(ErrorInfo)` hook is what spdlog's bundled fmt
+    // picks up. Must match the ostream rendering byte-for-byte.
+    auto with_detail    = eph::core::format_as(ErrorInfo{Error::CodecOverflow, "frame too big"});
+    auto without_detail = eph::core::format_as(ErrorInfo{Error::WouldBlock});
+    EXPECT_EQ(with_detail,    "CODEC_OVERFLOW: frame too big");
+    EXPECT_EQ(without_detail, "WOULD_BLOCK");
+}
+
+TEST(ErrorFormatter, FormatAsErrorReturnsName) {
+    auto sv = eph::core::format_as(Error::TlsCipherFailed);
+    EXPECT_EQ(sv, "TLS_CIPHER_FAILED");
+}
+
+TEST(ErrorFormatter, StdFormatErrorInfoMatchesOstream) {
+    // std::format() goes through the std::formatter<ErrorInfo> spec; that
+    // path is independent of format_as / operator<<. Pin it.
+    EXPECT_EQ(std::format("{}", ErrorInfo{Error::ProxyConnectFailed, "ECONNREFUSED"}),
+              "PROXY_CONNECT_FAILED: ECONNREFUSED");
+    EXPECT_EQ(std::format("{}", ErrorInfo{Error::NotFound}),
+              "NOT_FOUND");
+}
+
+TEST(ErrorFormatter, StdFormatErrorReturnsName) {
+    EXPECT_EQ(std::format("{}", Error::DaemonDisconnected), "DAEMON_DISCONNECTED");
+    EXPECT_EQ(std::format("[{}]", Error::Ok), "[OK]");
+}
