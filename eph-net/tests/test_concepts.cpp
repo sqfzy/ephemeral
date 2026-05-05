@@ -389,3 +389,45 @@ TEST(Concepts, Supplemental_FakeStreamStateMutable) {
     fake->set_state(en::TcpState::Closed);
     EXPECT_EQ(fake->state(), en::TcpState::Closed);
 }
+
+// ── saturate_u16 helpers (concepts.hpp:55-64) ────────────────────────────
+//
+// `saturate_u16` clamps any size_t to the uint16_t range; the partner
+// `saturate_u16_clamps` predicate gates a one-shot WARN log at backend
+// dispatch sites. Both are constexpr but were untested. A future
+// refactor that flipped a `>` to `>=` (or swapped the clamp value)
+// would silently corrupt every Stream backend's frame-length
+// dispatch path.
+TEST(SaturateU16, ClampsAtMax) {
+    static_assert(en::saturate_u16(0) == 0);
+    static_assert(en::saturate_u16(1) == 1);
+    static_assert(en::saturate_u16(0xFFFF) == 0xFFFF);
+    // Anything > 0xFFFF must clamp.
+    static_assert(en::saturate_u16(0x10000) == 0xFFFF);
+    static_assert(en::saturate_u16(0x10001) == 0xFFFF);
+    static_assert(en::saturate_u16(SIZE_MAX) == 0xFFFF);
+    EXPECT_EQ(en::saturate_u16(0xFFFFu), 0xFFFFu);
+    EXPECT_EQ(en::saturate_u16(0x10000u), 0xFFFFu);
+}
+
+TEST(SaturateU16, ClampsPredicateMatchesSaturateBehaviour) {
+    // `saturate_u16_clamps(n)` is true iff `saturate_u16(n) != n`. The
+    // two helpers must agree at every boundary or the WARN-gating
+    // logic at the backends would either over-warn or under-warn.
+    static_assert(!en::saturate_u16_clamps(0));
+    static_assert(!en::saturate_u16_clamps(0xFFFF));
+    static_assert(en::saturate_u16_clamps(0x10000));
+    static_assert(en::saturate_u16_clamps(SIZE_MAX));
+
+    // Cross-check at the boundary.
+    EXPECT_FALSE(en::saturate_u16_clamps(0xFFFFu));
+    EXPECT_TRUE(en::saturate_u16_clamps(0x10000u));
+    // The two helpers must disagree iff the predicate fires.
+    for (size_t n : {size_t{0}, size_t{1}, size_t{0xFFFF},
+                     size_t{0x10000}, size_t{SIZE_MAX}}) {
+        const bool clamped = en::saturate_u16_clamps(n);
+        const uint16_t s = en::saturate_u16(n);
+        EXPECT_EQ(clamped, s != n)
+            << "n=" << n << " clamped=" << clamped << " saturated=" << s;
+    }
+}
