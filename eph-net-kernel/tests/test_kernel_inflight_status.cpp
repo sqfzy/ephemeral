@@ -112,3 +112,40 @@ TEST(KernelInFlightStatus, DetectionTimestampMonotonic) {
     const uint64_t t2 = en::last_in_flight_detail().detected_at_ns;
     EXPECT_GT(t2, t1);
 }
+
+// to_string has a trailing `return "Unknown";` for values cast outside
+// the defined enum range. Pin the sentinel so a future refactor that
+// drops the fallthrough surfaces here (UB territory: control falls off
+// the end of a non-void function, only -Wreturn-type catches it).
+TEST(KernelInFlightStatus, ToStringUnknownReturnsSentinel) {
+    auto bogus = static_cast<en::InFlightStatus>(static_cast<uint8_t>(99));
+    EXPECT_STREQ(en::to_string(bogus), "Unknown");
+}
+
+// set_in_flight_detail's `phase != nullptr` guard coerces a nullptr to
+// "" so downstream loggers never deref a dangling pointer. Pin both
+// the coercion AND the empty-phase result.
+TEST(KernelInFlightStatus, SetInFlightDetailNullPhaseCoercedToEmpty) {
+    en::clear_in_flight_detail();
+    en::set_in_flight_detail(en::InFlightStatus::Uncertain, 7, 3, nullptr);
+    const auto& d = en::last_in_flight_detail();
+    EXPECT_EQ(d.status, en::InFlightStatus::Uncertain);
+    EXPECT_EQ(d.bytes_observed, 7u);
+    EXPECT_EQ(d.bytes_confirmed, 3u);
+    ASSERT_NE(d.phase, nullptr);
+    EXPECT_STREQ(d.phase, "");
+}
+
+// clear_in_flight_detail must reset every field — pin so a future
+// addition of a new field that's not zeroed surfaces here.
+TEST(KernelInFlightStatus, ClearResetsEveryField) {
+    en::set_in_flight_detail(en::InFlightStatus::Sent, 100, 100, "before-clear");
+    en::clear_in_flight_detail();
+    const auto& d = en::last_in_flight_detail();
+    EXPECT_EQ(d.status, en::InFlightStatus::Unsent);
+    EXPECT_EQ(d.bytes_observed, 0u);
+    EXPECT_EQ(d.bytes_confirmed, 0u);
+    ASSERT_NE(d.phase, nullptr);
+    EXPECT_STREQ(d.phase, "");
+    EXPECT_EQ(d.detected_at_ns, 0u);
+}
