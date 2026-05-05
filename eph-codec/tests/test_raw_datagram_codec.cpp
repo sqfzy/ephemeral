@@ -169,3 +169,49 @@ TEST(RawDatagramCodec, EncodeDecodeRoundTrip) {
     EXPECT_EQ(received[0], 0x10);
     EXPECT_EQ(received[4], 0x50);
 }
+
+// ---------------------------------------------------------------------------
+// Empty std::function sink — R56 contract
+// ---------------------------------------------------------------------------
+
+TEST(RawDatagramCodec, DecodeRejectsEmptySinkWithInvalidConfig) {
+    // R56: an empty std::function would throw bad_function_call inside
+    // the decode callback path, terminating the process via the
+    // noexcept boundary. The codec must reject with a typed
+    // InvalidConfig instead. Note: per the DatagramCodec contract,
+    // the codec consumes the datagram (trim_front) BEFORE the sink
+    // is invoked, so the input span IS drained on the rejection
+    // path; the typed error is the only signal back to the caller.
+    std::vector<uint8_t> dgram{0xCA, 0xFE, 0xBA, 0xBE};
+    SpanPacketView view{dgram.data(), dgram.size()};
+    uint8_t out_storage[8]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    std::function<void(std::span<const uint8_t>)> empty_sink{};
+    RawDatagramCodec codec;
+    auto r = codec.decode(view, out, empty_sink);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+    // Documented contract: trim_front happens before the sink check,
+    // so the datagram IS consumed on this rejection path.
+    EXPECT_EQ(view.length(), 0u);
+}
+
+TEST(RawDatagramCodec, DecodeRejectsMovedFromSink) {
+    // After std::move(sink), the source is in a no-target state. The
+    // codec's empty-sink defense must catch this same shape.
+    std::function<void(std::span<const uint8_t>)> sink = [](auto) {};
+    EXPECT_TRUE(static_cast<bool>(sink));
+    auto sink_moved_out = std::move(sink);  // sink now empty
+    EXPECT_FALSE(static_cast<bool>(sink));
+
+    std::vector<uint8_t> dgram{0x01};
+    SpanPacketView view{dgram.data(), dgram.size()};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    RawDatagramCodec codec;
+    auto r = codec.decode(view, out, sink);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}

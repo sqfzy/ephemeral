@@ -351,3 +351,52 @@ TEST(Mold64Codec, DecodeReplayWithPartialOverlapPreservesExpectedSeq) {
            "(guard uses `>`, not `>=`)";
     EXPECT_EQ(codec.gap_count(), 0u);
 }
+
+TEST(Mold64Codec, DecodeRejectsEmptySinkBeforeTouchingDatagramBytes) {
+    // R56/R57 / R60 contract: empty std::function would throw inside
+    // the parse_moldudp64 callback (bad_function_call), terminating the
+    // process via decode()'s noexcept boundary. The codec defends with
+    // an InvalidConfig before any datagram bytes are inspected. Pin
+    // the rejection: state and sequence number must not advance, and
+    // the datagram must not be consumed (caller can retry with a
+    // wired sink).
+    Mold64Codec codec;
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    // A perfectly valid 3-message datagram — proves the rejection is
+    // about the sink, not the data.
+    auto wire = build_mold64("SESS000001", 1, {{0xAA}, {0xBB}, {0xCC}});
+    SpanPacketView view{wire.data(), wire.size()};
+    const std::size_t pre_len = view.length();
+
+    std::function<void(Mold64Codec::Frame)> empty_sink{};  // default-constructed → !sink
+    auto r = codec.decode(view, out, empty_sink);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+    EXPECT_EQ(view.length(), pre_len) << "empty sink must NOT consume the datagram";
+    EXPECT_EQ(codec.expected_seq(), 1u) << "expected_seq must not advance";
+    EXPECT_EQ(codec.gap_count(), 0u);
+}
+
+TEST(Mold64Codec, DecodeRejectsMovedFromSink) {
+    // Same contract as the empty-sink test but exercises the move-from
+    // path that `std::function` lands in after std::move() — caller
+    // bug pattern where a sink is captured and then moved out, leaving
+    // the variable in a no-target state. The codec must reject without
+    // ABI-incompatible UB.
+    Mold64Codec codec;
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+
+    std::function<void(Mold64Codec::Frame)> sink = [](auto) {};
+    EXPECT_TRUE(static_cast<bool>(sink));
+    auto sink_moved_out = std::move(sink);  // sink is now empty
+    EXPECT_FALSE(static_cast<bool>(sink));
+
+    auto wire = build_mold64("SESS000001", 1, {{0xDD}});
+    SpanPacketView view{wire.data(), wire.size()};
+    auto r = codec.decode(view, out, sink);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::InvalidConfig);
+}
