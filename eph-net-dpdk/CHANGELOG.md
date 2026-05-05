@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+### Wired — T2.3 QueueAllocator HMAC tamper protection (2026-05-05, follow-up)
+
+Second of the two cold-path registry HMAC wirings (the first was
+MpRegistry, commit `bddb12f8`). Same threat model, same opt-in shape
+(`NicServiceConfig::enable_registry_hmac`).
+
+Wire format bumped v1 → v2:
+  `Header::hmac_enabled` (1 byte + 7 byte pad)  — flips between unkeyed
+                                                   and keyed mode
+  `Header::hmac_tag[32]`                        — HMAC-SHA256 over the
+                                                   authenticated payload
+
+Authenticated payload (2088 bytes, explicit little-endian byte order):
+  bitmap[]                32 bytes (4 × uint64_t — claim state)
+  claim_gen[]           2048 bytes (256 × uint64_t — per-queue ABA gen)
+  generation               8 bytes (relaxed-loaded global counter)
+
+Excluded from the payload (justified per-field in pack_header_for_hmac
+docstring):
+  - magic / version / total_queues — fixed at primary init
+  - mutex                          — kernel POSIX object, mutable internal state
+  - stale_releases                 — diagnostic counter (benign races)
+  - hmac_enabled / _pad / hmac_tag — flag + tag self
+
+Helpers:
+  pack_header_for_hmac(hdr, out)         — explicit byte packing
+  sign_header_in_place(hdr, key)         — daemon write-side
+  verify_header(hdr, key)                — diagnostic-side
+                                           (constant-time CRYPTO_memcmp)
+
+Wiring:
+  QueueAllocator::enable_hmac_(key)      — daemon flips header.hmac_enabled
+                                           and signs the empty initial state
+  claim()                                — re-signs after successful bitmap +
+                                           claim_gen + generation mutation
+                                           (under the existing pthread mutex
+                                           — same serialization the previous
+                                           ABA-defense logic uses; no new race)
+  release()                              — re-signs after successful bitmap
+                                           clear
+
+Tests:
+  test_queue_allocator_hmac     9 cases all passing:
+    - pack_header_for_hmac deterministic; kHeaderAuthBytes == 2088
+    - sign/verify round-trip on raw header
+    - enable_hmac_ + claim → release flow consistent
+    - tamper detection on bitmap, claim_gen[i], generation
+    - mutex lock/unlock does NOT invalidate the tag
+    - stale_releases mutation does NOT invalidate the tag
+    - different keys produce different tags + reject cross-verify
+
+Existing test_queue_allocator (15 cases) and
+test_queue_allocator_concurrent (3 cases) continue to pass —
+the wire format change preserved field offsets where v1 readers
+expected them.
+
+Cost: HMAC-SHA256 over 2088 bytes ≈ 300-500 ns on aarch64
+Graviton4. Cold path only — claim/release happens at attach +
+teardown (typically ≤ 2 calls per tenant lifecycle). bench_rx_hot_path
+baseline preserved.
+
+Track item: T2.3 — closes the QueueAllocator portion. One T2.3
+sub-area remains (DEFERRED.md):
+  - IcmpDirectory HMAC (hot-path-adjacent; needs verify-on-suspicion
+    design instead of verify-always)
+
 ### Wired — T2.3 MpRegistry HMAC tamper protection (2026-05-05, follow-up)
 
 Closes the major piece of the previously-deferred T2.3. The
