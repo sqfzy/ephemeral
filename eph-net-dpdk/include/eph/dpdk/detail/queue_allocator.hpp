@@ -595,13 +595,18 @@ public:
                     queue_allocator_impl::sign_header_in_place(
                         *hdr_, *hmac_key_);
                 }
+                // Snapshot the diagnostic count BEFORE unlock — the
+                // `_unlocked_` helpers' contract requires the mutex
+                // held, and a post-unlock call would race concurrent
+                // claim/release peers (only affects the log message,
+                // not the granted range — but consistency over a brief
+                // log discrepancy is the lesser evil).
+                const uint16_t free_after = free_queues_unlocked_();
                 pthread_mutex_unlock(&hdr_->mutex);
                 SPDLOG_INFO(
                     "QueueAllocator::claim: granted [{}, {}) gen={} "
                     "(count={}, pool={}/{} now free)",
-                    lo, hi, gen, count,
-                    free_queues_unlocked_(),
-                    total);
+                    lo, hi, gen, count, free_after, total);
                 return QueueRange{lo, hi, gen};
             }
         }
@@ -700,13 +705,19 @@ public:
         if (hdr_->hmac_enabled && hmac_key_.has_value()) {
             queue_allocator_impl::sign_header_in_place(*hdr_, *hmac_key_);
         }
+        // Snapshot diagnostic counts BEFORE unlock — see claim() for
+        // the rationale. total_queues itself is set-once at primary
+        // init, so loading it post-unlock is fine, but free_queues_
+        // unlocked_ requires the mutex.
+        const uint16_t total_q   = hdr_->total_queues;
+        const uint16_t free_now  = free_queues_unlocked_();
         pthread_mutex_unlock(&hdr_->mutex);
         SPDLOG_INFO(
             "QueueAllocator::release: freed [{}, {}) gen={} "
             "(pool {}/{} now claimed)",
             range.lo, range.hi, range.generation,
-            hdr_->total_queues - free_queues_unlocked_(),
-            hdr_->total_queues);
+            static_cast<uint16_t>(total_q - free_now),
+            total_q);
     }
 
     /// @brief Bitmap of currently-claimed queues. Bit `i` set ⇔ queue
