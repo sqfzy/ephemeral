@@ -20,7 +20,6 @@
 /// `StreamCodec` / `DatagramCodec`.
 
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <string_view>
 
