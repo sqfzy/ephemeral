@@ -2,7 +2,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -46,6 +48,50 @@ TEST(TokenBucketTest, non_positive_refill_is_clamped_to_zero) {
     // No refill will ever occur — next call fails.
     sleep_ms(5);
     EXPECT_FALSE(tb.try_acquire(1));
+}
+
+// sanitize_refill_ explicitly maps NaN to 0.0. The header comment
+// warns that without this the first refill would multiply NaN ×
+// elapsed = NaN, poisoning `tokens_` permanently and silently
+// rejecting every subsequent try_acquire as `NaN >= weight` is
+// false. This is exactly the wrong direction for an HFT venue
+// limiter — pin the behavior so a future sanitizer refactor can't
+// silently drop the NaN guard.
+TEST(TokenBucketTest, nan_refill_clamps_to_zero_no_silent_lockout) {
+    TokenBucket tb{{.capacity = 5,
+                    .refill_per_second = std::numeric_limits<double>::quiet_NaN()}};
+    EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0)
+        << "NaN refill must be sanitized to 0.0, not propagated";
+    // Initial fill is intact so the first 5 acquires succeed.
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(tb.try_acquire(1)) << "i=" << i;
+    }
+    // Beyond initial fill, no refill happens — but importantly,
+    // try_acquire returns FALSE (tokens=0), not the NaN-poisoned
+    // shape where every call rejects even though tokens_ should
+    // still be positive.
+    sleep_ms(5);
+    EXPECT_FALSE(tb.try_acquire(1));
+    // available_tokens() must report a real number, not NaN.
+    const double avail = tb.available_tokens();
+    EXPECT_FALSE(std::isnan(avail))
+        << "available_tokens must not surface NaN to dashboards";
+    EXPECT_GE(avail, 0.0);
+}
+
+// Same protection for +inf — the header warns that elapsed × inf =
+// inf is fine but elapsed=0 × inf = NaN, which then poisons tokens_.
+// sanitize_refill_ collapses both inf flavors to 0.0.
+TEST(TokenBucketTest, infinite_refill_clamps_to_zero) {
+    TokenBucket tb_pos{{.capacity = 3,
+                        .refill_per_second = std::numeric_limits<double>::infinity()}};
+    EXPECT_DOUBLE_EQ(tb_pos.refill_rate(), 0.0);
+    EXPECT_FALSE(std::isnan(tb_pos.available_tokens()));
+
+    TokenBucket tb_neg{{.capacity = 3,
+                        .refill_per_second = -std::numeric_limits<double>::infinity()}};
+    EXPECT_DOUBLE_EQ(tb_neg.refill_rate(), 0.0);
+    EXPECT_FALSE(std::isnan(tb_neg.available_tokens()));
 }
 
 // ---------------------------------------------------------------------------
