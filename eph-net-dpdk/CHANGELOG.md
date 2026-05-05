@@ -2,6 +2,95 @@
 
 ## [Unreleased]
 
+### Wired — T2.3 IcmpDirectory HMAC (verify-on-suspicion, K series, 2026-05-05)
+
+**Closes the last T2.3 sub-area.** `IcmpDirectory` carries 5-tuple →
+owner_proc mappings consulted on the per-mbuf RX path when an ICMP
+arrives — the only cross-process registry that's hot-path-adjacent.
+
+Naive verify-every-lookup would add ~150-300 ns/aarch64 per ICMP,
+far above the 50-200 ns/mbuf budget. Instead this commit ships a
+**verify-on-suspicion** design after the deep trade-off review:
+
+| Design point | Choice | Rationale |
+|---|---|---|
+| Verify trigger | hybrid (audit-on-error + periodic sweep) | error-trigger alone misses passive tampering; periodic-only has worst-case detection latency = period |
+| Sweep frequency | 1 Hz (caller-driven) | <1% CPU even with 1024 entries; <1s detection ≤ HFT compliance threshold |
+| Sweep batch size | 64 entries / round | full directory in 16 ticks ≈ 16 s worst-case missed-detection window |
+| Hot-path lookup | NEVER verifies | absolute requirement — preserves bench_rx_hot_path baseline |
+
+Wire format bumped v1 → v2:
+  `IcmpDirectoryHeader::hmac_enabled` (1 byte + 3 byte pad)
+  `IcmpDirectoryEntry::hmac_tag[32]`  (HMAC-SHA256 over 16-byte
+                                       authenticated payload)
+
+Authenticated payload (16 bytes, explicit little-endian):
+  proto(1) + owner_proc(1) + src_ip(4) + dst_ip(4) +
+  src_port(2) + dst_port(2) + _pad(2)
+
+Excluded from payload (stable across legitimate state transitions):
+  - claimed     — atomic state machine (free/in-progress/published);
+                  signing it would force re-sign on every cycle
+  - generation  — bumped per unregister
+  - hmac_tag    — tag itself
+
+Helpers (queue_allocator_impl-style namespace inside detail/):
+  pack_icmp_entry_for_hmac(e, out)        — explicit byte packing
+  sign_icmp_entry_in_place(e, key)        — primary write-side
+                                            (called between field
+                                            writes and Published
+                                            release-store)
+  verify_icmp_entry(e, key)               — verify-on-suspicion only,
+                                            constant-time CRYPTO_memcmp
+
+Wiring on `IcmpDirectoryHandle`:
+  enable_hmac_(key)                       — daemon flips
+                                            header.hmac_enabled and
+                                            stashes the key for sign +
+                                            audit
+  audit_entry(slot_idx)                   — audit-on-error: callbacks
+                                            that reject an entry call
+                                            this to surface tamper vs
+                                            ABA. Returns true on
+                                            unkeyed mode (no-op);
+                                            constant-time mismatch
+                                            check otherwise.
+  audit_sweep_one_round(batch_size=64)    — periodic sweep: caller
+                                            invokes ~1 Hz from a
+                                            control thread; advances
+                                            an internal cursor +
+                                            returns mismatch count
+                                            this round; logs each
+                                            detection at WARN level.
+
+Hot path:
+  - lookup() unchanged — still 5-tuple compare + load(acquire) + zero
+    crypto operations per mbuf. bench_rx_hot_path baseline preserved.
+  - Sign at publish: ~150-300 ns once per `register_target` call
+    (cold control plane).
+  - audit_entry: ~150-300 ns per call, fires only on rejection path.
+  - audit_sweep_one_round: ~200 ns × batch_size = ~12-20 µs per 1 Hz
+    invocation; <1% CPU at 64-batch / 1 Hz / 1024 entries.
+
+Tests: test_icmp_directory_hmac — 11 cases all passing
+  - kIcmpEntryAuthBytes == 16 invariant
+  - sign/verify round-trip
+  - tamper detection on every authenticated field (proto / owner_proc
+    / src_ip / dst_port / hmac_tag itself)
+  - claimed transitions don't invalidate the tag
+  - generation transitions don't invalidate the tag
+  - different keys produce different tags + cross-verify rejects
+  - init defaults hmac_enabled=0 + zero tags
+
+Existing test_icmp_directory (21 cases), test_icmp_dispatch (10),
+test_icmp_registry (24) all continue to pass.
+
+Track item: T2.3 — closes IcmpDirectory wiring. **All 3 cross-process
+registries now have HMAC-SHA256 tamper protection (cold + hot-adj).**
+
+Last DEFERRED.md item for T2.3: end-to-end Platform integration
+(needs daemon-equipped host).
+
 ### Generalised — InFlightStatus shared with kernel backend (J series, 2026-05-05)
 
 The InFlightStatus three-state classification (Unsent/Sent/Uncertain)

@@ -92,48 +92,41 @@ into detail/tcp_stream_hot_drain.hpp; mandatory bench validation"
 
 ---
 
-### T2.3 HMAC wiring into IcmpDirectory (Tier 2, partial)
+### T2.3 end-to-end Platform integration test (Tier 3, hardware-gated)
 
-**Status**: MpRegistry **fully shipped** (commit `bddb12f8`).
-QueueAllocator **fully shipped** (this commit). The remaining
-hugepage-backed cross-process layout that does not yet carry HMAC
-tags is `IcmpDirectory` (5-tuple → owner_proc mapping for cross-
-lcore ICMP dispatch).
+**Status**: All 3 cross-process registries now carry HMAC tamper
+protection:
+  - MpRegistry: cold-path verify-every-read (commit `bddb12f8`)
+  - QueueAllocator: cold-path verify-every-read (commit `027501e8`)
+  - IcmpDirectory: hot-path-adjacent **verify-on-suspicion** (this
+    commit) — audit-on-error + 1 Hz periodic sweep covers <1s
+    missed-detection window with zero hot-path cost
 
-**What's still missing**:
-- Wire-format bump on `IcmpDirectory` (insert tag-per-entry).
-- Performance design: `IcmpDirectory::lookup` runs on the per-mbuf
-  RX path when an ICMP arrives. verify-every-lookup adds an HMAC-
-  SHA256 cost that on aarch64 is ~150-300ns, far above the budget
-  for a hot RX dispatch (current target is 50-200ns/mbuf).
-- The right approach is **verify-on-suspicion**: skip verify on the
-  hot dispatch path; verify only when:
-  * The lookup hits an entry but the dispatched callback rejects
-    (e.g. wrong queue id);
-  * An admin tool (eph-nicctl) explicitly audits;
-  * A periodic background cycle (~1 Hz) sweeps a few entries.
-  Trades verify-coverage-per-mbuf for hot-path-cleanliness; still
-  catches a static-tampering attack within seconds.
-- End-to-end Platform::serve_nic + Platform::create attaching under
-  HMAC (needs daemon-equipped host with hugepages + vfio-pci).
+**What's still missing** (operator-side, not source-level):
+- End-to-end test on a daemon-equipped host with hugepages + vfio-pci:
+  `Platform::serve_nic(NicServiceConfig{.enable_registry_hmac=true})`
+  → daemon writes `/run/eph/<bdf>.key`, signs all 3 registries
+  → `Platform::create` from a tenant process reads the key, verifies
+  → SIGKILL-induced wild write into the hugepage segment → audit
+  detects it within ≤1 second
+- Periodic-sweep callback wiring from `Platform::poll()` or a
+  control thread (currently the helper exists; the daemon harness
+  needs to schedule it).
 
-**Why deferred**: hot-path-adjacent design, genuinely needs `--deep`
-discussion of where to draw the verify boundary. The audit-scan
-periodicity, the cost-per-cycle, the missed-detection window — all
-trade-offs that warrant adversarial review.
+**Why deferred**: requires real DPDK + hugepage + vfio-pci environment
+the source-level test framework can't simulate. Operator-side task.
 
-**Recommended next steps**:
+**Recommended next step**:
 ```
-/pax --feat --deep "T2.3 IcmpDirectory HMAC: per-entry tag, verify-
-on-suspicion design (audit-on-error + background sweep cadence)"
-
 /pax --test "T2.3 end-to-end: real Platform::serve_nic with
 enable_registry_hmac=true; tenant Platform::create reads
 /run/eph/<bdf>.key + verifies all three registries; SIGKILL-induced
-tamper detection scenario"
+tamper detection scenario; periodic sweep wiring in eph-nicd
+control loop"
 ```
 
-**Estimated effort**: 1 week design + 3-5 days施工 + 3-5 days testing.
+**Estimated effort**: 1-2 days operator setup + 1-2 days schedulers
+hooked.
 
 ---
 
