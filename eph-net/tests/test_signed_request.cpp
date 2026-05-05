@@ -472,3 +472,44 @@ TEST(Move, MoveSrcThenSignFromDstAgrees) {
     EXPECT_EQ(find_header(before.headers, "X-MBX-SIGNATURE"),
               find_header(after.headers,  "X-MBX-SIGNATURE"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// detail::u64_to_decimal — direct tests
+//
+// Rolled by hand (avoids std::to_string) so a libc++ regression that
+// changed std::to_string would not silently affect signing. Pin the
+// edge cases explicitly: zero, one digit, transitions across decimal
+// digit-counts, and uint64_t::max.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST(U64ToDecimal, ZeroProducesSingleZeroDigit) {
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(0), "0");
+}
+
+TEST(U64ToDecimal, SingleDigit) {
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(7), "7");
+}
+
+TEST(U64ToDecimal, MultiDigitTransitions) {
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(9), "9");
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(10), "10");
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(99), "99");
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(100), "100");
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(999), "999");
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(1000), "1000");
+}
+
+TEST(U64ToDecimal, BinanceTimestampShape) {
+    // 13-digit ms-resolution unix timestamp — the canonical Binance
+    // signing input.
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(1499827319559ull),
+              "1499827319559");
+}
+
+TEST(U64ToDecimal, MaxUint64ProducesTwentyDigits) {
+    // UINT64_MAX = 18446744073709551615 (20 digits). Pins the
+    // sizeof(buf)=20 internal buffer is enough.
+    EXPECT_EQ(eph::net::detail::u64_to_decimal(
+        std::numeric_limits<uint64_t>::max()),
+              "18446744073709551615");
+}
