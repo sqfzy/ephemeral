@@ -526,6 +526,52 @@ TEST(FixSession, logout_timeout_forces_disconnected) {
         << "post-timeout state must be kDisconnected, not kLogoutSent";
 }
 
+// Per FIX 4.4 §B.6, a server-side Logon rejection may arrive as a
+// Logout (auth failure, bad config, server-side sequence mismatch).
+// Pre-fix: session stayed in kLogonSent and logon() blocked until
+// timeout (typically 5s). Post-fix: on_rx Logout in kLogonSent
+// transitions to kDisconnected so the logon() spin-wait exits
+// promptly with the "did not reach ACTIVE state" error.
+TEST(FixSession, server_logout_during_logon_transitions_to_disconnected) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+
+    // Run logon() with a generous timeout. If the fix is in place,
+    // the Logout will trigger early state transition and logon()
+    // will return quickly with an error, well before timeout.
+    std::expected<void, std::string> result;
+    const auto t_start = std::chrono::steady_clock::now();
+    std::thread t([&] {
+        result = session.logon(std::chrono::milliseconds{5000});
+    });
+    while (mock.sent.empty()) std::this_thread::yield();
+
+    // Server replies with a Logout (instead of Logon).
+    auto logout_resp = MockFixTransport::logout_response(1);
+    session.on_rx(logout_resp.data(), logout_resp.size());
+
+    t.join();
+    const auto elapsed = std::chrono::steady_clock::now() - t_start;
+
+    // Logon must have failed (not transitioned to Active).
+    EXPECT_FALSE(result.has_value())
+        << "logon() returned success after server sent Logout — the "
+        << "session was incorrectly treated as connected";
+    // State must be kDisconnected (not stuck in kLogonSent).
+    EXPECT_EQ(session.state(), SessionState::kDisconnected);
+    // Critical regression assertion: logon() must have exited well
+    // before the 5s timeout. Pre-fix this would take ~5s (the
+    // configured timeout); post-fix it should be < 500ms (just the
+    // RX dispatch + spin-loop wake). 1s gives generous headroom for
+    // CI noise without weakening the regression signal.
+    EXPECT_LT(elapsed, std::chrono::seconds{1})
+        << "logon() took "
+        << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+        << " ms — expected < 1000 ms because server Logout should "
+        << "trigger immediate state transition rather than letting "
+        << "the spin-wait run to timeout";
+}
+
 TEST(FixSession, server_initiated_logout) {
     MockFixTransport mock;
     FixSession session(mock.send_fn(), test_config());

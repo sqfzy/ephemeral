@@ -571,6 +571,22 @@ public:
                         "Failed to send Logout response to server-initiated Logout");
                 }
                 set_state(SessionState::kDisconnected);
+            } else if (cur_state == SessionState::kLogonSent) {
+                // Server rejected the Logon (auth failure / bad config /
+                // sequence mismatch on the SERVER's side, …) and replied
+                // with a Logout instead of a Logon. The pre-2026-05-05
+                // path silently kept the session in kLogonSent until the
+                // application-side spin-loop in logon() hit its timeout —
+                // a typically 5s delay where we already had the
+                // authoritative "rejected" signal. Per FIX 4.4 §B.6 a
+                // Logout in response to a Logon is the canonical hard-
+                // reject; transition to kDisconnected immediately so the
+                // logon() spin-wait exits with the unexpected-state
+                // error path on the next observe.
+                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                    "Server-rejected Logon with Logout — transitioning to "
+                    "Disconnected so logon() exits the spin-wait promptly");
+                set_state(SessionState::kDisconnected);
             }
             return true;
         }
