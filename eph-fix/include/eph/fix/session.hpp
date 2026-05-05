@@ -710,7 +710,15 @@ public:
     ///   2. Server hasn't sent anything for HeartBtInt → send TestRequest
     ///   3. Server hasn't sent anything for HeartBtInt * timeout_factor → server dead
     ///
-    /// @return true if session is still healthy, false if server is considered dead
+    /// @return true if the tick was non-fatal: either the session is alive,
+    ///         OR the session is in any non-Active state (Disconnected /
+    ///         LogonSent / LogoutSent), in which case tick() is a no-op
+    ///         and there is no health to report. Returns false ONLY when
+    ///         tick() actively transitioned an Active session to
+    ///         Disconnected because the server failed to respond to a
+    ///         pending TestRequest. Callers that want to drive a
+    ///         reconnect orchestrator on the false path can rely on the
+    ///         session also being in kDisconnected at that moment.
     bool tick() noexcept {
         if (state_.load(std::memory_order_relaxed) != SessionState::kActive) return true;
 
