@@ -409,12 +409,22 @@ public:
     /// applications never call this; `Platform::serve_nic` does
     /// when `NicServiceConfig::enable_registry_hmac == true`.
     void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) return;
+        if (hdr_ == nullptr) {
+            SPDLOG_DEBUG(
+                "QueueAllocator::enable_hmac_: handle is moved-from "
+                "(noop)");
+            return;
+        }
         hmac_key_.emplace(std::move(key));
         pthread_mutex_lock(&hdr_->mutex);
+        const bool was_enabled = (hdr_->hmac_enabled == 1);
         hdr_->hmac_enabled = 1;
         queue_allocator_impl::sign_header_in_place(*hdr_, *hmac_key_);
         pthread_mutex_unlock(&hdr_->mutex);
+        SPDLOG_INFO(
+            "QueueAllocator::enable_hmac_: HMAC tamper protection {} "
+            "(header re-signed; was_enabled={})",
+            was_enabled ? "rekeyed" : "enabled", was_enabled);
     }
 
     /// @brief Initialize on the primary side: configure pool of

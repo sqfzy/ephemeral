@@ -974,9 +974,19 @@ public:
     /// supplying the same key written to `/run/eph/<bdf>.key`.
     /// `nullopt` disables (test-only path).
     void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) return;
+        if (hdr_ == nullptr) {
+            SPDLOG_DEBUG(
+                "IcmpDirectory::enable_hmac_: handle is moved-from "
+                "(noop)");
+            return;
+        }
+        const bool was_enabled = (hdr_->hmac_enabled == 1);
         hmac_key_.emplace(std::move(key));
         hdr_->hmac_enabled = 1;
+        SPDLOG_INFO(
+            "IcmpDirectory::enable_hmac_: HMAC tamper protection "
+            "{} for memzone (was_enabled={})",
+            was_enabled ? "rekeyed" : "enabled", was_enabled);
     }
 
     /// @brief T2.3 audit-on-suspicion: verify a single Published

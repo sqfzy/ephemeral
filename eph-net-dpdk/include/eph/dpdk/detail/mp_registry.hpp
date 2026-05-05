@@ -500,12 +500,23 @@ public:
     /// Idempotent. Trailing underscore reflects "internal-eph-glue"
     /// status — applications never call this; serve_nic does.
     void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) return;
+        if (hdr_ == nullptr) {
+            SPDLOG_DEBUG(
+                "MpRegistry::enable_hmac_: handle is moved-from "
+                "(noop)");
+            return;
+        }
+        const bool was_enabled = (hdr_->hmac_enabled == 1);
         hmac_key_.emplace(std::move(key));
         hdr_->hmac_enabled = 1;
         for (uint8_t i = 0; i < hdr_->total_procs; ++i) {
             sign_slot_in_place(hdr_->procs[i], *hmac_key_);
         }
+        SPDLOG_INFO(
+            "MpRegistry::enable_hmac_: HMAC tamper protection {} "
+            "(signed {} populated slot(s); was_enabled={})",
+            was_enabled ? "rekeyed" : "enabled",
+            hdr_->total_procs, was_enabled);
     }
 
     /// @brief T2.3 audit-on-suspicion. Verify every populated slot
