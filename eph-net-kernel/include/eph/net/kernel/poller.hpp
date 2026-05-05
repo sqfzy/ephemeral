@@ -86,6 +86,11 @@ concept KernelPollable = requires(P& p, KernelPoller* poller) {
     { p.poll_once_() } noexcept -> std::convertible_to<std::size_t>;
     { p.notify_attached_(poller) } noexcept;
     { p.notify_detached_() } noexcept;
+    // Required so `KernelPoller::add` can reject pollables already
+    // attached to a different poller before mutating epoll state. Every
+    // real Pollable (KernelTcpStream / KernelUdpSocket) already exposes
+    // this; test mocks must mirror it.
+    { p.is_attached_() } noexcept -> std::convertible_to<bool>;
 };
 
 // ---------------------------------------------------------------------------
@@ -173,6 +178,26 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::add: pollable has closed fd"});
+        }
+
+        // Reject already-attached pollables. Without this guard, calling
+        // `poller2.add(obj)` while `obj` is still attached to `poller1`
+        // silently flips `obj->attached_to_` to `poller2` (via
+        // `notify_attached_` below) without removing the entry from
+        // `poller1`. Result: `poller1` keeps a stale entry pointing at a
+        // pollable that no longer reports as attached to it; if obj is
+        // later destroyed, ~obj's `if (attached_to_) attached_to_->remove`
+        // dispatches to `poller2`, leaving `poller1` with a dangling
+        // entry that surfaces as the "orphan event" path in `poll_impl_`.
+        // Surface the misuse loudly at the call site instead.
+        if (obj->is_attached_()) {
+            SPDLOG_LOGGER_ERROR(log,
+                "KernelPoller::add: obj={} (fd={}) already attached to "
+                "another KernelPoller; remove() it first",
+                static_cast<void*>(obj), fd);
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelPoller::add: pollable already attached to another poller"});
         }
 
         // Reject duplicates defensively — epoll_ctl(ADD) would return EEXIST

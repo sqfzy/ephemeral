@@ -288,6 +288,9 @@ struct ClosedFdPollable {
     std::size_t poll_once_() noexcept { return 0; }
     void notify_attached_(ek::KernelPoller* p) noexcept { attached_ = p; }
     void notify_detached_() noexcept { attached_ = nullptr; }
+    [[nodiscard]] bool is_attached_() const noexcept {
+        return attached_ != nullptr;
+    }
 };
 
 TEST(KernelPoller, AddPollableWithClosedFdRejected) {
@@ -304,4 +307,37 @@ TEST(KernelPoller, AddPollableWithClosedFdRejected) {
     // hook would be reached.
     EXPECT_EQ(bad.attached_, nullptr);
     EXPECT_EQ(p->size(), 0u);
+}
+
+/// `add()` must reject pollables already attached to a different poller.
+/// Without this guard, `notify_attached_(p2)` would silently overwrite
+/// `attached_to_` to point at the new poller while the original poller
+/// retained a stale entries_ row. Subsequent ~obj would dispatch
+/// remove() to p2 and leave p1 with a dangling entry that surfaces as
+/// the "orphan event" path in poll_impl_.
+TEST(KernelPoller, AddRejectsAlreadyAttachedToOtherPoller) {
+    auto p1 = ek::KernelPoller::create().value();
+    auto p2 = ek::KernelPoller::create().value();
+
+    EventfdPollable ev;
+    ASSERT_GE(ev.fd(), 0);
+
+    ASSERT_TRUE(p1->add(&ev).has_value());
+    ASSERT_TRUE(ev.is_attached_());
+    EXPECT_EQ(ev.attached_, p1.get());
+
+    auto r = p2->add(&ev);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    EXPECT_NE(std::string_view{r.error().detail}.find("already attached"),
+              std::string_view::npos)
+        << "detail: " << r.error().detail;
+
+    // p1 still owns the registration; p2 is empty; ev still points at p1.
+    EXPECT_EQ(p1->size(), 1u);
+    EXPECT_EQ(p2->size(), 0u);
+    EXPECT_EQ(ev.attached_, p1.get());
+
+    // Clean up so ~p1 doesn't dangle past ~ev.
+    ASSERT_TRUE(p1->remove(&ev).has_value());
 }
