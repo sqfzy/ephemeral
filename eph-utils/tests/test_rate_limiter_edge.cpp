@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <thread>
 
 #include "eph/utils/rate_limiter.hpp"
@@ -121,6 +122,39 @@ TEST(TokenBucketEdge, extreme_refill_rate_clamps_at_capacity) {
 
 TEST(TokenBucketEdge, negative_refill_clamped_to_zero) {
     TokenBucket tb{{.capacity = 5, .refill_per_second = -999.0}};
+    EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0);
+}
+
+// sanitize_refill_'s NaN / +Inf rejection was added to defend against
+// `std::uniform_real_distribution`-style poisoned config but had no
+// dedicated tests. The header doc treats both as a "config error" and
+// collapses to 0.0 (matches the existing negative-rejection contract).
+TEST(TokenBucketEdge, nan_refill_clamped_to_zero) {
+    TokenBucket tb{{.capacity = 5,
+                    .refill_per_second = std::numeric_limits<double>::quiet_NaN()}};
+    EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0)
+        << "NaN refill must collapse to 0.0 — silent NaN propagation "
+           "would poison tokens_ and reject every try_acquire forever";
+    // Verify behaviour: capacity=5, NaN→0 refill, drain 5, then exhausted.
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(tb.try_acquire(1));
+    EXPECT_FALSE(tb.try_acquire(1));
+}
+
+TEST(TokenBucketEdge, positive_infinity_refill_clamped_to_zero) {
+    // +Inf refill would cause `elapsed * refill = inf` math; even with
+    // the `min(capacity, refilled)` clamp, a `0 * inf = NaN` trap is
+    // possible if elapsed=0 (zero-duration refill). The header rejects
+    // +Inf upfront as a config error.
+    TokenBucket tb{{.capacity = 5,
+                    .refill_per_second = std::numeric_limits<double>::infinity()}};
+    EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0);
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(tb.try_acquire(1));
+    EXPECT_FALSE(tb.try_acquire(1));
+}
+
+TEST(TokenBucketEdge, negative_infinity_refill_clamped_to_zero) {
+    TokenBucket tb{{.capacity = 5,
+                    .refill_per_second = -std::numeric_limits<double>::infinity()}};
     EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0);
 }
 
