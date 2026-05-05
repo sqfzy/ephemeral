@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added — `test_dpdk_daemon_recovery` integration scenario (T1.4, 2026-05-05)
+
+Pairs with the T1.1+T1.2 wire-up. Two test cases run unconditionally:
+
+  - `HookPrimitiveCanBePopulatedFromBurstSimulation` — verifies the
+    exact set_daemon_disconnected_detail call shape that the burst
+    path emits round-trips through the thread_local.
+  - `HookPrimitiveSurvivesUdpPhaseString` — same for the UDP path
+    (different phase tag).
+
+A third case `FullKillAndReattachScenario` SKIPs cleanly when env
+not ready. The probe checks: hugepages directory, eph-nicd binary
+on PATH or $EPH_NICD_BIN, vfio-pci kernel module loaded with at
+least one NIC bound. The full scenario body is preserved verbatim
+in the file header as narrative — reactivation on a properly-
+equipped host is no code change, just env preparation.
+
+Reactivation steps documented in the test file:
+  1. sudo dpdk-setup.sh
+  2. systemctl start eph-nicd@<bdf>
+  3. xmake run test_dpdk_daemon_recovery
+
+The test is gated by the same skip discipline existing RSS
+integration tests use (commit 2102fdc4) — fails-or-SKIPs but never
+fail-builds on environments missing hardware.
+
+Track item: T1.4 from the 2026-05-05 action list (skeleton +
+primitive cases; full kill-and-reattach scenario remains hardware-
+gated as documented).
+
 ### Wired — daemon-died `is_alive()` check at TX-burst entry (T1.1+T1.2 wire-up, 2026-05-05)
 
 Closes the long-promised wire-up: `DpdkTcpStream::send` and

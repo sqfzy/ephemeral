@@ -186,6 +186,19 @@ target("test_eal_init_with_pins")
     add_deps("eph-net-dpdk")
     apply_dpdk_pmd_linkgroups()
 
+-- T1.4 daemon-kill recovery scenario (skeleton — hardware-gated).
+-- Verifies the T1.1+T1.2 wire-up's pre-burst is_alive() check
+-- populates DaemonDisconnectedDetail correctly. Two unconditional
+-- behavioural-primitive cases run anywhere; the full kill-and-
+-- reattach scenario SKIPs on hosts without vfio-pci NIC binding +
+-- eph-nicd availability. Reactivation = no code change once env is
+-- equipped (see file header).
+target("test_dpdk_daemon_recovery")
+    add_rules("eph-test")
+    add_files("tests/integration/test_dpdk_daemon_recovery.cpp")
+    add_deps("eph-net-dpdk")
+    apply_dpdk_pmd_linkgroups()
+
 -- RSS multi-queue fan-out regression test (real-NIC). N concurrent
 -- DpdkTcpStream attaches all pinned to the same queue + same endpoint
 -- — the canonical HFT producer pattern that previously trampled
