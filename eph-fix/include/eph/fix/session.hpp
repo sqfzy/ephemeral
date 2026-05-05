@@ -364,6 +364,19 @@ public:
 
     /// @brief Send Logout and wait for response.
     /// @param timeout  Maximum time to wait for server Logout response.
+    /// @return Empty on graceful close (server replied with Logout, OR
+    ///         the timeout fired and we forced kDisconnected).
+    /// @return Error string on:
+    ///         - "session not ACTIVE": call out of order (already
+    ///           disconnected / mid-logon). State unchanged.
+    ///         - "failed to send Logout message": the wire send failed
+    ///           (TLS desync / socket EPIPE / builder overflow). State
+    ///           is LEFT AT kActive — the caller must call `reset()`
+    ///           before retrying logout, OR continue treating the
+    ///           session as alive (the failure may be transient).
+    ///           Note: this is asymmetric with the timeout path which
+    ///           forces kDisconnected — TX failure cannot prove the
+    ///           session is dead, so we don't pretend it is.
     [[nodiscard]] std::expected<void, std::string>
     logout(std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}) {
         if (state_.load(std::memory_order_acquire) != SessionState::kActive) {
