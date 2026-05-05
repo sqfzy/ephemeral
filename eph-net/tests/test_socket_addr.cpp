@@ -196,3 +196,35 @@ TEST(SocketAddr, Equality) {
     EXPECT_NE(a, c);
     EXPECT_NE(a, d);
 }
+
+// Default-constructed SocketAddr must be 0.0.0.0:0 — the documented
+// "not yet bound" sentinel that callers test with `port == 0`.
+TEST(SocketAddr, DefaultConstructedIsAllZero) {
+    en::SocketAddr sa{};
+    EXPECT_EQ(sa.port, 0);
+    EXPECT_EQ(sa.ip.to_string(), "0.0.0.0");
+    EXPECT_EQ(sa.to_string(), "0.0.0.0:0");
+}
+
+// Boundary: port 0 prints as ":0" not omitted.
+TEST(SocketAddr, ToStringWithPortZeroIsExplicit) {
+    en::SocketAddr sa{en::Ipv4Addr{1, 2, 3, 4}, 0};
+    EXPECT_EQ(sa.to_string(), "1.2.3.4:0");
+}
+
+// Boundary: port at uint16 max — ensures std::to_string handles 65535
+// without truncation.
+TEST(SocketAddr, ToStringWithPortMaxIsFiveDigits) {
+    en::SocketAddr sa{en::Ipv4Addr{255, 255, 255, 255}, 65535};
+    EXPECT_EQ(sa.to_string(), "255.255.255.255:65535");
+}
+
+// Ipv4Addr::operator== must distinguish all four octets.
+TEST(Ipv4Addr, EqualityChecksAllOctets) {
+    en::Ipv4Addr base{10, 20, 30, 40};
+    EXPECT_EQ(base, (en::Ipv4Addr{10, 20, 30, 40}));
+    EXPECT_NE(base, (en::Ipv4Addr{11, 20, 30, 40}));
+    EXPECT_NE(base, (en::Ipv4Addr{10, 21, 30, 40}));
+    EXPECT_NE(base, (en::Ipv4Addr{10, 20, 31, 40}));
+    EXPECT_NE(base, (en::Ipv4Addr{10, 20, 30, 41}));
+}
