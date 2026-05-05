@@ -126,11 +126,18 @@ inline constexpr uint8_t kIcmpSlotInProgress = 2;
 /// are ordered so all atomics align naturally; pads are explicit.
 struct IcmpDirectoryEntry {
     /// State machine for the slot's claim lifecycle:
-    ///   0 = free (no owner, fields are zeroed),
+    ///   0 = free (no owner; tuple/owner fields hold stale residue —
+    ///       readers MUST gate on `claimed==Published` before
+    ///       interpreting any field, INCLUDING `hmac_tag`),
     ///   2 = in-progress (CAS-acquired but tuple/owner fields not yet
     ///       fully written — readers MUST treat as miss),
     ///   1 = published (tuple/owner fields fully visible; readers can
     ///       safely compare).
+    /// "fields zero on free" is intentionally NOT an invariant: zeroing
+    /// the non-atomic fields between gen-bump and Free-store would
+    /// race a concurrent cross-process reader doing
+    /// `acquire(claimed)==Published → tuple compare`. Leaving stale
+    /// residue is harmless because every reader gates on Published.
     /// CAS 0→2 on register; release-store 2→1 once fields are written;
     /// release-store →0 on unregister. The 2-step publish closes the
     /// race where a reader load-acquired `claimed==1` but the producer's
@@ -726,12 +733,13 @@ public:
                         // is about to be invalidated; bumping gen
                         // would noisily invalidate any future
                         // readers of THIS slot's gen counter.
-                        e.proto      = 0;
-                        e.owner_proc = kIcmpDirectoryNoOwner;
-                        e.src_ip     = 0;
-                        e.dst_ip     = 0;
-                        e.src_port   = 0;
-                        e.dst_port   = 0;
+                        // Same rationale as `unregister`: do NOT
+                        // zero proto/owner_proc/ports/ips here —
+                        // the non-atomic stores would race a
+                        // concurrent cross-process reader that
+                        // observed our brief Published. Stale
+                        // residue is harmless under the
+                        // gate-on-Published invariant.
                         e.claimed.store(kIcmpSlotFree,
                                         std::memory_order_release);
                         SPDLOG_DEBUG(
@@ -809,12 +817,15 @@ public:
         // ++gen first (acquire-release with claimed clear so dispatch
         // path observing Published + new gen is consistent).
         e.generation.fetch_add(1, std::memory_order_acq_rel);
-        e.proto      = 0;
-        e.owner_proc = kIcmpDirectoryNoOwner;
-        e.src_ip     = 0;
-        e.dst_ip     = 0;
-        e.src_port   = 0;
-        e.dst_port   = 0;
+        // Intentionally do NOT zero proto/owner_proc/src_ip/dst_ip/
+        // src_port/dst_port (or hmac_tag): doing so between gen-bump
+        // and the Free-store below would race a concurrent
+        // cross-process reader that has just done
+        // `acquire(claimed)==Published → tuple compare`. Stale residue
+        // after Free is harmless — every reader (lookup, register
+        // Pass 1/2, audit_entry, audit_sweep) gates on
+        // `claimed==Published`. See `IcmpDirectoryEntry::claimed`
+        // docstring for the full lifecycle invariant.
         e.claimed.store(kIcmpSlotFree, std::memory_order_release);
     }
 
