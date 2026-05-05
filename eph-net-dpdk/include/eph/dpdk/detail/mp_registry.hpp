@@ -43,6 +43,7 @@
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -486,6 +487,50 @@ public:
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return hdr_ != nullptr;
+    }
+
+    /// @brief T2.3 wiring (cold path). Flip the registry to keyed
+    /// mode and stash the key for future sign/verify. Daemon
+    /// (`Platform::serve_nic`) calls this immediately after
+    /// `create_primary` returns when `enable_registry_hmac=true`,
+    /// supplying the same key written to `/run/eph/<bdf>.key`.
+    ///
+    /// Sets `header.hmac_enabled = 1` and signs every populated
+    /// slot so the initial state is verifiable.
+    /// Idempotent. Trailing underscore reflects "internal-eph-glue"
+    /// status — applications never call this; serve_nic does.
+    void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
+        if (hdr_ == nullptr) return;
+        hmac_key_.emplace(std::move(key));
+        hdr_->hmac_enabled = 1;
+        for (uint8_t i = 0; i < hdr_->total_procs; ++i) {
+            sign_slot_in_place(hdr_->procs[i], *hmac_key_);
+        }
+    }
+
+    /// @brief T2.3 audit-on-suspicion. Verify every populated slot
+    /// against the stashed key. Returns the number of mismatches
+    /// (0 in the healthy case). Each mismatch logged at WARN.
+    /// Returns 0 when hmac_enabled==0 (unkeyed mode → no-op).
+    /// Cold-path; called from a daemon control thread on operator
+    /// `eph-nicctl audit` requests, NOT from any hot dispatch path.
+    [[nodiscard]] size_t audit_all() const noexcept {
+        if (hdr_ == nullptr || !hdr_->hmac_enabled ||
+            !hmac_key_.has_value()) return 0;
+        size_t mismatches = 0;
+        for (uint8_t i = 0; i < hdr_->total_procs; ++i) {
+            const auto& s = hdr_->procs[i];
+            if (s.claimed.load(std::memory_order_acquire) == 0) continue;
+            if (!verify_slot(s, *hmac_key_)) {
+                ++mismatches;
+                SPDLOG_WARN(
+                    "MpRegistry: tamper detected at slot {} "
+                    "(audit) — pid={}, queue=[{},{}), port=[{},{})",
+                    i, s.pid, s.queue_lo, s.queue_hi,
+                    s.port_lo, s.port_hi);
+            }
+        }
+        return mismatches;
     }
 
     [[nodiscard]] MpRegistryHeader const* header() const noexcept {
@@ -1302,6 +1347,11 @@ private:
     const struct rte_memzone* mz_          = nullptr;
     bool                     owns_memzone_ = false;
     uint8_t                  self_index_   = kMpRegistrySelfIndexUnset;
+    /// T2.3 wiring: when populated, sign all slot writes + verify
+    /// on audit. Daemon (Platform::serve_nic) installs via
+    /// `enable_hmac_()`. Wrapped in optional so unkeyed default
+    /// (single tenant) pays zero key construction cost.
+    std::optional<::eph::net::HmacSha256Key> hmac_key_{};
 };
 
 } // namespace eph::dpdk::detail

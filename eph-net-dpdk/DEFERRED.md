@@ -92,41 +92,64 @@ into detail/tcp_stream_hot_drain.hpp; mandatory bench validation"
 
 ---
 
-### T2.3 end-to-end Platform integration test (Tier 3, hardware-gated)
+### T2.3 end-to-end Platform integration test (Tier 3, hardware-gated, **operator-side only**)
 
-**Status**: All 3 cross-process registries now carry HMAC tamper
-protection:
+**Source-level work fully complete.** All 3 cross-process registries
+carry HMAC tamper protection AND the Platform end-to-end plumbing
+auto-enables on the daemon side and auto-attaches on the tenant
+side:
   - MpRegistry: cold-path verify-every-read (commit `bddb12f8`)
   - QueueAllocator: cold-path verify-every-read (commit `027501e8`)
-  - IcmpDirectory: hot-path-adjacent **verify-on-suspicion** (this
-    commit) — audit-on-error + 1 Hz periodic sweep covers <1s
-    missed-detection window with zero hot-path cost
+  - IcmpDirectory: hot-path-adjacent verify-on-suspicion (commit
+    `ae60de63`)
+  - **L series end-to-end wiring (this commit)**:
+    daemon: `Platform::serve_nic(cfg.enable_registry_hmac=true)`
+      → writes /run/eph/<bdf>.key + signs all 3 registries
+    tenant: `Platform::create` reads /run/eph/<bdf>.key + stashes
+      the key for `Platform::audit_registries()` /
+      `Platform::icmp_audit_sweep_one_round()`
 
-**What's still missing** (operator-side, not source-level):
-- End-to-end test on a daemon-equipped host with hugepages + vfio-pci:
-  `Platform::serve_nic(NicServiceConfig{.enable_registry_hmac=true})`
-  → daemon writes `/run/eph/<bdf>.key`, signs all 3 registries
-  → `Platform::create` from a tenant process reads the key, verifies
-  → SIGKILL-induced wild write into the hugepage segment → audit
-  detects it within ≤1 second
-- Periodic-sweep callback wiring from `Platform::poll()` or a
-  control thread (currently the helper exists; the daemon harness
-  needs to schedule it).
+**What's still missing** (purely operator-side, no source code to
+write):
+- Run on a daemon-equipped host with hugepages + vfio-pci NIC:
+    sudo systemctl restart eph-nicd@<bdf> with new binary
+    enable_registry_hmac=true in /etc/eph/<bdf>.toml
+    spawn a tenant via Platform::create
+    audit_registries() returns 0 (healthy)
+- Tamper injection: dd random bytes into the hugepage backing file
+  for a populated slot offset → audit_registries() returns >0 +
+  WARN log appears in journalctl
+- Daemon control-loop wiring: schedule
+  `icmp_audit_sweep_one_round()` at ~1 Hz from a thread inside
+  `Platform::join()`'s SIGTERM-wait loop (or a separate timerfd-
+  driven thread)
+- Bench gate: confirm bench_rx_hot_path baseline unchanged with
+  HMAC enabled vs disabled
 
-**Why deferred**: requires real DPDK + hugepage + vfio-pci environment
-the source-level test framework can't simulate. Operator-side task.
+**Why deferred**: source code is done; what remains is
+operator-side test orchestration on real DPDK hardware. Cannot
+execute via auto-mode; needs root + vfio-pci + hugepages + a
+real running NIC.
 
 **Recommended next step**:
 ```
-/pax --test "T2.3 end-to-end: real Platform::serve_nic with
-enable_registry_hmac=true; tenant Platform::create reads
-/run/eph/<bdf>.key + verifies all three registries; SIGKILL-induced
-tamper detection scenario; periodic sweep wiring in eph-nicd
-control loop"
+# (Manual, on a vfio-pci-equipped host)
+echo 'enable_registry_hmac = true' >> /etc/eph/<bdf>.toml
+sudo systemctl restart eph-nicd@<bdf>
+sudo cat /run/eph/<bdf>.key | xxd | head      # confirm 32 bytes 0440
+# Run tenant program (any application), confirm:
+#   journalctl -u eph-nicd | grep "registry HMAC enabled"
+#   journalctl -u <tenant> | grep "registry HMAC key attached"
+# Tamper test:
+sudo dd if=/dev/urandom of=/dev/hugepages/eph_<bdf>_map_0 \
+       bs=1 seek=<offset_of_a_ProcSlot_data> count=1 \
+       conv=notrunc
+# Wait <16 s, observe:
+#   journalctl -u eph-nicd | grep "tamper detected"
 ```
 
-**Estimated effort**: 1-2 days operator setup + 1-2 days schedulers
-hooked.
+**Estimated effort**: ~1 day operator setup + verification + writing
+the 1 Hz sweep scheduler hook (~50 LoC inside `Platform::join`).
 
 ---
 

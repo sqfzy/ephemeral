@@ -2,6 +2,92 @@
 
 ## [Unreleased]
 
+### Wired — T2.3 Platform::serve_nic + Platform::create end-to-end HMAC (L series, 2026-05-05)
+
+Closes the L series — the auto-enable + auto-attach plumbing for
+the cross-process HMAC machinery. The three underlying registries
+(MpRegistry / QueueAllocator / IcmpDirectory) were already wired in
+prior commits; this commit makes the daemon and tenant paths
+ergonomic — operators set one flag and everything below activates.
+
+**Daemon side** (`Platform::serve_nic` extension):
+  When `cfg.enable_registry_hmac == true` (NicServiceConfig field
+  added by commit `bddb12f8`):
+    1. After primary_bringup_ + queue_allocator setup, derive the
+       canonical key path via `registry_hmac_key_path(cfg.pci)` →
+       `/run/eph/<sanitize_bdf(pci)>.key`.
+    2. `write_registry_hmac_key(path)` generates 32 CSPRNG bytes
+       (aws-lc `RAND_bytes`), atomic-writes mode 0440 root:root.
+    3. Calls `enable_hmac_(key)` on each of the 3 registries in
+       turn, supplying its own copy of HmacSha256Key (each owns a
+       normalised buffer; key bytes are zeroized on destruction).
+    4. Logs `hmac_enabled=1` in the serve_nic ready line so
+       operators can confirm.
+  Best-effort: any failure (key path resolve, key file write, etc.)
+  logs WARN and continues with HMAC disabled — daemon stays serving.
+
+**Tenant side** (`Platform::create` → `secondary_bringup_` extension):
+  When the attached MpRegistry header advertises `hmac_enabled == 1`:
+    1. Derives the key file path from the BringupConfig's
+       file_prefix (strip "eph_" prefix → sanitize_bdf form).
+    2. `read_registry_hmac_key(path)` reads the daemon-written key.
+    3. Stashes the key in `Platform::Impl::registry_hmac_key`.
+       (Does NOT call `enable_hmac_` on the registry handles — that
+       would re-sign existing data, which only the daemon should
+       do.)
+  Best-effort: a tenant that can't read the file (wrong uid/gid,
+  file missing) logs WARN and proceeds with `Platform::audit_*`
+  returning 0 mismatches in degraded mode (verify is no-op).
+
+**New public Platform API**:
+  `Platform::audit_registries()`         — single-shot audit of all
+                                           3 registries; returns
+                                           total mismatch count
+                                           across MpRegistry +
+                                           IcmpDirectory (full sweep).
+                                           Operator-driven (eph-nicctl
+                                           audit, watchdog, etc.).
+                                           Returns 0 in unkeyed
+                                           mode.
+  `Platform::icmp_audit_sweep_one_round()` — drives one batch of
+                                            IcmpDirectory's 1 Hz
+                                            verify-on-suspicion
+                                            sweep. Daemon control
+                                            thread should call at
+                                            ~1 Hz (1024 entries /
+                                            64 batch / 1 Hz = 16 s
+                                            full coverage worst
+                                            case).
+
+**MpRegistryHandle additions** (mirroring QueueAllocator + IcmpDirectory's
+existing pattern):
+  `enable_hmac_(key)`  — daemon-side; sets header.hmac_enabled = 1
+                         and signs every populated slot.
+  `audit_all()`        — verifies every populated slot using the
+                         stashed key; returns mismatch count + WARN
+                         logs each tamper.
+
+**Tests** (14 cases passing, +1 from previous run):
+  test_mp_registry_hmac::EnableHmacRuntimeIsIdempotentAndSigns
+                        — exercises sign-then-tamper-then-verify
+                          flow that mirrors the runtime enable_hmac_
+                          path.
+
+  All other registry / HMAC tests continue to pass:
+    test_mp_registry              48/48
+    test_mp_registry_hmac         14/14 (new)
+    test_queue_allocator          15/15
+    test_queue_allocator_hmac      9/9
+    test_icmp_directory_hmac      11/11
+    test_registry_hmac_key         7/7
+    test_dpdk_poller              33/33
+    test_dpdk_tcp_stream          30/30
+    test_platform_config_validate  8/8
+
+DEFERRED.md: T2.3 source-level work fully complete. Hardware-gated
+end-to-end test (real daemon + real tamper injection on a vfio-pci
+host) remains as the sole operator-side task.
+
 ### Wired — T2.3 IcmpDirectory HMAC (verify-on-suspicion, K series, 2026-05-05)
 
 **Closes the last T2.3 sub-area.** `IcmpDirectory` carries 5-tuple →

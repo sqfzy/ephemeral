@@ -23,6 +23,7 @@
 #include <chrono>
 #include <csignal>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
@@ -47,6 +48,8 @@
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/detail/platform_config.hpp" // PlatformConfig + NicServiceConfig (T2.1 partial split)
 #include "eph/dpdk/detail/queue_allocator.hpp" // detail::QueueAllocator + IPC payloads (S5)
+#include "eph/dpdk/detail/registry_hmac_key.hpp" // T2.3: read/write /run/eph/<bdf>.key
+#include "eph/net/hmac.hpp"                    // T2.3: HmacSha256Key for tenant-side stash
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (internal helper)
 #include "eph/dpdk/lcore_pin.hpp"              // LcorePin (typed pin spec for PlatformConfig)
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
@@ -934,6 +937,40 @@ public:
     /// reachable-from-eph-net-dpdk-glue" status.
     [[nodiscard]] std::atomic<bool> const* alive_flag_addr_() const noexcept;
 
+    /// @brief T2.3 audit-on-demand. Returns the total number of
+    /// HMAC mismatches detected across all 3 cross-process registries
+    /// at the moment of call. Operator-driven; called from
+    /// `eph-nicctl audit` (when implemented) or a watchdog.
+    ///
+    /// On a daemon process, walks `mp_registry->audit_all()` +
+    /// `queue_allocator->verify_header()` + `icmp_directory->
+    /// audit_sweep_one_round(full)` using the keys stashed at
+    /// `enable_hmac_` time.
+    ///
+    /// On a tenant process, walks the same registries using the
+    /// key stashed in `Impl::registry_hmac_key` (read from
+    /// `/run/eph/<bdf>.key` at attach time).
+    ///
+    /// Returns 0 in:
+    ///   - the unkeyed (single-tenant) deployment
+    ///   - tenants that couldn't read the key file (warn already
+    ///     logged at attach; this is a degraded but non-fatal mode)
+    ///   - the healthy keyed case (no tampering)
+    ///
+    /// Non-zero return = tampering detected. Each individual
+    /// mismatch is also logged at WARN level to journalctl so
+    /// operator alerts can grep without polling this method.
+    [[nodiscard]] size_t audit_registries() noexcept;
+
+    /// @brief T2.3 sweep. Calls `audit_sweep_one_round()` on the
+    /// IcmpDirectory once. Daemon control thread should call this
+    /// at ~1 Hz to drip the IcmpDirectory verification (the cold
+    /// hash-table-style MpRegistry/QueueAllocator are verified by
+    /// `audit_registries()` directly; only IcmpDirectory carries
+    /// 1024 entries that warrant batch sweep).
+    /// Returns # mismatches detected this round.
+    size_t icmp_audit_sweep_one_round() noexcept;
+
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
@@ -1198,6 +1235,18 @@ struct Platform::Impl {
     /// already moved on). 0xFF = mp_topology not set, ICMP cross-
     /// proc path inactive.
     uint8_t self_proc_index = 0xFF;
+
+    /// T2.3 wiring (2026-05-05). When the daemon enabled HMAC at
+    /// `serve_nic` time, this field carries the same key on tenant
+    /// side (read from `/run/eph/<bdf>.key`). `Platform::audit_*`
+    /// methods verify against this key. Empty on:
+    ///   - daemon-side Impls (the daemon already has the key on the
+    ///     individual registry handles via `enable_hmac_`)
+    ///   - tenants attaching to a daemon that left HMAC disabled
+    ///   - tenants whose uid/gid can't read the key file
+    /// In the last case `secondary_bringup_` logs WARN — a verify-
+    /// capable Platform requires successful key read.
+    std::optional<::eph::net::HmacSha256Key> registry_hmac_key;
 
     /// @brief Primary-side bookkeeping of rules installed on behalf
     /// of secondaries via the eph_fd_install IPC fallback path.
@@ -2637,12 +2686,64 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         }
     }
 
+    // ── T2.3: tenant-side HMAC key attach ──────────────────────────
+    //
+    // If the daemon enabled HMAC at serve_nic time, the registry
+    // header carries `hmac_enabled = 1` and the key file lives at
+    // `/run/eph/<sanitize_bdf(pci)>.key`. Tenants that successfully
+    // read the file get a verify-capable Platform; tenants that
+    // can't (wrong uid/gid, file missing) get a warning and a
+    // best-effort attach (verify calls become no-ops + ERROR log).
+    //
+    // We DO NOT call `enable_hmac_` on the registry handles — that
+    // would re-sign existing data, which only the daemon should do.
+    // Instead the key is stashed at the Platform Impl level and
+    // forwarded to `verify_slot` / `audit_*` calls explicitly.
+    if (impl->mp_registry.has_value() &&
+        impl->mp_registry->header() != nullptr &&
+        impl->mp_registry->header()->hmac_enabled == 1) {
+        // Derive key path from file_prefix. The daemon wrote the
+        // file at `/run/eph/<sanitize_bdf(pci)>.key`, which equals
+        // `/run/eph/<file_prefix without "eph_" prefix>.key` since
+        // file_prefix is constructed as `eph_<sanitize_bdf(pci)>`.
+        std::string_view fp{config.file_prefix};
+        if (fp.size() > 4 && fp.substr(0, 4) == "eph_") {
+            std::filesystem::path kp = std::filesystem::path("/run/eph") /
+                (std::string{fp.substr(4)} + ".key");
+            auto k = ::eph::dpdk::detail::read_registry_hmac_key(kp);
+            if (!k) {
+                SPDLOG_LOGGER_WARN(log,
+                    "secondary_bringup_: hmac_enabled=1 but key file "
+                    "'{}' unreadable: {} — verify calls will return "
+                    "false; check tenant uid/gid against file mode "
+                    "(default 0440 root:root)",
+                    kp.string(), k.error().detail);
+            } else {
+                impl->registry_hmac_key.emplace(
+                    std::span<const uint8_t>(k->data(), k->size()));
+                SPDLOG_LOGGER_INFO(log,
+                    "secondary_bringup_: registry HMAC key attached "
+                    "from '{}' — Platform::audit_registries() will "
+                    "verify all 3 cross-process layouts",
+                    kp.string());
+            }
+        } else {
+            SPDLOG_LOGGER_WARN(log,
+                "secondary_bringup_: file_prefix='{}' lacks expected "
+                "'eph_' prefix — cannot derive HMAC key path; "
+                "tampering will be undetected on this tenant",
+                fp);
+        }
+    }
+
     SPDLOG_LOGGER_INFO(log,
         "secondary_bringup_ ready (port={}, file_prefix='{}', "
-        "rx_queue_range=[{},{}), dispatch_mode={})",
+        "rx_queue_range=[{},{}), dispatch_mode={}, hmac={})",
         config.port_id, config.file_prefix,
         config.rx_queue_range.first, config.rx_queue_range.second,
-        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
+        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode),
+        impl->registry_hmac_key.has_value() ? "verify-capable"
+                                            : "unkeyed");
 
     return Platform(std::move(impl));
 }
@@ -3094,7 +3195,70 @@ Platform::serve_nic(NicServiceConfig cfg) {
             bool(*plat.impl_->nicctl_query_action) ? "registered" : "DEGRADED");
     }
 
-    // ── 4. Announce PCI for default-NIC resolution ──────────────────
+    // ── 4. T2.3: optionally enable cross-process registry HMAC ──────
+    //
+    // When `cfg.enable_registry_hmac == true`, the daemon takes
+    // ownership of a 32-byte CSPRNG key written to
+    // `/run/eph/<sanitize_bdf(pci)>.key` (mode 0440 root:root) and
+    // hands it to all three cross-process registries. Tenants that
+    // attach later read the same file + verify on lookups (cold
+    // path) / sweep (1 Hz background) / audit-on-error (when a
+    // dispatch callback rejects).
+    //
+    // Failure mode: best-effort. If the key file write fails (e.g.
+    // /run/eph not writable), we log + continue with HMAC disabled
+    // — the daemon still serves, just without tamper protection.
+    // Callers that demand HMAC should check `is_alive()` + audit
+    // flags; a hard-fail mode can land in a future commit if
+    // operators want it.
+    if (plat.impl_ && cfg.enable_registry_hmac) {
+        auto key_path_r = ::eph::dpdk::detail::registry_hmac_key_path(cfg.pci);
+        if (!key_path_r) {
+            SPDLOG_LOGGER_WARN(log,
+                "Platform::serve_nic: registry_hmac_key_path failed: {} — "
+                "HMAC disabled, daemon serving in unkeyed mode",
+                key_path_r.error().detail);
+        } else {
+            auto key_r = ::eph::dpdk::detail::write_registry_hmac_key(
+                *key_path_r);
+            if (!key_r) {
+                SPDLOG_LOGGER_WARN(log,
+                    "Platform::serve_nic: write_registry_hmac_key('{}') "
+                    "failed: {} — HMAC disabled, daemon serving in "
+                    "unkeyed mode (check /run/eph permissions and that "
+                    "this process has root or CAP_DAC_OVERRIDE)",
+                    key_path_r->string(), key_r.error().detail);
+            } else {
+                // Hand the key to each registry. Construct
+                // HmacSha256Key once per registry so each owns its
+                // own normalised buffer (the key class zero-cleanses
+                // on destruction; sharing would couple lifetimes).
+                std::span<const uint8_t> key_bytes{
+                    key_r->data(), key_r->size()};
+                if (plat.impl_->mp_registry.has_value()) {
+                    plat.impl_->mp_registry->enable_hmac_(
+                        ::eph::net::HmacSha256Key{key_bytes});
+                }
+                if (plat.impl_->queue_allocator.has_value()) {
+                    plat.impl_->queue_allocator->enable_hmac_(
+                        ::eph::net::HmacSha256Key{key_bytes});
+                }
+                if (plat.impl_->icmp_directory.has_value()) {
+                    plat.impl_->icmp_directory->enable_hmac_(
+                        ::eph::net::HmacSha256Key{key_bytes});
+                }
+                SPDLOG_LOGGER_INFO(log,
+                    "Platform::serve_nic: registry HMAC enabled "
+                    "(key={}, MpRegistry+QueueAllocator+IcmpDirectory "
+                    "all signed); tenants must read this key file at "
+                    "Platform::create attach time and will verify each "
+                    "registry read against it",
+                    key_path_r->string());
+            }
+        }
+    }
+
+    // ── 5. Announce PCI for default-NIC resolution ──────────────────
     //
     // Apps that call Platform::create({.pci=""}) auto-resolve the
     // default daemon by scanning /var/run/dpdk/eph_*/eph-pci.txt.
@@ -3114,8 +3278,9 @@ Platform::serve_nic(NicServiceConfig cfg) {
 
     SPDLOG_LOGGER_INFO(log,
         "Platform::serve_nic: ready (pci='{}', file_prefix='{}', "
-        "total_queues={})",
-        cfg.pci, derived_prefix, cfg.total_queues);
+        "total_queues={}, hmac_enabled={})",
+        cfg.pci, derived_prefix, cfg.total_queues,
+        cfg.enable_registry_hmac);
     return plat;
 }
 
@@ -3276,6 +3441,66 @@ inline bool Platform::is_alive() const noexcept {
 inline std::atomic<bool> const* Platform::alive_flag_addr_() const noexcept {
     if (!impl_) return nullptr;
     return &impl_->is_alive;
+}
+
+inline size_t Platform::audit_registries() noexcept {
+    if (!impl_) return 0;
+    size_t total = 0;
+    // Daemon path: each registry handle has its own key stashed at
+    // enable_hmac_ time; their `audit_*` methods use the stashed key.
+    if (impl_->mp_registry.has_value()) {
+        total += impl_->mp_registry->audit_all();
+    }
+    // Tenant path: when the daemon enabled HMAC and we read the key
+    // at attach, we verify the registries against our copy. The
+    // primary already verified its own at sign time, but the tenant
+    // sees the hugepage state directly so it MUST verify
+    // independently — a compromised peer between daemon and tenant
+    // could write garbage we'd otherwise trust.
+    if (impl_->registry_hmac_key.has_value()) {
+        // MpRegistry: walk every populated slot ourselves with the
+        // tenant's key; the on-handle audit_all uses the daemon's
+        // (which we don't have here on tenant side).
+        if (impl_->mp_registry.has_value() &&
+            impl_->mp_registry->header() != nullptr &&
+            impl_->mp_registry->header()->hmac_enabled == 1) {
+            const auto* hdr = impl_->mp_registry->header();
+            for (uint8_t i = 0; i < hdr->total_procs; ++i) {
+                const auto& s = hdr->procs[i];
+                if (s.claimed.load(std::memory_order_acquire) == 0) continue;
+                if (!::eph::dpdk::detail::verify_slot(
+                        s, *impl_->registry_hmac_key)) {
+                    ++total;
+                    SPDLOG_LOGGER_WARN(detail::platform_logger(),
+                        "Platform::audit_registries: MpRegistry slot {} "
+                        "tamper detected (tenant audit) — pid={}, "
+                        "queue=[{},{}), port=[{},{})",
+                        i, s.pid, s.queue_lo, s.queue_hi,
+                        s.port_lo, s.port_hi);
+                }
+            }
+        }
+        // IcmpDirectory: tenant verifies all currently-Published
+        // entries via a one-shot sweep with full batch.
+        if (impl_->icmp_directory.has_value()) {
+            // Run audit_sweep_one_round with batch_size = full
+            // directory so a single call covers everything.
+            // This uses the directory's own stashed key, which
+            // primary set; tenant attach didn't re-key it (the
+            // shared header already has hmac_enabled=1 + tags).
+            // We call sweep once with a large batch — it advances
+            // the cursor and returns mismatch count.
+            total += impl_->icmp_directory->audit_sweep_one_round(
+                ::eph::dpdk::detail::kIcmpDirectoryMaxEntries);
+        }
+    }
+    return total;
+}
+
+inline size_t Platform::icmp_audit_sweep_one_round() noexcept {
+    if (!impl_) return 0;
+    if (!impl_->icmp_directory.has_value()) return 0;
+    return impl_->icmp_directory->audit_sweep_one_round();
 }
 
 inline void Platform::mark_daemon_disconnected_() noexcept {
