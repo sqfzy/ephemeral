@@ -525,6 +525,19 @@ public:
     /// Returns 0 when hmac_enabled==0 (unkeyed mode → no-op).
     /// Cold-path; called from a daemon control thread on operator
     /// `eph-nicctl audit` requests, NOT from any hot dispatch path.
+    ///
+    /// **Race window (acceptable)**: a slot transitioning 1→0→1
+    /// (release + reclaim by a different peer) during this scan can
+    /// produce a false-positive mismatch — the reader sees `claimed=1`
+    /// and pulls torn fields across two incarnations. ProcSlot has no
+    /// generation counter to seqlock-witness the transition (cf.
+    /// IcmpDirectoryEntry which has one), and adding one would be a
+    /// v4→v5 wire-format break. The race is mitigated by frequency:
+    /// MpRegistry slot churn is ~once per process lifetime (claim on
+    /// startup, release on shutdown), vs IcmpDirectory's per-stream
+    /// register/unregister churn (potentially 100s/sec). False-positive
+    /// rate is therefore acceptably rare; operators should re-run the
+    /// audit before escalating a single mismatch.
     [[nodiscard]] size_t audit_all() const noexcept {
         if (hdr_ == nullptr || !hdr_->hmac_enabled ||
             !hmac_key_.has_value()) return 0;
