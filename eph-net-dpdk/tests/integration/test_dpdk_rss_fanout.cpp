@@ -86,23 +86,17 @@ public:
     static ::eph::dpdk::test::DpdkBenchEnv& env() { return *env_; }
 
     void SetUp() override {
-        // FIXME(daemon-reshape): the S5 QueueAllocator (in
-        // eph/dpdk/detail/queue_allocator.hpp) and the multi-queue
-        // attach IPC have both landed and are wired in
-        // Platform::create — but this fixture has not been re-validated
-        // against the new path yet. Keeping the unconditional SKIP for
-        // now. Reactivation is `delete this block` + verify against a
-        // running eph-nicd daemon with total_queues >= 4. The original
-        // env setup follows this `return` and is intentionally
-        // preserved to make reactivation a one-line change.
-        reason_ = "FIXME(daemon-reshape): multi-queue secondary attach "
-                  "wired but fixture unverified — remove SKIP and re-run "
-                  "against a 4+ queue eph-nicd daemon to reactivate.";
-        ready_ = false;
-        return;
-
-        // ── original env setup, dead under S3 but kept for S5
-        //    reactivation; the `return` above makes it unreachable.
+        // T1.3 from the 2026-05-05 action list: reactivated by deleting
+        // the previous unconditional `reason_ = ...; ready_ = false; return;`
+        // sentinel block. The downstream env probe (`DpdkBenchEnv` /
+        // bench.conf parse / vfio-pci availability / daemon presence)
+        // gates correctly on its own — when NIC_B is on the kernel
+        // driver or no daemon is running, ready_ stays false and every
+        // TEST SKIPs cleanly via EPH_RSS_FANOUT_SKIP_IF_NOT_READY().
+        // When the environment IS ready, the test runs against the
+        // post-reshape daemon-led path (Platform::create attaching as
+        // secondary, QueueAllocator IPC live).
+        // ── original env setup ────────────────────────────────
         std::string conf_path;
         if (const char* e = std::getenv("EPH_BENCH_CONF"); e && *e) {
             conf_path = e;

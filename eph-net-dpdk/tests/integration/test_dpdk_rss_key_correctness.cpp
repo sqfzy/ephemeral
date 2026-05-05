@@ -285,8 +285,8 @@ std::optional<uint16_t> match_echo_reply(rte_mbuf* m,
 
 TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
     EPH_RSS_KEY_SKIP_IF_NOT_READY();
-    EPH_DAEMON_RESHAPE_S5_SKIP();
-    // The body below is preserved verbatim for S5 reactivation.
+    // T1.3 reactivation: S5 SKIP removed; env probe handles missing
+    // hardware / daemon. Body runs end-to-end when env is ready.
 
     // Fork the kernel echo BEFORE the verifier subprocess so it lives in
     // the parent's address space (no DPDK / EAL touch).
@@ -515,8 +515,8 @@ TEST(RssKeyCorrectness, ProbedKeyMatchesNicHash) {
 
 TEST(RssKeyCorrectness, FindSrcPortForQueueLandsOnTargetQueue) {
     EPH_RSS_KEY_SKIP_IF_NOT_READY();
-    EPH_DAEMON_RESHAPE_S5_SKIP();
-    // The body below is preserved verbatim for S5 reactivation.
+    // T1.3 reactivation: S5 SKIP removed; env probe handles missing
+    // hardware / daemon. Body runs end-to-end when env is ready.
 
     const auto& net = RssKeyEnv::cfg().networking;
     pid_t echo_pid = fork_kernel_udp_echo(net.server_ip);

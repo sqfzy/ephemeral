@@ -82,20 +82,15 @@ public:
 
     void SetUp() override {
         // Multi-queue Platform tests against a real NIC remain gated
-        // off pending end-to-end verification under the post-S5
-        // daemon-led model — the QueueAllocator + RETA-tracking IPC
-        // is live in `Platform::create`, but the broader fixture
-        // (kernel mock dispatcher, ARP resolve against gw_ip from
-        // bench.conf, multi-queue RX dispatch verification) hasn't
-        // been re-validated end-to-end on this host. The body below
-        // is the intended reactivation path and is preserved verbatim;
-        // remove the unconditional SKIP once a separate reactivation
-        // pass confirms each step still works.
-        reason_ = "Multi-queue Platform fixture pending post-S5 "
-                  "reactivation verification (env setup body below "
-                  "is the intended path).";
-        ready_ = false;
-        return;
+        // T1.3 from the 2026-05-05 action list: previously kept
+        // unconditionally not-ready via the `reason_=...; ready_=false;
+        // return;` sentinel. The S5 deps (QueueAllocator + IPC) are
+        // live in Platform::create today, and the env probe below
+        // gates correctly on missing hardware / daemon — when those
+        // are unavailable, ready_ stays false naturally and every
+        // TEST SKIPs cleanly via EPH_RSS_PLATFORM_SKIP_IF_NOT_READY().
+        // Removing the sentinel lets the test body run end-to-end
+        // whenever the environment is actually ready.
 
         // ── intended env setup; left unreachable until the
         //    reactivation pass above clears.

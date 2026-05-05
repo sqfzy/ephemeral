@@ -223,9 +223,13 @@ void run_in_subprocess(std::function<void()> body) {
 
 TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
-    EPH_DAEMON_RESHAPE_S5_SKIP();
-    // The body below is preserved verbatim for S5 reactivation.
-    // Unreachable today; the SKIP above returns early.
+    // T1.3 from the 2026-05-05 action list: previously unconditionally
+    // skipped via EPH_DAEMON_RESHAPE_S5_SKIP() pending S5 fixture
+    // reactivation. The S5 deps (QueueAllocator + multi-queue secondary
+    // attach IPC) are live in Platform::create today; the
+    // EPH_RSS_BRINGUP_SKIP_IF_NOT_READY env probe correctly skips when
+    // NIC_B isn't on vfio-pci or the daemon isn't running, so the test
+    // body now runs end-to-end whenever the environment is ready.
     run_in_subprocess([] {
         auto pcfg = make_pcfg();
         pcfg.queues = 4;  // S5: multi-queue secondary claim

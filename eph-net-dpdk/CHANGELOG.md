@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Reactivated — 4 RSS integration tests (T1.3, 2026-05-05)
+
+`tests/integration/test_dpdk_rss_{bringup,fanout,key_correctness,platform}.cpp`
+were previously gated behind unconditional skip blocks
+(`EPH_DAEMON_RESHAPE_S5_SKIP()` macro and a `reason_=...; ready_=false; return;`
+sentinel) pending S5 daemon-reshape fixture re-validation. The S5
+dependencies (QueueAllocator + multi-queue secondary attach IPC) are
+live in `Platform::create` and have been since 2026-04-30; what was
+missing was simply the reactivation pass.
+
+Removed the unconditional skips. The downstream env probes
+(`RssBringupEnv`, `RssFanoutEnv`, `RssKeyEnv`, `RssPlatformEnv`)
+already gate correctly on missing hardware (NIC_B not on vfio-pci)
+and missing daemon — when those are absent the tests still SKIP
+cleanly via their per-fixture `..._SKIP_IF_NOT_READY()` macro.
+
+Verified on the audit host (no vfio-pci binding present): all 4
+test binaries compile and SKIP cleanly with appropriate diagnostic
+messages. End-to-end verification on a NIC-bound host with a running
+`eph-nicd` daemon (4+ queues) is the operator's next step.
+
+Track item: T1.3 from the 2026-05-05 action list.
+
 ### Added — Prometheus textfile MetricsSink (T2.6, 2026-05-05)
 
 `eph::net::dpdk::detail::PrometheusTextfileSink` — a concrete `MetricsSink`
