@@ -19,7 +19,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <optional>
