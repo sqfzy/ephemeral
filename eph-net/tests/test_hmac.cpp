@@ -500,6 +500,31 @@ TEST(Sign, MoveAssignmentWorks) {
     EXPECT_EQ(before_k2.bytes, after_k1.bytes);
 }
 
+// Self-move-assignment guard: `k = std::move(k)` must not OPENSSL_cleanse
+// then memcpy from the just-cleansed buffer (which would zero out the
+// material, defeating the move's purpose). The `if (this != &other)`
+// guard exists for exactly this case; pin it.
+TEST(Sign, SelfMoveAssignmentDoesNotZeroOutKeyMaterial) {
+    HmacSha256Key k{std::string_view{"my-secret"}};
+    auto before = hmac_sha256_sign(k, std::string_view{"sample-msg"});
+
+    // Compiler may warn about self-move; suppress narrowly so the test
+    // intent (exercising the self-move guard) reads cleanly.
+    #if defined(__GNUC__) && !defined(__clang__)
+    #  pragma GCC diagnostic push
+    #  pragma GCC diagnostic ignored "-Wself-move"
+    #endif
+    k = std::move(k);
+    #if defined(__GNUC__) && !defined(__clang__)
+    #  pragma GCC diagnostic pop
+    #endif
+
+    auto after = hmac_sha256_sign(k, std::string_view{"sample-msg"});
+    EXPECT_EQ(before.bytes, after.bytes)
+        << "self-move must be a no-op; without the `this != &other` guard "
+           "the OPENSSL_cleanse would zero the buffer before memcpy reads it";
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Realistic exchange-style usage
 // ═════════════════════════════════════════════════════════════════════════════
