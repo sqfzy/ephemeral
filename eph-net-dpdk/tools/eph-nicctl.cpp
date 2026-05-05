@@ -323,6 +323,14 @@ int cmd_query(const CliArgs& args) {
 // ─────────────────────────────────────────────────────────────────────
 
 // SIGINT/SIGTERM flag used by the watch loop. async-signal-safe writes only.
+//
+// Lock-free is required for the signal-handler store to be async-signal-
+// safe (POSIX permits std::atomic<T>::store from a handler ONLY when
+// is_always_lock_free; otherwise the store may take a hidden lock that
+// races with whatever the interrupted thread held).
+static_assert(std::atomic<int>::is_always_lock_free,
+              "watch_signal_handler relies on lock-free atomic<int> store "
+              "to be async-signal-safe");
 std::atomic<int> g_stop_signal{0};
 
 extern "C" void watch_signal_handler(int signo) noexcept {
