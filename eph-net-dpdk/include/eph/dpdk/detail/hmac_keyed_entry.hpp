@@ -2,7 +2,8 @@
 
 /// @file detail/hmac_keyed_entry.hpp
 /// HMAC-SHA256 entry wrapper for hugepage-backed cross-process registries
-/// (T2.3 from the 2026-05-05 action list, **skeleton only**).
+/// (originally T2.3 skeleton from the 2026-05-05 action list — see
+/// **Status update below** for the wiring outcome).
 ///
 /// Threat model the wrapper addresses:
 ///   The hugepage POD layouts that `MpRegistry` / `IcmpDirectory` /
@@ -15,36 +16,51 @@
 ///   risk for multi-LP / multi-strategy deployments (single-LP single-
 ///   strategy assumes all secondaries in the same trust domain).
 ///
-/// The wrapper provides the *primitive* the eventual full deployment
-/// will need: `HmacKeyedEntry<T>` carries `T` plus a 32-byte HMAC-SHA256
-/// tag computed over `T`'s bytes under a daemon-distributed key.
-/// `verify()` recomputes the tag in constant time and reports tamper.
-/// The actual wiring into MpRegistry / IcmpDirectory / QueueAllocator is
-/// left to a follow-up `pax --feat --deep` because it requires:
+/// **Status update (2026-05-05 K/L/M/N/O/P series, post-skeleton)**:
+/// The production wiring shipped, but the registries did not adopt
+/// `HmacKeyedEntry<T>` directly — each registry instead embeds a
+/// `hmac_tag[32]` field in its existing POD layout and defines its
+/// own `pack_*_for_hmac` / `sign_*_in_place` / `verify_*` helpers
+/// over an explicit little-endian payload. This avoided a
+/// hugepage-wire-format break (the v1 entry layouts predate
+/// `HmacKeyedEntry`) and let each registry pick which bytes are
+/// authenticated (e.g. `IcmpDirectoryEntry` excludes `claimed` and
+/// `generation` because they mutate per claim/release).
 ///
-///   1. Designing the daemon→secondaries key distribution (read-only
-///      `/run/eph/<bdf>.key` mode 0440 root-only?). Out of scope here.
-///   2. Defining failure semantics: tamper detected → log + tear down
-///      that secondary? Reset the slot? Quarantine the registry? Each
-///      has cross-process consequences.
-///   3. Performance check: every cross-process read becomes verify().
-///      For control plane (cold path) this is fine; for ICMP dispatch
-///      we'd want to verify only on suspicion (e.g. unusual fields).
+/// Resolved design questions (originally out-of-scope here):
+///   1. Daemon→secondaries key distribution: shipped via
+///      `eph/dpdk/detail/registry_hmac_key.hpp` —
+///      `/run/eph/<sanitize_bdf(pci)>.key` mode 0440 root-owned.
+///   2. Failure semantics: `verify_*` returns false → audit caller
+///      logs `WARN`, increments mismatch counter, drops the
+///      individual dispatch. Periodic 1 Hz `audit_sweep_one_round`
+///      catches passive tampering. Daemon does NOT tear down
+///      secondaries — operator decides via Prometheus alerts.
+///   3. Performance: hot lookup paths NEVER verify; verify is
+///      audit-on-suspicion + periodic sweep on a control thread.
+///      `bench_registry_hmac.cpp` measures the actual cost.
 ///
-/// What this header gives you today:
-///   * `HmacKeyedEntry<T>` POD layout: `T data; uint8_t tag[32];`
+/// What this header still provides:
+///   * `HmacKeyedEntry<T>` POD layout (generic primitive — usable
+///     for future registries that haven't yet picked their own
+///     authenticated-payload schema).
 ///   * `compute_tag(span<uint8_t> bytes, key) -> Tag` — bytes-only,
 ///     no T involved (caller decides which bytes are authenticated).
 ///   * `verify(span<uint8_t> bytes, key, expected_tag) -> bool` —
 ///     constant-time comparison via `CRYPTO_memcmp`.
-///   * `EPH_DPDK_ENABLE_HMAC` gating macro: when undefined (the
-///     current default), the wrapper compiles but is unused; future
-///     wiring will be `#if EPH_DPDK_ENABLE_HMAC` blocks in registry
-///     code.
 ///
-/// Test coverage: `tests/test_hmac_keyed_entry.cpp` (T2.3 skeleton).
-/// Future test: `tests/test_mp_registry_hmac_tamper.cpp` once the
-/// registries are actually wired (T3.3 — also skeleton-only today).
+/// Production callers: none today. The 3 shipped registries
+/// (MpRegistry / QueueAllocator / IcmpDirectory) carry their own
+/// per-type pack/sign/verify helpers. This header survives as a
+/// reference primitive + as the test target for
+/// `tests/test_hmac_keyed_entry.cpp` (sign/verify round-trip
+/// invariants) and `tests/test_hmac_tamper_simulation.cpp` (T3.3
+/// closed — 5 fuzz cases × 3500 trials).
+///
+/// The previous `EPH_DPDK_ENABLE_HMAC` compile-time gating macro
+/// was never adopted; the registries use a runtime
+/// `header.hmac_enabled` flag so single-tenant deployments (no
+/// HMAC) and multi-tenant (HMAC on) coexist on the same build.
 
 #include <array>
 #include <cstdint>
