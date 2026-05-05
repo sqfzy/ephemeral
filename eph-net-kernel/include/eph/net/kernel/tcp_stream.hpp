@@ -838,9 +838,16 @@ public:
             // TX buffer. From the application's perspective they're
             // committed; do NOT retransmit on a subsequent
             // EPIPE/ECONNRESET (the kernel TCP stack will deliver or
-            // diagnose). Stamp `Sent` proactively so a watchdog that
-            // observes the stream go bad next can confirm the prior
-            // call completed cleanly.
+            // diagnose).
+            //
+            // We deliberately do NOT stamp `last_in_flight_detail` on
+            // the full-success path: that thread-local slot is for
+            // failure-mode classification (Unsent / Uncertain / Sent),
+            // and overwriting it on every successful send would erase
+            // the most recent failure context just as the application
+            // is checking it. Readers must check the function's
+            // `expected<>` return — a successful send is signalled by
+            // `expected.has_value()`, not by the in-flight slot.
             //
             // Note: `*sr` may equal less than `app_payload.size()`
             // only if ByteSocket::send is later changed to allow
