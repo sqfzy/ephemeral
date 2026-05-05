@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed — systemd unit: explicit `AmbientCapabilities` + `CapabilityBoundingSet` (2026-05-05)
+
+`etc/eph-nicd@.service` previously ran the daemon as `User=root` with the
+intent that capability inheritance was implicit. `docs/dpdk-daemon-deployment.md`
+:109 documented `AmbientCapabilities=CAP_IPC_LOCK CAP_NET_ADMIN CAP_SYS_NICE`
+as part of the S4 deliverable, but the actual unit file did not declare them.
+The result was a "config escape" footgun: an operator who switched `User=` to
+a non-root account would silently lose every capability the daemon needs
+(mlock hugepages, NIC bring-up, lcore pinning) — failures would surface as
+opaque `rte_eal_init` errors deep inside DPDK PMD code, not as a recognisable
+"missing capability" error at startup.
+
+Both `AmbientCapabilities=` (capabilities the daemon receives) and
+`CapabilityBoundingSet=` (cap on the set it can ever acquire) are now declared
+explicitly. The bounding set protects against a compromised PMD or library
+acquiring more than the daemon's declared needs.
+
+No public-API or wire-format change. Operators with the previous unit file
+should `systemctl daemon-reload` after picking up the new unit.
+
+Track item: T2.5 from the 2026-05-05 action list.
+
 ### Added — `kTcpKeepaliveSendFailures` StreamMetric (2026-05-03)
 
 `TcpSession::Stats::keepalive_send_failures` (which already existed and

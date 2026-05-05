@@ -13,7 +13,16 @@ LimitMEMLOCK=infinity
 # DPDK requires CAP_IPC_LOCK + (typically) root for VFIO group fd ownership
 # and hugepage mmap. Run as root; per-app processes (DPDK secondaries) can
 # inherit the daemon's hugepage segments without needing root themselves.
+#
+# Capabilities are listed explicitly via AmbientCapabilities so that an
+# operator who edits User= away from root does not silently drop privileges
+# the daemon actually needs (CAP_IPC_LOCK = mlock hugepages, CAP_NET_ADMIN
+# = NIC bring-up / RSS / FlowDirector, CAP_SYS_NICE = lcore pinning).
+# CapabilityBoundingSet caps the set the daemon can ever acquire — this
+# protects against a compromised PMD acquiring more than declared.
 User=root
+AmbientCapabilities=CAP_IPC_LOCK CAP_NET_ADMIN CAP_SYS_NICE
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_NET_ADMIN CAP_SYS_NICE
 StandardOutput=journal
 StandardError=journal
 
