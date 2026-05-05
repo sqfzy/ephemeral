@@ -21,6 +21,7 @@
 #include "eph/core/error.hpp"
 #include "eph/dpdk/detail/icmp_directory.hpp"
 #include "eph/dpdk/packet_core.hpp"
+#include "eph/net/hmac.hpp"
 
 using eph::core::Error;
 using eph::dpdk::net::ConnectionTuple;
@@ -456,4 +457,170 @@ TEST(IcmpDirectory, ConcurrentRegisterSameTuple_ExactlyOneWinner) {
 
     EXPECT_EQ(total_winners, kTrials);
     EXPECT_EQ(total_dups, kTrials * (kThreads - 1));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// audit_sweep_one_round — cursor advancement + wrap-around
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The handle's docstring claims `audit_sweep_one_round(batch)` advances
+// the cursor across calls and wraps to 0 once a full pass is complete,
+// but this was previously untested. These cases pin the contract so a
+// future refactor breaking cursor arithmetic fails loudly here.
+
+TEST(IcmpDirectory, AuditSweep_ZeroWhenHmacDisabled) {
+    // Default unkeyed mode: hmac_enabled=0, sweep is a deterministic
+    // no-op even when populated entries exist.
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swdis");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    ASSERT_TRUE(h->register_target(make_tuple(40010), kProtoTcp, 0).has_value());
+    ASSERT_TRUE(h->register_target(make_tuple(40020), kProtoTcp, 0).has_value());
+
+    // hmac_enabled is 0, so audit_sweep returns 0 mismatches without
+    // running HMAC over any entry. Repeated calls stay at 0.
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/64), 0u);
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/64), 0u);
+}
+
+TEST(IcmpDirectory, AuditSweep_HealthyKeyedReturnsZeroMismatches) {
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swhealth");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    eph::net::HmacSha256Key key{std::string_view{"sweep-test-key"}};
+    h->enable_hmac_(std::move(key));
+
+    // Register 3 targets — they get signed at publish time.
+    ASSERT_TRUE(h->register_target(make_tuple(41000), kProtoTcp, 0).has_value());
+    ASSERT_TRUE(h->register_target(make_tuple(41010), kProtoTcp, 1).has_value());
+    ASSERT_TRUE(h->register_target(make_tuple(41020), kProtoUdp, 2).has_value());
+
+    // Walk the entire directory in chunks. With kIcmpDirectoryMaxEntries=1024
+    // and batch=128, a full pass takes 8 calls. Healthy = 0 mismatches each.
+    size_t total_mm = 0;
+    for (int i = 0; i < 8; ++i) {
+        total_mm += h->audit_sweep_one_round(/*batch=*/128);
+    }
+    EXPECT_EQ(total_mm, 0u);
+}
+
+TEST(IcmpDirectory, AuditSweep_DetectsTamper) {
+    // Wild-pointer tamper: flip a byte in proto. Audit sweep MUST surface it.
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swtamp");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    eph::net::HmacSha256Key key{std::string_view{"sweep-tamper-key"}};
+    h->enable_hmac_(std::move(key));
+
+    auto t = make_tuple(42000);
+    auto idx_r = h->register_target(t, kProtoTcp, /*owner=*/0);
+    ASSERT_TRUE(idx_r.has_value()) << idx_r.error();
+    const size_t idx = *idx_r;
+
+    // Healthy: full sweep yields 0 mismatches.
+    size_t healthy_mm = 0;
+    for (int i = 0; i < 16; ++i) {  // 16 * 64 = 1024 = full pass
+        healthy_mm += h->audit_sweep_one_round(/*batch=*/64);
+    }
+    EXPECT_EQ(healthy_mm, 0u);
+
+    // Tamper proto in place. The acquire-load on `claimed` still sees
+    // Published, but the recomputed HMAC will not match the stored tag.
+    h->header()->entries[idx].proto ^= 0xFF;
+
+    // Sweep — exactly one mismatch should surface, and only on the
+    // pass that covers slot `idx`.
+    size_t total_mm = 0;
+    for (int i = 0; i < 16; ++i) {
+        total_mm += h->audit_sweep_one_round(/*batch=*/64);
+    }
+    EXPECT_EQ(total_mm, 1u)
+        << "expected exactly 1 mismatch from the tampered slot " << idx;
+}
+
+TEST(IcmpDirectory, AuditSweep_CursorWrapsAfterFullPass) {
+    // Walk the entire directory using batch=kIcmpDirectoryMaxEntries; the
+    // cursor must reset to 0 so a SECOND pass also covers everything.
+    // Verify by tampering AFTER the first full pass — the second pass
+    // must still detect the new tamper (proves the cursor wrapped).
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swwrap");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    eph::net::HmacSha256Key key{std::string_view{"sweep-wrap-key"}};
+    h->enable_hmac_(std::move(key));
+
+    auto t = make_tuple(43000);
+    auto idx_r = h->register_target(t, kProtoTcp, /*owner=*/0);
+    ASSERT_TRUE(idx_r.has_value()) << idx_r.error();
+
+    // Full sweep #1 — healthy, 0 mismatches.
+    EXPECT_EQ(h->audit_sweep_one_round(kIcmpDirectoryMaxEntries), 0u);
+
+    // Tamper AFTER pass #1 closes. If the cursor failed to wrap to 0,
+    // the next call would scan an empty tail range and miss this.
+    h->header()->entries[*idx_r].owner_proc = 99;  // tampered
+
+    // Full sweep #2 — must detect the tamper, proving cursor wrapped.
+    EXPECT_EQ(h->audit_sweep_one_round(kIcmpDirectoryMaxEntries), 1u)
+        << "cursor did not wrap after first full pass";
+}
+
+TEST(IcmpDirectory, AuditSweep_BatchSmallerThanTotalProgressesAcrossCalls) {
+    // Batch smaller than total: cursor should advance by batch each
+    // call, so a tampered slot near the END of the directory is only
+    // detected by the call whose window covers it.
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swprog");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    eph::net::HmacSha256Key key{std::string_view{"sweep-prog-key"}};
+    h->enable_hmac_(std::move(key));
+
+    // Force registrations into known slots by registering many targets;
+    // first-fit allocates 0,1,2,… in order. After registering 3 targets,
+    // slots 0,1,2 are populated, all others are Free.
+    auto idx0 = h->register_target(make_tuple(44000), kProtoTcp, 0);
+    auto idx1 = h->register_target(make_tuple(44010), kProtoTcp, 1);
+    auto idx2 = h->register_target(make_tuple(44020), kProtoTcp, 2);
+    ASSERT_TRUE(idx0.has_value() && idx1.has_value() && idx2.has_value());
+    EXPECT_EQ(*idx0, 0u);
+    EXPECT_EQ(*idx1, 1u);
+    EXPECT_EQ(*idx2, 2u);
+
+    // Tamper slot 1.
+    h->header()->entries[1].src_port ^= 0x55;
+
+    // batch=1: each call advances cursor by 1. Calls #0..#2 cover slots
+    // 0,1,2 — call #1 (covering slot 1) should report the only mismatch.
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/1), 0u);  // slot 0: clean
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/1), 1u);  // slot 1: tampered
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/1), 0u);  // slot 2: clean
+
+    // Calls #3..#1023: all Free (skip), 0 mismatches each. We don't
+    // walk all 1021 here for test runtime; the wrap test covers full
+    // pass behaviour separately.
+    for (int i = 0; i < 10; ++i) {
+        EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/1), 0u)
+            << "extra call " << i << " (free slot range)";
+    }
+}
+
+TEST(IcmpDirectory, AuditSweep_ZeroBatchIsNoOp) {
+    // Defensive edge: batch_size=0. Should be a clean no-op (no
+    // division-by-zero, no infinite loop).
+    auto h = IcmpDirectoryHandle::create_primary("idtest_swzero");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    eph::net::HmacSha256Key key{std::string_view{"sweep-zero-key"}};
+    h->enable_hmac_(std::move(key));
+
+    ASSERT_TRUE(h->register_target(make_tuple(45000), kProtoTcp, 0).has_value());
+
+    // Even with a tampered slot, batch=0 doesn't scan anything.
+    h->header()->entries[0].dst_ip ^= 1u;
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/0), 0u);
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/0), 0u);
+
+    // A batch>=1 call in the same window should still find the tamper —
+    // this proves the cursor was NOT advanced by the zero-batch calls.
+    EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/64), 1u);
 }
