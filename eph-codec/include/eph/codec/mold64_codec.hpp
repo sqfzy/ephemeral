@@ -96,7 +96,12 @@ public:
     ///        ITCH message via `sink`.
     ///
     /// Returns the number of frames emitted, or an `ErrorInfo` if the
-    /// header is malformed / truncated.
+    /// header is malformed / truncated. Empty `sink` (default-constructed
+    /// `std::function`) is rejected with `InvalidConfig` before any
+    /// datagram bytes are consumed (so the caller can retry with a
+    /// wired sink); a malformed-header datagram is consumed and the
+    /// codec returns `CodecBad`. See R56/R57 for the sibling
+    /// RawDatagramCodec contract.
     ///
     /// Gap handling:
     ///   - If `header.sequence_number > expected_seq_`, we observe a gap
