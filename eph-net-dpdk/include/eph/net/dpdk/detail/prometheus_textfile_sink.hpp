@@ -181,6 +181,16 @@ public:
                 ::unlink(tmp_str.c_str());
                 return;
             }
+            if (n == 0) {
+                // POSIX-allowed but observable on pipes / unusual fs:
+                // n=0 with bytes remaining means "no progress made,
+                // errno indicates cause". Naive `buf += 0; left -= 0;`
+                // would spin forever; abort the flush instead.
+                record_errno_("write(tmp): zero progress");
+                ::close(fd);
+                ::unlink(tmp_str.c_str());
+                return;
+            }
             buf += static_cast<size_t>(n);
             left -= static_cast<size_t>(n);
         }
