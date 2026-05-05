@@ -72,3 +72,122 @@ TEST(DpdkUdpMulticast, SocketAddrToBe32MatchesIpFormat) {
     en::SocketAddr unicast{en::Ipv4Addr{10, 0, 0, 1}, 30000};
     EXPECT_FALSE(::eph::dpdk::is_multicast_ip(unicast.ip.to_be32()));
 }
+
+// MulticastGroup::validate covers four reject paths plus the happy
+// path. Pin them to lock the structural contract before any
+// optimisation reorders the checks.
+
+TEST(DpdkUdpMulticast, GroupValidateAcceptsMinimalGroup) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0000001u;   // 224.0.0.1
+    g.group_port = 30000;
+    EXPECT_TRUE(g.validate().empty());
+}
+
+TEST(DpdkUdpMulticast, GroupValidateRejectsZeroGroupIp) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_port = 30000;
+    auto err = g.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("group_ip"), std::string_view::npos)
+        << "expected group_ip rejection, got: " << err;
+}
+
+TEST(DpdkUdpMulticast, GroupValidateRejectsNonMulticastGroupIp) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0x0A000001u;   // 10.0.0.1 — unicast
+    g.group_port = 30000;
+    auto err = g.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("multicast range"), std::string_view::npos)
+        << "expected multicast-range rejection, got: " << err;
+}
+
+TEST(DpdkUdpMulticast, GroupValidateRejectsZeroGroupPort) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip = 0xE0010203u;
+    auto err = g.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("group_port"), std::string_view::npos);
+}
+
+TEST(DpdkUdpMulticast, GroupValidateRejectsMulticastSourceIp) {
+    // SSM filter sourcing FROM a multicast address is impossible —
+    // process_packet would silently drop every datagram.
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0010203u;
+    g.group_port = 30000;
+    g.source_ip  = 0xE0000001u;   // 224.0.0.1
+    auto err = g.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("multicast"), std::string_view::npos)
+        << "expected multicast-source rejection, got: " << err;
+}
+
+TEST(DpdkUdpMulticast, GroupValidateRejectsBroadcastSourceIp) {
+    // 255.255.255.255 also can't validly source a real datagram.
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0010203u;
+    g.group_port = 30000;
+    g.source_ip  = 0xFFFFFFFFu;
+    auto err = g.validate();
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("255.255.255.255"), std::string_view::npos);
+}
+
+TEST(DpdkUdpMulticast, GroupValidateAcceptsLegitimateUnicastSource) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0010203u;
+    g.group_port = 30000;
+    g.source_ip  = 0x0A000001u;   // 10.0.0.1 — unicast
+    EXPECT_TRUE(g.validate().empty());
+}
+
+// MulticastGroup::warnings() — three advisory warning paths. Pin
+// each so a future refactor that drops one is caught.
+TEST(DpdkUdpMulticast, GroupWarningsLocalNetworkControlBlock) {
+    // 224.0.0.x is the local network control block (RFC 5771 §4).
+    // Note: the warnings() check is `(group_ip >> 8) == 0xE00000`,
+    // which corresponds to `224.0.0.0/24` exactly.
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0000005u;   // 224.0.0.5
+    g.group_port = 30000;
+    auto w = g.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("local network control") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected local-network-control warning";
+}
+
+TEST(DpdkUdpMulticast, GroupWarningsLoopbackSourceIp) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0010203u;
+    g.group_port = 30000;
+    g.source_ip  = 0x7F000001u;   // 127.0.0.1
+    auto w = g.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("loopback") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected loopback-source warning";
+}
+
+TEST(DpdkUdpMulticast, GroupWarningsWellKnownPort) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE0010203u;
+    g.group_port = 80;
+    auto w = g.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("well-known") != std::string::npos) found = true;
+    }
+    EXPECT_TRUE(found) << "expected well-known-port warning";
+}
+
+TEST(DpdkUdpMulticast, GroupWarningsNominalConfigEmpty) {
+    ::eph::dpdk::MulticastGroup g{};
+    g.group_ip   = 0xE1010203u;   // 225.1.2.3 — outside control block
+    g.group_port = 30000;
+    EXPECT_TRUE(g.warnings().empty());
+}
