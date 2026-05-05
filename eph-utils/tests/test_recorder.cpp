@@ -1378,6 +1378,54 @@ TEST_F(RecorderTest, RecordNsPrecisionSweep) {
     EXPECT_NEAR(stats->p50_ns, expected_median, 300.0);
 }
 
+// `record_ns(UINT64_MAX)` triggers the saturate-on-overflow guard in
+// `ns_to_cycles_saturate`. The cycles_d * cycles_per_ns product would
+// produce a double larger than UINT64_MAX → UB on `static_cast<uint64_t>`
+// per [conv.fpint]/p1. The guard returns UINT64_MAX so the histogram
+// counts the sample under skipped_overflow_ rather than poisoning
+// total_cycles_. Pin this contract — without it, a refactor that drops
+// the [[unlikely]] guard would silently regress to UB.
+TEST_F(RecorderTest, RecordNsHugeValueSaturatesToOverflow) {
+    Recorder rec("RecordNsOverflow");
+    const uint64_t huge_ns = std::numeric_limits<uint64_t>::max();
+    rec.record_ns(huge_ns);
+
+    // The sample either lands as overflow (TSC frequency makes
+    // cycles_d > UINT64_MAX so guard returns UINT64_MAX → histogram
+    // overflow) or as a successful record (TSC frequency very low).
+    // Either way: count_ + skipped_overflow_count() == 1, no UB,
+    // no negative-looking large value.
+    const uint64_t total = rec.count() + rec.skipped_overflow_count();
+    EXPECT_EQ(total, 1u)
+        << "record_ns(UINT64_MAX) must be tallied exactly once across "
+           "the count_/skipped_overflow_ pair (saturation path).";
+    // Defensive: skipped_invalid_ must remain 0 — UINT64_MAX is not
+    // a "zero" sample, so the invalid-value branch must not fire.
+    EXPECT_EQ(rec.skipped_invalid_count(), 0u);
+}
+
+TEST_F(RecorderTest, RecordNsZeroIsRejectedAsInvalid) {
+    // Zero ns → zero cycles → caught by the `cycles == 0` invalid
+    // guard, NOT the overflow guard. Pins the per-message-type
+    // accounting that the warning printer relies on.
+    Recorder rec("RecordNsZero");
+    rec.record_ns(0);
+    EXPECT_EQ(rec.count(), 0u);
+    EXPECT_EQ(rec.skipped_invalid_count(), 1u);
+    EXPECT_EQ(rec.skipped_overflow_count(), 0u);
+}
+
+TEST_F(RecorderTest, RecordNsValuesZeroValueAccumulatesInvalid) {
+    // record_ns_values(0, count) — the cycles==0 invalid path adds
+    // `count` to skipped_invalid_, NOT 1. Without the test, a refactor
+    // that did `skipped_invalid_++` instead of `+= count` would silently
+    // under-report.
+    Recorder rec("RecordNsValuesZero");
+    rec.record_ns_values(0, 7);
+    EXPECT_EQ(rec.count(), 0u);
+    EXPECT_EQ(rec.skipped_invalid_count(), 7u);
+}
+
 TEST_F(RecorderTest, RecordNsConcurrentDifferentInstances) {
     // Recorder itself is single-threaded; record_ns inherits that. But
     // the static cache inside ns_to_cycles_() is shared across all
