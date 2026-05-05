@@ -792,8 +792,19 @@ class ConcurrentRecorder {
             return false;
         }
 
-        local->count++;
-        local->total_cycles += cycles;
+        // Saturating accumulators — same hazard as the single-threaded
+        // Recorder::record(): without the guard, `total_cycles_` of a
+        // pathologically long-running thread can wrap past UINT64_MAX
+        // and corrupt the avg_ns downstream of compute_stats(). Cheap
+        // (one extra branch on the hot path; predictable since
+        // saturation is the unlikely path for any real workload).
+        constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+        local->count = (local->count == kSatU64)
+                         ? kSatU64
+                         : local->count + 1;
+        local->total_cycles = (cycles > kSatU64 - local->total_cycles)
+                                ? kSatU64
+                                : local->total_cycles + cycles;
         local->min_cycles = std::min(local->min_cycles, cycles);
         local->max_cycles = std::max(local->max_cycles, cycles);
 
@@ -824,13 +835,27 @@ class ConcurrentRecorder {
             return false;
         }
 
-        local->count += count;
-        // Saturate on overflow to prevent corrupted average calculations.
-        if (cycles <= std::numeric_limits<uint64_t>::max() / count) [[likely]] {
-            local->total_cycles += cycles * count;
+        // Two-phase saturation, matching the single-threaded
+        // Recorder::record_values() path:
+        //   1. multiplication: cycles * count must fit in uint64_t
+        //   2. accumulation:   total_cycles_ + product must fit in uint64_t
+        // Without phase (2) a pathological thread could pre-saturate
+        // total_cycles in an earlier batch and then wrap on a later
+        // small batch back near zero, polluting the merged avg_ns.
+        // count_ has the same hazard if many large-count batches are
+        // recorded — saturate there too.
+        constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+        if (cycles <= kSatU64 / count) [[likely]] {
+            const uint64_t product = cycles * count;
+            local->total_cycles = (product > kSatU64 - local->total_cycles)
+                                    ? kSatU64
+                                    : local->total_cycles + product;
         } else {
-            local->total_cycles = std::numeric_limits<uint64_t>::max();
+            local->total_cycles = kSatU64;
         }
+        local->count = (count > kSatU64 - local->count)
+                         ? kSatU64
+                         : local->count + count;
         local->min_cycles = std::min(local->min_cycles, cycles);
         local->max_cycles = std::max(local->max_cycles, cycles);
 
@@ -1144,14 +1169,28 @@ class ConcurrentRecorder {
                 if (it != active_locals.end()) {
                     // Merge data into retirement buffer (always compatible — same ctor params)
                     (void)retired_histogram.merge(local->histogram);
-                    retired_count += local->count;
-                    retired_total_cycles += local->total_cycles;
+                    // Saturating sums: a single retiring thread that
+                    // already pre-saturated its `total_cycles`/`count`
+                    // (per the per-thread guards in record / record_values)
+                    // must not wrap the retirement totals. The skipped
+                    // counters use the same shape so dashboards stay
+                    // monotone under sustained retirement churn.
+                    constexpr uint64_t kSatU64 =
+                        std::numeric_limits<uint64_t>::max();
+                    auto sat_add = [](uint64_t a, uint64_t b) noexcept {
+                        return (b > kSatU64 - a) ? kSatU64 : a + b;
+                    };
+                    retired_count = sat_add(retired_count, local->count);
+                    retired_total_cycles =
+                        sat_add(retired_total_cycles, local->total_cycles);
                     retired_min_cycles =
                         std::min(retired_min_cycles, local->min_cycles);
                     retired_max_cycles =
                         std::max(retired_max_cycles, local->max_cycles);
-                    retired_skipped_invalid += local->skipped_invalid;
-                    retired_skipped_overflow += local->skipped_overflow;
+                    retired_skipped_invalid =
+                        sat_add(retired_skipped_invalid, local->skipped_invalid);
+                    retired_skipped_overflow =
+                        sat_add(retired_skipped_overflow, local->skipped_overflow);
                     retired_thread_count++;
 
                     active_locals.erase(it);
@@ -1183,11 +1222,21 @@ class ConcurrentRecorder {
             merged.min_cycles = retired_min_cycles;
             merged.max_cycles = retired_max_cycles;
 
-            // Then merge active thread data (always compatible — same ctor params)
+            // Then merge active thread data (always compatible — same ctor params).
+            // Saturating sum so even a single saturated thread's totals
+            // do not wrap merged.count / merged.total_cycles back near 0
+            // and corrupt avg_ns in the caller. Mirrors the saturation
+            // discipline applied at the per-thread record() entry points
+            // and at retire_local().
+            constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+            auto sat_add = [](uint64_t a, uint64_t b) noexcept {
+                return (b > kSatU64 - a) ? kSatU64 : a + b;
+            };
             for (const auto* local : active_locals) {
                 (void)merged.histogram.merge(local->histogram);
-                merged.count += local->count;
-                merged.total_cycles += local->total_cycles;
+                merged.count = sat_add(merged.count, local->count);
+                merged.total_cycles =
+                    sat_add(merged.total_cycles, local->total_cycles);
                 merged.min_cycles =
                     std::min(merged.min_cycles, local->min_cycles);
                 merged.max_cycles =
@@ -1280,13 +1329,20 @@ class ConcurrentRecorder {
     }
 
     /// Sum skipped counts across all active and retired thread-local data.
+    /// Saturating to UINT64_MAX so a long-running observability dashboard
+    /// cannot read counters that wrap back to near-zero after a thread
+    /// hits the per-thread saturation cap.
     [[nodiscard]] std::pair<uint64_t, uint64_t> merged_skipped_counts() const {
         std::lock_guard lock(state_->mutex);
+        constexpr uint64_t kSatU64 = std::numeric_limits<uint64_t>::max();
+        auto sat_add = [](uint64_t a, uint64_t b) noexcept {
+            return (b > kSatU64 - a) ? kSatU64 : a + b;
+        };
         uint64_t invalid = state_->retired_skipped_invalid;
         uint64_t overflow = state_->retired_skipped_overflow;
         for (const auto* local : state_->active_locals) {
-            invalid += local->skipped_invalid;
-            overflow += local->skipped_overflow;
+            invalid = sat_add(invalid, local->skipped_invalid);
+            overflow = sat_add(overflow, local->skipped_overflow);
         }
         return {invalid, overflow};
     }
