@@ -2,6 +2,77 @@
 
 ## [Unreleased]
 
+### Added — `bench_registry_hmac` microbench + cleanup pass (O series, 2026-05-05)
+
+Two-track session — performance budget reference + cleanup of debt
+identified during the session.
+
+**Path A: bench_registry_hmac.cpp microbench**
+
+New `benchmarks/bench_registry_hmac.cpp` measures every T2.3 sign /
+verify / audit primitive directly. The CHANGELOG estimates "150-300 ns"
+in earlier T2.3 commits were guesses; this binary produces the actual
+numbers, archived at `.artifacts/bench-registry-hmac-20260505.json`.
+
+Measured on aarch64 EC2 Graviton4 (1 GHz timer, ARM crypto extensions):
+
+| Operation | ns/op | CHANGELOG estimate |
+|---|---:|---|
+| Pack MpRegistrySlot (56B) | 4.3 | (n/a) |
+| Sign MpRegistrySlot | 252 | ~150-300 ✓ |
+| Verify MpRegistrySlot | 252 | ~150-300 ✓ |
+| Pack QueueAllocatorHeader (2088B) | 172 | (n/a) |
+| Sign QueueAllocator | 1554 | ~300-500 ❌ underestimated |
+| Verify QueueAllocator | 1556 | ~300-500 ❌ |
+| Pack IcmpEntry (16B) | 1.4 | (n/a) |
+| Sign IcmpEntry | 216 | ~150-300 ✓ |
+| Verify IcmpEntry | 216 | ~150-300 ✓ |
+| AuditSweep 64 entries (1 Hz tick) | 13800 | ~12-20 µs ✓ |
+| AuditSweep 1024 entries (full) | 220500 | (16× of 64-batch, as expected) |
+| AuditAll MpRegistry 64 slots | 16100 | (n/a) |
+
+Key correction: `QueueAllocator` sign/verify costs **~1.5 µs not
+~300-500 ns** because the auth payload is 2088 bytes (full header
+including 256-entry claim_gen array). Still cold-path safe (claim/
+release happens at attach + teardown only — not per packet), but the
+prior CHANGELOG was inaccurate. Per-1Hz tick total cost ≈ 14 µs sweep
++ occasional 1.5 µs QA sign on a claim → <1% CPU even at peak
+allocator churn.
+
+NUMA-aware via `EPH_BENCH_NUMA_NODE` (T3.6 helper); single-socket
+hosts no-op.
+
+**Path B: cleanup**
+
+  - **`tests/legacy/` → `tests/detail/`** (T3.4 audit primary
+    recommendation): `git mv` + xmake.lua glob update + README.md
+    section heading updated. AUDIT.md preserved verbatim with a
+    post-rename header noting the action was executed. Build green
+    after rename; `test_tcp` (68 cases), `test_dns` (61), `test_arp`
+    (23) all continue to pass.
+
+  - **eph-nicd `Type=simple` vs docs `Type=notify` drift**: docs
+    claimed Type=notify (sd_notify READY=1) which the code never
+    implemented — fixed the doc to match reality (`Type=simple`).
+    Switching to Type=notify in the future is a separate enhancement
+    requiring `libsystemd` link + `sd_notify` call from
+    `Platform::serve_nic`'s ready point.
+
+  - **`docs/architecture.md` T2.3 section**: top-level architecture
+    doc predated the T2.3 trust-boundary work. Added a section
+    documenting the multi-tenant HMAC machinery (3-registry trust
+    boundary, daemon-managed key distribution, hot-path-untouched
+    verify-on-suspicion design, measured ns/op table). Also added a
+    pointer to the new section in the "Where to go next" list.
+
+Verified: 218 build targets compile; 10 regression-relevant test
+suites all pass.
+
+Track items: closes path A (bench reference) + path B.1/B.2/B.3
+(rename + Type drift + arch doc) of the post-T2.3 cleanup pass.
+DEFERRED.md status unchanged — only hardware-gated end-to-end
+remains.
+
 ### Added — `eph-nicctl audit` subcommand + IPC handler (N series, 2026-05-05)
 
 Operator-facing audit tool. Closes the gap that T2.3's per-registry

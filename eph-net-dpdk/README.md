@@ -250,7 +250,7 @@ field is the only cross-lcore mutation.
 Lifecycle ordering (registry predeceases Platform → Stream's
 `IcmpTargetHandle` weak_ptr fails gracefully; session lives past
 registry → handle expires cleanly on ~Registry). ASan + TSan
-verified via `tests/legacy/test_icmp_registry.cpp` (registry-level
+verified via `tests/detail/test_icmp_registry.cpp` (registry-level
 unit) plus `tests/test_icmp_directory.cpp` and
 `tests/test_icmp_dispatch.cpp` (public-surface dispatch routing).
 
@@ -285,7 +285,9 @@ DPDK environment setup (hugepages, vfio-pci binding) is documented in
 ## Testing
 
 `eph-net-dpdk/tests/` holds the public-surface tests (top-level) plus
-the preserved internal-primitive tests under `tests/legacy/`.
+the internal-primitive tests under `tests/detail/` (renamed from
+`tests/legacy/` in the 2026-05-05 cleanup; see `tests/detail/AUDIT.md`
+— not deprecated, just better-named).
 
 ### Public-surface tests (top-level `tests/`)
 
@@ -330,13 +332,16 @@ the preserved internal-primitive tests under `tests/legacy/`.
 | `dpdk_mp_secondary`  | Secondary half: attaches via shared mempool, owns its sub-range     |
 | `dpdk_mp_e2e.sh`     | Coordinator script — launches primary, waits, launches secondary, asserts both see their owned queue / src_port range; skips with exit 77 if env vars absent / NIC unbound / hugepages low |
 
-### Legacy tests (`tests/legacy/`)
+### Detail-layer tests (`tests/detail/`)
 
 Unit-level coverage for the internal `eph::dpdk::*` primitives (ARP,
 DNS, flow steering, TCP state machine, net-header helpers, ICMP
-registry, packet parse, packet core, multicast). Preserved from the
-pre-rename `eph-dpdk` module — **not deprecated**, they are the
-source of truth for the detail layer the public types wrap.
+registry, packet parse, packet core, multicast). **Not deprecated** —
+these are the source of truth for the detail layer the public types
+wrap. Renamed from `tests/legacy/` to `tests/detail/` in the
+2026-05-05 cleanup so the directory name matches its actual role
+(mirroring the source convention `include/eph/dpdk/detail/`); see
+`tests/detail/AUDIT.md` for the full disposition rationale.
 
 ```bash
 xmake build -g tests

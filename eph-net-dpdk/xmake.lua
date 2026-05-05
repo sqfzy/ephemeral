@@ -92,14 +92,18 @@ for _, file in ipairs(os.files("tests/*.cpp")) do
         apply_dpdk_pmd_linkgroups()
 end
 
--- Legacy DPDK unit tests — these exercise the low-level `eph::dpdk::*`
--- primitives. They run under --no-pci mode and do NOT touch the
--- high-level Stream / Datagram API.
-for _, file in ipairs(os.files("tests/legacy/*.cpp")) do
+-- Detail-layer DPDK unit tests — exercise the low-level `eph::dpdk::*`
+-- primitives (ARP / DNS / multicast / packet / TCP / UDP / EAL / ICMP
+-- registry / net_header). Run under --no-pci mode and do NOT touch
+-- the high-level Stream / Datagram API. Renamed from `tests/legacy/`
+-- in 2026-05-05 cleanup; see tests/detail/AUDIT.md for context. Not
+-- deprecated — these are the source of truth for the detail layer
+-- the public types wrap.
+for _, file in ipairs(os.files("tests/detail/*.cpp")) do
     target(path.basename(file))
         add_rules("eph-test")
         add_files(file)
-        add_includedirs("tests/legacy")
+        add_includedirs("tests/detail")
         add_deps("eph-net-dpdk")
         apply_dpdk_pmd_linkgroups()
 end

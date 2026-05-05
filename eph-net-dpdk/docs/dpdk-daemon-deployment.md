@@ -104,10 +104,18 @@ Expected unit shape (S4 deliverable, paraphrased):
 - `ExecStart=/usr/local/bin/eph-nicd --config-file=/etc/eph/%i.toml`
 - `Restart=on-failure`, `RestartSec=1s` — apps lean on this for
   reconnect (see `dpdk-reconnect-pattern.md`).
-- `Type=notify` — daemon emits `READY=1` to systemd after
-  `serve_nic` completes its bring-up.
+- `Type=simple` — eph-nicd today does not emit `sd_notify(READY=1)`;
+  it relies on `Restart=on-failure` semantics and the
+  app-side `Platform::create` retry/backoff (per
+  `dpdk-reconnect-pattern.md`) for reliable startup. Switching to
+  `Type=notify` is a future enhancement that would require linking
+  `libsystemd` and emitting `sd_notify` from `Platform::serve_nic`'s
+  ready point — useful for systemd dependency ordering, not required
+  for current correctness.
 - `User=root`, `AmbientCapabilities=CAP_IPC_LOCK CAP_NET_ADMIN
-  CAP_SYS_NICE` — required for VFIO + hugepage + lcore pinning.
+  CAP_SYS_NICE`, `CapabilityBoundingSet` matching — required for
+  VFIO + hugepage + lcore pinning. (See `etc/eph-nicd@.service`
+  for the canonical shipped unit.)
 - `LimitMEMLOCK=infinity` — hugepage mlock budget.
 
 ## Multi-NIC hosts

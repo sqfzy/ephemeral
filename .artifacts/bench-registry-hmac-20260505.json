@@ -1,0 +1,211 @@
+{
+  "context": {
+    "date": "2026-05-05T17:15:21+00:00",
+    "host_name": "ip-172-31-47-238.ap-northeast-1.compute.internal",
+    "executable": "/home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_registry_hmac",
+    "num_cpus": 16,
+    "mhz_per_cpu": 2000,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": true,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 65536,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 2097152,
+        "num_sharing": 1
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 37748736,
+        "num_sharing": 16
+      }
+    ],
+    "load_avg": [0.57,0.89,1.19],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_PackMpRegistrySlot",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_PackMpRegistrySlot",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 163121203,
+      "real_time": 4.2902845193049508e+00,
+      "cpu_time": 4.2903812081376085e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_SignMpRegistrySlot",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SignMpRegistrySlot",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2764134,
+      "real_time": 2.5256106180086360e+02,
+      "cpu_time": 2.5256603840479508e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_VerifyMpRegistrySlot",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_VerifyMpRegistrySlot",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 2767609,
+      "real_time": 2.5288149915757725e+02,
+      "cpu_time": 2.5288451909211165e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_PackQueueAllocatorHeader",
+      "family_index": 3,
+      "per_family_instance_index": 0,
+      "run_name": "BM_PackQueueAllocatorHeader",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 4070153,
+      "real_time": 1.7186387366733996e+02,
+      "cpu_time": 1.7186706028004340e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_SignQueueAllocator",
+      "family_index": 4,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SignQueueAllocator",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 450318,
+      "real_time": 1.5547157275463321e+03,
+      "cpu_time": 1.5547486132022268e+03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_VerifyQueueAllocator",
+      "family_index": 5,
+      "per_family_instance_index": 0,
+      "run_name": "BM_VerifyQueueAllocator",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 449753,
+      "real_time": 1.5565289614580395e+03,
+      "cpu_time": 1.5565518918161754e+03,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_PackIcmpEntry",
+      "family_index": 6,
+      "per_family_instance_index": 0,
+      "run_name": "BM_PackIcmpEntry",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 485858144,
+      "real_time": 1.4379591360663369e+00,
+      "cpu_time": 1.4380032580044606e+00,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_SignIcmpEntry",
+      "family_index": 7,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SignIcmpEntry",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3249654,
+      "real_time": 2.1602578828317155e+02,
+      "cpu_time": 2.1603242560592602e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_VerifyIcmpEntry",
+      "family_index": 8,
+      "per_family_instance_index": 0,
+      "run_name": "BM_VerifyIcmpEntry",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3267142,
+      "real_time": 2.1421099817554284e+02,
+      "cpu_time": 2.1418710848809152e+02,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_AuditSweepBatch64",
+      "family_index": 9,
+      "per_family_instance_index": 0,
+      "run_name": "BM_AuditSweepBatch64",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 50650,
+      "real_time": 1.3820115557693860e+04,
+      "cpu_time": 1.3820472596248792e+04,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_AuditSweepFull1024",
+      "family_index": 10,
+      "per_family_instance_index": 0,
+      "run_name": "BM_AuditSweepFull1024",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3100,
+      "real_time": 2.2580690225778756e+05,
+      "cpu_time": 2.2581277903225823e+05,
+      "time_unit": "ns"
+    },
+    {
+      "name": "BM_AuditAllMpRegistry64Slots",
+      "family_index": 11,
+      "per_family_instance_index": 0,
+      "run_name": "BM_AuditAllMpRegistry64Slots",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 43471,
+      "real_time": 1.6065859262439124e+04,
+      "cpu_time": 1.6066210209104929e+04,
+      "time_unit": "ns"
+    }
+  ]
+}

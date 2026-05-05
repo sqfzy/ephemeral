@@ -1,4 +1,11 @@
-# `tests/legacy/` audit (T3.4, 2026-05-05)
+# `tests/detail/` audit (formerly `tests/legacy/`, T3.4, 2026-05-05)
+
+> **Update 2026-05-05 (post-rename)**: directory renamed from
+> `tests/legacy/` to `tests/detail/` per the audit's primary
+> recommendation. xmake.lua glob and README.md references updated.
+> Audit content preserved verbatim below — every path reference to
+> `tests/legacy/` in this file is historical context, not a
+> contradiction with the current state.
 
 ## TL;DR
 
