@@ -3590,6 +3590,32 @@ TEST(FixBuilder, as_span_empty_on_overflow) {
     EXPECT_EQ(sp.size(), 0u);
 }
 
+// data() returns the raw buffer pointer; as_span().data() must alias
+// the same address. A future refactor that changed one accessor's
+// derivation (e.g. as_span() returning a copy via memcpy) would
+// silently break the zero-copy guarantee that downstream callers
+// depend on (e.g. send() takes a span and the kernel side passes
+// it straight to send(2) without copy).
+TEST(FixBuilder, data_and_as_span_alias_same_buffer) {
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D").set(tag::Symbol, "AAPL");
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    EXPECT_EQ(b.data(), buf)
+        << "data() must return the user-supplied buffer pointer (zero-copy)";
+    EXPECT_EQ(b.as_span().data(), b.data())
+        << "as_span().data() and data() must alias — caller relies on "
+        << "as_span() being a zero-copy view, not a memcpy'd reference";
+    EXPECT_EQ(b.as_span().size(), b.size())
+        << "as_span().size() must equal size()";
+    // as_string_view() must alias the same bytes too.
+    EXPECT_EQ(reinterpret_cast<const uint8_t*>(b.as_string_view().data()),
+              b.data())
+        << "as_string_view().data() must also alias the buffer";
+}
+
 // ===========================================================================
 // RepeatingGroupView
 // ===========================================================================
