@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added — `test_queue_allocator_concurrent` (T3.1, 2026-05-05)
+
+Concurrent claim/release stress test for `QueueAllocator`. Existing
+`test_queue_allocator.cpp` covers the algorithm single-threaded;
+T3.1 was filed because the production path (daemon IPC handler)
+could in principle dispatch concurrent invocations from rte_mp's
+thread pool, and the underlying mutex + atomic generation logic
+must stay race-free.
+
+Three test cases (all passing locally):
+
+  - `RepeatedClaimReleaseIsRaceFree`
+    8 threads × 200 iter × claim(4) → release; pool=64. Verifies
+    generation strictly monotonic per-thread, claim/release count
+    balance, pool fully released at end, stale_releases==0.
+  - `PoolExhaustionUnderContentionStaysConsistent`
+    16 threads × 100 iter × claim(4); pool=32 (oversubscribed —
+    most claims bounce on QueuePoolExhausted). Verifies consistency
+    under contention, no leaked claims.
+  - `MixedClaimSizesPreserveBitmapInvariants`
+    8 threads × 80 iter × claim(rand(1|2|4|8)). Verifies range
+    sizes match request, bitmap stays consistent, no leaks.
+
+Recommended sanitizer runs: `xmake f -m tsan && xmake build
+test_queue_allocator_concurrent` (catches any race the locking
+logic still has) and `xmake f -m asan` (catches use-after-free
+on stale ranges).
+
+Track item: T3.1 from the 2026-05-05 action list.
+
 ### Reactivated — 4 RSS integration tests (T1.3, 2026-05-05)
 
 `tests/integration/test_dpdk_rss_{bringup,fanout,key_correctness,platform}.cpp`
