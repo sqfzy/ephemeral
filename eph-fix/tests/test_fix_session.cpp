@@ -575,6 +575,40 @@ TEST(FixSession, inbound_seq_at_uint32_max_does_not_wrap_expected_to_zero) {
         << "this corrupts gap detection on every subsequent message";
 }
 
+/// FIX 4.4 §4 mandates MsgSeqNum be >= 1. A peer sending MsgSeqNum=0
+/// is sending a protocol-illegal value; the session.hpp guard at line
+/// ~444 returns early without advancing any sequence counters.
+/// Without this test, the guard could be silently weakened by a future
+/// refactor and the symptom would only surface as "expected_inbound_seq_
+/// got reset by a malicious zero-seq message" downstream.
+TEST(FixSession, inbound_seq_zero_is_ignored) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // After logon: expected_inbound_seq_ == 2, last_inbound_seq_ == 1.
+    const uint32_t exp_before  = session.expected_inbound_seq();
+    const uint32_t last_before = session.last_inbound_seq();
+
+    // Build a message with MsgSeqNum=0 — illegal per spec.
+    auto bad = MockFixTransport::market_data(0);
+    session.on_rx(bad.data(), bad.size());
+
+    // Both counters must remain frozen — the session must not treat the
+    // illegal seq as a gap (would advance expected) or as the most
+    // recent inbound (would corrupt last_inbound_seq).
+    EXPECT_EQ(session.expected_inbound_seq(), exp_before)
+        << "expected_inbound_seq_ moved after seq=0 input — guard "
+        << "weakened? FIX 4.4 §4 requires MsgSeqNum >= 1";
+    EXPECT_EQ(session.last_inbound_seq(), last_before)
+        << "last_inbound_seq_ stored seq=0 — would falsely report the "
+        << "session received a zero-seq message; downstream diagnostics "
+        << "expect last_inbound_seq >= 1 once active";
+    // State must remain Active (the message was rejected as a session-
+    // level error, not as a fatal protocol violation).
+    EXPECT_EQ(session.state(), SessionState::kActive);
+}
+
 // ---------------------------------------------------------------------------
 // FixSessionConfig::validate()
 // ---------------------------------------------------------------------------
