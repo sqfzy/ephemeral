@@ -67,6 +67,39 @@ TEST(FixTags, msg_type_name_unknown) {
     EXPECT_EQ(tag::msg_type_name('~'), "Unknown");
 }
 
+// Pin every remaining FIX 4.4 msg_type_name case so a future copy-paste
+// rebinding is caught immediately. Without this, only 8 of 21 known
+// message types were name-checked.
+TEST(FixTags, msg_type_name_all_remaining_session_types) {
+    EXPECT_EQ(tag::msg_type_name('1'), "TestRequest");
+    EXPECT_EQ(tag::msg_type_name('2'), "ResendRequest");
+    EXPECT_EQ(tag::msg_type_name('3'), "Reject");
+    EXPECT_EQ(tag::msg_type_name('4'), "SequenceReset");
+}
+
+TEST(FixTags, msg_type_name_all_remaining_app_types) {
+    EXPECT_EQ(tag::msg_type_name('F'), "OrderCancelRequest");
+    EXPECT_EQ(tag::msg_type_name('G'), "OrderCancelReplace");
+    EXPECT_EQ(tag::msg_type_name('9'), "OrderCancelReject");
+    EXPECT_EQ(tag::msg_type_name('d'), "SecurityDefinition");
+    EXPECT_EQ(tag::msg_type_name('f'), "SecurityStatus");
+    EXPECT_EQ(tag::msg_type_name('i'), "MassQuote");
+    EXPECT_EQ(tag::msg_type_name('Z'), "QuoteCancel");
+    EXPECT_EQ(tag::msg_type_name('y'), "SecurityList");
+    EXPECT_EQ(tag::msg_type_name('x'), "SecurityListRequest");
+}
+
+// The string_view overload short-circuits to the char overload for
+// length-1 inputs. Pin both the short-circuit and a non-1-length input.
+TEST(FixTags, msg_type_name_string_view_length_one_routes_to_char) {
+    EXPECT_EQ(tag::msg_type_name(std::string_view{"D"}), "NewOrderSingle");
+    EXPECT_EQ(tag::msg_type_name(std::string_view{"A"}), "Logon");
+}
+
+TEST(FixTags, msg_type_name_string_view_empty_returns_unknown) {
+    EXPECT_EQ(tag::msg_type_name(std::string_view{}), "Unknown");
+}
+
 TEST(FixTags, msg_type_name_new_single_char) {
     EXPECT_EQ(tag::msg_type_name('d'), "SecurityDefinition");
     EXPECT_EQ(tag::msg_type_name('f'), "SecurityStatus");
