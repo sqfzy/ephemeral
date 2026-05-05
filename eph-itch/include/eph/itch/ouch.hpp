@@ -95,7 +95,14 @@ inline void write_be64(uint8_t* p, uint64_t v) noexcept {
 /// @param width Exact number of bytes to write.
 inline void write_padded(uint8_t* p, std::string_view s, size_t width) noexcept {
     const size_t n = std::min(s.size(), width);
-    std::memcpy(p, s.data(), n);
+    // Guard against `std::memcpy(p, nullptr, 0)`: ISO C requires both
+    // src and dst to be valid pointers even when count==0 (UBSan
+    // -fsanitize=undefined catches this). std::string_view::data() may
+    // legitimately return nullptr for an empty view, so a default-
+    // constructed std::string_view{} feeding into write_padded would
+    // hit the UB. Mirrors the same defensive pattern in
+    // eph-utils/cpu.hpp set_thread_name and eph-net/hmac.hpp.
+    if (n > 0) std::memcpy(p, s.data(), n);
     if (n < width) std::memset(p + n, ' ', width - n);
 }
 

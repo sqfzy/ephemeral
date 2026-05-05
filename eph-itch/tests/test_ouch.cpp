@@ -81,6 +81,28 @@ TEST(OuchEnterOrder, ShortTokenIsPadded) {
               "TK            ");
 }
 
+// Default-constructed std::string_view's data() may legitimately be
+// nullptr; write_padded would otherwise hit memcpy(p, nullptr, 0) which
+// is technically UB per ISO C and trips UBSan. Verify the guard so the
+// empty-string path produces an all-spaces field without UB.
+TEST(OuchEnterOrder, EmptyStringViewArgsProduceAllSpaces) {
+    std::array<uint8_t, EnterOrder::kSize> buf{};
+    auto n = EnterOrder::build(buf.data(),
+                               /*token=*/std::string_view{},
+                               'B', 100,
+                               /*symbol=*/std::string_view{},
+                               100, 0,
+                               /*firm=*/std::string_view{});
+    ASSERT_EQ(n, EnterOrder::kSize);
+    // Every text field should be entirely spaces.
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 1), 14}),
+              "              ");
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 20), 8}),
+              "        ");
+    EXPECT_EQ((std::string_view{reinterpret_cast<const char*>(buf.data() + 36), 4}),
+              "    ");
+}
+
 // Oversize text fields must be rejected (HFT correctness): silent truncation
 // would let two distinct tokens collide on the wire and mis-route the order.
 TEST(OuchEnterOrder, OversizeTokenReturnsZero) {
