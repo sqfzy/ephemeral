@@ -1092,3 +1092,34 @@ TEST(HttpClientParser, EmptyHeadersRequestAccepted) {
     ASSERT_TRUE(r->has_value());
     EXPECT_EQ((*r)->value.headers.size(), 0u);
 }
+
+// =============================================================================
+// Obsolete line-folding (continuation lines) — RFC 7230 §3.2.4 forbids; some
+// proxies still tolerate them. We parse the leading SP/HTAB as part of the
+// field-name slot, which then fails is_valid_token() → CodecBad.
+// =============================================================================
+
+TEST(HttpClientParser, FoldedHeaderLeadingSpaceRejected) {
+    // Continuation line: "X-Long-Header: part1\r\n part2\r\n\r\n"
+    constexpr std::string_view wire =
+        "GET / HTTP/1.1\r\n"
+        "X-Long-Header: part1\r\n"
+        " part2\r\n"
+        "\r\n";
+    HdrStorage hdrs{};
+    auto r = parse_http_request(as_bytes(wire), hdrs);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::CodecBad);
+}
+
+TEST(HttpClientParser, FoldedHeaderLeadingTabRejected) {
+    constexpr std::string_view wire =
+        "GET / HTTP/1.1\r\n"
+        "X-Long-Header: part1\r\n"
+        "\tpart2\r\n"
+        "\r\n";
+    HdrStorage hdrs{};
+    auto r = parse_http_request(as_bytes(wire), hdrs);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, Error::CodecBad);
+}
