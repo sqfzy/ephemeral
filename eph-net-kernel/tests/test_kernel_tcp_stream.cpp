@@ -120,6 +120,52 @@ static void echo_once(int listen_fd) {
 }
 
 // ---------------------------------------------------------------------------
+// Config defaults
+// ---------------------------------------------------------------------------
+//
+// StreamConfig and its Kernel sub-struct have implicit defaults that
+// the rest of the test suite (and downstream callers) rely on. Pin them
+// so a refactor that changes a default is loud rather than silent.
+
+TEST(KernelStreamConfig, TopLevelDefaultsAreSafe) {
+    ek::StreamConfig cfg{};
+    EXPECT_EQ(cfg.connect_timeout, std::chrono::milliseconds{3000});
+    EXPECT_EQ(cfg.reasm_capacity, 64u * 1024u);
+    // proxy is optional and must default to disengaged.
+    EXPECT_FALSE(cfg.proxy.has_value());
+    // remote default-constructed = 0.0.0.0:0
+    EXPECT_EQ(cfg.remote.port, 0);
+}
+
+TEST(KernelStreamConfig, KernelSubstructDefaults) {
+    ek::StreamConfig cfg{};
+    // local_bind defaults to 0.0.0.0:0 — "let kernel pick".
+    EXPECT_EQ(cfg.kernel.local_bind.port, 0);
+    // tcp_nodelay defaults to true — HFT canonical setting; flipping
+    // this to false would silently regress every kernel TCP connect.
+    EXPECT_TRUE(cfg.kernel.tcp_nodelay);
+}
+
+TEST(KernelStreamConfig, BackendSharedSubconfigDefaultsDisabled) {
+    ek::StreamConfig cfg{};
+    // Default-constructed sub-configs must be inert (no surprise behaviour
+    // at create-time).
+    EXPECT_TRUE(cfg.tls.hostname.empty());
+    EXPECT_TRUE(cfg.ws.path.empty());
+    // KeepaliveConfig: interval == 0 disables.
+    EXPECT_EQ(cfg.keepalive.interval.count(), 0);
+}
+
+TEST(KernelUdpConfig, DefaultsAreSafe) {
+    ek::UdpConfig cfg{};
+    EXPECT_EQ(cfg.bind.port, 0);
+    EXPECT_EQ(cfg.connect_to.port, 0);
+    EXPECT_EQ(cfg.rcv_buf, 0u);
+    EXPECT_EQ(cfg.snd_buf, 0u);
+    EXPECT_FALSE(cfg.reuse_addr);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
