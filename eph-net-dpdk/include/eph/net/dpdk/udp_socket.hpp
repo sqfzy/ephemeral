@@ -57,6 +57,7 @@
 #include "eph/dpdk/udp.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/dpdk/config.hpp"
+#include "eph/net/dpdk/detail/daemon_disconnected_hook.hpp"  // T1.1+T1.2 in-flight semantics
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/socket_addr.hpp"
@@ -341,6 +342,8 @@ public:
         // here (not in plain create()) because create() has no Platform
         // reference; unattached sockets stay in non-strict best-effort.
         sock->set_strict_rx_checksum_(platform.strict_rx_checksum());
+        // T1.1+T1.2 wire-up — see DpdkTcpStream::create_and_attach.
+        sock->platform_ = &platform;
 
         // Attach BEFORE installing the flow rule (see tcp_stream.hpp's
         // create_and_attach for the race-window rationale).
@@ -450,6 +453,19 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "DpdkUdpSocket::send_to called before attach"});
+        }
+        // T1.1+T1.2: pre-burst is_alive() check — same pattern as
+        // DpdkTcpStream::send. Bare-create path leaves platform_ null.
+        if (platform_ != nullptr && !platform_->is_alive()) [[unlikely]] {
+            ::eph::net::dpdk::detail::set_daemon_disconnected_detail(
+                ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                /*bytes_observed=*/app_payload.size(),
+                /*bytes_confirmed=*/0,
+                /*phase=*/"DpdkUdpSocket::send_to");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::DaemonDisconnected,
+                "DpdkUdpSocket::send_to: daemon disconnected; "
+                "bytes are Unsent — see last_daemon_disconnected_detail()"});
         }
         // Legacy UdpSender is fixed-peer; reject dst mismatches so user
         // code gets a clear error instead of silent misdelivery.
@@ -898,6 +914,10 @@ private:
     ::eph::dpdk::UdpSender                 sender_;
     [[no_unique_address]] C                codec_{};
     DpdkPoller<void>*                      attached_to_{nullptr};
+    /// @brief Platform back-pointer for `is_alive()` checks on the
+    /// burst path (T1.1+T1.2 wire-up, 2026-05-05). Same lifetime
+    /// contract as the matching field on `DpdkTcpStream`.
+    ::eph::dpdk::Platform*                 platform_{nullptr};
     /// @brief RAII handle for the rte_flow rule installed by
     /// `create_and_attach` in FlowDirector mode. See the matching field
     /// on `DpdkTcpStream` for the lifecycle contract.

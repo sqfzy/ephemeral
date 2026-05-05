@@ -49,6 +49,7 @@
 #include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
 #include "eph/net/dpdk/config.hpp"
+#include "eph/net/dpdk/detail/daemon_disconnected_hook.hpp"  // T1.1+T1.2 in-flight semantics
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
 #include "eph/net/dpdk/detail/reasm_buffer.hpp"  // ReasmBuffer (T2.2 partial split)
 #include "eph/net/dpdk/poller.hpp"
@@ -859,6 +860,12 @@ public:
         // here (not in plain create()) because create() has no Platform
         // reference; unattached streams stay in non-strict best-effort.
         stream->set_strict_rx_checksum_(platform.strict_rx_checksum());
+        // T1.1+T1.2 wire-up: stash a Platform back-pointer so the burst
+        // path's pre-burst is_alive() check can detect daemon-died
+        // mid-flight without the application needing an external
+        // watchdog. Platform must outlive every attached Stream (same
+        // contract the Poller already requires).
+        stream->platform_ = &platform;
 
         // Attach the Pollable BEFORE installing any flow rule, so the
         // moment the NIC starts steering matching packets to target_qid
@@ -1080,6 +1087,23 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::NotAttached,
                 "DpdkTcpStream::send called before attach"});
+        }
+        // T1.1+T1.2: pre-burst daemon-alive check. When the daemon
+        // dies while we have bytes queued for send, surface the
+        // condition immediately rather than letting rte_eth_tx_burst
+        // race against the mempool teardown. `platform_` is non-null
+        // only when create_and_attach() was used; bare-create path
+        // skips this check (no Platform context).
+        if (platform_ != nullptr && !platform_->is_alive()) [[unlikely]] {
+            ::eph::net::dpdk::detail::set_daemon_disconnected_detail(
+                ::eph::net::dpdk::detail::InFlightStatus::Unsent,
+                /*bytes_observed=*/app_payload.size(),
+                /*bytes_confirmed=*/0,
+                /*phase=*/"DpdkTcpStream::send");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::DaemonDisconnected,
+                "DpdkTcpStream::send: daemon disconnected (Platform::is_alive==false); "
+                "bytes are Unsent — see last_daemon_disconnected_detail()"});
         }
         if (!sess_.is_established()) {
             return std::unexpected(core::ErrorInfo{
@@ -2250,6 +2274,14 @@ private:
     /// plain `create()` leaves it at the safe best-effort default.
     bool                                    strict_rx_cksum_{false};
     DpdkPoller<void>*                       attached_to_{nullptr};
+    /// @brief Platform back-pointer for `is_alive()` checks on the
+    /// burst path (T1.1+T1.2 wire-up, 2026-05-05). Populated by
+    /// `create_and_attach`; remains `nullptr` for streams created via
+    /// the bare `create()` path. Lifetime: the Platform must outlive
+    /// every Stream attached to it (the same contract that the Poller
+    /// already imposes; sharing the back-pointer doesn't extend it).
+    /// Naming convention `_` follows the rest of the private members.
+    ::eph::dpdk::Platform*                  platform_{nullptr};
     /// @brief RAII handle for the rte_flow rule installed by
     /// `create_and_attach` in FlowDirector mode (engaged only on NICs
     /// where `Platform::dispatch_mode() == FlowDirector`). When the

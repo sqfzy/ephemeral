@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+### Wired — daemon-died `is_alive()` check at TX-burst entry (T1.1+T1.2 wire-up, 2026-05-05)
+
+Closes the long-promised wire-up: `DpdkTcpStream::send` and
+`DpdkUdpSocket::send_to` now check `Platform::is_alive()` at the
+**pre-burst boundary** (before `rte_eth_tx_burst`) and short-circuit
+to `Error::DaemonDisconnected` with the thread_local
+`DaemonDisconnectedDetail` populated to `InFlightStatus::Unsent`.
+
+Changes:
+
+  - `DpdkTcpStream::platform_` and `DpdkUdpSocket::platform_` —
+    new `::eph::dpdk::Platform*` back-pointer fields (default null).
+    Populated at `create_and_attach()` time alongside the existing
+    strict-rx-checksum injection. Bare-create path leaves them null.
+  - Pre-burst check in `send` / `send_to`:
+    ```cpp
+    if (platform_ != nullptr && !platform_->is_alive()) [[unlikely]] {
+        set_daemon_disconnected_detail(InFlightStatus::Unsent,
+                                       app_payload.size(), 0,
+                                       "DpdkTcpStream::send");
+        return std::unexpected(...DaemonDisconnected...);
+    }
+    ```
+  - One atomic load per send on healthy paths (`Platform::is_alive()`
+    is implemented as a relaxed atomic read; verified by reading
+    platform.hpp). Marked `[[unlikely]]` so the compiler keeps the
+    fast path linear.
+
+What this gives applications today:
+
+  - Apps using `create_and_attach` automatically observe
+    `DaemonDisconnected` from `send` / `send_to` without an external
+    watchdog. The pre-burst Unsent status is the safe-to-retry flag
+    `docs/dpdk-reconnect-pattern.md` references.
+  - Apps using bare `create()` still skip the check (no Platform
+    context); they continue to use the existing `Platform::is_alive()`
+    polling pattern.
+
+Still deferred (DEFERRED.md):
+
+  - Mid-burst detection inside `rte_eth_tx_burst` itself (would need
+    `Sent` / `Uncertain` status; currently only `Unsent` is wired).
+  - rx_burst-side check in `DpdkPoller::poll` (cycle-boundary, not
+    per-mbuf — stream's process_burst is already called only on
+    matched mbufs, so the absence is a tiny exposure).
+
+Verified:
+  - test_dpdk_tcp_stream            30/30
+  - test_dpdk_udp_socket            24/24
+  - test_daemon_disconnected_hook    7/7
+  - test_dpdk_poller                33/33
+
+Track item: T1.1 + T1.2 wire-up (closes the Unsent path; Sent /
+Uncertain remain in DEFERRED.md).
+
 ### Reshape — `tcp_stream.hpp` ReasmBuffer extraction (T2.2 partial, 2026-05-05)
 
 `tcp_stream.hpp` shrank from **2325 → 2282 lines** by moving the
