@@ -131,3 +131,112 @@ TEST(PlatformConfigValidate, ConstexprEvaluable) {
     // Runtime sanity: same value, evaluated dynamically.
     EXPECT_TRUE(config_ok(cfg));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// NicServiceConfig — daemon-side validator. Six reject paths in
+// validate(NicServiceConfig); none were tested before this commit.
+// ─────────────────────────────────────────────────────────────────────
+
+using eph::dpdk::NicServiceConfig;
+
+TEST(NicServiceConfigValidate, MinimalDaemonConfigPasses) {
+    // Default values are all valid except `pci` (which is required).
+    NicServiceConfig cfg{};
+    cfg.pci = "0000:01:00.0";
+    auto err = validate(cfg);
+    EXPECT_TRUE(err.empty()) << "minimal cfg rejected: " << err;
+    EXPECT_TRUE(config_ok(cfg));
+}
+
+TEST(NicServiceConfigValidate, EmptyPciIsRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci = "";
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("pci"), std::string_view::npos)
+        << "expected pci rejection, got: " << err;
+    EXPECT_FALSE(config_ok(cfg));
+}
+
+TEST(NicServiceConfigValidate, ZeroTotalQueuesRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci          = "0000:01:00.0";
+    cfg.total_queues = 0;
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("total_queues"), std::string_view::npos)
+        << "expected total_queues rejection, got: " << err;
+}
+
+TEST(NicServiceConfigValidate, ZeroNbRxDescRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci        = "0000:01:00.0";
+    cfg.nb_rx_desc = 0;
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_rx_desc"), std::string_view::npos)
+        << "expected nb_rx_desc rejection, got: " << err;
+}
+
+TEST(NicServiceConfigValidate, ZeroNbTxDescRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci        = "0000:01:00.0";
+    cfg.nb_tx_desc = 0;
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("nb_tx_desc"), std::string_view::npos)
+        << "expected nb_tx_desc rejection, got: " << err;
+}
+
+TEST(NicServiceConfigValidate, MbufPoolSizeNotPowerOfTwoMinusOneRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci            = "0000:01:00.0";
+    cfg.mbuf_pool_size = 1024;     // not 2^n - 1
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("2^n"), std::string_view::npos)
+        << "expected 2^n - 1 rejection, got: " << err;
+}
+
+TEST(NicServiceConfigValidate, MbufPoolSizeZeroRejected) {
+    // Zero is also not 2^n - 1; pin both branches of the size validator.
+    NicServiceConfig cfg{};
+    cfg.pci            = "0000:01:00.0";
+    cfg.mbuf_pool_size = 0;
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("2^n"), std::string_view::npos);
+}
+
+TEST(NicServiceConfigValidate, MbufCacheSizeGEPoolSizeRejected) {
+    NicServiceConfig cfg{};
+    cfg.pci             = "0000:01:00.0";
+    cfg.mbuf_pool_size  = 1023;
+    cfg.mbuf_cache_size = 1023;     // == pool_size — must be <
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("mbuf_cache_size"), std::string_view::npos)
+        << "expected mbuf_cache_size rejection, got: " << err;
+}
+
+TEST(NicServiceConfigValidate, MbufCacheSizeGreaterThanPoolSizeRejected) {
+    // Distinct from the == case above.
+    NicServiceConfig cfg{};
+    cfg.pci             = "0000:01:00.0";
+    cfg.mbuf_pool_size  = 1023;
+    cfg.mbuf_cache_size = 2048;     // strictly greater
+    auto err = validate(cfg);
+    ASSERT_FALSE(err.empty());
+    EXPECT_NE(err.find("mbuf_cache_size"), std::string_view::npos);
+}
+
+TEST(NicServiceConfigValidate, ConstexprEvaluable) {
+    constexpr NicServiceConfig cfg{};
+    static_assert(noexcept(validate(cfg)),
+                  "validate(NicServiceConfig) must be noexcept");
+    static_assert(noexcept(config_ok(cfg)),
+                  "config_ok(NicServiceConfig) must be noexcept");
+    // The default-constructed cfg has empty pci → invalid.
+    static_assert(!validate(cfg).empty());
+    static_assert(!config_ok(cfg));
+}
