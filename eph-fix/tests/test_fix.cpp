@@ -4977,6 +4977,58 @@ TEST(FixBuilder, set_price_sub_penny) {
     EXPECT_EQ(*mv->get(tag::Price), "123.4567");
 }
 
+// set_price uses `abs_val = -static_cast<uint64_t>(mantissa)` for
+// negatives — this is the well-defined alternative to `-mantissa`,
+// which would be UB for mantissa == INT64_MIN. The conversion to
+// uint64_t produces 0x8000000000000000 (2^63), and the unary minus
+// on uint64_t wraps modular to the same value (since 2^64 - 2^63 ==
+// 2^63), giving the correct |INT64_MIN|. Without the unsigned cast,
+// `-mantissa` for INT64_MIN is UB per [expr.unary.op]/8 and could
+// produce any result the optimizer wants.
+//
+// The corresponding wire output is "-9223372036854775808.00" (with
+// 2 decimals = $-92233720368547758.08). 22 chars + null fits in the
+// 32-byte tmp buffer at builder.hpp:356. Test verifies the round-trip.
+TEST(FixBuilder, set_price_int64_min_no_ub) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_price(tag::Price, INT64_MIN, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u)
+        << "set_price(INT64_MIN) must not overflow the builder; the "
+        << "unsigned-negate path keeps |INT64_MIN| representable";
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    auto px = mv->get(tag::Price);
+    ASSERT_TRUE(px.has_value());
+    // |INT64_MIN| = 9223372036854775808; with 2 decimals that's
+    // 92233720368547758.08. Sign is prepended.
+    EXPECT_EQ(*px, "-92233720368547758.08")
+        << "set_price(INT64_MIN, 2) wire format diverged — likely "
+        << "the signed→unsigned cast path was changed";
+}
+
+// Sister test: INT64_MAX with the same precision. Confirms the
+// positive boundary works symmetrically and that the buffer
+// (32 bytes per builder.hpp:356) is large enough.
+TEST(FixBuilder, set_price_int64_max_at_precision_2) {
+    uint8_t buf[512];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "D");
+    b.set_price(tag::Price, INT64_MAX, 2);
+    size_t len = b.finish();
+    ASSERT_GT(len, 0u);
+
+    auto mv = parse(buf, len);
+    ASSERT_TRUE(mv.has_value());
+    auto px = mv->get(tag::Price);
+    ASSERT_TRUE(px.has_value());
+    // INT64_MAX = 9223372036854775807; with 2 decimals: 92233720368547758.07.
+    EXPECT_EQ(*px, "92233720368547758.07");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // parse_int_value edge cases: leading zeros, plus sign, whitespace
 // ─────────────────────────────────────────────────────────────────────────────
