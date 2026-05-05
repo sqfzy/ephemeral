@@ -194,6 +194,40 @@ TEST(LengthPrefixCodec, EncodeWritesBigEndianPrefix) {
     EXPECT_EQ(buf[6], 0xCC);
 }
 
+// Symmetric encode-then-decode roundtrip with empty payload — the
+// decoded Frame must point to data+4 and have payload_len=0 (the
+// `DecodeZeroLengthFrameAllowed` test already covers this independently
+// but with hand-built bytes; round-trip pins encode/decode together).
+TEST(LengthPrefixCodec, EncodeDecodeEmptyPayloadRoundtrip) {
+    uint8_t buf[8]{};
+    LengthPrefixCodec codec;
+    auto enc = codec.encode(buf, sizeof(buf), std::span<const uint8_t>{});
+    ASSERT_TRUE(enc.has_value());
+    EXPECT_EQ(*enc, 4u);
+
+    SpanPacketView view{buf, 4};
+    uint8_t out_storage[4]{};
+    OutputBuffer out{out_storage, sizeof(out_storage)};
+    auto dec = codec.decode(view, out);
+    ASSERT_TRUE(dec.has_value());
+    ASSERT_TRUE(dec->has_value());
+    EXPECT_EQ((*dec)->size(), 0u);
+}
+
+// Encode buffer EXACTLY equal to header+payload size — the `>` boundary
+// check (`needed > cap`) must accept; pins it's not a `>=` regression.
+TEST(LengthPrefixCodec, EncodeExactBufferSizeAccepted) {
+    uint8_t buf[7]{};   // 4 header + 3 payload
+    LengthPrefixCodec codec;
+    const uint8_t payload[] = {0x01, 0x02, 0x03};
+    auto r = codec.encode(buf, sizeof(buf),
+                          std::span<const uint8_t>{payload, 3});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(*r, 7u);
+    EXPECT_EQ(buf[3], 3);                     // len byte
+    EXPECT_EQ(buf[6], 0x03);                  // last payload byte
+}
+
 TEST(LengthPrefixCodec, EncodeBufferFull) {
     uint8_t buf[5]{};  // header fits, payload doesn't
     LengthPrefixCodec codec;
