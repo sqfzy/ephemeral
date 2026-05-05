@@ -225,7 +225,8 @@ runs between DPDK benchmark sessions to recycle hugepages. The
 tradeoff was deliberate: heartbeat-based liveness checking is more
 complex (background thread, pid tracking, signal semantics) and adds
 a new failure surface (false-positive reaper killing a slow process).
-v2 candidate is in `TODO.md`.
+v2 candidate sketched below in this file's "v2 candidate (deferred)"
+section.
 
 ## v2 candidate (deferred)
 
@@ -387,8 +388,10 @@ distinct config files per peer.
 * `.artifacts/retro-20260501-ena-mp-rootcause-discovery.md` — meta-retro
   on the methodology that finally pinned the root cause and the
   cognitive flip from "vendor limitation" to "library protocol bug".
-* `TODO.md` — `Resolved` section with the fix-commit list; v2
-  heartbeat-reaper candidate parked.
+* `eph-net-dpdk/DEFERRED.md` — the v2 heartbeat-reaper candidate, if
+  it ever gets prioritized, will land in this tracker (the standalone
+  `TODO.md` referenced in older docs has been folded into DEFERRED.md
+  + CHANGELOG.md `[Unreleased]`).
 
 ## Maintenance note
 

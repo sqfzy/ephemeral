@@ -2177,7 +2177,10 @@ so both gates short-circuit to false).
 **v1 trade-off (gate-only refcount)**: if all peers exit abnormally
 (`kill -9` / OOM) without releasing slots, the port is never stopped.
 Recovered by `scripts/dpdk-teardown.sh` between sessions. **v2
-candidate**: IPC heartbeat + reaper (deferred — see `TODO.md`).
+candidate**: IPC heartbeat + reaper, sketched in
+`docs/dpdk-mp-teardown-protocol.md` (the standalone `TODO.md`
+originally cited here has been folded into DEFERRED.md +
+CHANGELOG.md `[Unreleased]`).
 
 ### Fixed (2026-04-30) — `validate_config` rejects RSS multi-rx with single tx queue
 
