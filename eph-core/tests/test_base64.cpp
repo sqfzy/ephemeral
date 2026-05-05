@@ -83,3 +83,33 @@ TEST(Base64Encode, AllOnesBytes) {
     const uint8_t data[] = {0xFF, 0xFF, 0xFF};
     EXPECT_EQ(base64_encode(data, 3), "////");
 }
+
+// Pointer-overload zero-length: the string-overload empty case is
+// covered above via `Rfc4648Vector{"", ""}`, but the byte-pointer
+// overload's `len==0` short-circuit (the for-loop body never runs)
+// is a separate path. Pin it: `base64_encode(data, 0)` returns "" no
+// matter what `data` points at — so passing nullptr is also safe.
+TEST(Base64Encode, PointerOverloadZeroLengthReturnsEmpty) {
+    const uint8_t data[] = {0xAB, 0xCD};
+    EXPECT_EQ(base64_encode(data, 0), "");
+    EXPECT_EQ(base64_encode(nullptr, 0), "");
+}
+
+// Round-trip the canonical Sec-WebSocket-Accept input shape. The
+// existing tests use small printable inputs; this pins the encoder
+// against real-world WS-handshake usage where the input is a 20-byte
+// SHA-1 digest of ASCII, NOT another printable string.
+TEST(Base64Encode, Sha1DigestShapeProducesTwentyEightCharsWithEqualsPadding) {
+    // 20-byte input — SHA-1 output length. Encodes to ceil(20/3)*4 =
+    // 28 chars including '=' padding (since 20 mod 3 == 2 → one '=').
+    const uint8_t digest[] = {
+        0xb3, 0x7a, 0x4f, 0x2c, 0xc0, 0x62, 0x4f, 0x16, 0x90, 0xf6,
+        0x46, 0x06, 0xcf, 0x38, 0x59, 0x45, 0xb2, 0xbe, 0xc4, 0xea};
+    auto out = base64_encode(digest, sizeof(digest));
+    EXPECT_EQ(out.size(), 28u);
+    // Last char must be '=' (the single-pad case for mod-3==2 inputs).
+    EXPECT_EQ(out.back(), '=');
+    // Second-to-last must NOT be '=' (a 20-byte input only needs one
+    // pad char; two-padding would mean a 19-byte / mod-3==1 input).
+    EXPECT_NE(out[out.size() - 2], '=');
+}
