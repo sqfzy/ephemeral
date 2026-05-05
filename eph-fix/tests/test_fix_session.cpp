@@ -492,6 +492,40 @@ TEST(FixSession, logout_handshake) {
     EXPECT_EQ(session.state(), SessionState::kDisconnected);
 }
 
+// session.hpp::logout() at line ~380 spins on the state atomic until
+// either the server responds (state goes to kDisconnected) or the
+// timeout deadline is reached. The timeout path FORCES the state to
+// kDisconnected and returns success ({}) — graceful-shutdown is
+// best-effort: a non-responsive server should not block the local
+// teardown indefinitely. The previous suite covered the happy path
+// (server responds in time) but not the timeout path.
+//
+// Without this test, a future refactor that returned an error on
+// timeout (or — worse — left the state at kLogoutSent) would silently
+// regress: the local session would leak and the next reconnect
+// attempt would fail an "already connected" check.
+TEST(FixSession, logout_timeout_forces_disconnected) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+    ASSERT_EQ(session.state(), SessionState::kActive);
+
+    // Use a short timeout so the test is fast. We deliberately do NOT
+    // feed the session a logout_response — the spin-loop must hit
+    // its deadline.
+    auto r = session.logout(std::chrono::milliseconds{50});
+    // logout() returns {} on timeout (best-effort), per the comment
+    // at session.hpp:382-384 and the early-return at line 385.
+    EXPECT_TRUE(r.has_value())
+        << "logout timeout must succeed (best-effort tear-down) — "
+        << "regressing this returns an error and breaks the reconnect "
+        << "orchestrator's expectation that logout() is graceful";
+    // State must be forced to kDisconnected. A future refactor that
+    // left the state at kLogoutSent would leak the session.
+    EXPECT_EQ(session.state(), SessionState::kDisconnected)
+        << "post-timeout state must be kDisconnected, not kLogoutSent";
+}
+
 TEST(FixSession, server_initiated_logout) {
     MockFixTransport mock;
     FixSession session(mock.send_fn(), test_config());
