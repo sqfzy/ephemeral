@@ -624,3 +624,100 @@ TEST(IcmpDirectory, AuditSweep_ZeroBatchIsNoOp) {
     // this proves the cursor was NOT advanced by the zero-batch calls.
     EXPECT_EQ(h->audit_sweep_one_round(/*batch=*/64), 1u);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// audit_entry — single-slot HMAC verification (audit-on-suspicion path)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `audit_entry(slot_idx)` is the audit-on-error fast path: when a
+// dispatch handler rejects an entry, the call site verifies just that
+// one slot to distinguish logical (tuple mismatch) vs malicious
+// (tampered) rejection. The docstring promises specific returns for
+// every state combination — pin them here.
+
+TEST(IcmpDirectory, AuditEntry_UnkeyedAlwaysTrue) {
+    // hmac_enabled=0 (default unkeyed) → audit_entry returns true
+    // unconditionally without scanning the entry. Single-tenant
+    // deployments pay zero overhead.
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aeunk");
+    ASSERT_TRUE(h.has_value()) << h.error();
+
+    auto idx = h->register_target(make_tuple(46000), kProtoTcp, 0);
+    ASSERT_TRUE(idx.has_value());
+
+    // Even with a deliberately tampered entry, unkeyed audit returns true.
+    h->header()->entries[*idx].proto ^= 0xFF;
+    EXPECT_TRUE(h->audit_entry(*idx))
+        << "unkeyed audit_entry must return true (no-op success)";
+}
+
+TEST(IcmpDirectoryHmac, AuditEntry_HealthyPublishedReturnsTrue) {
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aeok");
+    ASSERT_TRUE(h.has_value()) << h.error();
+    h->enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-ok-key"}});
+
+    auto idx = h->register_target(make_tuple(46100), kProtoTcp, 0);
+    ASSERT_TRUE(idx.has_value());
+
+    EXPECT_TRUE(h->audit_entry(*idx))
+        << "freshly-published entry must verify under its sign-time key";
+}
+
+TEST(IcmpDirectoryHmac, AuditEntry_TamperedPublishedReturnsFalse) {
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aetamp");
+    ASSERT_TRUE(h.has_value()) << h.error();
+    h->enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-tamp-key"}});
+
+    auto idx = h->register_target(make_tuple(46200), kProtoTcp, 0);
+    ASSERT_TRUE(idx.has_value());
+
+    h->header()->entries[*idx].owner_proc = 99;  // tamper
+    EXPECT_FALSE(h->audit_entry(*idx))
+        << "tampered authenticated field must surface as audit failure";
+}
+
+TEST(IcmpDirectoryHmac, AuditEntry_FreeSlotReturnsTrue) {
+    // Free slots have no signed payload; audit_entry returns true (the
+    // "nothing to verify" no-op so callers can probe any index).
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aefree");
+    ASSERT_TRUE(h.has_value()) << h.error();
+    h->enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-free-key"}});
+
+    // No registrations → all 1024 slots are Free.
+    EXPECT_TRUE(h->audit_entry(/*slot=*/0));
+    EXPECT_TRUE(h->audit_entry(/*slot=*/100));
+    EXPECT_TRUE(h->audit_entry(/*slot=*/1023));
+}
+
+TEST(IcmpDirectoryHmac, AuditEntry_OutOfRangeReturnsFalse) {
+    // slot_idx >= entries.size() is rejected (defensive bound check;
+    // callers passing the result of `lookup`/`register_target` never
+    // hit this — but a misbehaving caller deserves a deterministic no
+    // rather than UB).
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aeoob");
+    ASSERT_TRUE(h.has_value()) << h.error();
+    h->enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-oob-key"}});
+
+    EXPECT_FALSE(h->audit_entry(/*slot=*/kIcmpDirectoryMaxEntries));
+    EXPECT_FALSE(h->audit_entry(/*slot=*/kIcmpDirectoryMaxEntries + 100));
+    EXPECT_FALSE(h->audit_entry(/*slot=*/SIZE_MAX));
+}
+
+TEST(IcmpDirectoryHmac, AuditEntry_AfterUnregisterReturnsTrue) {
+    // After unregister, the slot's `claimed` is Free. audit_entry
+    // returns true because there's nothing meaningful to verify on
+    // a Free slot — even though the now-stale `hmac_tag` bytes remain
+    // (R2 fix: unregister deliberately doesn't zero fields to avoid
+    // racing concurrent acquire-Published readers).
+    auto h = IcmpDirectoryHandle::create_primary("idtest_aeunreg");
+    ASSERT_TRUE(h.has_value()) << h.error();
+    h->enable_hmac_(eph::net::HmacSha256Key{std::string_view{"audit-unreg-key"}});
+
+    auto idx = h->register_target(make_tuple(46300), kProtoTcp, 0);
+    ASSERT_TRUE(idx.has_value());
+    EXPECT_TRUE(h->audit_entry(*idx));   // pre-unregister: healthy
+
+    h->unregister(*idx);
+    EXPECT_TRUE(h->audit_entry(*idx))   // post-unregister: Free → true
+        << "Free slot must audit as no-op true regardless of stale tag";
+}

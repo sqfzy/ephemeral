@@ -41,7 +41,6 @@
 /// `thread_local` storage; same enum tags; existing call sites
 /// continue to work without recompilation).
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
