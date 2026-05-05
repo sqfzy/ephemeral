@@ -243,6 +243,54 @@ TEST(JsonFramer, EncodePassthrough) {
     EXPECT_EQ(std::memcmp(out, data, 5), 0);
 }
 
+TEST(JsonFramer, EncodeRejectsNullOut) {
+    // Null output buffer must short-circuit to 0 — without this guard
+    // the memcpy(nullptr, data, len) is UB.
+    const uint8_t data[] = "x";
+    JsonFramer framer;
+    EXPECT_EQ(framer.encode(nullptr, data, 1, 0), 0u);
+}
+
+TEST(JsonFramer, EncodeRejectsNullData) {
+    // Null source pointer with non-zero length is a programmer bug;
+    // 0 short-circuits the memcpy.
+    uint8_t out[8]{};
+    JsonFramer framer;
+    EXPECT_EQ(framer.encode(out, nullptr, 4, 0), 0u);
+}
+
+TEST(JsonFramer, EncodeRejectsZeroLen) {
+    // Zero-length encode is treated as a no-op rejection (returns 0)
+    // rather than "0 bytes written successfully" to match the existing
+    // null-pointer rejection signature: callers can branch on `>0`
+    // unconditionally.
+    const uint8_t data[] = "x";
+    uint8_t out[8]{};
+    JsonFramer framer;
+    EXPECT_EQ(framer.encode(out, data, 0, 0), 0u);
+}
+
+TEST(JsonFramer, DecodeMsgTypeAndIsControlAreZero) {
+    // The framer is a passthrough — msg_type/is_control must always
+    // be 0/false because WebSocket already conveyed those upstream.
+    const uint8_t data[] = R"({"k":"v"})";
+    JsonFramer framer;
+    auto r = framer.decode(data, sizeof(data) - 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->msg_type, 0u);
+    EXPECT_FALSE(r->is_control);
+    EXPECT_EQ(r->total_len, r->payload_len);
+}
+
+TEST(JsonFramer, MaxOverheadIsZero) {
+    // JsonFramer adds no framing bytes — the WS layer carries that.
+    // Pin the constexpr so a future refactor that stuffs a sentinel
+    // byte (e.g. for newline-delimited fallback) surfaces as a
+    // compile-time test failure here.
+    static_assert(JsonFramer::max_overhead() == 0);
+    EXPECT_EQ(JsonFramer::max_overhead(), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // Integer edge cases (INT64_MIN, overflow)
 // ---------------------------------------------------------------------------
