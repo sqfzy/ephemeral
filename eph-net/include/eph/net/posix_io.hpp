@@ -40,6 +40,21 @@ namespace eph::net::posix {
                         fd, sent, len, errno, std::strerror(errno));
             return false;
         }
+        if (n == 0) [[unlikely]] {
+            // POSIX: send() on stream sockets should never return 0 with
+            // a non-zero len request. If it ever does (defensive against
+            // a future kernel quirk or a misconfigured AF_UNIX SOCK_SEQPACKET
+            // mock), treat it as a fatal stall — without this guard the
+            // outer `while (sent < len)` loop spins forever on a 0-byte
+            // return path (sent stays unchanged, len - sent stays the same).
+            // Test mocks deserve the same actionable diagnostic the
+            // production byte_socket.hpp::send already emits for the same
+            // edge case.
+            SPDLOG_WARN("posix::send_all: send() returned 0 fd={} sent={}/{} "
+                        "(treating as stall to avoid infinite loop)",
+                        fd, sent, len);
+            return false;
+        }
         sent += static_cast<size_t>(n);
     }
     return true;
