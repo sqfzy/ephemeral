@@ -280,3 +280,34 @@ TEST(ReassemblyBuffer, data_integrity_after_compact) {
     // Should be able to write more now
     EXPECT_EQ(buf.writable_capacity(), 226u); // 256 - 30
 }
+
+// ---------------------------------------------------------------------------
+// commit_write defensive clamp
+// ---------------------------------------------------------------------------
+
+/// commit_write must clamp `n` to writable_capacity() so a caller bug
+/// (e.g. accidentally passing the original recv buffer cap after a
+/// compact() shifted the available headroom) cannot push tail_ past the
+/// allocated buffer. After the clamp, readable() must reflect the
+/// clamped commit, not the requested over-commit.
+TEST(ReassemblyBuffer, commit_write_clamps_oversized_n) {
+    ReassemblyBuffer buf(16);
+
+    // Commit way more than capacity from the very start.
+    buf.commit_write(100);
+    EXPECT_EQ(buf.readable(), 16u)
+        << "tail_ must clamp to capacity; readable() reflects the clamped commit";
+    EXPECT_EQ(buf.writable_capacity(), 0u);
+
+    // After a clear() the same clamp applies fresh.
+    buf.clear();
+    EXPECT_EQ(buf.readable(), 0u);
+    buf.commit_write(8);
+    EXPECT_EQ(buf.readable(), 8u);
+    EXPECT_EQ(buf.writable_capacity(), 8u);
+    // A second over-commit clamps relative to the *current* writable
+    // headroom, not the original capacity.
+    buf.commit_write(100);
+    EXPECT_EQ(buf.readable(), 16u);
+    EXPECT_EQ(buf.writable_capacity(), 0u);
+}

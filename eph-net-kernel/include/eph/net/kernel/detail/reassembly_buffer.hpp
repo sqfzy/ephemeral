@@ -57,7 +57,19 @@ public:
     }
 
     /// @brief Commit `n` bytes previously written via `writable_ptr()`.
-    void commit_write(std::size_t n) noexcept { tail_ += n; }
+    ///
+    /// Clamps `n` to the remaining writable_capacity() so that a caller
+    /// that miscomputes the recv() return (e.g. accidentally reusing a
+    /// stale `cap` after a compact()) cannot push `tail_` past the
+    /// allocated buffer. Without the clamp, subsequent `read_ptr()` /
+    /// `readable()` calls would expose memory beyond `buf_.data() +
+    /// buf_.size()`. The hot path normally satisfies `n <= writable_capacity()`
+    /// (KernelTcpStream sizes the recv with the same `cap`), so the
+    /// branch is predictable.
+    void commit_write(std::size_t n) noexcept {
+        const std::size_t cap = writable_capacity();
+        tail_ += (n > cap) ? cap : n;
+    }
 
     /// @brief Advance the head by `n` unread bytes.
     void consume(std::size_t n) noexcept {
