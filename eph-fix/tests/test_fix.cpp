@@ -1902,6 +1902,51 @@ TEST(FixCustomCapacity, parse_all_with_custom_capacity) {
     EXPECT_EQ(consumed, combined.size());
 }
 
+// `parse_all` supports an early-stop pattern: a callback returning bool
+// can short-circuit the iteration by returning false. The implementation
+// at parser.hpp:899-906 handles both void-returning callbacks (always
+// continue) and bool-returning callbacks (stop on false). The bool path
+// was untested — a refactor that broke `if (!callback(...))` would only
+// surface as silent over-processing, not a test failure. Lock the
+// contract.
+TEST(FixCustomCapacity, parse_all_bool_callback_stops_on_false) {
+    std::string body1 = "35=D\x01" "55=AAPL\x01";
+    std::string body2 = "35=8\x01" "55=MSFT\x01";
+    std::string body3 = "35=8\x01" "55=GOOG\x01";
+    auto raw1 = make_fix_msg("FIX.4.4", body1);
+    auto raw2 = make_fix_msg("FIX.4.4", body2);
+    auto raw3 = make_fix_msg("FIX.4.4", body3);
+
+    std::vector<uint8_t> combined;
+    combined.insert(combined.end(), raw1.begin(), raw1.end());
+    combined.insert(combined.end(), raw2.begin(), raw2.end());
+    combined.insert(combined.end(), raw3.begin(), raw3.end());
+
+    size_t msg_count = 0;
+    size_t consumed = parse_all(combined.data(), combined.size(),
+        [&](const auto& /*view*/) -> bool {
+            ++msg_count;
+            // Stop after the second message — third raw should not be
+            // consumed.
+            return msg_count < 2;
+        });
+
+    EXPECT_EQ(msg_count, 2u)
+        << "callback returned false on 2nd message; parse_all must "
+        << "stop iterating before invoking on the 3rd message";
+    // After the false return, parse_all advances past the just-parsed
+    // message (per parser.hpp:901 `offset += result->total_len()`),
+    // so consumed should equal raw1.size() + raw2.size() but NOT
+    // include raw3.
+    EXPECT_EQ(consumed, raw1.size() + raw2.size())
+        << "consumed must include the message that returned false (so "
+        << "the caller's next call resumes from after it) but exclude "
+        << "subsequent messages — raw3.size()=" << raw3.size();
+    EXPECT_LT(consumed, combined.size())
+        << "consumed must be strictly less than total — proves the "
+        << "early-stop short-circuit fired";
+}
+
 TEST(FixCustomCapacity, formatter_works_with_custom_capacity) {
     std::string body = "35=D\x01" "55=AAPL\x01";
     auto raw = make_fix_msg("FIX.4.4", body);
