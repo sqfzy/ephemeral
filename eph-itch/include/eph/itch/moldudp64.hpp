@@ -16,10 +16,10 @@
 /// Reference:
 ///   https://www.nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/moldudp64.pdf
 
+#include <concepts>      // std::invocable for the parse_moldudp64 callback
 #include <cstdint>
 #include <expected>
 #include <string_view>
-#include <type_traits>
 
 #include <spdlog/spdlog.h>
 
