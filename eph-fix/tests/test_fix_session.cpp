@@ -610,6 +610,35 @@ TEST(FixSession, reset_allows_relogon) {
 /// session.hpp::reset() does this at line ~409, but no test currently
 /// asserts it. Add a focused test so a future refactor that drops the
 /// pending-flag clear can't slip past CI silently.
+// reset() also restores heartbeat_interval_sec_ to the client config
+// (session.hpp:410). Without this, a session that received a
+// server-pushed HeartBtInt override (say 10s) and then reset() would
+// retain the 10s value into the next logon — even though the
+// re-logon flow may not arrive at a server that wants 10s. Test
+// ensures the override is wiped so re-logon starts from the original
+// client config.
+TEST(FixSession, reset_restores_heartbeat_interval_to_config) {
+    MockFixTransport mock;
+    auto cfg = test_config();
+    cfg.heartbeat_interval_sec = 30;  // client baseline
+    FixSession session(mock.send_fn(), cfg);
+
+    // Logon with server-overridden HeartBtInt = 10.
+    std::thread t([&] { (void)session.logon(std::chrono::milliseconds{500}); });
+    while (mock.sent.empty()) std::this_thread::yield();
+    auto resp = MockFixTransport::logon_response(1, 10);
+    session.on_rx(resp.data(), resp.size());
+    t.join();
+    ASSERT_EQ(session.heartbeat_interval_sec(), 10);  // override landed
+
+    // reset() must wipe the override back to the client config.
+    session.reset();
+    EXPECT_EQ(session.heartbeat_interval_sec(), 30)
+        << "reset() did not restore heartbeat_interval_sec_ to "
+        << "cfg_.heartbeat_interval_sec — re-logon would carry the "
+        << "stale server-pushed value into a fresh session";
+}
+
 TEST(FixSession, reset_clears_test_request_pending_state) {
     MockFixTransport mock;
     auto cfg = test_config();
