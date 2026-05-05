@@ -344,6 +344,43 @@ TEST(FixParser, verify_checksum_too_short) {
     EXPECT_FALSE(verify_checksum(tiny, sizeof(tiny)));
 }
 
+// compute_checksum: edge cases not covered by verify_checksum tests.
+TEST(FixParser, compute_checksum_zero_length_returns_zero) {
+    // Sum over no bytes = 0. Verifies the loop short-circuits on
+    // len==0 without touching `data` (data may be nullptr per
+    // documented contract — `data[i]` is never dereferenced when
+    // i never reaches 0).
+    EXPECT_EQ(compute_checksum(nullptr, 0), 0u);
+
+    uint8_t buf[] = {0xAA};
+    EXPECT_EQ(compute_checksum(buf, 0), 0u);
+}
+
+TEST(FixParser, compute_checksum_modulo_256_wraps) {
+    // Sum 0xFF + 0x01 = 0x100 → wraps to 0x00.
+    uint8_t buf[] = {0xFF, 0x01};
+    EXPECT_EQ(compute_checksum(buf, sizeof(buf)), 0x00u);
+
+    // 0xFF * 3 = 765, modulo 256 = 253 (0xFD).
+    uint8_t buf3[] = {0xFF, 0xFF, 0xFF};
+    EXPECT_EQ(compute_checksum(buf3, sizeof(buf3)), 0xFDu);
+}
+
+// parse_error_name: pin all four enum values + the trailing "unknown"
+// sentinel — the function is referenced by every error-diagnostic
+// path in the parser tests but never directly asserted on.
+TEST(FixParser, parse_error_name_all_values) {
+    EXPECT_EQ(parse_error_name(ParseError::kIncomplete),       "incomplete");
+    EXPECT_EQ(parse_error_name(ParseError::kInvalidFormat),    "invalid format");
+    EXPECT_EQ(parse_error_name(ParseError::kChecksumMismatch), "checksum mismatch");
+    EXPECT_EQ(parse_error_name(ParseError::kFieldOverflow),    "field overflow");
+}
+
+TEST(FixParser, parse_error_name_unknown_returns_sentinel) {
+    auto bogus = static_cast<ParseError>(static_cast<uint8_t>(99));
+    EXPECT_EQ(parse_error_name(bogus), "unknown");
+}
+
 TEST(FixParser, parse_multiple_messages_consumes_first_only) {
     std::string body1 = "35=D\x01";
     std::string body2 = "35=8\x01";
