@@ -539,16 +539,19 @@ public:
                 "ByteSocket::set_keepalive: probes must be > 0 "
                 "when interval_secs > 0"});
         }
-        int one = 1;
-        if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
-                         &one, sizeof(one)) != 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
-                "ByteSocket::set_keepalive: SO_KEEPALIVE errno={} ({})",
-                errno, std::strerror(errno));
-            return std::unexpected(core::ErrorInfo{
-                core::Error::InvalidConfig,
-                "ByteSocket::set_keepalive: SO_KEEPALIVE failed"});
-        }
+        // Order matters for partial-failure containment: configure the
+        // per-knob defaults (KEEPIDLE / KEEPINTVL / KEEPCNT) FIRST while
+        // SO_KEEPALIVE is still off, then flip SO_KEEPALIVE on as the
+        // last step. Earlier order issued SO_KEEPALIVE first, so a
+        // failure on (say) KEEPIDLE left the socket with keepalive
+        // enabled BUT using the system-wide /proc/sys/net/ipv4/
+        // tcp_keepalive_* defaults — typically 7200s idle / 75s intvl
+        // / 9 probes. That silent fallback is exactly the kind of
+        // partial-state we already reject for `probes==0` above; the
+        // same defense should apply to every knob, since once a
+        // probe-on-the-wire is timing-sensitive the wrong cadence is
+        // worse than no cadence at all (HFT venues see 7200s gaps
+        // and re-RST as a "stale connection" signal).
         if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
                          &interval_secs, sizeof(interval_secs)) != 0) {
             SPDLOG_LOGGER_WARN(byte_socket_logger(),
@@ -579,6 +582,21 @@ public:
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "ByteSocket::set_keepalive: TCP_KEEPCNT failed"});
+        }
+        // SO_KEEPALIVE must be flipped LAST — see comment above. This
+        // way an early failure leaves the socket with keepalive still
+        // off (the kernel's default for an unconfigured socket), which
+        // is observable / inert rather than the silently-wrong
+        // 7200s-idle cadence.
+        int one = 1;
+        if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
+                         &one, sizeof(one)) != 0) {
+            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                "ByteSocket::set_keepalive: SO_KEEPALIVE errno={} ({})",
+                errno, std::strerror(errno));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::set_keepalive: SO_KEEPALIVE failed"});
         }
         SPDLOG_LOGGER_DEBUG(byte_socket_logger(),
             "ByteSocket::set_keepalive: fd={} interval={}s probes={}",
