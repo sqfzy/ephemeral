@@ -25,13 +25,11 @@
 /// `CodecType` associated type is a type-level handle only; consumers that
 /// need codec implementations link against `eph-codec` themselves.
 
-#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
-#include <type_traits>
 
 #include "eph/core/error.hpp"
 #include "eph/net/socket_addr.hpp"
