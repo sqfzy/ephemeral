@@ -34,7 +34,6 @@
 /// a dangling poller.
 
 #include <algorithm>
-#include <array>
 #include <cerrno>
 #include <chrono>
 #include <concepts>
