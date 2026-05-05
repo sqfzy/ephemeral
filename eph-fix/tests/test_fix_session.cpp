@@ -839,6 +839,47 @@ TEST(FixSession, send_app_fails_when_not_active) {
     EXPECT_FALSE(session.send_app(b));
 }
 
+// send_app on an active session must succeed when the underlying
+// transport accepts the bytes; pin both the success path and the
+// transport-failure passthrough.
+TEST(FixSession, send_app_succeeds_when_active_and_transport_ok) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    size_t before = mock.sent.size();
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "V");
+    b.set(tag::MDReqID, "ord-001");
+    EXPECT_TRUE(session.send_app(b));
+    EXPECT_GT(mock.sent.size(), before);
+
+    // The sent bytes must include the MsgType and a MsgSeqNum that's
+    // > the Logon's sequence number (= 1) — so >= 2.
+    auto last = mock.parse_last_sent();
+    ASSERT_TRUE(last.has_value());
+    EXPECT_EQ(last->msg_type(), std::optional<std::string_view>("V"));
+    auto seq = last->get_int(tag::MsgSeqNum);
+    ASSERT_TRUE(seq.has_value());
+    EXPECT_GE(*seq, 2);
+}
+
+TEST(FixSession, send_app_passthroughs_transport_failure) {
+    MockFixTransport mock;
+    FixSession session(mock.send_fn(), test_config());
+    do_logon(session, mock);
+
+    // Now flip the transport to fail mode.
+    mock.set_send_fails(true);
+
+    uint8_t buf[256];
+    MessageBuilder b(buf, sizeof(buf));
+    b.set(tag::MsgType, "V");
+    EXPECT_FALSE(session.send_app(b))
+        << "send_app must surface the transport's send() failure";
+}
+
 // ===========================================================================
 // Heartbeat timeout detection (tick)
 // ===========================================================================
