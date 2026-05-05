@@ -23,6 +23,21 @@ namespace eph::utils {
 /// `std::memory_order_relaxed` and break when it goes false.
 inline std::atomic<bool> g_shutdown_flag{true};
 
+/// Async-signal-safety contract: `on_shutdown_signal` runs from a real
+/// signal handler. `std::atomic<bool>::store` is async-signal-safe ONLY
+/// when the implementation is lock-free; a hypothetical platform that
+/// implements `atomic<bool>` via a hidden mutex would deadlock if the
+/// signal interrupted a thread that already held that mutex. Every
+/// platform we target (Linux x86-64 / ARM64, glibc + libstdc++) uses a
+/// lock-free single-byte atomic, but pin the requirement at compile
+/// time so a future toolchain port that introduces a non-lock-free
+/// atomic_bool fails here rather than at first SIGTERM under load.
+/// (Same defense the audit-sweep signal handler applies in
+/// eph-net-dpdk/include/eph/net/dpdk/detail/nicctl.hpp via R29.)
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "shutdown_signal handler requires lock-free std::atomic<bool> "
+              "for async-signal-safe store");
+
 namespace detail {
 inline void on_shutdown_signal(int /*signo*/) noexcept {
     g_shutdown_flag.store(false, std::memory_order_release);
