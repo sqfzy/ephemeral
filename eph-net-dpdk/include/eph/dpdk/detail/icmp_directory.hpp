@@ -963,11 +963,28 @@ public:
         if (!hmac_key_.has_value()) return true;  // attached but no key
         if (slot_idx >= hdr_->entries.size()) return false;
         const auto& e = hdr_->entries[slot_idx];
+        // Seqlock-style read — same rationale as audit_sweep_one_round.
+        // A torn read mid-unregister-then-reregister would compute HMAC
+        // over a mix of two slot incarnations and falsely surface as a
+        // tamper. Returning `true` (no-op success) on a raced read is
+        // safe: the caller is the audit-on-error path, which already
+        // logged the trigger; a "raced — try again next time" outcome
+        // simply lets the periodic sweep catch any genuine tamper.
+        const uint32_t gen0 =
+            e.generation.load(std::memory_order_acquire);
         if (e.claimed.load(std::memory_order_acquire) !=
             kIcmpSlotPublished) {
             return true;  // free / in-progress: nothing to verify
         }
-        return verify_icmp_entry(e, *hmac_key_);
+        const bool tag_ok = verify_icmp_entry(e, *hmac_key_);
+        const uint32_t gen1 =
+            e.generation.load(std::memory_order_acquire);
+        if (gen0 != gen1 ||
+            e.claimed.load(std::memory_order_acquire) !=
+                kIcmpSlotPublished) {
+            return true;  // raced; let sweep recheck
+        }
+        return tag_ok;
     }
 
     /// @brief T2.3 periodic sweep — verify a batch of `batch_size`
@@ -994,9 +1011,30 @@ public:
         const size_t end = std::min(sweep_cursor_ + batch_size, total);
         for (size_t i = sweep_cursor_; i < end; ++i) {
             const auto& e = hdr_->entries[i];
+            // Seqlock-style read: snapshot generation + claimed BEFORE
+            // reading the authenticated fields, then re-check after.
+            // If either changed, a concurrent unregister + reuse cycle
+            // raced our read and the field bytes are torn — skip this
+            // slot for now, the next sweep cycle will recheck on a
+            // stable state. False-positive tamper warns are
+            // operationally worse than a one-tick-late detection.
+            const uint32_t gen0 =
+                e.generation.load(std::memory_order_acquire);
             if (e.claimed.load(std::memory_order_acquire) !=
                 kIcmpSlotPublished) continue;
-            if (!verify_icmp_entry(e, *hmac_key_)) {
+            const bool tag_ok = verify_icmp_entry(e, *hmac_key_);
+            // Re-check generation + claimed AFTER the verify. If a
+            // concurrent peer unregistered (gen bumped) or transitioned
+            // away from Published, the field reads inside
+            // verify_icmp_entry may have raced — discard the result.
+            const uint32_t gen1 =
+                e.generation.load(std::memory_order_acquire);
+            if (gen0 != gen1 ||
+                e.claimed.load(std::memory_order_acquire) !=
+                    kIcmpSlotPublished) {
+                continue;  // raced — defer to next sweep
+            }
+            if (!tag_ok) {
                 ++mismatches;
                 SPDLOG_WARN(
                     "IcmpDirectory: tamper detected at slot {} "
