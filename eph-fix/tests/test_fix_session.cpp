@@ -624,6 +624,67 @@ TEST(FixSession, ConfigValidateRejectsBadTimeoutFactor) {
     EXPECT_NE(err.find("timeout_factor"), std::string_view::npos);
 }
 
+// validate()'s isfinite()-first guard exists specifically because both
+// `<= 1.0` and `> 10.0` return false for NaN (every NaN comparison is
+// false). Without the explicit isfinite() check first, a NaN
+// heartbeat_timeout_factor would slip through validate() and cause UB
+// inside tick() at the float→int64 cast for the dead-server timeout.
+// This test asserts the guard is in place — its absence would be a
+// regression that the existing 1.0 test cannot catch.
+TEST(FixSession, ConfigValidateRejectsNanTimeoutFactor) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor = std::numeric_limits<double>::quiet_NaN()};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    // The error must specifically call out "finite" so an operator
+    // greping the diagnostic understands the rejection cause; a generic
+    // "timeout_factor must be > 1.0" would be misleading (NaN > 1.0 is
+    // false but for the wrong reason).
+    EXPECT_NE(err.find("finite"), std::string_view::npos)
+        << "expected 'finite' in diagnostic, got: " << err;
+}
+
+TEST(FixSession, ConfigValidateRejectsPosInfTimeoutFactor) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor =
+            std::numeric_limits<double>::infinity()};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    // +inf currently lands on either the isfinite branch or the >10.0
+    // branch depending on order — both must reject. Don't assert on
+    // which branch triggers; just assert non-empty error.
+}
+
+TEST(FixSession, ConfigValidateRejectsNegInfTimeoutFactor) {
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor =
+            -std::numeric_limits<double>::infinity()};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+}
+
+TEST(FixSession, ConfigValidateRejectsExcessiveTimeoutFactor) {
+    // > 10.0 is rejected as "likely misconfiguration" — a 100x
+    // factor would mean a 30s heartbeat_interval allows 50min of
+    // server silence before the dead-server check fires, which is
+    // never what you want in production.
+    FixSessionConfig cfg{
+        .sender_comp_id = "SENDER",
+        .target_comp_id = "TARGET",
+        .heartbeat_timeout_factor = 100.0};
+    auto err = cfg.validate();
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("misconfiguration"), std::string_view::npos)
+        << "expected 'misconfiguration' diagnostic for 100.0 factor, got: "
+        << err;
+}
+
 // ---------------------------------------------------------------------------
 // FixSessionConfig dump/to_json/equality/warnings/formatter tests
 // ---------------------------------------------------------------------------
