@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added — `Platform::audit_sweep_tamper_count()` Prometheus-friendly tamper getter (loop-cleanup R4, 2026-05-05)
+
+The 1 Hz audit-sweeper thread spawned by `Platform::serve_nic` (when
+`enable_registry_hmac=true`) was tracking a `total_mismatches` counter
+inside the lambda but only exposed it via `SPDLOG_WARN` to journalctl.
+A Prometheus exporter or `eph-nicctl` poller had to grep the log to
+count tamper detections.
+
+Adds `Platform::audit_sweep_tamper_count() const noexcept -> uint64_t`
+backed by an atomic-relaxed counter on `Impl`. The audit_sweeper
+lambda increments it on every non-zero round; readers see the
+cumulative value with at-most-one-tick lag. Returns 0 on tenant
+processes (no sweeper) and on daemons running unkeyed mode.
+
+No hot-path impact (the sweeper runs at 1 Hz on a control thread).
+
 ### Added — `eph-nicctl audit --watch` continuous mode + post-T2.3 hot-path bench gate (P series, 2026-05-05)
 
 Two small follow-ups closing the T2.3 trust-boundary work.

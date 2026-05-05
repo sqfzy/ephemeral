@@ -973,6 +973,20 @@ public:
     /// Returns # mismatches detected this round.
     size_t icmp_audit_sweep_one_round() noexcept;
 
+    /// @brief T2.3 P series — cumulative count of HMAC tamper
+    /// detections accumulated by the daemon's 1 Hz audit-sweep
+    /// thread (the one spawned by `Platform::serve_nic` when
+    /// `enable_registry_hmac=true`). Exposed so Prometheus /
+    /// dashboards / nicctl can scrape a single number instead of
+    /// grepping journalctl for "audit_sweeper: detected" lines.
+    /// Returns 0 on:
+    ///   - tenant processes (no sweeper thread)
+    ///   - daemons running unkeyed mode
+    ///   - the healthy keyed case
+    /// Atomic-relaxed read — caller doesn't need to synchronize
+    /// with the sweeper thread; the value lags at most one tick.
+    [[nodiscard]] uint64_t audit_sweep_tamper_count() const noexcept;
+
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
@@ -1270,6 +1284,16 @@ struct Platform::Impl {
     std::atomic<bool>       audit_sweeper_running{false};
     std::mutex              audit_sweeper_mu;
     std::condition_variable audit_sweeper_cv;
+    /// @brief T2.3 P series — cumulative tamper-detection counter
+    /// surfaced by `Platform::audit_sweep_tamper_count()`. The
+    /// audit_sweeper lambda increments this on every non-zero
+    /// `audit_sweep_one_round` return so operators can scrape a
+    /// single number for Prometheus / dashboards instead of
+    /// grepping journalctl for "audit_sweeper: detected" lines.
+    /// Atomic so the reader doesn't need to synchronize with the
+    /// sweeper thread. Stays at 0 on tenants and on daemons running
+    /// unkeyed mode.
+    std::atomic<uint64_t>   audit_sweep_tamper_total{0};
 
     /// @brief Primary-side bookkeeping of rules installed on behalf
     /// of secondaries via the eph_fd_install IPC fallback path.
@@ -3366,6 +3390,13 @@ Platform::serve_nic(NicServiceConfig cfg) {
                                 ->audit_sweep_one_round();
                             if (mm > 0) {
                                 total_mismatches += mm;
+                                // Surface to Platform getter so
+                                // Prometheus / nicctl / dashboards
+                                // see the cumulative count without
+                                // grepping journalctl.
+                                impl_raw->audit_sweep_tamper_total
+                                    .fetch_add(mm,
+                                        std::memory_order_relaxed);
                                 SPDLOG_LOGGER_WARN(tlog,
                                     "audit_sweeper: detected {} "
                                     "tampered entries this round "
@@ -3625,6 +3656,12 @@ inline size_t Platform::icmp_audit_sweep_one_round() noexcept {
     if (!impl_) return 0;
     if (!impl_->icmp_directory.has_value()) return 0;
     return impl_->icmp_directory->audit_sweep_one_round();
+}
+
+inline uint64_t Platform::audit_sweep_tamper_count() const noexcept {
+    if (!impl_) return 0;
+    return impl_->audit_sweep_tamper_total.load(
+        std::memory_order_relaxed);
 }
 
 inline void Platform::mark_daemon_disconnected_() noexcept {
