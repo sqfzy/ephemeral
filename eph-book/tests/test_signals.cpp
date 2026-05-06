@@ -413,3 +413,56 @@ TEST(SignalsTest, SpreadBpsNonPositiveMidReturnsNullopt) {
     book.ask_ = PriceLevel{1.0, 1.0}; // mid = 0
     EXPECT_FALSE(spread_bps(book).has_value());
 }
+
+// All four signals (order_imbalance, weighted_mid, spread_bps,
+// depth_ratio) carry an explicit "templated-book defensive" comment
+// explaining that a user-supplied book without insert-time NaN
+// validation could feed NaN into the math and silently poison every
+// downstream consumer (NaN > threshold == false → buy-pressure tests
+// never trip). The defense uses the `!(x > 0.0)` shape which folds
+// NaN into the empty-book branch. ArrayBook/MapBook reject NaN at
+// insert, so this is unreachable through them — the StubBook path is
+// the only way to verify the guards actually fire.
+
+TEST(SignalsTest, OrderImbalanceNanTotalReturnsZero) {
+    StubBook book;
+    book.bid_total_ = std::nan("");
+    book.ask_total_ = 5.0;
+    // total = NaN; `!(NaN > 0.0)` → return 0.0 (not NaN).
+    EXPECT_DOUBLE_EQ(order_imbalance(book), 0.0)
+        << "NaN total must fold into the empty-book early-return, not "
+           "propagate into trading-signal pipelines";
+}
+
+TEST(SignalsTest, WeightedMidNanQtyReturnsNullopt) {
+    StubBook book;
+    book.bid_ = PriceLevel{100.0, std::nan("")};
+    book.ask_ = PriceLevel{101.0, 1.0};
+    EXPECT_FALSE(weighted_mid(book).has_value())
+        << "NaN qty must fold into nullopt, not produce NaN price";
+    // Microprice shares the formula — also nullopt.
+    EXPECT_FALSE(microprice(book).has_value());
+}
+
+TEST(SignalsTest, SpreadBpsNanPriceReturnsNullopt) {
+    StubBook book;
+    // NaN bid price → mid = NaN → guard `!(NaN > 0.0)` returns nullopt.
+    book.bid_ = PriceLevel{std::nan(""), 1.0};
+    book.ask_ = PriceLevel{101.0, 1.0};
+    EXPECT_FALSE(spread_bps(book).has_value());
+}
+
+TEST(SignalsTest, DepthRatioNanQtyReturnsNullopt) {
+    StubBook book;
+    // NaN bid_total → guard `!(NaN > 0.0)` returns nullopt instead of NaN.
+    book.bid_total_ = std::nan("");
+    book.ask_total_ = 5.0;
+    EXPECT_FALSE(depth_ratio(book).has_value())
+        << "NaN bid_qty must produce nullopt, not NaN/inf — otherwise "
+           "callers' `if (depth_ratio > threshold)` tests silently break";
+
+    // Symmetric: NaN ask_total
+    book.bid_total_ = 5.0;
+    book.ask_total_ = std::nan("");
+    EXPECT_FALSE(depth_ratio(book).has_value());
+}
