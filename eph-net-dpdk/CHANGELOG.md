@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+### Changed — T2.3 audit IPC reshape: drop on-demand fresh sweep, read sweeper counter (Q series, 2026-05-06)
+
+**BREAKING (operator-side):** `eph-nicctl audit` and `eph-nicd` must
+be rebuilt together. `NicctlAuditRequest` / `NicctlAuditReply` wire
+version bumps from 1 → 2; daemons reject mismatched-version
+requests with `ok=0` + a clear "rebuild eph-nicctl" hint.
+
+**Why:** the v1 audit IPC handler called `audit_all` on MpRegistry,
+`verify_header` on QueueAllocator, and `audit_sweep_one_round(full)`
+on IcmpDirectory on every CLI invocation — duplicating the work of
+the daemon's always-running 1 Hz `audit_sweeper` thread. Under the
+project's "tenants trusted, defend against accidents" threat model,
+re-running a full-coverage sweep on operator demand adds nothing:
+accidental tamper doesn't fix itself, and the sweeper finds it
+within at most one full-coverage cycle (16 s for IcmpDirectory).
+The on-demand path was unnecessary work.
+
+**What changed:**
+
+- `NicctlAuditReply` schema simplified: replaces six per-registry
+  `*_total_checked` / `*_mismatches` u16 fields with two u64s —
+  `tamper_count_total` (cumulative since daemon start) and
+  `rounds_completed` (cumulative sweep ticks at 1 Hz). Adds a
+  `sweeper_alive` flag so the CLI can distinguish "0 cumulative
+  because everything is fine" from "0 cumulative because sweeper
+  never started".
+- `on_nicctl_audit_thunk` no longer calls any `audit_*` method. It
+  reads three new detail-level globals — `g_audit_sweep_tamper_total`,
+  `g_audit_sweep_rounds_completed`, `g_audit_sweeper_alive` — that
+  the audit-sweeper lambda writes on every tick.
+- `Platform::audit_registries()` and `Platform::icmp_audit_sweep_one_round()`
+  removed from the public API. `Platform::audit_sweep_tamper_count()`
+  (R4) stays — that's still the Prometheus-friendly getter for
+  in-process use.
+- `eph-nicctl audit` output reshaped: prints `sweeper_alive`,
+  `observation_window` (humanised: `1h 23m 45s`), and a single
+  `cumulative_tamper` count instead of the per-registry table.
+  Exit codes unchanged (0 = clean / unkeyed, 2 = tamper, 1 = IPC
+  / sweeper-not-running).
+
+**Impact:**
+
+- Daemon IPC thread no longer pays for a fresh full sweep on each
+  CLI call; reply assembly is pure atomic-load.
+- Net code change: -64 lines (172 removed in
+  `queue_allocator.hpp::on_nicctl_audit_thunk` + Platform; 108
+  added across thunk simplification, sweeper hookup, CLI rewrite).
+- All 44 T2.3 HMAC + audit tests still pass:
+  `test_audit_sweeper` 3/3, `test_mp_registry_hmac` 14/14,
+  `test_queue_allocator_hmac` 9/9, `test_icmp_directory_hmac` 11/11,
+  `test_registry_hmac_key` 7/7. Adjacent platform tests
+  (`test_mp_topology` 32/32, `test_icmp_directory` 34/34,
+  `test_icmp_dispatch` 10/10, `test_src_port_collision` 13/13)
+  unaffected.
+
 ### Added — `Platform::audit_sweep_tamper_count()` Prometheus-friendly tamper getter (loop-cleanup R4, 2026-05-05)
 
 The 1 Hz audit-sweeper thread spawned by `Platform::serve_nic` (when

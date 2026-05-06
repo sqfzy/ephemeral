@@ -938,40 +938,6 @@ public:
     /// reachable-from-eph-net-dpdk-glue" status.
     [[nodiscard]] std::atomic<bool> const* alive_flag_addr_() const noexcept;
 
-    /// @brief T2.3 audit-on-demand. Returns the total number of
-    /// HMAC mismatches detected across all 3 cross-process registries
-    /// at the moment of call. Operator-driven; called from
-    /// `eph-nicctl audit` (when implemented) or a watchdog.
-    ///
-    /// On a daemon process, walks `mp_registry->audit_all()` +
-    /// `queue_allocator->verify_header()` + `icmp_directory->
-    /// audit_sweep_one_round(full)` using the keys stashed at
-    /// `enable_hmac_` time.
-    ///
-    /// On a tenant process, walks the same registries using the
-    /// key stashed in `Impl::registry_hmac_key` (read from
-    /// `/run/eph/<bdf>.key` at attach time).
-    ///
-    /// Returns 0 in:
-    ///   - the unkeyed (single-tenant) deployment
-    ///   - tenants that couldn't read the key file (warn already
-    ///     logged at attach; this is a degraded but non-fatal mode)
-    ///   - the healthy keyed case (no tampering)
-    ///
-    /// Non-zero return = tampering detected. Each individual
-    /// mismatch is also logged at WARN level to journalctl so
-    /// operator alerts can grep without polling this method.
-    [[nodiscard]] size_t audit_registries() noexcept;
-
-    /// @brief T2.3 sweep. Calls `audit_sweep_one_round()` on the
-    /// IcmpDirectory once. Daemon control thread should call this
-    /// at ~1 Hz to drip the IcmpDirectory verification (the cold
-    /// hash-table-style MpRegistry/QueueAllocator are verified by
-    /// `audit_registries()` directly; only IcmpDirectory carries
-    /// 1024 entries that warrant batch sweep).
-    /// Returns # mismatches detected this round.
-    size_t icmp_audit_sweep_one_round() noexcept;
-
     /// @brief T2.3 P series — cumulative count of HMAC tamper
     /// detections accumulated by the daemon's 1 Hz audit-sweep
     /// thread (the one spawned by `Platform::serve_nic` when
@@ -1270,8 +1236,9 @@ struct Platform::Impl {
     /// the verify-on-suspicion sweep across the directory's 1024
     /// entries (full coverage in 16 s worst-case). Empty / unjoinable
     /// when HMAC is disabled or this Impl is a tenant secondary
-    /// (only the daemon owns the sweep cadence; tenants run their
-    /// own audit on demand via `Platform::audit_registries()`).
+    /// (only the daemon owns the sweep cadence — tenants do not
+    /// run their own audit; the daemon's sweep + `eph-nicctl audit`
+    /// IPC counter readout cover the operator-visible audit story).
     /// Cleanup ordering:
     ///   1. ~Impl flips `audit_sweeper_running.store(false)`
     ///   2. notify_all on the cv to break the cv_wait_for early
@@ -2799,7 +2766,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
                     std::span<const uint8_t>(k->data(), k->size()));
                 SPDLOG_LOGGER_INFO(log,
                     "secondary_bringup_: registry HMAC key attached "
-                    "from '{}' — Platform::audit_registries() will "
+                    "from '{}' — cold-path registry reads will "
                     "verify all 3 cross-process layouts",
                     kp.string());
             }
@@ -3363,6 +3330,13 @@ Platform::serve_nic(NicServiceConfig cfg) {
                         SPDLOG_LOGGER_INFO(tlog,
                             "audit_sweeper: thread started "
                             "(interval=1s, batch=64)");
+                        // Q series: announce thread liveness to
+                        // detail::g_audit_sweeper_alive so the IPC
+                        // audit handler can distinguish "0 cumulative
+                        // because sweeper never started" from "0
+                        // because everything is fine".
+                        ::eph::dpdk::detail::g_audit_sweeper_alive
+                            .store(true, std::memory_order_release);
                         size_t total_mismatches = 0;
                         // Heartbeat every 10 minutes so operators can
                         // see "thread is alive AND finding 0
@@ -3416,13 +3390,23 @@ Platform::serve_nic(NicServiceConfig cfg) {
                             }
                             const size_t mm = impl_raw->icmp_directory
                                 ->audit_sweep_one_round();
+                            // Q series: every actually-executed round
+                            // bumps the rounds counter, so an
+                            // operator can read "rounds_completed=N"
+                            // and infer the observation window.
+                            ::eph::dpdk::detail::g_audit_sweep_rounds_completed
+                                .fetch_add(1, std::memory_order_relaxed);
                             if (mm > 0) {
                                 total_mismatches += mm;
-                                // Surface to Platform getter so
-                                // Prometheus / nicctl / dashboards
-                                // see the cumulative count without
-                                // grepping journalctl.
+                                // Surface to Platform getter +
+                                // detail global so Prometheus /
+                                // nicctl / dashboards see the
+                                // cumulative count without grepping
+                                // journalctl.
                                 impl_raw->audit_sweep_tamper_total
+                                    .fetch_add(mm,
+                                        std::memory_order_relaxed);
+                                ::eph::dpdk::detail::g_audit_sweep_tamper_total
                                     .fetch_add(mm,
                                         std::memory_order_relaxed);
                                 SPDLOG_LOGGER_WARN(tlog,
@@ -3439,6 +3423,8 @@ Platform::serve_nic(NicServiceConfig cfg) {
                                     total_mismatches);
                             }
                         }
+                        ::eph::dpdk::detail::g_audit_sweeper_alive
+                            .store(false, std::memory_order_release);
                         SPDLOG_LOGGER_INFO(tlog,
                             "audit_sweeper: thread exiting "
                             "(cumulative tamper count={})",
@@ -3631,66 +3617,6 @@ inline bool Platform::is_alive() const noexcept {
 inline std::atomic<bool> const* Platform::alive_flag_addr_() const noexcept {
     if (!impl_) return nullptr;
     return &impl_->is_alive;
-}
-
-inline size_t Platform::audit_registries() noexcept {
-    if (!impl_) return 0;
-    size_t total = 0;
-    // Daemon path: each registry handle has its own key stashed at
-    // enable_hmac_ time; their `audit_*` methods use the stashed key.
-    if (impl_->mp_registry.has_value()) {
-        total += impl_->mp_registry->audit_all();
-    }
-    // Tenant path: when the daemon enabled HMAC and we read the key
-    // at attach, we verify the registries against our copy. The
-    // primary already verified its own at sign time, but the tenant
-    // sees the hugepage state directly so it MUST verify
-    // independently — a compromised peer between daemon and tenant
-    // could write garbage we'd otherwise trust.
-    if (impl_->registry_hmac_key.has_value()) {
-        // MpRegistry: walk every populated slot ourselves with the
-        // tenant's key; the on-handle audit_all uses the daemon's
-        // (which we don't have here on tenant side).
-        if (impl_->mp_registry.has_value() &&
-            impl_->mp_registry->header() != nullptr &&
-            impl_->mp_registry->header()->hmac_enabled == 1) {
-            const auto* hdr = impl_->mp_registry->header();
-            for (uint8_t i = 0; i < hdr->total_procs; ++i) {
-                const auto& s = hdr->procs[i];
-                if (s.claimed.load(std::memory_order_acquire) == 0) continue;
-                if (!::eph::dpdk::detail::verify_slot(
-                        s, *impl_->registry_hmac_key)) {
-                    ++total;
-                    SPDLOG_LOGGER_WARN(detail::platform_logger(),
-                        "Platform::audit_registries: MpRegistry slot {} "
-                        "tamper detected (tenant audit) — pid={}, "
-                        "queue=[{},{}), port=[{},{})",
-                        i, s.pid, s.queue_lo, s.queue_hi,
-                        s.port_lo, s.port_hi);
-                }
-            }
-        }
-        // IcmpDirectory: tenant verifies all currently-Published
-        // entries via a one-shot sweep with full batch.
-        if (impl_->icmp_directory.has_value()) {
-            // Run audit_sweep_one_round with batch_size = full
-            // directory so a single call covers everything.
-            // This uses the directory's own stashed key, which
-            // primary set; tenant attach didn't re-key it (the
-            // shared header already has hmac_enabled=1 + tags).
-            // We call sweep once with a large batch — it advances
-            // the cursor and returns mismatch count.
-            total += impl_->icmp_directory->audit_sweep_one_round(
-                ::eph::dpdk::detail::kIcmpDirectoryMaxEntries);
-        }
-    }
-    return total;
-}
-
-inline size_t Platform::icmp_audit_sweep_one_round() noexcept {
-    if (!impl_) return 0;
-    if (!impl_->icmp_directory.has_value()) return 0;
-    return impl_->icmp_directory->audit_sweep_one_round();
 }
 
 inline uint64_t Platform::audit_sweep_tamper_count() const noexcept {

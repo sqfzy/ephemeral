@@ -1204,6 +1204,30 @@ inline std::atomic<IcmpRegistry*> g_active_icmp_registry{nullptr};
 /// 0xFF = uninitialized / mp_topology not set.
 inline std::atomic<uint8_t> g_active_self_proc_index{0xFF};
 
+/// @brief Q series — telemetry from the daemon's 1 Hz audit_sweeper
+/// thread, exposed to the `on_nicctl_audit_thunk` IPC handler so
+/// `eph-nicctl audit` can report cumulative tamper detection without
+/// re-running a fresh full sweep on every CLI invocation.
+///
+/// `g_audit_sweep_tamper_total`     — monotonic; incremented by the
+///   sweeper lambda (Platform::serve_nic) on every non-zero round.
+///   Mirrors `Platform::Impl::audit_sweep_tamper_total`.
+/// `g_audit_sweep_rounds_completed` — monotonic; incremented every
+///   sweep tick that actually ran (skipped when icmp_directory was
+///   transiently absent). Lets the operator infer "we've been
+///   watching for N seconds" from a single number.
+/// `g_audit_sweeper_alive`          — set by the sweeper while
+///   running, cleared during ~Impl. Allows `eph-nicctl audit` to
+///   distinguish "0 cumulative because sweeper has never run" from
+///   "0 cumulative because everything is fine".
+///
+/// All three default to 0 / false on tenant processes (no sweeper)
+/// and on daemons running unkeyed mode (sweeper started but
+/// short-circuits before incrementing on a per-round basis).
+inline std::atomic<uint64_t> g_audit_sweep_tamper_total{0};
+inline std::atomic<uint64_t> g_audit_sweep_rounds_completed{0};
+inline std::atomic<bool>     g_audit_sweeper_alive{false};
+
 /// @brief DPDK rte_mp_t handler for incoming `eph_icmp_dispatch`
 /// messages. Validates payload version + slot generation, rebuilds
 /// the essentials of `ParsedIcmp`, and delivers to the local

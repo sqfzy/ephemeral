@@ -219,11 +219,14 @@ daemon          :  Platform::serve_nic
                           ↓
 tenant          :  Platform::create
                      → reads key (mode 0440 → operator's group ACL)
-                     → stashes for verify on Platform::audit_registries()
+                     → stashes for cold-path registry-read verify
                           ↓
 operator audit  :  eph-nicctl audit --pci=<bdf>
-                     → table per registry: Checked / Mismatches / Status
-                     → exit 0 healthy | 2 tampered
+                     → reads daemon's cumulative tamper counter
+                       (no fresh sweep — sweeper runs at 1 Hz already)
+                     → prints sweeper_alive / observation_window /
+                       cumulative_tamper
+                     → exit 0 healthy | 2 tampered | 1 sweeper down
 ```
 
 **Hot path is untouched.** `IcmpDirectory::lookup()` (called per ICMP

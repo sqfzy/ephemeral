@@ -271,8 +271,12 @@ int cmd_query(const CliArgs& args) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// T2.3 N: audit subcommand — query daemon for per-registry mismatches.
-// Exit code 0 = healthy / unkeyed; 1 = IPC error; 2 = mismatches found.
+// T2.3 audit subcommand. Q series shape (wire v2): no fresh sweep;
+// reads the daemon's cumulative tamper counter from its always-running
+// 1 Hz audit_sweeper thread and reports it. Exit codes:
+//   0  healthy / unkeyed / sweeper just-started-clean
+//   1  IPC error / daemon error / wire version mismatch
+//   2  cumulative tamper count > 0 (operator must investigate)
 // ─────────────────────────────────────────────────────────────────────
 int cmd_audit(const CliArgs& args) {
     auto attach_r = attach_as_secondary(args.pci);
@@ -283,7 +287,7 @@ int cmd_audit(const CliArgs& args) {
     const std::string& file_prefix = *attach_r;
 
     ::eph::dpdk::detail::NicctlAuditRequest req{};
-    req.version       = 1;
+    req.version       = 2;  // Q series — see queue_allocator.hpp wire-version note
     req.requester_pid = static_cast<int32_t>(::getpid());
 
     auto reply_r = ::eph::dpdk::detail::mp_ipc_request_sync<
@@ -295,8 +299,9 @@ int cmd_audit(const CliArgs& args) {
     if (!reply_r) {
         std::fprintf(stderr,
             "eph-nicctl: audit IPC failed: %s\n"
-            "(file_prefix='%s'; daemon may be unresponsive or this "
-            "daemon predates T2.3 — confirm `eph-nicd` was rebuilt)\n",
+            "(file_prefix='%s'; daemon may be unresponsive or it "
+            "predates the Q-series audit reshape — rebuild `eph-nicd` "
+            "if it's older than 2026-05-06)\n",
             reply_r.error().detail, file_prefix.c_str());
         (void)::eph::dpdk::eal_cleanup();
         return 1;
@@ -324,37 +329,49 @@ int cmd_audit(const CliArgs& args) {
         return 0;
     }
 
-    const unsigned mp_mm  = reply.mp_registry_mismatches;
-    const unsigned qa_mm  = reply.queue_allocator_mismatches;
-    const unsigned icmp_mm = reply.icmp_directory_mismatches;
-    const unsigned total_mm = mp_mm + qa_mm + icmp_mm;
+    const unsigned long long tamper = reply.tamper_count_total;
+    const unsigned long long rounds = reply.rounds_completed;
+    const bool alive = (reply.sweeper_alive != 0);
+
+    // Sweeper observation window: rounds * 1 Hz ≈ seconds since
+    // sweeper start. Print as "Hh Mm Ss" if non-trivial so the
+    // operator can sanity-check coverage at a glance.
+    char window[64];
+    if (rounds == 0) {
+        std::snprintf(window, sizeof(window), "<1s (sweeper starting)");
+    } else if (rounds < 60) {
+        std::snprintf(window, sizeof(window), "%llus", rounds);
+    } else if (rounds < 3600) {
+        std::snprintf(window, sizeof(window), "%llum %llus",
+                      rounds / 60, rounds % 60);
+    } else {
+        const auto h = rounds / 3600, m = (rounds % 3600) / 60,
+                   s = rounds % 60;
+        std::snprintf(window, sizeof(window), "%lluh %llum %llus",
+                      h, m, s);
+    }
 
     std::printf("\n");
-    std::printf("  Registry         Checked   Mismatches  Status\n");
-    std::printf("  ──────────────  ────────  ──────────  ─────────────\n");
-    std::printf("  MpRegistry      %8u  %10u  %s\n",
-                static_cast<unsigned>(reply.mp_registry_total_slots_checked),
-                mp_mm,
-                mp_mm == 0 ? "✓ healthy" : "✗ TAMPER DETECTED");
-    std::printf("  QueueAllocator  %8u  %10u  %s\n",
-                static_cast<unsigned>(reply.queue_allocator_total_checked),
-                qa_mm,
-                qa_mm == 0 ? "✓ healthy" : "✗ TAMPER DETECTED");
-    std::printf("  IcmpDirectory   %8u  %10u  %s\n",
-                static_cast<unsigned>(reply.icmp_directory_total_checked),
-                icmp_mm,
-                icmp_mm == 0 ? "✓ healthy" : "✗ TAMPER DETECTED");
-    std::printf("  ──────────────  ────────  ──────────  ─────────────\n");
-    std::printf("  Total                     %10u  %s\n",
-                total_mm,
-                total_mm == 0 ? "All clean" : "TAMPER — investigate");
+    std::printf("  sweeper_alive       : %s\n",
+                alive ? "yes" : "NO (thread not running)");
+    std::printf("  observation_window  : %s  (%llu sweep rounds @ 1 Hz)\n",
+                window, rounds);
+    std::printf("  cumulative_tamper   : %llu\n", tamper);
+    std::printf("  status              : %s\n",
+                tamper == 0
+                    ? (alive ? "✓ all clean"
+                             : "⚠ sweeper not running — audit not actionable")
+                    : "✗ TAMPER DETECTED — investigate journalctl for "
+                      "'audit_sweeper: detected' entries");
 
     (void)::eph::dpdk::eal_cleanup();
-    if (total_mm > 0) {
+
+    if (tamper > 0) return 2;
+    if (!alive) {
         std::fprintf(stderr,
-            "\n[WARN] %u mismatches detected. Check daemon journalctl "
-            "for per-slot tamper details.\n", total_mm);
-        return 2;
+            "\n[WARN] daemon reports HMAC enabled but the audit "
+            "sweeper thread is not running. Check daemon logs.\n");
+        return 1;
     }
     return 0;
 }

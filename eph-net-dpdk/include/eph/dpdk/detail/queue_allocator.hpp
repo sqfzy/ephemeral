@@ -947,8 +947,18 @@ static_assert(std::is_trivially_copyable_v<NicctlQueryReply>);
 
 /// @brief Wire format for `eph_nicctl_audit` request — nicctl → daemon.
 /// T2.3 N series. Read-only audit query.
+///
+/// Q series (2026-05-06): bumped to wire version 2. The v1 reply
+/// triggered a fresh full-coverage audit on the daemon side on every
+/// CLI invocation; that duplicated the work of the always-running
+/// 1 Hz `audit_sweeper` thread under the project's "防意外 / tenants
+/// trusted" threat model. v2 returns a snapshot of the sweeper's
+/// cumulative counters instead, with no fresh-sweep cost on the
+/// daemon. v1 daemons reject v2 requests at the parse boundary
+/// (size check) and v2 daemons reject v1 requests at the version
+/// check — operators must rebuild eph-nicctl + eph-nicd together.
 struct alignas(8) NicctlAuditRequest {
-    uint8_t  version;          ///< wire version, must be 1
+    uint8_t  version;          ///< wire version, must be 2
     uint8_t  reserved0;
     uint16_t reserved1;
     int32_t  requester_pid;    ///< diagnostic only
@@ -957,26 +967,30 @@ static_assert(std::is_trivially_copyable_v<NicctlAuditRequest>);
 static_assert(sizeof(NicctlAuditRequest) == 8);
 
 /// @brief Wire format for `eph_nicctl_audit` reply — daemon → nicctl.
-/// `mismatches_*` fields are 0 in healthy and unkeyed-mode cases;
-/// non-zero only on detected tampering. `hmac_enabled` lets the CLI
-/// distinguish "audit ran clean" from "audit not actionable".
+/// Q series shape: cumulative counters from the daemon's 1 Hz
+/// `audit_sweeper` thread, no fresh sweep work.
+///
+///   - `tamper_count_total`   — cumulative tamper detections across
+///     all rounds since the daemon started. 0 means either "always
+///     clean" or "sweeper never ran" (disambiguated by
+///     `sweeper_alive` + `rounds_completed`).
+///   - `rounds_completed`     — number of sweep rounds executed.
+///     Lets the operator infer the observation window: at 1 Hz
+///     this is roughly seconds-since-sweeper-start.
+///   - `sweeper_alive`        — 1 while the sweeper thread is in
+///     its loop; 0 if it never started (tenant process / unkeyed
+///     mode) or has exited (daemon shutting down).
+///   - `hmac_enabled`         — 1 if the daemon is running with
+///     `enable_registry_hmac=true`; 0 means audit is not actionable
+///     (single-tenant deployment).
 struct alignas(8) NicctlAuditReply {
-    uint8_t  version;            ///< wire version, must be 1
+    uint8_t  version;            ///< wire version, must be 2
     uint8_t  ok;                 ///< 1 = success, 0 = error
     uint8_t  hmac_enabled;       ///< 1 = HMAC active; 0 = unkeyed
-    uint8_t  reserved0;
-    uint32_t reserved1;
-    /// MpRegistry slots checked = total_procs (claimed only).
-    uint16_t mp_registry_total_slots_checked;
-    uint16_t mp_registry_mismatches;
-    /// QueueAllocator: header-level tag, single check, single result.
-    uint16_t queue_allocator_total_checked;   ///< always 0 or 1
-    uint16_t queue_allocator_mismatches;
-    /// IcmpDirectory: full-sweep result; total = currently-Published
-    /// entries; mismatches = HMAC fails this round.
-    uint16_t icmp_directory_total_checked;
-    uint16_t icmp_directory_mismatches;
-    uint32_t reserved2;
+    uint8_t  sweeper_alive;      ///< 1 = sweeper running; 0 = never / exited
+    uint32_t reserved0;
+    uint64_t tamper_count_total; ///< cumulative since daemon start
+    uint64_t rounds_completed;   ///< cumulative since daemon start
     char     error[64];          ///< NUL-padded; empty on success
 };
 static_assert(std::is_trivially_copyable_v<NicctlAuditReply>);
@@ -1308,11 +1322,18 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
     return 0;
 }
 
+/// @brief Q series — read the daemon's cumulative tamper counters
+/// from the always-running `audit_sweeper` thread and reply. No
+/// fresh sweep work is done here — that's already happening at 1 Hz
+/// in the background. Under the "tenants trusted" threat model,
+/// re-running a full-coverage sweep on every CLI invocation just
+/// duplicated the sweeper's work and added tail latency on the
+/// daemon's IPC thread for no extra detection coverage.
 inline int
 on_nicctl_audit_thunk(const struct rte_mp_msg* msg,
                       const void*              peer) {
     NicctlAuditReply reply{};
-    reply.version = 1;
+    reply.version = 2;
     reply.ok      = 0;
 
     auto parsed = parse_payload<NicctlAuditRequest>(msg);
@@ -1323,101 +1344,48 @@ on_nicctl_audit_thunk(const struct rte_mp_msg* msg,
         return 0;
     }
     const auto& req = *parsed;
-    if (req.version != 1) {
+    if (req.version != 2) {
         SPDLOG_ERROR(
             "on_nicctl_audit_thunk: version={} unsupported "
-            "(expected 1)", req.version);
-        std::strncpy(reply.error, "unsupported audit wire version",
-                     sizeof(reply.error) - 1);
+            "(expected 2 — rebuild eph-nicctl alongside eph-nicd)",
+            req.version);
+        std::strncpy(reply.error,
+            "unsupported audit wire version (expected 2)",
+            sizeof(reply.error) - 1);
         (void)mp_ipc_reply_send(kNicctlAuditActionName, reply, peer);
         return 0;
     }
 
-    // Walk the 3 cross-process registries via their globals — the
-    // same pointers serve_nic populated alongside the IPC handler
-    // registration, so race-free at this point. mp_registry has its
-    // own global added in the N series (g_active_mp_registry).
-    auto* alloc      = g_active_queue_allocator.load(std::memory_order_acquire);
-    auto* icmp_dir   = g_active_icmp_directory.load(std::memory_order_acquire);
-    auto* mp_reg     = g_active_mp_registry.load(std::memory_order_acquire);
-
+    // hmac_enabled is true iff at least one keyed registry exists in
+    // this process. Single-tenant unkeyed deployments leave all three
+    // headers' hmac_enabled=0; CLI uses this bit to print "unkeyed
+    // mode" instead of "0 mismatches".
+    auto* alloc    = g_active_queue_allocator.load(std::memory_order_acquire);
+    auto* icmp_dir = g_active_icmp_directory.load(std::memory_order_acquire);
+    auto* mp_reg   = g_active_mp_registry.load(std::memory_order_acquire);
     bool any_keyed = false;
+    if (mp_reg != nullptr && mp_reg->header() != nullptr
+        && mp_reg->header()->hmac_enabled == 1) any_keyed = true;
+    if (alloc != nullptr && alloc->header_() != nullptr
+        && alloc->header_()->hmac_enabled == 1) any_keyed = true;
+    if (icmp_dir != nullptr && icmp_dir->header_() != nullptr
+        && icmp_dir->header_()->hmac_enabled == 1) any_keyed = true;
 
-    // MpRegistry: walk every populated slot under the stashed key.
-    if (mp_reg != nullptr && mp_reg->header() != nullptr) {
-        const auto* hdr = mp_reg->header();
-        if (hdr->hmac_enabled == 1) {
-            any_keyed = true;
-            uint16_t checked = 0;
-            // audit_all returns mismatch count + logs each WARN.
-            const size_t mm = mp_reg->audit_all();
-            // total_procs is the population; each populated slot
-            // is counted as "checked" regardless of mismatch.
-            for (uint8_t i = 0; i < hdr->total_procs; ++i) {
-                if (hdr->procs[i].claimed.load(std::memory_order_acquire))
-                    ++checked;
-            }
-            reply.mp_registry_total_slots_checked = checked;
-            reply.mp_registry_mismatches =
-                static_cast<uint16_t>(std::min<size_t>(mm, 0xFFFFu));
-        }
-    }
-
-    // QueueAllocator: single header-level tag.
-    if (alloc != nullptr) {
-        const auto* hdr = alloc->header_();
-        if (hdr != nullptr && hdr->hmac_enabled == 1) {
-            any_keyed = true;
-            reply.queue_allocator_total_checked = 1;
-            // Re-verify the header against the allocator's own
-            // stashed key. We can't reach the key directly here,
-            // so we use the allocator's audit semantic — a fresh
-            // sign + compare round-trip would touch the locked
-            // path. Instead expose a simple "is the live tag
-            // consistent" check via verify_header path. For now,
-            // approximate: assume daemon-side header always
-            // verifies (it never tampers itself); a non-zero is
-            // surfaced only if a future refactor adds peer audit.
-            // Conservative: mark 0 mismatches (operator-driven
-            // tamper inject + journalctl tamper-detected log
-            // remains the canonical signal for now).
-            reply.queue_allocator_mismatches = 0;
-        }
-    }
-
-    // IcmpDirectory: full sweep with batch == kIcmpDirectoryMaxEntries.
-    if (icmp_dir != nullptr) {
-        const auto* hdr = icmp_dir->header_();
-        if (hdr != nullptr && hdr->hmac_enabled == 1) {
-            any_keyed = true;
-            uint16_t checked = 0;
-            for (size_t i = 0; i < hdr->entries.size(); ++i) {
-                if (hdr->entries[i].claimed.load(
-                        std::memory_order_acquire) == kIcmpSlotPublished)
-                    ++checked;
-            }
-            const size_t mm = icmp_dir->audit_sweep_one_round(
-                kIcmpDirectoryMaxEntries);
-            reply.icmp_directory_total_checked = checked;
-            reply.icmp_directory_mismatches =
-                static_cast<uint16_t>(std::min<size_t>(mm, 0xFFFFu));
-        }
-    }
-
-    reply.hmac_enabled = any_keyed ? 1 : 0;
+    reply.hmac_enabled       = any_keyed ? 1 : 0;
+    reply.sweeper_alive      = g_audit_sweeper_alive
+        .load(std::memory_order_acquire) ? 1 : 0;
+    reply.tamper_count_total = g_audit_sweep_tamper_total
+        .load(std::memory_order_relaxed);
+    reply.rounds_completed   = g_audit_sweep_rounds_completed
+        .load(std::memory_order_relaxed);
     reply.ok = 1;
 
     SPDLOG_DEBUG(
         "on_nicctl_audit_thunk: pid={} hmac_enabled={} "
-        "mp(checked={} mm={}) qa(checked={} mm={}) "
-        "icmp(checked={} mm={})",
+        "sweeper_alive={} tamper_total={} rounds={}",
         req.requester_pid, reply.hmac_enabled,
-        reply.mp_registry_total_slots_checked,
-        reply.mp_registry_mismatches,
-        reply.queue_allocator_total_checked,
-        reply.queue_allocator_mismatches,
-        reply.icmp_directory_total_checked,
-        reply.icmp_directory_mismatches);
+        reply.sweeper_alive, reply.tamper_count_total,
+        reply.rounds_completed);
 
     (void)mp_ipc_reply_send(kNicctlAuditActionName, reply, peer);
     return 0;
