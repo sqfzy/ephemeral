@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <random>
+#include <vector>
 
 #include <benchmark/benchmark.h>
 
@@ -186,5 +187,82 @@ static void BM_ItchFramerDecode(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_ItchFramerDecode);
+
+// ---------------------------------------------------------------------------
+// MoldUDP64 — batch container parse, hot path on every market-data
+// datagram delivered by Nasdaq's multicast feed.
+//
+// `parse_moldudp64` is per-UDP-datagram: the function parses the 20-byte
+// header, walks the message_count length-prefixed records, validates
+// each length, and invokes the user callback. A real ITCH MoldUDP feed
+// dispatches O(1k–10k msg/s) per channel, so even a few-ns regression
+// per call is measurable end-to-end. Until now the only visibility was
+// through `BM_ItchParseAddOrder` which exercises the inner per-message
+// view but skips the batch-level header walk + length-prefix scan.
+//
+// Two cases:
+//   - 1 message: header + single 36-byte AddOrder (small batch — the
+//     fixed header overhead dominates).
+//   - 8 messages: a typical mid-size batch (per-message marginal cost
+//     dominates, exposes the inner loop's per-iteration cost).
+// ---------------------------------------------------------------------------
+
+namespace {
+/// Build a MoldUDP64 packet containing `n` AddOrder messages.
+std::vector<uint8_t> build_mold_packet(uint16_t n) {
+    std::vector<uint8_t> pkt;
+    // Header: 10-byte session + 8-byte seq + 2-byte count
+    for (size_t i = 0; i < 10; ++i) pkt.push_back('S');
+    const uint64_t seq = 1000;
+    for (int i = 7; i >= 0; --i)
+        pkt.push_back(static_cast<uint8_t>((seq >> (i*8)) & 0xFF));
+    pkt.push_back(static_cast<uint8_t>((n >> 8) & 0xFF));
+    pkt.push_back(static_cast<uint8_t>(n & 0xFF));
+    // Append n length-prefixed AddOrder messages.
+    std::array<uint8_t, kAddOrderBufSize> body{};
+    fill_add_order(body.data());
+    for (uint16_t i = 0; i < n; ++i) {
+        const uint16_t mlen = kAddOrderBufSize;
+        pkt.push_back(static_cast<uint8_t>((mlen >> 8) & 0xFF));
+        pkt.push_back(static_cast<uint8_t>(mlen & 0xFF));
+        pkt.insert(pkt.end(), body.begin(), body.end());
+    }
+    return pkt;
+}
+} // anonymous namespace
+
+static void BM_MoldUDP64ParseSingleMessage(benchmark::State& state) {
+    auto pkt = build_mold_packet(1);
+    for (auto _ : state) {
+        size_t delivered = parse_moldudp64(
+            pkt.data(), pkt.size(),
+            [](const uint8_t* d, uint16_t l, uint64_t s) {
+                benchmark::DoNotOptimize(d);
+                benchmark::DoNotOptimize(l);
+                benchmark::DoNotOptimize(s);
+            });
+        benchmark::DoNotOptimize(delivered);
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(pkt.size()));
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_MoldUDP64ParseSingleMessage);
+
+static void BM_MoldUDP64ParseEightMessages(benchmark::State& state) {
+    auto pkt = build_mold_packet(8);
+    for (auto _ : state) {
+        size_t delivered = parse_moldudp64(
+            pkt.data(), pkt.size(),
+            [](const uint8_t* d, uint16_t l, uint64_t s) {
+                benchmark::DoNotOptimize(d);
+                benchmark::DoNotOptimize(l);
+                benchmark::DoNotOptimize(s);
+            });
+        benchmark::DoNotOptimize(delivered);
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(pkt.size()));
+    state.SetItemsProcessed(state.iterations() * 8);
+}
+BENCHMARK(BM_MoldUDP64ParseEightMessages);
 
 BENCHMARK_MAIN();
