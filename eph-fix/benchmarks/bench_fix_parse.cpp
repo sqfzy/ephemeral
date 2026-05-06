@@ -291,4 +291,86 @@ static void BM_FixBuildParseRoundtrip(benchmark::State& state) {
 }
 BENCHMARK(BM_FixBuildParseRoundtrip);
 
+// ---------------------------------------------------------------------------
+// parse_timestamp_value — isolated hot-path microbench.
+//
+// Every inbound FIX message header carries a SendingTime that the
+// parser feeds through parse_timestamp_value (and execution-report
+// readers do the same for TransactTime). Both call sites are on the
+// per-message hot path: a steady-state market-data feed dispatching
+// 1M msg/s also dispatches 1M timestamp parses/s, and the function
+// internally walks the civil-date math (~50 LoC of integer arithmetic
+// + the kMaxEpochSec overflow guard). Until now the only visibility
+// into its cost was implicit inside BM_FixParseNewOrder, where it
+// shares the budget with tag iteration / checksum / framing — making
+// any future regression in the date math (e.g. a poorly inlined
+// helper, a non-noexcept exception path) invisible at the benchmark
+// level.
+//
+// The 4 valid FIX 4.4 frac shapes get distinct benches: a
+// regression specific to one precision (e.g. the 9-digit ns extension
+// growing a heap allocation) would otherwise hide behind the average.
+// ---------------------------------------------------------------------------
+
+static void BM_FixParseTimestampSeconds(benchmark::State& state) {
+    // 17 chars — no fractional seconds.
+    constexpr std::string_view ts = "20260322-12:00:00";
+    for (auto _ : state) {
+        auto r = eph::fix::detail::parse_timestamp_value(ts);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_FixParseTimestampSeconds);
+
+static void BM_FixParseTimestampMillis(benchmark::State& state) {
+    // 21 chars — millisecond precision.
+    constexpr std::string_view ts = "20260322-12:00:00.123";
+    for (auto _ : state) {
+        auto r = eph::fix::detail::parse_timestamp_value(ts);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_FixParseTimestampMillis);
+
+static void BM_FixParseTimestampMicros(benchmark::State& state) {
+    // 24 chars — microsecond precision (modern CME / ICE feeds).
+    constexpr std::string_view ts = "20260322-12:00:00.123456";
+    for (auto _ : state) {
+        auto r = eph::fix::detail::parse_timestamp_value(ts);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_FixParseTimestampMicros);
+
+static void BM_FixParseTimestampNanos(benchmark::State& state) {
+    // 27 chars — nanosecond precision.
+    constexpr std::string_view ts = "20260322-12:00:00.123456789";
+    for (auto _ : state) {
+        auto r = eph::fix::detail::parse_timestamp_value(ts);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_FixParseTimestampNanos);
+
+// Reject path — guards against a regression where the early
+// length-rejection becomes more expensive (e.g. someone replaces the
+// constexpr length compare with a runtime function call). The reject
+// path is also on the hot path: an adversarial / malformed wire feed
+// can produce arbitrary lengths, and the parser must reject them
+// quickly to avoid amplifying an attack into measurable downtime.
+static void BM_FixParseTimestampInvalidLength(benchmark::State& state) {
+    // 23 chars — neither 17/21/24/27, must early-reject.
+    constexpr std::string_view ts = "20260322-12:00:00.12345";
+    for (auto _ : state) {
+        auto r = eph::fix::detail::parse_timestamp_value(ts);
+        benchmark::DoNotOptimize(r);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_FixParseTimestampInvalidLength);
+
 BENCHMARK_MAIN();
