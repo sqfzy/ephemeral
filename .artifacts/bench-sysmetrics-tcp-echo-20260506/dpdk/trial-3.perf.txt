@@ -1,0 +1,16 @@
+# started on Wed May  6 10:13:52 2026
+
+
+ Performance counter stats for process id '191185':
+
+      836828165099      cycles                                                               (60.00%)
+     1291487434985      instructions                     #    1.54  insn per cycle           (60.00%)
+      473669148917      cache-references                                                     (60.00%)
+         571153155      cache-misses                     #    0.121 % of all cache refs      (40.00%)
+          26401612      branch-misses                                                        (40.00%)
+              3145      context-switches                                                   
+                 0      cpu-migrations                                                     
+                 0      page-faults                                                        
+
+     301.300448100 seconds time elapsed
+

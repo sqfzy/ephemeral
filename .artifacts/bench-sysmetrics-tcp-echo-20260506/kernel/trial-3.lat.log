@@ -1,0 +1,51 @@
+[OK] NIC-B current: bench_ns  →  desired: bench_ns
+
+── lat tcp ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_tcp
+   mock   : mockex --scenario tcp
+   config : /tmp/config-bench-sysmetrics.toml
+   topo   : bench_ns(ens35) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario tcp --config config-bench-sysmetrics.toml → /tmp/lat_mockex_tcp_gnbA6p.log
+[..] exec client: lat_tcp --config config-bench-sysmetrics.toml
+[2026-05-06 09:52:35.710] [info] pin_thread: 'lat_tcp' pinned to cpu 4 (verified)
+[2026-05-06 09:52:35.710] [info] [pin_client.hpp:86] [lat_tcp] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+[2026-05-06 09:52:35.710] [utils.cpu] [info] [cpu.hpp:545] [lat_tcp] lock_memory: ok (current=true future=true on_fault=false)
+=== lat_tcp ===
+config: mock=172.31.47.238 port=20000 payload_size=256 duration=300s warmup_samples=1000 tls=no
+[2026-05-06 09:52:35.710] [net.kernel.tcp_stream] [info] [tcp_stream.hpp:666] KernelTcpStream::create: connected fd=4 remote=172.31.47.238:20000
+[2026-05-06 09:52:35.710] [utils.tsc] [info] [time.hpp:292] Calibrating TSC...
+[2026-05-06 09:52:36.730] [utils.tsc] [info] [time.hpp:378] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+=== lat_tcp (kernel) ===
+samples: 10800134 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21948
+  p50    = 24199
+  p90    = 27303
+  p99    = 69597
+  p99.9  = 96412
+  max    = 18402912
+  avg    = 27679
+  stddev = 27065
+TX_ns:
+  min    = 10626
+  p50    = 13211
+  p90    = 14611
+  p99    = 58126
+  p99.9  = 64045
+  max    = 18376151
+  avg    = 15093
+  stddev = 25479
+RX_ns:
+  min    = 9744
+  p50    = 10867
+  p90    = 12123
+  p99    = 55726
+  p99.9  = 57486
+  max    = 7956100
+  avg    = 12552
+  stddev = 8917
+throughput: 36004 samples/s
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_rtt_2026-05-06_09-57-36.json
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_tx_2026-05-06_09-57-36.json
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_rx_2026-05-06_09-57-36.json

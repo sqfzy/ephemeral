@@ -1,0 +1,16 @@
+# started on Wed May  6 09:47:17 2026
+
+
+ Performance counter stats for process id '156590':
+
+      828635715319      cycles                                                               (59.97%)
+     1513686502400      instructions                     #    1.83  insn per cycle           (59.99%)
+      421230295020      cache-references                                                     (60.02%)
+         768996487      cache-misses                     #    0.183 % of all cache refs      (40.01%)
+         172616839      branch-misses                                                        (39.98%)
+             68762      context-switches                                                   
+                 0      cpu-migrations                                                     
+                 0      page-faults                                                        
+
+     301.293290142 seconds time elapsed
+

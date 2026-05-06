@@ -1,0 +1,138 @@
+{
+  "mode": "dpdk",
+  "trial": 1,
+  "perf": {
+    "cycles": 837034301026,
+    "instructions": 1312558209848,
+    "cache-references": 481806053573,
+    "cache-misses": 207349099,
+    "branch-misses": 20669510,
+    "context-switches": 2917,
+    "cpu-migrations": 0,
+    "page-faults": 0,
+    "elapsed_sec": 301.299551114,
+    "ipc": 1.5681
+  },
+  "proc_ctxt_delta": {
+    "voluntary": 0,
+    "nonvoluntary": 2912
+  },
+  "irq_delta_nic": [
+    {
+      "label": "ITS-MSI 20447233 Edge ens34-Tx-Rx-0",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        7584,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 7584
+    },
+    {
+      "label": "ITS-MSI 20447234 Edge ens34-Tx-Rx-1",
+      "cpu_deltas": [
+        0,
+        0,
+        8857,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 8857
+    },
+    {
+      "label": "ITS-MSI 20447235 Edge ens34-Tx-Rx-2",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4314282,
+        0
+      ],
+      "total_delta": 4314282
+    },
+    {
+      "label": "ITS-MSI 20447236 Edge ens34-Tx-Rx-3",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        13830051
+      ],
+      "total_delta": 13830051
+    },
+    {
+      "label": "ITS-MSI 20447237 Edge ens34-Tx-Rx-4",
+      "cpu_deltas": [
+        0,
+        2340,
+        0,
+        2637,
+        0,
+        194,
+        0,
+        0
+      ],
+      "total_delta": 5171
+    },
+    {
+      "label": "ITS-MSI 20447238 Edge ens34-Tx-Rx-5",
+      "cpu_deltas": [
+        7019,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 7019
+    },
+    {
+      "label": "ITS-MSI 20447239 Edge ens34-Tx-Rx-6",
+      "cpu_deltas": [
+        0,
+        3778,
+        0,
+        0,
+        0,
+        5226,
+        0,
+        0
+      ],
+      "total_delta": 9004
+    },
+    {
+      "label": "ITS-MSI 20447240 Edge ens34-Tx-Rx-7",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        3017,
+        0,
+        5404,
+        612,
+        0
+      ],
+      "total_delta": 9033
+    }
+  ],
+  "lat_summary": {
+    "recorded": 1000,
+    "throughput_per_sec": 46092
+  }
+}

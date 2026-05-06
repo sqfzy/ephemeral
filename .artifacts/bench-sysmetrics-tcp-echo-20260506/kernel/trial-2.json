@@ -1,0 +1,250 @@
+{
+  "mode": "kernel",
+  "trial": 2,
+  "perf": {
+    "cycles": 828635715319,
+    "instructions": 1513686502400,
+    "cache-references": 421230295020,
+    "cache-misses": 768996487,
+    "branch-misses": 172616839,
+    "context-switches": 68762,
+    "cpu-migrations": 0,
+    "page-faults": 0,
+    "elapsed_sec": 301.293290142,
+    "ipc": 1.8267
+  },
+  "proc_ctxt_delta": {
+    "voluntary": 0,
+    "nonvoluntary": 68687
+  },
+  "irq_delta_nic": [
+    {
+      "label": "ITS-MSI 20447233 Edge ens34-Tx-Rx-0",
+      "cpu_deltas": [
+        1775,
+        0,
+        0,
+        0,
+        479,
+        12902,
+        0,
+        0
+      ],
+      "total_delta": 15156
+    },
+    {
+      "label": "ITS-MSI 20447234 Edge ens34-Tx-Rx-1",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        3680,
+        0,
+        16145,
+        0,
+        0
+      ],
+      "total_delta": 19825
+    },
+    {
+      "label": "ITS-MSI 20447235 Edge ens34-Tx-Rx-2",
+      "cpu_deltas": [
+        267,
+        0,
+        324,
+        9188,
+        0,
+        2172,
+        557,
+        0
+      ],
+      "total_delta": 12508
+    },
+    {
+      "label": "ITS-MSI 20447236 Edge ens34-Tx-Rx-3",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        11037343
+      ],
+      "total_delta": 11037343
+    },
+    {
+      "label": "ITS-MSI 20447237 Edge ens34-Tx-Rx-4",
+      "cpu_deltas": [
+        0,
+        0,
+        1079,
+        2962,
+        435,
+        6082,
+        0,
+        0
+      ],
+      "total_delta": 10558
+    },
+    {
+      "label": "ITS-MSI 20447238 Edge ens34-Tx-Rx-5",
+      "cpu_deltas": [
+        560,
+        0,
+        2000,
+        4364,
+        542,
+        3152,
+        0,
+        0
+      ],
+      "total_delta": 10618
+    },
+    {
+      "label": "ITS-MSI 20447239 Edge ens34-Tx-Rx-6",
+      "cpu_deltas": [
+        0,
+        4304571,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 4304571
+    },
+    {
+      "label": "ITS-MSI 20447240 Edge ens34-Tx-Rx-7",
+      "cpu_deltas": [
+        0,
+        0,
+        3883,
+        874,
+        0,
+        13037,
+        0,
+        0
+      ],
+      "total_delta": 17794
+    },
+    {
+      "label": "ITS-MSI 20971521 Edge ens35-Tx-Rx-0",
+      "cpu_deltas": [
+        0,
+        0,
+        12,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 12
+    },
+    {
+      "label": "ITS-MSI 20971522 Edge ens35-Tx-Rx-1",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        11026549,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 11026549
+    },
+    {
+      "label": "ITS-MSI 20971523 Edge ens35-Tx-Rx-2",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 0
+    },
+    {
+      "label": "ITS-MSI 20971524 Edge ens35-Tx-Rx-3",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4302498,
+        0
+      ],
+      "total_delta": 4302498
+    },
+    {
+      "label": "ITS-MSI 20971525 Edge ens35-Tx-Rx-4",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 0
+    },
+    {
+      "label": "ITS-MSI 20971526 Edge ens35-Tx-Rx-5",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 1
+    },
+    {
+      "label": "ITS-MSI 20971527 Edge ens35-Tx-Rx-6",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 0
+    },
+    {
+      "label": "ITS-MSI 20971528 Edge ens35-Tx-Rx-7",
+      "cpu_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "total_delta": 0
+    }
+  ],
+  "lat_summary": {
+    "recorded": 1000,
+    "throughput_per_sec": 36755
+  }
+}

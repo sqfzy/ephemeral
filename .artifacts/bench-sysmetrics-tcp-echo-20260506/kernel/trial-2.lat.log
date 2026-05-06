@@ -1,0 +1,51 @@
+[OK] NIC-B current: bench_ns  →  desired: bench_ns
+
+── lat tcp ──
+   binary : /home/ec2-user/ephemeral_dev/build/linux/arm64/release/lat_tcp
+   mock   : mockex --scenario tcp
+   config : /tmp/config-bench-sysmetrics.toml
+   topo   : bench_ns(ens35) → VPC → mock(ens34)
+
+[..] forking mock: mockex --scenario tcp --config config-bench-sysmetrics.toml → /tmp/lat_mockex_tcp_2CzFFe.log
+[..] exec client: lat_tcp --config config-bench-sysmetrics.toml
+[2026-05-06 09:47:16.648] [info] pin_thread: 'lat_tcp' pinned to cpu 4 (verified)
+[2026-05-06 09:47:16.648] [info] [pin_client.hpp:86] [lat_tcp] pinned to CPU 4 (source: config.toml cpu.cpu_client)
+[2026-05-06 09:47:16.649] [utils.cpu] [info] [cpu.hpp:545] [lat_tcp] lock_memory: ok (current=true future=true on_fault=false)
+=== lat_tcp ===
+config: mock=172.31.47.238 port=20000 payload_size=256 duration=300s warmup_samples=1000 tls=no
+[2026-05-06 09:47:16.649] [net.kernel.tcp_stream] [info] [tcp_stream.hpp:666] KernelTcpStream::create: connected fd=4 remote=172.31.47.238:20000
+[2026-05-06 09:47:16.649] [utils.tsc] [info] [time.hpp:292] Calibrating TSC...
+[2026-05-06 09:47:17.669] [utils.tsc] [info] [time.hpp:378] TSC calibrated: CPU frequency 1.00 GHz (CV=0.00%)
+=== lat_tcp (kernel) ===
+samples: 11025546 (warmup 1000 discarded)
+RTT_ns:
+  min    = 21050
+  p50    = 23799
+  p90    = 26919
+  p99    = 69661
+  p99.9  = 132667
+  max    = 17245896
+  avg    = 27111
+  stddev = 25329
+TX_ns:
+  min    = 11520
+  p50    = 13275
+  p90    = 15043
+  p99    = 58606
+  p99.9  = 75549
+  max    = 17219765
+  avg    = 14983
+  stddev = 23633
+RX_ns:
+  min    = 8908
+  p50    = 10331
+  p90    = 12075
+  p99    = 55662
+  p99.9  = 82781
+  max    = 4339323
+  avg    = 12096
+  stddev = 8894
+throughput: 36755 samples/s
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_rtt_2026-05-06_09-52-17.json
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_tx_2026-05-06_09-52-17.json
+  JSON: benchmarks/latency/outputs/lat_tcp_kernel_rx_2026-05-06_09-52-17.json
