@@ -3254,6 +3254,26 @@ Platform::serve_nic(NicServiceConfig cfg) {
     // Callers that demand HMAC should check `is_alive()` + audit
     // flags; a hard-fail mode can land in a future commit if
     // operators want it.
+    // Q series — always register the nicctl audit IPC handler, even
+    // in unkeyed mode. The handler reads detail-level globals that
+    // stay at 0 / false when HMAC is disabled; eph-nicctl renders
+    // that as "unkeyed mode" gracefully. Keeping the handler gated
+    // behind enable_registry_hmac (the v1 behaviour) caused unkeyed
+    // daemons to time out CLI audit calls for 2 s and emit a
+    // misleading "rebuild eph-nicd" hint — verified live 2026-05-06.
+    if (plat.impl_) {
+        plat.impl_->nicctl_audit_action.emplace(
+            ::eph::dpdk::detail::kNicctlAuditActionName,
+            &::eph::dpdk::detail::on_nicctl_audit_thunk);
+        SPDLOG_LOGGER_INFO(log,
+            "Platform::serve_nic: registered nicctl_audit_action "
+            "(unconditional; replies with hmac_enabled=0 in unkeyed "
+            "mode so eph-nicctl can distinguish 'unkeyed' from "
+            "'daemon down'); registered={}",
+            bool(*plat.impl_->nicctl_audit_action)
+                ? "yes" : "DEGRADED");
+    }
+
     if (plat.impl_ && cfg.enable_registry_hmac) {
         auto key_path_r = ::eph::dpdk::detail::registry_hmac_key_path(cfg.pci);
         if (!key_path_r) {
@@ -3291,27 +3311,21 @@ Platform::serve_nic(NicServiceConfig cfg) {
                         ::eph::net::HmacSha256Key{key_bytes});
                 }
                 // T2.3 N series: publish the MpRegistry pointer for
-                // the audit thunk + register the audit IPC action so
-                // `eph-nicctl audit` can query the daemon. Same
-                // race-free ordering: globals first, action second
-                // (matches queue_claim / nicctl_query pattern above).
+                // the audit thunk's hmac_enabled detection. (The
+                // audit IPC action itself is registered unconditionally
+                // above the HMAC-enable branch — Q series.)
                 if (plat.impl_->mp_registry.has_value()) {
                     ::eph::dpdk::detail::g_active_mp_registry.store(
                         &*plat.impl_->mp_registry,
                         std::memory_order_release);
                 }
-                plat.impl_->nicctl_audit_action.emplace(
-                    ::eph::dpdk::detail::kNicctlAuditActionName,
-                    &::eph::dpdk::detail::on_nicctl_audit_thunk);
                 SPDLOG_LOGGER_INFO(log,
                     "Platform::serve_nic: registry HMAC enabled "
                     "(key={}, MpRegistry+QueueAllocator+IcmpDirectory "
                     "all signed); tenants must read this key file at "
                     "Platform::create attach time and will verify each "
-                    "registry read against it; nicctl_audit_action={}",
-                    key_path_r->string(),
-                    bool(*plat.impl_->nicctl_audit_action)
-                        ? "registered" : "DEGRADED");
+                    "registry read against it",
+                    key_path_r->string());
 
                 // M series: spawn the 1 Hz audit-sweep scheduler
                 // thread. Loops on `audit_sweeper_running` and
