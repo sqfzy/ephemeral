@@ -17,8 +17,11 @@
 /// - **Vwap**: scales with depth — bench at 5 / 20 levels covering the
 ///   typical "top of book" vs "deep ladder" use cases.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <span>
 
 #include <benchmark/benchmark.h>
 
@@ -117,6 +120,47 @@ static void BM_SignalVwap(benchmark::State& state) {
                             static_cast<int64_t>(depth));
 }
 BENCHMARK(BM_SignalVwap)->Arg(1)->Arg(5)->Arg(20);
+
+// ---------------------------------------------------------------------------
+// VWAP NaN-skip path: defense-in-depth branch in `vwap()` skips levels with
+// non-finite price or qty. ArrayBook/MapBook normally reject these at
+// insert, but vwap accepts any span — a caller building a span by hand
+// hits the skip branch. No bench exercised it, so a regression in the
+// `[[unlikely]]` hint or in moving the isfinite check below the multiply
+// would silently raise per-quote VWAP cost.
+//
+// We construct a 20-level span where roughly every other level is NaN
+// (sparse NaN pattern matching what a partially-flushed external feed
+// might present) and confirm the skip branch stays cheap.
+// ---------------------------------------------------------------------------
+
+static void BM_SignalVwapSparseNaN(benchmark::State& state) {
+    constexpr std::size_t depth = 20;
+    std::array<eph::book::PriceLevel, depth> levels{};
+    const double nan_v = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t i = 0; i < depth; ++i) {
+        if ((i & 1u) != 0u) {
+            // Sparse NaN — every odd level. Mix of NaN price and NaN qty so
+            // both checks in the `isfinite(price) || isfinite(qty)` test
+            // get exercised across iterations.
+            levels[i] = (i & 2u)
+                ? eph::book::PriceLevel{nan_v, 10.0 + static_cast<double>(i)}
+                : eph::book::PriceLevel{100.0 - 0.05 * static_cast<double>(i), nan_v};
+        } else {
+            levels[i] = eph::book::PriceLevel{
+                100.0 - 0.05 * static_cast<double>(i),
+                10.0 + static_cast<double>(i)};
+        }
+    }
+    std::span<const eph::book::PriceLevel> view{levels};
+    for (auto _ : state) {
+        auto v = vwap(view);
+        benchmark::DoNotOptimize(v);
+    }
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) *
+                            static_cast<int64_t>(depth));
+}
+BENCHMARK(BM_SignalVwapSparseNaN);
 
 // ---------------------------------------------------------------------------
 // Same signals over MapBook — confirms the duck-typed interface doesn't
