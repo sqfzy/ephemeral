@@ -83,6 +83,27 @@ TEST(ParseWsUrl, RejectsZeroPort) {
     EXPECT_FALSE(bench::parse_ws_url("ws://x:000/path").has_value());
 }
 
+// `wss://:443/path` (empty authority) is structurally a host-less URL —
+// `KernelTcpStream::create()` would fail later but with an opaque
+// "connect failed" error pointing at downstream code instead of the
+// config field that's actually wrong. parse_ws_url rejects it
+// up-front; pin that contract.
+TEST(ParseWsUrl, RejectsEmptyHost) {
+    EXPECT_FALSE(bench::parse_ws_url("wss://:443/path").has_value());
+    EXPECT_FALSE(bench::parse_ws_url("ws:///path").has_value());
+    // Empty host with no path either (just scheme + colon-port)
+    EXPECT_FALSE(bench::parse_ws_url("wss://:80").has_value());
+}
+
+// `wss://host:/path` — colon present, no digits after. The internal
+// parse loop at line 95 catches this with a dedicated "empty port
+// after ':'" message; pin that path rather than silently accepting
+// the URL with port=0.
+TEST(ParseWsUrl, RejectsEmptyPortAfterColon) {
+    EXPECT_FALSE(bench::parse_ws_url("wss://host:/path").has_value());
+    EXPECT_FALSE(bench::parse_ws_url("ws://host:").has_value());
+}
+
 TEST(ResolveEndpoint, DefaultsToServerIpPortPath) {
     const auto p = write_toml("10.0.0.1",
         "port             = 20003\n"
