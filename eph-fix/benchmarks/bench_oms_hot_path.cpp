@@ -31,12 +31,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include <benchmark/benchmark.h>
 #include <spdlog/spdlog.h>
 
+#include "eph/fix.hpp"
 #include "eph/fix/order_manager.hpp"
 #include "eph/fix/position.hpp"
 
@@ -156,5 +159,95 @@ static void BM_PositionTrackerOnFillRejectNaN(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_PositionTrackerOnFillRejectNaN);
+
+// ---------------------------------------------------------------------------
+// OrderManager::on_execution_report — the inbound side of the OMS.
+//
+// Loop-cleanup R171: pairs with the submit-side benches above. Each
+// inbound exchange ExecutionReport flows through `on_execution_report`,
+// which: locates the order via `unordered_map::find`, validates ExecType
+// + LastQty + LastPx, computes the running avg_fill_price, updates
+// leaves_qty, and (optionally) forwards to PositionTracker. Existing
+// `bench_execution_report.cpp` covers the wire-parse step but not the
+// state-machine application — so a regression in the over-fill guard,
+// the avg-price recompute, or the PositionTracker forwarding hot path
+// would not surface in any bench.
+//
+// We bench a sustained partial-fill stream: the typical exchange
+// behaviour for a 1000-lot order that gets sliced into 100-lot
+// fills. Each iteration recreates the OrderManager + Position state
+// because terminal state is sticky and we want the bench to measure
+// the steady-state hot path, not the first-fill cold path.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Build a raw FIX message buffer with valid BodyLength + CheckSum, returning
+/// it as a vector. Mirrors the pattern in tests/test_order_manager.cpp.
+[[nodiscard]] std::vector<uint8_t> make_partial_fill_wire(int seq) {
+    std::string body;
+    body += "35=8\x01";
+    body += "49=SENDER\x01";
+    body += "56=TARGET\x01";
+    body += "34=" + std::to_string(seq) + "\x01";
+    body += "11=ORDBENCH\x01";  // ClOrdID
+    body += "37=EXCHID\x01";
+    body += "17=EXEC" + std::to_string(seq) + "\x01";
+    body += "150=1\x01";  // ExecType=PartialFill
+    body += "39=1\x01";   // OrdStatus=PartiallyFilled
+    body += "55=AAPL\x01";
+    body += "54=1\x01";   // Side=Buy
+    body += "31=150.25\x01";  // LastPx
+    body += "32=10\x01";      // LastQty
+    body += "6=150.25\x01";   // AvgPx
+    body += "14=10\x01";      // CumQty
+    body += "151=990\x01";    // LeavesQty
+
+    std::string full = "8=FIX.4.4\x01";
+    full += "9=" + std::to_string(body.size()) + "\x01";
+    full += body;
+
+    uint32_t sum = 0;
+    for (char c : full) sum += static_cast<uint8_t>(c);
+    char cs[8];
+    std::snprintf(cs, sizeof(cs), "10=%03u\x01",
+                  static_cast<unsigned>(sum & 0xFF));
+    full += cs;
+
+    return {full.begin(), full.end()};
+}
+
+}  // namespace
+
+static void BM_OrderManagerOnExecReportPartialFill(benchmark::State& state) {
+    // Pre-build the wire bytes — the parser re-runs each iteration but
+    // we measure the OMS dispatch hot path, not the parser itself
+    // (already covered by bench_execution_report).
+    auto wire = make_partial_fill_wire(/*seq=*/1);
+
+    for (auto _ : state) {
+        // Recreate per-iteration so we don't accumulate filled_qty past
+        // orig_qty (would trip the over-fill guard and exit early,
+        // which would no longer measure the partial-fill hot path).
+        state.PauseTiming();
+        eph::fix::OrderManager mgr;
+        mgr.submit("ORDBENCH", "AAPL", '1', /*qty=*/1'000'000.0, /*price=*/150.0);
+        // Mark New so the report isn't ignored as terminal-state.
+        // (submit() leaves it PendingNew; on_execution_report will
+        // re-route New/PartialFill correctly either way.)
+        auto parse_r = eph::fix::parse<256>({wire.data(), wire.size()});
+        if (!parse_r.has_value()) {
+            state.SkipWithError("parse failed");
+            break;
+        }
+        eph::fix::BasicMessageView<256> mv = parse_r.value();
+        eph::fix::ExecutionReportView<256> rv{mv};
+        state.ResumeTiming();
+
+        bool ok = mgr.on_execution_report(rv);
+        benchmark::DoNotOptimize(ok);
+    }
+}
+BENCHMARK(BM_OrderManagerOnExecReportPartialFill);
 
 BENCHMARK_MAIN();
