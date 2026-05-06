@@ -192,6 +192,71 @@ static void BM_OuchExecutedFullAccess(benchmark::State& state) {
 }
 BENCHMARK(BM_OuchExecutedFullAccess);
 
+// ---------------------------------------------------------------------------
+// OUCH inbound builders — the order-entry hot path.
+//
+// EnterOrder ('O'), ReplaceOrder ('U'), and CancelOrder ('X') are
+// the three client → exchange messages an HFT order entry router
+// emits. Every order, modification, and cancel goes through one of
+// these `build()` functions before SoupBinTcpFramer wraps them and
+// the kernel/DPDK stream sends them out. The earlier per-batch sweep
+// added comprehensive correctness tests for these builders (sentinel
+// rejection, oversize-token rejection, exact-boundary acceptance) but
+// no microbench measured the encode cost itself. Pin it so a future
+// refactor that adds runtime validation, error-path branching, or
+// allocates anywhere accidentally surfaces in the bench output.
+// ---------------------------------------------------------------------------
+
+static void BM_OuchBuildEnterOrder(benchmark::State& state) {
+    std::array<uint8_t, ob::EnterOrder::kSize> buf{};
+    for (auto _ : state) {
+        size_t n = ob::EnterOrder::build(
+            buf.data(),
+            "ABCDEFGHIJKLMN",  // 14-char token (max length)
+            'B',               // buy
+            100,               // shares
+            "AAPL",            // symbol (right-padded to 8)
+            1500000,           // $150.00 wire format
+            0,                 // day order
+            "FIRM");           // 4-char MPID
+        benchmark::DoNotOptimize(n);
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_OuchBuildEnterOrder);
+
+static void BM_OuchBuildReplaceOrder(benchmark::State& state) {
+    std::array<uint8_t, ob::ReplaceOrder::kSize> buf{};
+    for (auto _ : state) {
+        size_t n = ob::ReplaceOrder::build(
+            buf.data(),
+            "EXISTING_TOKN1",   // 14-char existing token
+            "REPLACEMENT_T1",   // 14-char replacement
+            200,                // new shares
+            1525000,            // new price $152.50
+            60);                // 60s TIF
+        benchmark::DoNotOptimize(n);
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_OuchBuildReplaceOrder);
+
+static void BM_OuchBuildCancelOrder(benchmark::State& state) {
+    std::array<uint8_t, ob::CancelOrder::kSize> buf{};
+    for (auto _ : state) {
+        size_t n = ob::CancelOrder::build(
+            buf.data(),
+            "CANCEL_TOKEN_1",   // 14-char token
+            0);                 // 0 = cancel entire remaining
+        benchmark::DoNotOptimize(n);
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_OuchBuildCancelOrder);
+
 int main(int argc, char** argv) {
     spdlog::set_level(spdlog::level::off);
     benchmark::Initialize(&argc, argv);
