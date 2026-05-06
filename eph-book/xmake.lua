@@ -17,10 +17,13 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         add_deps("eph-book")
 end
 
--- Module benchmarks (depend on eph-json for input data)
+-- Module benchmarks (depend on eph-json for input data; eph-itch
+-- pulled in for the itch_adapter bench — all are header-only so the
+-- transitive deps are zero binary cost on benches that don't use
+-- the extra modules).
 for _, file in ipairs(os.files("benchmarks/**.cpp")) do
     target(path.basename(file))
         add_rules("eph-bench")
         add_files(file)
-        add_deps("eph-book", "eph-json")
+        add_deps("eph-book", "eph-json", "eph-itch")
 end
