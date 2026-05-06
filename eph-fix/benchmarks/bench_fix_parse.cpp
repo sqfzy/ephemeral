@@ -5,14 +5,25 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include <benchmark/benchmark.h>
+#include <spdlog/spdlog.h>
 
 #include "eph/fix.hpp"
 
 using namespace eph::fix;
+
+namespace {
+/// Silence WARN-level reject paths so reject-branch logs do not poison
+/// the bench timing (set_double NaN-reject in particular).
+struct LoggerSilencer {
+    LoggerSilencer() { spdlog::set_level(spdlog::level::off); }
+};
+const LoggerSilencer g_silencer{};
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Helpers: build valid FIX messages of varying complexity
@@ -372,5 +383,113 @@ static void BM_FixParseTimestampInvalidLength(benchmark::State& state) {
     state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_FixParseTimestampInvalidLength);
+
+// ---------------------------------------------------------------------------
+// Isolated builder primitive benchmarks (loop-cleanup R168)
+//
+// `set_int` / `set_double` / `set_decimal` / `set_price` / `set_bool` are the
+// per-field encoding primitives invoked once for every typed field in every
+// outbound FIX message. Existing benches embed them inside larger
+// `BM_FixBuild*` flows but never measure them in isolation — so a regression
+// in the integer formatter, the `format_double` path, the `set_decimal`
+// validator, or the `set_price` mantissa/decimal expansion would only
+// surface as a small drift in the multi-field flow benchmarks where it can
+// hide behind noise. Pinning each primitive at a fixed cost makes
+// regressions immediately attributable.
+// ---------------------------------------------------------------------------
+
+static void BM_BuilderSetIntSmall(benchmark::State& state) {
+    uint8_t buf[256];
+    int64_t v = 0;
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_int(tag::MsgSeqNum, ++v & 0xFFFF);  // 1-5 digit values
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetIntSmall);
+
+static void BM_BuilderSetIntLarge(benchmark::State& state) {
+    // Wide-range value to exercise the full format_int loop, not the
+    // small-integer fast path.
+    uint8_t buf[256];
+    int64_t v = 1'234'567'890'123LL;
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_int(tag::OrderQty, v);
+        v = (v + 1) % 1'234'567'890'124LL;
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetIntLarge);
+
+static void BM_BuilderSetDouble(benchmark::State& state) {
+    uint8_t buf[256];
+    double v = 100.50;
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_double(tag::Price, v, 2);
+        v += 0.01;
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetDouble);
+
+// set_double's reject branch — non-finite value short-circuits before
+// `format_double`. Pin the early-exit cost so a future change that adds
+// extra logging or validation higher in the function cannot regress
+// the cheap-reject case unnoticed.
+static void BM_BuilderSetDoubleRejectNaN(benchmark::State& state) {
+    uint8_t buf[256];
+    const double nan_v = std::numeric_limits<double>::quiet_NaN();
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_double(tag::Price, nan_v, 2);
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetDoubleRejectNaN);
+
+static void BM_BuilderSetDecimal(benchmark::State& state) {
+    uint8_t buf[256];
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        // Realistic price string that exercises the validation loop
+        // (sign, digit run, dot, fractional digits).
+        b.set_decimal(tag::Price, "12345.6789");
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetDecimal);
+
+static void BM_BuilderSetPrice(benchmark::State& state) {
+    uint8_t buf[256];
+    int64_t mantissa = 12345678;
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_price(tag::Price, ++mantissa, /*decimals=*/4);
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetPrice);
+
+static void BM_BuilderSetBool(benchmark::State& state) {
+    uint8_t buf[256];
+    bool flip = false;
+    for (auto _ : state) {
+        MessageBuilder b(buf, sizeof(buf));
+        b.set_bool(tag::PossDupFlag, flip);
+        flip = !flip;
+        benchmark::DoNotOptimize(buf);
+    }
+    state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_BuilderSetBool);
 
 BENCHMARK_MAIN();
