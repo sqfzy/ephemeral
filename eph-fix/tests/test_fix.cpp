@@ -5447,3 +5447,56 @@ TEST(FixValueParsers, get_int_non_digit_rejected) {
     EXPECT_FALSE(eph::fix::detail::parse_int_value("abc").has_value());
     EXPECT_FALSE(eph::fix::detail::parse_int_value("1.5").has_value());
 }
+
+// FIX 4.4 UTCTimestamp's fractional-second extension is defined only
+// at lengths 3 (ms), 6 (us), and 9 (ns). The parser's first guard
+// (line 124-125 of parser.hpp) rejects every other length up-front
+// via the strict `sv.size() != 17 && != 21 && != 24 && != 27` check.
+// This is the right defense: a hostile peer that pads or truncates
+// frac digits can't slip a partially-parsed timestamp through, and
+// the inner frac_len switch is dead code for non-standard lengths.
+// Pin the rejection so a future refactor that loosens the strict
+// length check (e.g. accepts arbitrary ".d+") would fail here — the
+// silent-drop fallback (`frac_ns=0` for non-standard lengths) would
+// then become reachable and mask freshness checks against tampered
+// timestamps (".5" misread as exact second).
+TEST(FixParser, get_timestamp_four_frac_digits_rejected) {
+    auto raw = make_fix_msg("FIX.4.4",
+        "35=D\x01" "52=20250101-12:30:45.1234\x01");
+    auto m = parse(raw.data(), raw.size());
+    ASSERT_TRUE(m.has_value());
+    EXPECT_FALSE(m->get_timestamp(tag::SendingTime).has_value())
+        << "FIX 4.4 frac extension is {0,3,6,9}-digit only; 4 must "
+           "reject up-front rather than fall through to the dead "
+           "frac_len switch where frac_ns would silently zero";
+}
+
+TEST(FixParser, get_timestamp_one_frac_digit_rejected) {
+    auto raw = make_fix_msg("FIX.4.4",
+        "35=D\x01" "52=20250101-12:30:45.5\x01");
+    auto m = parse(raw.data(), raw.size());
+    ASSERT_TRUE(m.has_value());
+    EXPECT_FALSE(m->get_timestamp(tag::SendingTime).has_value())
+        << "Half-second precision (1 frac digit) is not a FIX 4.4 wire "
+           "shape; reject so a tampered '.5' can't read as an exact "
+           "second under a freshness check";
+}
+
+TEST(FixParser, get_timestamp_two_frac_digits_rejected) {
+    // Centisecond precision (2 frac digits) also outside FIX 4.4 spec.
+    auto raw = make_fix_msg("FIX.4.4",
+        "35=D\x01" "52=20250101-12:30:45.55\x01");
+    auto m = parse(raw.data(), raw.size());
+    ASSERT_TRUE(m.has_value());
+    EXPECT_FALSE(m->get_timestamp(tag::SendingTime).has_value());
+}
+
+TEST(FixParser, get_timestamp_seven_frac_digits_rejected) {
+    // 7 digits — between us (6) and ns (9), neither valid. Catches the
+    // edge where a buggy server pads ms-precision with zero-padded ns.
+    auto raw = make_fix_msg("FIX.4.4",
+        "35=D\x01" "52=20250101-12:30:45.1234567\x01");
+    auto m = parse(raw.data(), raw.size());
+    ASSERT_TRUE(m.has_value());
+    EXPECT_FALSE(m->get_timestamp(tag::SendingTime).has_value());
+}
