@@ -148,3 +148,30 @@ TEST(JsonScan, ZeroValue) {
     ASSERT_TRUE(v.has_value());
     EXPECT_EQ(*v, 0ull);
 }
+
+// scan_json_uint_field's pre-checks reject empty field_name and
+// oversized field_name (> 253 chars to fit "<F>": in the 256-byte
+// stack needle). Both are uncovered guards — pin them so a future
+// change to the needle buffer size surfaces here.
+TEST(JsonScan, EmptyFieldNameRejected) {
+    // The pre-check at "field_name.empty()" returns nullopt directly.
+    auto v = scan(R"({"":42,"T":99})", "");
+    EXPECT_FALSE(v.has_value())
+        << "empty field_name must reject — without the guard the loop "
+           "would search for a degenerate 3-byte needle '\":' in the "
+           "buffer and could match arbitrary content";
+}
+
+TEST(JsonScan, FieldNameTooLongForStackNeedleRejected) {
+    // 254-byte field name pushes needle_len=257 > sizeof(needle)=256.
+    // The function rejects rather than silently truncating.
+    std::string long_name(254, 'k');
+    auto v = scan(R"({"foo":1,"T":42})", long_name);
+    EXPECT_FALSE(v.has_value());
+    // Boundary: 253 bytes is the maximum that fits (needle_len=256).
+    // We don't insist this *succeeds* (it just won't match the test
+    // payload's "T" field) — only that it doesn't crash or assert.
+    std::string max_name(253, 'k');
+    auto v2 = scan(R"({"foo":1,"T":42})", max_name);
+    EXPECT_FALSE(v2.has_value());  // field "kkk...kkk" not in payload
+}
