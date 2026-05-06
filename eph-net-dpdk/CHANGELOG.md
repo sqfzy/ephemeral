@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+### Reverted — T2.3 trust-boundary HMAC stack (R series, 2026-05-06)
+
+**BREAKING.** Wire formats for all 3 cross-process registries change.
+Stop all daemons + tenants, rebuild eph-net-dpdk + eph-nicd + eph-nicctl
+together, restart. Existing v4 hugepages will be hard-rejected at attach.
+
+T2.3 layered HMAC-SHA256 entry tags onto MpRegistry / QueueAllocator /
+IcmpDirectory under a daemon-managed key, plus a 1 Hz audit-sweep thread
+and an `eph-nicctl audit` subcommand. The K..Q series (commits
+b775310b..de3697e9) added ~1000 LOC across 11 files, ~44 unit tests,
+and a microbench.
+
+Reason for revert: under the project's actual threat model — "tenants
+are trusted; defend against accidents" — HMAC's only unique coverage is
+**wild-pointer writes that clip the registries**. That case is rare, the
+shared segment's magic/version headers + claim_gen + atomic claim
+flags + bounds-checks already handle every realistic accident, and ASan
+/ hardened malloc catch wild pointers in dev. The `enable_registry_hmac`
+flag was never wired through `nic_config_toml` to production deployments,
+so the entire stack ran in unkeyed mode in every real install — dead
+code in the production path. T2.3 is the textbook case of "no half-
+finished implementations / don't design for hypothetical futures".
+
+**What's removed:**
+
+- Files deleted (10):
+  - `include/eph/dpdk/detail/registry_hmac_key.hpp` (key file mgmt)
+  - `include/eph/dpdk/detail/hmac_keyed_entry.hpp` (generic helper)
+  - `tests/test_audit_sweeper.cpp`
+  - `tests/test_hmac_keyed_entry.cpp`
+  - `tests/test_hmac_tamper_simulation.cpp`
+  - `tests/test_icmp_directory_hmac.cpp`
+  - `tests/test_mp_registry_hmac.cpp`
+  - `tests/test_queue_allocator_hmac.cpp`
+  - `tests/test_registry_hmac_key.cpp`
+  - `benchmarks/bench_registry_hmac.cpp`
+- HMAC tag fields removed from `ProcSlot`, `QueueAllocator::Header`,
+  `IcmpDirectoryEntry`. `hmac_enabled` flags removed from each header.
+  `pack_*_for_hmac` / `sign_*_in_place` / `verify_*` helpers removed.
+  `enable_hmac_()` methods removed from each handle. `audit_all` /
+  `audit_entry` / `audit_sweep_one_round` removed from
+  `IcmpDirectoryHandle` + `MpRegistryHandle`.
+- IPC: `kNicctlAuditActionName` / `NicctlAuditRequest` /
+  `NicctlAuditReply` / `on_nicctl_audit_thunk` removed.
+- Platform: `audit_sweep_tamper_count()`, `audit_registries()`,
+  `icmp_audit_sweep_one_round()` public methods removed. `Impl`
+  fields `audit_sweeper_thread` / `audit_sweeper_running` /
+  `audit_sweeper_mu` / `audit_sweeper_cv` / `audit_sweep_tamper_total`
+  / `registry_hmac_key` / `nicctl_audit_action` removed. The 1 Hz
+  audit-sweep lambda spawned in `serve_nic` is gone.
+- Detail globals removed: `g_active_mp_registry`,
+  `g_audit_sweep_tamper_total`, `g_audit_sweep_rounds_completed`,
+  `g_audit_sweeper_alive`.
+- `NicServiceConfig::enable_registry_hmac` field removed.
+- `eph-nicctl audit` subcommand removed (only `peers` / `stats` remain).
+
+**Wire format bumps (forward, not back to pre-T2.3):**
+
+- `MpRegistry`: v4 → v5
+- `QueueAllocator`: v2 → v3
+- `IcmpDirectory`: v2 → v3
+
+Forward bumps ensure stale v4/v2 hugepage segments from the T2.3 era
+are hard-rejected, not silently mapped with the new layout.
+
+**What stays:**
+
+- `eph-net/include/eph/net/hmac.hpp` — used by `eph-fix/builder.hpp`,
+  `signed_request.hpp`, exchange auth (Binance, Coinbase). Untouched.
+- All non-HMAC registry primitives: magic / version / generation /
+  claim FSM / atomic claimed flag / 2-step publish / bounds checks.
+  These continue to defend against ABA, half-init reads, and obvious
+  layout mismatches under cross-process attach.
+
+**Reintroducing T2.3 in the future:** if the threat model ever shifts
+to "defend against malicious tenants in short attack windows", the
+work can be re-derived from the K..Q series commits. The forward-bumped
+wire versions leave a clean slot for v6/v4/v4 to add HMAC tags back.
+
+Net code change: -1184 lines (1488 removed, 304 added across edits).
+All non-HMAC tests still pass (test_mp_registry 48/48, test_icmp_directory
+21/21, test_mp_topology 32/32, test_icmp_dispatch 10/10,
+test_src_port_collision 13/13).
+
 ### Changed — T2.3 audit IPC reshape: drop on-demand fresh sweep, read sweeper counter (Q series, 2026-05-06)
 
 **BREAKING (operator-side):** `eph-nicctl audit` and `eph-nicd` must

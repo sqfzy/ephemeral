@@ -71,17 +71,12 @@ void print_usage(FILE* out) {
         "Usage:\n"
         "  eph-nicctl peers  --pci=<bdf>\n"
         "  eph-nicctl stats  --pci=<bdf>\n"
-        "  eph-nicctl audit  --pci=<bdf>\n"
         "  eph-nicctl --help | --version\n"
         "\n"
         "Connects to the eph-nicd daemon for the given pci as a DPDK\n"
         "secondary, queries its state, prints a snapshot and exits.\n"
         "\n"
-        "  peers / stats — QueueAllocator pool state snapshot\n"
-        "  audit         — T2.3 HMAC tamper-detection scan across\n"
-        "                  MpRegistry + QueueAllocator + IcmpDirectory.\n"
-        "                  Returns 0 mismatches in healthy / unkeyed mode;\n"
-        "                  non-zero on detected tampering.\n",
+        "  peers / stats — QueueAllocator pool state snapshot\n",
         kVersion);
 }
 
@@ -96,7 +91,6 @@ enum class Subcommand {
     None,
     Peers,
     Stats,
-    Audit,
 };
 
 struct CliArgs {
@@ -126,8 +120,6 @@ std::expected<CliArgs, std::string> parse_argv(int argc, char** argv) {
             out.sub = Subcommand::Peers;
         } else if (std::strcmp(a, "stats") == 0) {
             out.sub = Subcommand::Stats;
-        } else if (std::strcmp(a, "audit") == 0) {
-            out.sub = Subcommand::Audit;
         } else {
             return std::unexpected(
                 std::string{"unknown subcommand: "} + a);
@@ -270,112 +262,6 @@ int cmd_query(const CliArgs& args) {
     return 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// T2.3 audit subcommand. Q series shape (wire v2): no fresh sweep;
-// reads the daemon's cumulative tamper counter from its always-running
-// 1 Hz audit_sweeper thread and reports it. Exit codes:
-//   0  healthy / unkeyed / sweeper just-started-clean
-//   1  IPC error / daemon error / wire version mismatch
-//   2  cumulative tamper count > 0 (operator must investigate)
-// ─────────────────────────────────────────────────────────────────────
-int cmd_audit(const CliArgs& args) {
-    auto attach_r = attach_as_secondary(args.pci);
-    if (!attach_r) {
-        std::fprintf(stderr, "%s\n", attach_r.error().c_str());
-        return 1;
-    }
-    const std::string& file_prefix = *attach_r;
-
-    ::eph::dpdk::detail::NicctlAuditRequest req{};
-    req.version       = 2;  // Q series — see queue_allocator.hpp wire-version note
-    req.requester_pid = static_cast<int32_t>(::getpid());
-
-    auto reply_r = ::eph::dpdk::detail::mp_ipc_request_sync<
-        ::eph::dpdk::detail::NicctlAuditRequest,
-        ::eph::dpdk::detail::NicctlAuditReply>(
-        ::eph::dpdk::detail::kNicctlAuditActionName,
-        req,
-        std::chrono::milliseconds{2000});
-    if (!reply_r) {
-        std::fprintf(stderr,
-            "eph-nicctl: audit IPC failed: %s\n"
-            "(file_prefix='%s'; daemon may be unresponsive or it "
-            "predates the Q-series audit reshape — rebuild `eph-nicd` "
-            "if it's older than 2026-05-06)\n",
-            reply_r.error().detail, file_prefix.c_str());
-        (void)::eph::dpdk::eal_cleanup();
-        return 1;
-    }
-    const auto& reply = *reply_r;
-    if (!reply.ok) {
-        std::fprintf(stderr, "eph-nicctl: daemon error: %s\n", reply.error);
-        (void)::eph::dpdk::eal_cleanup();
-        return 1;
-    }
-
-    std::printf("eph-nicd registry HMAC audit (pci='%s', "
-                "file_prefix='%s'):\n",
-                args.pci.c_str(), file_prefix.c_str());
-    if (!reply.hmac_enabled) {
-        std::printf("\n  hmac_enabled: 0  (daemon running in unkeyed "
-                    "mode — single-tenant deployment;\n"
-                    "                    no tamper protection active. "
-                    "Set\n"
-                    "                    `enable_registry_hmac = true` "
-                    "in /etc/eph/<bdf>.toml\n"
-                    "                    and restart `eph-nicd@<bdf>` "
-                    "to enable.)\n");
-        (void)::eph::dpdk::eal_cleanup();
-        return 0;
-    }
-
-    const unsigned long long tamper = reply.tamper_count_total;
-    const unsigned long long rounds = reply.rounds_completed;
-    const bool alive = (reply.sweeper_alive != 0);
-
-    // Sweeper observation window: rounds * 1 Hz ≈ seconds since
-    // sweeper start. Print as "Hh Mm Ss" if non-trivial so the
-    // operator can sanity-check coverage at a glance.
-    char window[64];
-    if (rounds == 0) {
-        std::snprintf(window, sizeof(window), "<1s (sweeper starting)");
-    } else if (rounds < 60) {
-        std::snprintf(window, sizeof(window), "%llus", rounds);
-    } else if (rounds < 3600) {
-        std::snprintf(window, sizeof(window), "%llum %llus",
-                      rounds / 60, rounds % 60);
-    } else {
-        const auto h = rounds / 3600, m = (rounds % 3600) / 60,
-                   s = rounds % 60;
-        std::snprintf(window, sizeof(window), "%lluh %llum %llus",
-                      h, m, s);
-    }
-
-    std::printf("\n");
-    std::printf("  sweeper_alive       : %s\n",
-                alive ? "yes" : "NO (thread not running)");
-    std::printf("  observation_window  : %s  (%llu sweep rounds @ 1 Hz)\n",
-                window, rounds);
-    std::printf("  cumulative_tamper   : %llu\n", tamper);
-    std::printf("  status              : %s\n",
-                tamper == 0
-                    ? (alive ? "✓ all clean"
-                             : "⚠ sweeper not running — audit not actionable")
-                    : "✗ TAMPER DETECTED — investigate journalctl for "
-                      "'audit_sweeper: detected' entries");
-
-    (void)::eph::dpdk::eal_cleanup();
-
-    if (tamper > 0) return 2;
-    if (!alive) {
-        std::fprintf(stderr,
-            "\n[WARN] daemon reports HMAC enabled but the audit "
-            "sweeper thread is not running. Check daemon logs.\n");
-        return 1;
-    }
-    return 0;
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -407,8 +293,6 @@ int main(int argc, char** argv) {
         case Subcommand::Peers:
         case Subcommand::Stats:
             return cmd_query(args);
-        case Subcommand::Audit:
-            return cmd_audit(args);
         case Subcommand::None:
             print_usage(stderr);
             return 2;

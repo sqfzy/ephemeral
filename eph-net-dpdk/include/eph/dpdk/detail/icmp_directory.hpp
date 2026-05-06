@@ -53,10 +53,7 @@
 #include <rte_lcore.h>
 #include <rte_memzone.h>
 
-#include <openssl/mem.h>  // T2.3: CRYPTO_memcmp for constant-time tag verify
-
 #include "eph/core/error.hpp"
-#include "eph/net/hmac.hpp"  // T2.3: HmacSha256Key + sign helpers
 #include "eph/dpdk/detail/icmp_registry.hpp"  // IcmpRegistry (for thunk)
 #include "eph/dpdk/detail/mp_ipc.hpp"         // pack/parse_payload<T>
 #include "eph/dpdk/packet_core.hpp"           // ConnectionTuple
@@ -87,19 +84,15 @@ inline constexpr uint32_t kIcmpDirectoryMagic =
     (static_cast<uint32_t>('C') << 16) |
     (static_cast<uint32_t>('D') << 24);
 
-/// v2 (T2.3 wiring, 2026-05-05): adds `header.hmac_enabled` flag +
-/// per-entry `hmac_tag[32]`. Hot-path lookup() does NOT verify (would
-/// add ~150-300ns/aarch64 per ICMP, far above the 50-200ns/mbuf
-/// budget). Verification is **on-suspicion**:
-///   - audit-on-error: callbacks that reject an entry call
-///     `verify_entry_for_audit()` to surface tampering vs ABA;
-///   - periodic sweep: `audit_sweep_one_round(key)` verifies a
-///     batch of entries each call (caller invokes ~1 Hz from a
-///     control thread).
-/// Hybrid coverage: passive tampering detected within ≤1 second; an
-/// active error-trigger triggers immediate audit. Single-tenant
-/// deployments leave `hmac_enabled=0` and pay zero overhead.
-inline constexpr uint32_t kIcmpDirectoryVersion = 2;
+/// History:
+///   v1: original layout (atomic claim FSM + tuple + owner_proc + gen).
+///   v2: T2.3 trust-boundary HMAC tag + sweeper (added 2026-05-05).
+///   v3: T2.3 reverted (2026-05-06). Per-entry `hmac_tag[32]` and
+///       `header.hmac_enabled` flag removed; layout reverts to v1-
+///       equivalent. Bumping forward (rather than back to v1) so any
+///       in-memory v2 hugepages are hard-rejected at attach time —
+///       recovery: stop all peers, daemon recreates the directory.
+inline constexpr uint32_t kIcmpDirectoryVersion = 3;
 
 /// @brief Cap on populated entries. 1024 ≈ 4 procs × 256 streams/proc;
 /// generous for HFT but not extravagant. Header sizeof ≈ 32 KiB ≪
@@ -128,7 +121,7 @@ struct IcmpDirectoryEntry {
     /// State machine for the slot's claim lifecycle:
     ///   0 = free (no owner; tuple/owner fields hold stale residue —
     ///       readers MUST gate on `claimed==Published` before
-    ///       interpreting any field, INCLUDING `hmac_tag`),
+    ///       interpreting any field),
     ///   2 = in-progress (CAS-acquired but tuple/owner fields not yet
     ///       fully written — readers MUST treat as miss),
     ///   1 = published (tuple/owner fields fully visible; readers can
@@ -145,20 +138,13 @@ struct IcmpDirectoryEntry {
     /// happened-before that load.
     ///
     /// **Multi-field reader contract**: a reader that reads MORE than one
-    /// field after `acquire(claimed)==Published` is exposed to torn
-    /// reads if the slot is unregistered + immediately re-claimed by a
-    /// different (tuple, owner) mid-read. The HMAC audit paths
-    /// (`audit_entry`, `audit_sweep_one_round`) MUST seqlock-style
-    /// snapshot `generation` BEFORE and re-check `generation` + `claimed`
-    /// AFTER, discarding the result on mismatch — otherwise the torn
-    /// HMAC over a mix of two incarnations triggers a false-positive
-    /// tamper warning. `lookup` is also a multi-field reader but
-    /// tolerates the race by design: a torn read either fails a
-    /// component check (no match → caller treats as miss, retransmits
-    /// via TCP) or matches the new incarnation by coincidence (caller
-    /// dispatches to the new owner — semantically correct since the
-    /// old owner has already unregistered). The audit paths use the
-    /// strict seqlock pattern; lookup remains lock-free.
+    /// field after `acquire(claimed)==Published` may see a torn read if
+    /// the slot is unregistered + immediately re-claimed by a different
+    /// (tuple, owner) mid-read. `lookup` tolerates the race: a torn read
+    /// either fails a component check (no match → caller treats as miss,
+    /// retransmits via TCP) or matches the new incarnation by coincidence
+    /// (caller dispatches to the new owner — semantically correct since
+    /// the old owner has already unregistered). lookup remains lock-free.
     std::atomic<uint8_t> claimed;
     /// IP protocol (e.g. 6 = TCP, 17 = UDP). 0 = unset.
     uint8_t  proto;
@@ -177,17 +163,6 @@ struct IcmpDirectoryEntry {
     /// gen observed at lookup, owner re-reads on dispatch, drops if
     /// mismatch (stale handle protection).
     std::atomic<uint32_t> generation;
-
-    /// HMAC-SHA256 tag over the *authenticated* entry payload (proto +
-    /// owner_proc + src_ip + dst_ip + src_port + dst_port — i.e. the
-    /// 5-tuple plus owner). Signed by primary at two-phase publish
-    /// time; verified on suspicion, NOT on every lookup. v2 schema
-    /// (T2.3 wiring, 2026-05-05). Zero when `header.hmac_enabled == 0`.
-    /// `claimed` and `generation` are intentionally NOT in the
-    /// authenticated payload — `claimed` mutates per claim/unclaim
-    /// cycle (signing it would force re-sign on every state
-    /// transition); `generation` mutates per unregister (same).
-    uint8_t hmac_tag[32];
 };
 
 /// @brief Header block at the start of the memzone. Cacheline-aligned
@@ -197,12 +172,6 @@ struct alignas(64) IcmpDirectoryHeader {
     uint32_t magic;          ///< = kIcmpDirectoryMagic
     uint32_t version;        ///< = kIcmpDirectoryVersion
     uint32_t max_entries;    ///< Effective `entries` array bound (== kIcmpDirectoryMaxEntries)
-    /// 1 = HMAC-SHA256 entry tags present and audited via
-    /// verify-on-suspicion + periodic sweep; 0 = single-tenant mode
-    /// (entry `hmac_tag[]` zero, audit calls return "no-op success").
-    /// v2 schema (T2.3 wiring).
-    uint8_t  hmac_enabled;
-    uint8_t  _pad_hmac[3];   ///< Align _pad0 to 4
     uint32_t _pad0;          ///< Align file_prefix to 8
 
     /// Null-terminated copy of the user `file_prefix`. Sanity-check
@@ -269,93 +238,6 @@ build_icmp_directory_name(std::string_view file_prefix) noexcept {
     return buf;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// T2.3 HMAC helpers — verify-on-suspicion mode (hot-path stays clean)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Authenticated payload per entry (16 bytes, explicit little-endian):
-//
-//   proto        1 byte
-//   owner_proc   1 byte
-//   src_ip       4 bytes
-//   dst_ip       4 bytes
-//   src_port     2 bytes
-//   dst_port     2 bytes
-//   _pad         2 bytes (zero — keep payload size 16 = nice round)
-//                ─────
-//                16 bytes total
-//
-// Excluded from payload:
-//   - claimed       — atomic state machine (0/1/2 per claim/unclaim)
-//   - generation    — bumped per unregister
-//   - hmac_tag      — tag itself
-//
-// The exclusion of `claimed` and `generation` lets primary sign the
-// entry once at publish (claimed: 2→1) and never re-sign while the
-// entry stays valid. Subsequent unregister-and-reclaim cycles with
-// SAME tuple+owner re-sign produces the same tag (deterministic);
-// with different tuple+owner the new claim re-signs to a new tag.
-
-inline constexpr size_t kIcmpEntryAuthBytes = 16;
-
-inline void
-pack_icmp_entry_for_hmac(const IcmpDirectoryEntry& e,
-                         std::array<uint8_t, kIcmpEntryAuthBytes>& out) noexcept {
-    size_t off = 0;
-    out[off++] = e.proto;
-    out[off++] = e.owner_proc;
-    auto put_u32 = [&](uint32_t v) {
-        out[off++] = static_cast<uint8_t>(v & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 16) & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 24) & 0xFFu);
-    };
-    auto put_u16 = [&](uint16_t v) {
-        out[off++] = static_cast<uint8_t>(v & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-    };
-    put_u32(e.src_ip);
-    put_u32(e.dst_ip);
-    put_u16(e.src_port);
-    put_u16(e.dst_port);
-    out[off++] = 0;  // _pad
-    out[off++] = 0;  // _pad
-}
-
-/// @brief Sign `entry` in place. Called by primary at two-phase
-/// publish time, *between* the field writes and the release-store
-/// of `claimed = kIcmpSlotPublished`. Cost: ~150-300 ns aarch64.
-/// **NEVER** called on the hot lookup path.
-inline void
-sign_icmp_entry_in_place(IcmpDirectoryEntry& e,
-                         const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kIcmpEntryAuthBytes> packed{};
-    pack_icmp_entry_for_hmac(e, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    static_assert(sizeof(e.hmac_tag) == sig.bytes.size(),
-                  "IcmpDirectoryEntry::hmac_tag size mismatch");
-    std::memcpy(e.hmac_tag, sig.bytes.data(), sig.bytes.size());
-}
-
-/// @brief Verify `entry.hmac_tag` against `key` in constant time.
-/// Called from:
-///   - audit-on-error: when a callback rejects an entry, before
-///     concluding the rejection is logical (tuple mismatch) vs
-///     malicious (tampered). Cost amortized to error-handling path.
-///   - periodic sweep (audit_sweep_one_round): caller invokes ~1 Hz.
-/// **NEVER** called from `lookup()` on the hot RX dispatch path.
-[[nodiscard]] inline bool
-verify_icmp_entry(const IcmpDirectoryEntry& e,
-                  const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kIcmpEntryAuthBytes> packed{};
-    pack_icmp_entry_for_hmac(e, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    return CRYPTO_memcmp(e.hmac_tag, sig.bytes.data(),
-                         sig.bytes.size()) == 0;
-}
-
 /// @brief Initialize a fresh directory in `dst`. Caller has ensured
 /// `dst` points at a freshly reserved memzone of >=
 /// sizeof(IcmpDirectoryHeader) bytes.
@@ -365,9 +247,6 @@ init_icmp_directory_header(IcmpDirectoryHeader* dst,
     dst->magic       = kIcmpDirectoryMagic;
     dst->version     = kIcmpDirectoryVersion;
     dst->max_entries = static_cast<uint32_t>(kIcmpDirectoryMaxEntries);
-    dst->hmac_enabled = 0;  // T2.3: default unkeyed; flipped by
-                            // enable_hmac_() helper on the daemon side
-    std::memset(dst->_pad_hmac, 0, sizeof(dst->_pad_hmac));
     dst->_pad0       = 0;
     std::memset(dst->file_prefix, 0, sizeof(dst->file_prefix));
     std::memcpy(dst->file_prefix, file_prefix.data(),
@@ -390,7 +269,6 @@ init_icmp_directory_header(IcmpDirectoryHeader* dst,
         e.dst_port = 0;
         e._pad1 = 0;
         e.generation.store(0, std::memory_order_relaxed);
-        std::memset(e.hmac_tag, 0, sizeof(e.hmac_tag));
     }
 }
 
@@ -683,20 +561,6 @@ public:
             e.src_port   = tuple.src_port;
             e.dst_port   = tuple.dst_port;
 
-            // T2.3 wiring: sign the entry BEFORE the Published
-            // release-store. This way any reader that observes
-            // Published is also guaranteed (via the same release-
-            // acquire edge) to see the freshly-written hmac_tag.
-            // Hot lookup() does NOT verify; sign only happens at
-            // publish + on legitimate re-claim.
-            // Skip when hmac_enabled==0 (single-tenant) — leaves
-            // tag bytes whatever they were (zero from init or
-            // residual from prior publication; either way readers
-            // ignore the tag in unkeyed mode).
-            if (hdr_->hmac_enabled && hmac_key_.has_value()) {
-                sign_icmp_entry_in_place(e, *hmac_key_);
-            }
-
             // Two-step publish — step 2: release-store →Published. Any
             // subsequent acquire-load on `claimed` that observes
             // Published is now guaranteed to also observe every field
@@ -839,14 +703,14 @@ public:
         // path observing Published + new gen is consistent).
         e.generation.fetch_add(1, std::memory_order_acq_rel);
         // Intentionally do NOT zero proto/owner_proc/src_ip/dst_ip/
-        // src_port/dst_port (or hmac_tag): doing so between gen-bump
-        // and the Free-store below would race a concurrent
-        // cross-process reader that has just done
+        // src_port/dst_port: doing so between gen-bump and the
+        // Free-store below would race a concurrent cross-process
+        // reader that has just done
         // `acquire(claimed)==Published → tuple compare`. Stale residue
         // after Free is harmless — every reader (lookup, register
-        // Pass 1/2, audit_entry, audit_sweep) gates on
-        // `claimed==Published`. See `IcmpDirectoryEntry::claimed`
-        // docstring for the full lifecycle invariant.
+        // Pass 1/2) gates on `claimed==Published`. See
+        // `IcmpDirectoryEntry::claimed` docstring for the full
+        // lifecycle invariant.
         e.claimed.store(kIcmpSlotFree, std::memory_order_release);
     }
 
@@ -948,156 +812,6 @@ private:
     IcmpDirectoryHeader*      hdr_          = nullptr;
     const struct rte_memzone* mz_           = nullptr;
     bool                      owns_memzone_ = false;
-    /// T2.3: when populated, sign every published entry. Daemon owns
-    /// the master key; secondaries that want to audit hold their own
-    /// (read from `/run/eph/<bdf>.key` per `registry_hmac_key.hpp`).
-    /// Wrapped in optional so unkeyed default pays zero key
-    /// construction cost.
-    std::optional<::eph::net::HmacSha256Key> hmac_key_{};
-    /// T2.3 periodic sweep cursor — advances one batch per
-    /// `audit_sweep_one_round()` call so callers can drip the
-    /// authenticate-everything pass over many ticks instead of
-    /// stalling on a 1024-entry HMAC sweep.
-    size_t                    sweep_cursor_ = 0;
-
-public:
-    /// @brief T2.3 N series — read-only header accessor for the
-    /// `on_nicctl_audit_thunk` (which counts Published entries via
-    /// the wire-format flags). Returns nullptr on inert handles.
-    [[nodiscard]] IcmpDirectoryHeader const* header_() const noexcept {
-        return hdr_;
-    }
-
-    /// @brief T2.3 wiring (cold path). Flip the directory to keyed
-    /// mode and stash the key for future sign/verify. Idempotent.
-    /// Daemon calls this immediately after publishing a registry,
-    /// supplying the same key written to `/run/eph/<bdf>.key`.
-    /// `nullopt` disables (test-only path).
-    void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) {
-            SPDLOG_DEBUG(
-                "IcmpDirectory::enable_hmac_: handle is moved-from "
-                "(noop)");
-            return;
-        }
-        const bool was_enabled = (hdr_->hmac_enabled == 1);
-        hmac_key_.emplace(std::move(key));
-        hdr_->hmac_enabled = 1;
-        SPDLOG_INFO(
-            "IcmpDirectory::enable_hmac_: HMAC tamper protection "
-            "{} for memzone (was_enabled={})",
-            was_enabled ? "rekeyed" : "enabled", was_enabled);
-    }
-
-    /// @brief T2.3 audit-on-suspicion: verify a single Published
-    /// entry against the supplied key. Returns:
-    ///   - `true` when entry is well-signed (or hmac_enabled==0
-    ///     unkeyed mode → no-op true)
-    ///   - `false` when tag mismatches → call site logs + drops
-    ///     the dispatch as untrusted
-    /// Constant-time comparison via `verify_icmp_entry`. Cost
-    /// ~150-300 ns aarch64; **only** invoked from the
-    /// rejection / error path (NEVER from the hot lookup loop).
-    [[nodiscard]] bool
-    audit_entry(size_t slot_idx) const noexcept {
-        if (hdr_ == nullptr) return false;
-        if (!hdr_->hmac_enabled) return true;  // unkeyed: no audit
-        if (!hmac_key_.has_value()) return true;  // attached but no key
-        if (slot_idx >= hdr_->entries.size()) return false;
-        const auto& e = hdr_->entries[slot_idx];
-        // Seqlock-style read — same rationale as audit_sweep_one_round.
-        // A torn read mid-unregister-then-reregister would compute HMAC
-        // over a mix of two slot incarnations and falsely surface as a
-        // tamper. Returning `true` (no-op success) on a raced read is
-        // safe: the caller is the audit-on-error path, which already
-        // logged the trigger; a "raced — try again next time" outcome
-        // simply lets the periodic sweep catch any genuine tamper.
-        const uint32_t gen0 =
-            e.generation.load(std::memory_order_acquire);
-        if (e.claimed.load(std::memory_order_acquire) !=
-            kIcmpSlotPublished) {
-            return true;  // free / in-progress: nothing to verify
-        }
-        const bool tag_ok = verify_icmp_entry(e, *hmac_key_);
-        const uint32_t gen1 =
-            e.generation.load(std::memory_order_acquire);
-        if (gen0 != gen1 ||
-            e.claimed.load(std::memory_order_acquire) !=
-                kIcmpSlotPublished) {
-            return true;  // raced; let sweep recheck
-        }
-        return tag_ok;
-    }
-
-    /// @brief T2.3 periodic sweep — verify a batch of `batch_size`
-    /// entries starting at the current sweep cursor. Caller invokes
-    /// from a control thread at ~1 Hz; with 1024 entries / 64-batch
-    /// sweep covers the full directory in 16 ticks (~16 seconds
-    /// worst-case missed-detection window when paired with
-    /// audit-on-error which closes the typical case in <1 ms).
-    ///
-    /// Returns the number of mismatches detected this round (0 in
-    /// the healthy case). Each mismatch is also logged to the
-    /// directory logger at WARN level so journalctl picks them up.
-    ///
-    /// Default `batch_size` chosen so a 1 Hz invoker covers all 1024
-    /// entries in 16 seconds — operators tune by changing the call
-    /// cadence or the batch size.
-    size_t
-    audit_sweep_one_round(size_t batch_size = 64) noexcept {
-        if (hdr_ == nullptr) return 0;
-        if (!hdr_->hmac_enabled) return 0;
-        if (!hmac_key_.has_value()) return 0;
-        const size_t total = hdr_->entries.size();
-        size_t mismatches = 0;
-        const size_t end = std::min(sweep_cursor_ + batch_size, total);
-        for (size_t i = sweep_cursor_; i < end; ++i) {
-            const auto& e = hdr_->entries[i];
-            // Seqlock-style read: snapshot generation + claimed BEFORE
-            // reading the authenticated fields, then re-check after.
-            // If either changed, a concurrent unregister + reuse cycle
-            // raced our read and the field bytes are torn — skip this
-            // slot for now, the next sweep cycle will recheck on a
-            // stable state. False-positive tamper warns are
-            // operationally worse than a one-tick-late detection.
-            //
-            // Order matters: gen0 BEFORE the claimed gate. If we read
-            // claimed first and concurrent unregister fires between
-            // (Published→Free + gen++), gen0 captured AFTER the
-            // claimed check would already be the new gen — gen0 ==
-            // gen1 would falsely pass the seqlock check. Reading
-            // gen0 before claimed-check ensures gen0 is captured
-            // pre-transition.
-            const uint32_t gen0 =
-                e.generation.load(std::memory_order_acquire);
-            if (e.claimed.load(std::memory_order_acquire) !=
-                kIcmpSlotPublished) continue;
-            const bool tag_ok = verify_icmp_entry(e, *hmac_key_);
-            // Re-check generation + claimed AFTER the verify. If a
-            // concurrent peer unregistered (gen bumped) or transitioned
-            // away from Published, the field reads inside
-            // verify_icmp_entry may have raced — discard the result.
-            const uint32_t gen1 =
-                e.generation.load(std::memory_order_acquire);
-            if (gen0 != gen1 ||
-                e.claimed.load(std::memory_order_acquire) !=
-                    kIcmpSlotPublished) {
-                continue;  // raced — defer to next sweep
-            }
-            if (!tag_ok) {
-                ++mismatches;
-                SPDLOG_WARN(
-                    "IcmpDirectory: tamper detected at slot {} "
-                    "(audit sweep) — proto={}, owner={}, "
-                    "src={:08x}:{}, dst={:08x}:{}",
-                    i, e.proto, e.owner_proc,
-                    e.src_ip, e.src_port,
-                    e.dst_ip, e.dst_port);
-            }
-        }
-        sweep_cursor_ = (end >= total) ? 0 : end;
-        return mismatches;
-    }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1203,30 +917,6 @@ inline std::atomic<IcmpRegistry*> g_active_icmp_registry{nullptr};
 /// directory says I own but local registry already moved on).
 /// 0xFF = uninitialized / mp_topology not set.
 inline std::atomic<uint8_t> g_active_self_proc_index{0xFF};
-
-/// @brief Q series — telemetry from the daemon's 1 Hz audit_sweeper
-/// thread, exposed to the `on_nicctl_audit_thunk` IPC handler so
-/// `eph-nicctl audit` can report cumulative tamper detection without
-/// re-running a fresh full sweep on every CLI invocation.
-///
-/// `g_audit_sweep_tamper_total`     — monotonic; incremented by the
-///   sweeper lambda (Platform::serve_nic) on every non-zero round.
-///   Mirrors `Platform::Impl::audit_sweep_tamper_total`.
-/// `g_audit_sweep_rounds_completed` — monotonic; incremented every
-///   sweep tick that actually ran (skipped when icmp_directory was
-///   transiently absent). Lets the operator infer "we've been
-///   watching for N seconds" from a single number.
-/// `g_audit_sweeper_alive`          — set by the sweeper while
-///   running, cleared during ~Impl. Allows `eph-nicctl audit` to
-///   distinguish "0 cumulative because sweeper has never run" from
-///   "0 cumulative because everything is fine".
-///
-/// All three default to 0 / false on tenant processes (no sweeper)
-/// and on daemons running unkeyed mode (sweeper started but
-/// short-circuits before incrementing on a per-round basis).
-inline std::atomic<uint64_t> g_audit_sweep_tamper_total{0};
-inline std::atomic<uint64_t> g_audit_sweep_rounds_completed{0};
-inline std::atomic<bool>     g_audit_sweeper_alive{false};
 
 /// @brief DPDK rte_mp_t handler for incoming `eph_icmp_dispatch`
 /// messages. Validates payload version + slot generation, rebuilds

@@ -20,18 +20,14 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
-#include <mutex>
 #include <expected>
-#include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -49,8 +45,6 @@
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/detail/platform_config.hpp" // PlatformConfig + NicServiceConfig (T2.1 partial split)
 #include "eph/dpdk/detail/queue_allocator.hpp" // detail::QueueAllocator + IPC payloads (S5)
-#include "eph/dpdk/detail/registry_hmac_key.hpp" // T2.3: read/write /run/eph/<bdf>.key
-#include "eph/net/hmac.hpp"                    // T2.3: HmacSha256Key for tenant-side stash
 #include "eph/dpdk/eal.hpp"                    // EalConfig / build_eal_argv / eal_init (internal helper)
 #include "eph/dpdk/lcore_pin.hpp"              // LcorePin (typed pin spec for PlatformConfig)
 #include "eph/dpdk/mp_topology.hpp"            // MpTopology + ProcSpec
@@ -938,20 +932,6 @@ public:
     /// reachable-from-eph-net-dpdk-glue" status.
     [[nodiscard]] std::atomic<bool> const* alive_flag_addr_() const noexcept;
 
-    /// @brief T2.3 P series — cumulative count of HMAC tamper
-    /// detections accumulated by the daemon's 1 Hz audit-sweep
-    /// thread (the one spawned by `Platform::serve_nic` when
-    /// `enable_registry_hmac=true`). Exposed so Prometheus /
-    /// dashboards / nicctl can scrape a single number instead of
-    /// grepping journalctl for "audit_sweeper: detected" lines.
-    /// Returns 0 on:
-    ///   - tenant processes (no sweeper thread)
-    ///   - daemons running unkeyed mode
-    ///   - the healthy keyed case
-    /// Atomic-relaxed read — caller doesn't need to synchronize
-    /// with the sweeper thread; the value lags at most one tick.
-    [[nodiscard]] uint64_t audit_sweep_tamper_count() const noexcept;
-
     // ── Auto-derived MP layout (autojoin / mp_topology-driven) ───────────
 
     /// @brief True iff this Platform participates in an active
@@ -1217,50 +1197,6 @@ struct Platform::Impl {
     /// proc path inactive.
     uint8_t self_proc_index = 0xFF;
 
-    /// T2.3 wiring (2026-05-05). When the daemon enabled HMAC at
-    /// `serve_nic` time, this field carries the same key on tenant
-    /// side (read from `/run/eph/<bdf>.key`). `Platform::audit_*`
-    /// methods verify against this key. Empty on:
-    ///   - daemon-side Impls (the daemon already has the key on the
-    ///     individual registry handles via `enable_hmac_`)
-    ///   - tenants attaching to a daemon that left HMAC disabled
-    ///   - tenants whose uid/gid can't read the key file
-    /// In the last case `secondary_bringup_` logs WARN — a verify-
-    /// capable Platform requires successful key read.
-    std::optional<::eph::net::HmacSha256Key> registry_hmac_key;
-
-    /// T2.3 audit-sweep scheduler thread (M series, 2026-05-05).
-    /// `Platform::serve_nic` spawns this thread when
-    /// `cfg.enable_registry_hmac == true`. It loops at 1 Hz calling
-    /// `IcmpDirectoryHandle::audit_sweep_one_round(64)`, dripping
-    /// the verify-on-suspicion sweep across the directory's 1024
-    /// entries (full coverage in 16 s worst-case). Empty / unjoinable
-    /// when HMAC is disabled or this Impl is a tenant secondary
-    /// (only the daemon owns the sweep cadence — tenants do not
-    /// run their own audit; the daemon's sweep + `eph-nicctl audit`
-    /// IPC counter readout cover the operator-visible audit story).
-    /// Cleanup ordering:
-    ///   1. ~Impl flips `audit_sweeper_running.store(false)`
-    ///   2. notify_all on the cv to break the cv_wait_for early
-    ///   3. thread.join() blocks until it exits
-    /// Since the thread reads `icmp_directory.has_value()` before
-    /// each call and the `~Impl` body destroys the directory AFTER
-    /// joining the thread, no use-after-free is possible.
-    std::thread             audit_sweeper_thread;
-    std::atomic<bool>       audit_sweeper_running{false};
-    std::mutex              audit_sweeper_mu;
-    std::condition_variable audit_sweeper_cv;
-    /// @brief T2.3 P series — cumulative tamper-detection counter
-    /// surfaced by `Platform::audit_sweep_tamper_count()`. The
-    /// audit_sweeper lambda increments this on every non-zero
-    /// `audit_sweep_one_round` return so operators can scrape a
-    /// single number for Prometheus / dashboards instead of
-    /// grepping journalctl for "audit_sweeper: detected" lines.
-    /// Atomic so the reader doesn't need to synchronize with the
-    /// sweeper thread. Stays at 0 on tenants and on daemons running
-    /// unkeyed mode.
-    std::atomic<uint64_t>   audit_sweep_tamper_total{0};
-
     /// @brief Primary-side bookkeeping of rules installed on behalf
     /// of secondaries via the eph_fd_install IPC fallback path.
     /// Populated only on the primary; secondary processes leave it
@@ -1308,13 +1244,6 @@ struct Platform::Impl {
     /// containing the QueueAllocator's `PoolState` snapshot. Same
     /// primary-only contract; secondaries never register.
     std::optional<::eph::dpdk::detail::MpIpcAction> nicctl_query_action;
-
-    /// @brief T2.3 N series ops audit handler. Registered alongside
-    /// nicctl_query_action when the daemon enables HMAC. `eph-nicctl
-    /// audit` sends `NicctlAuditRequest` and reads back per-registry
-    /// mismatch counts. Same primary-only contract; secondaries
-    /// never register.
-    std::optional<::eph::dpdk::detail::MpIpcAction> nicctl_audit_action;
 
     /// @brief S5: secondary-side bookkeeping. Records the queue range
     /// granted by the daemon's QueueAllocator on attach. Used to
@@ -1444,22 +1373,6 @@ struct Platform::Impl {
     }
 
     ~Impl() {
-        // ── T2.3 audit sweeper: ask the thread to exit + join ─────────────
-        // The audit sweeper thread (spawned by Platform::serve_nic when
-        // enable_registry_hmac=true) loops on `audit_sweeper_running` and
-        // sleeps via a condition_variable so destruction notifies it
-        // immediately rather than waiting for the next 1 Hz tick. join()
-        // blocks until the thread exits — at most one tick of latency
-        // since the cv_wait_for unblocks on either timeout or notify.
-        if (audit_sweeper_thread.joinable()) {
-            {
-                std::lock_guard<std::mutex> g{audit_sweeper_mu};
-                audit_sweeper_running.store(false, std::memory_order_release);
-            }
-            audit_sweeper_cv.notify_all();
-            audit_sweeper_thread.join();
-        }
-
         // ── S5: secondary-side queue release ────────────────────────────
         // If this Platform was an application-side secondary that
         // claimed queues from the daemon's QueueAllocator, fire-and-
@@ -1521,13 +1434,6 @@ struct Platform::Impl {
             auto* expected_dir = &*icmp_directory;
             ::eph::dpdk::detail::g_active_icmp_directory.compare_exchange_strong(
                 expected_dir, nullptr, std::memory_order_acq_rel);
-        }
-        // T2.3 N: clear MpRegistry global (set in serve_nic if HMAC
-        // enabled; nullptr otherwise — CAS is harmless either way).
-        if (mp_registry.has_value()) {
-            auto* expected_reg = &*mp_registry;
-            ::eph::dpdk::detail::g_active_mp_registry.compare_exchange_strong(
-                expected_reg, nullptr, std::memory_order_acq_rel);
         }
         if (auto* reg = icmp_registry_sp.get()) {
             auto* expected_reg = reg;
@@ -2729,64 +2635,12 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         }
     }
 
-    // ── T2.3: tenant-side HMAC key attach ──────────────────────────
-    //
-    // If the daemon enabled HMAC at serve_nic time, the registry
-    // header carries `hmac_enabled = 1` and the key file lives at
-    // `/run/eph/<sanitize_bdf(pci)>.key`. Tenants that successfully
-    // read the file get a verify-capable Platform; tenants that
-    // can't (wrong uid/gid, file missing) get a warning and a
-    // best-effort attach (verify calls become no-ops + ERROR log).
-    //
-    // We DO NOT call `enable_hmac_` on the registry handles — that
-    // would re-sign existing data, which only the daemon should do.
-    // Instead the key is stashed at the Platform Impl level and
-    // forwarded to `verify_slot` / `audit_*` calls explicitly.
-    if (impl->mp_registry.has_value() &&
-        impl->mp_registry->header() != nullptr &&
-        impl->mp_registry->header()->hmac_enabled == 1) {
-        // Derive key path from file_prefix. The daemon wrote the
-        // file at `/run/eph/<sanitize_bdf(pci)>.key`, which equals
-        // `/run/eph/<file_prefix without "eph_" prefix>.key` since
-        // file_prefix is constructed as `eph_<sanitize_bdf(pci)>`.
-        std::string_view fp{config.file_prefix};
-        if (fp.size() > 4 && fp.substr(0, 4) == "eph_") {
-            std::filesystem::path kp = std::filesystem::path("/run/eph") /
-                (std::string{fp.substr(4)} + ".key");
-            auto k = ::eph::dpdk::detail::read_registry_hmac_key(kp);
-            if (!k) {
-                SPDLOG_LOGGER_WARN(log,
-                    "secondary_bringup_: hmac_enabled=1 but key file "
-                    "'{}' unreadable: {} — verify calls will return "
-                    "false; check tenant uid/gid against file mode "
-                    "(default 0440 root:root)",
-                    kp.string(), k.error().detail);
-            } else {
-                impl->registry_hmac_key.emplace(
-                    std::span<const uint8_t>(k->data(), k->size()));
-                SPDLOG_LOGGER_INFO(log,
-                    "secondary_bringup_: registry HMAC key attached "
-                    "from '{}' — cold-path registry reads will "
-                    "verify all 3 cross-process layouts",
-                    kp.string());
-            }
-        } else {
-            SPDLOG_LOGGER_WARN(log,
-                "secondary_bringup_: file_prefix='{}' lacks expected "
-                "'eph_' prefix — cannot derive HMAC key path; "
-                "tampering will be undetected on this tenant",
-                fp);
-        }
-    }
-
     SPDLOG_LOGGER_INFO(log,
         "secondary_bringup_ ready (port={}, file_prefix='{}', "
-        "rx_queue_range=[{},{}), dispatch_mode={}, hmac={})",
+        "rx_queue_range=[{},{}), dispatch_mode={})",
         config.port_id, config.file_prefix,
         config.rx_queue_range.first, config.rx_queue_range.second,
-        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode),
-        impl->registry_hmac_key.has_value() ? "verify-capable"
-                                            : "unkeyed");
+        ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
 
     return Platform(std::move(impl));
 }
@@ -3238,216 +3092,6 @@ Platform::serve_nic(NicServiceConfig cfg) {
             bool(*plat.impl_->nicctl_query_action) ? "registered" : "DEGRADED");
     }
 
-    // ── 4. T2.3: optionally enable cross-process registry HMAC ──────
-    //
-    // When `cfg.enable_registry_hmac == true`, the daemon takes
-    // ownership of a 32-byte CSPRNG key written to
-    // `/run/eph/<sanitize_bdf(pci)>.key` (mode 0440 root:root) and
-    // hands it to all three cross-process registries. Tenants that
-    // attach later read the same file + verify on lookups (cold
-    // path) / sweep (1 Hz background) / audit-on-error (when a
-    // dispatch callback rejects).
-    //
-    // Failure mode: best-effort. If the key file write fails (e.g.
-    // /run/eph not writable), we log + continue with HMAC disabled
-    // — the daemon still serves, just without tamper protection.
-    // Callers that demand HMAC should check `is_alive()` + audit
-    // flags; a hard-fail mode can land in a future commit if
-    // operators want it.
-    // Q series — always register the nicctl audit IPC handler, even
-    // in unkeyed mode. The handler reads detail-level globals that
-    // stay at 0 / false when HMAC is disabled; eph-nicctl renders
-    // that as "unkeyed mode" gracefully. Keeping the handler gated
-    // behind enable_registry_hmac (the v1 behaviour) caused unkeyed
-    // daemons to time out CLI audit calls for 2 s and emit a
-    // misleading "rebuild eph-nicd" hint — verified live 2026-05-06.
-    if (plat.impl_) {
-        plat.impl_->nicctl_audit_action.emplace(
-            ::eph::dpdk::detail::kNicctlAuditActionName,
-            &::eph::dpdk::detail::on_nicctl_audit_thunk);
-        SPDLOG_LOGGER_INFO(log,
-            "Platform::serve_nic: registered nicctl_audit_action "
-            "(unconditional; replies with hmac_enabled=0 in unkeyed "
-            "mode so eph-nicctl can distinguish 'unkeyed' from "
-            "'daemon down'); registered={}",
-            bool(*plat.impl_->nicctl_audit_action)
-                ? "yes" : "DEGRADED");
-    }
-
-    if (plat.impl_ && cfg.enable_registry_hmac) {
-        auto key_path_r = ::eph::dpdk::detail::registry_hmac_key_path(cfg.pci);
-        if (!key_path_r) {
-            SPDLOG_LOGGER_WARN(log,
-                "Platform::serve_nic: registry_hmac_key_path failed: {} — "
-                "HMAC disabled, daemon serving in unkeyed mode",
-                key_path_r.error().detail);
-        } else {
-            auto key_r = ::eph::dpdk::detail::write_registry_hmac_key(
-                *key_path_r);
-            if (!key_r) {
-                SPDLOG_LOGGER_WARN(log,
-                    "Platform::serve_nic: write_registry_hmac_key('{}') "
-                    "failed: {} — HMAC disabled, daemon serving in "
-                    "unkeyed mode (check /run/eph permissions and that "
-                    "this process has root or CAP_DAC_OVERRIDE)",
-                    key_path_r->string(), key_r.error().detail);
-            } else {
-                // Hand the key to each registry. Construct
-                // HmacSha256Key once per registry so each owns its
-                // own normalised buffer (the key class zero-cleanses
-                // on destruction; sharing would couple lifetimes).
-                std::span<const uint8_t> key_bytes{
-                    key_r->data(), key_r->size()};
-                if (plat.impl_->mp_registry.has_value()) {
-                    plat.impl_->mp_registry->enable_hmac_(
-                        ::eph::net::HmacSha256Key{key_bytes});
-                }
-                if (plat.impl_->queue_allocator.has_value()) {
-                    plat.impl_->queue_allocator->enable_hmac_(
-                        ::eph::net::HmacSha256Key{key_bytes});
-                }
-                if (plat.impl_->icmp_directory.has_value()) {
-                    plat.impl_->icmp_directory->enable_hmac_(
-                        ::eph::net::HmacSha256Key{key_bytes});
-                }
-                // T2.3 N series: publish the MpRegistry pointer for
-                // the audit thunk's hmac_enabled detection. (The
-                // audit IPC action itself is registered unconditionally
-                // above the HMAC-enable branch — Q series.)
-                if (plat.impl_->mp_registry.has_value()) {
-                    ::eph::dpdk::detail::g_active_mp_registry.store(
-                        &*plat.impl_->mp_registry,
-                        std::memory_order_release);
-                }
-                SPDLOG_LOGGER_INFO(log,
-                    "Platform::serve_nic: registry HMAC enabled "
-                    "(key={}, MpRegistry+QueueAllocator+IcmpDirectory "
-                    "all signed); tenants must read this key file at "
-                    "Platform::create attach time and will verify each "
-                    "registry read against it",
-                    key_path_r->string());
-
-                // M series: spawn the 1 Hz audit-sweep scheduler
-                // thread. Loops on `audit_sweeper_running` and
-                // sleeps via cv with 1 s timeout — destruction
-                // notifies the cv to break out promptly.
-                // 1 Hz × 64-batch sweeps = 16 s full coverage of
-                // 1024-entry IcmpDirectory in worst case (paired
-                // with audit-on-error which closes the typical
-                // active-attack window in <1 ms).
-                plat.impl_->audit_sweeper_running.store(
-                    true, std::memory_order_release);
-                Impl* impl_raw = plat.impl_.get();
-                plat.impl_->audit_sweeper_thread = std::thread(
-                    [impl_raw]() noexcept {
-                        auto* tlog = detail::platform_logger();
-                        SPDLOG_LOGGER_INFO(tlog,
-                            "audit_sweeper: thread started "
-                            "(interval=1s, batch=64)");
-                        // Q series: announce thread liveness to
-                        // detail::g_audit_sweeper_alive so the IPC
-                        // audit handler can distinguish "0 cumulative
-                        // because sweeper never started" from "0
-                        // because everything is fine".
-                        ::eph::dpdk::detail::g_audit_sweeper_alive
-                            .store(true, std::memory_order_release);
-                        size_t total_mismatches = 0;
-                        // Heartbeat every 10 minutes so operators can
-                        // see "thread is alive AND finding 0
-                        // mismatches" without enabling DEBUG. Healthy
-                        // production runs have no per-mismatch WARN
-                        // lines; without this heartbeat journalctl is
-                        // silent and an operator can't distinguish
-                        // "audit ran clean" from "audit thread died".
-                        constexpr size_t kHeartbeatTicks = 600;  // 10 min @ 1 Hz
-                        size_t ticks_since_heartbeat = 0;
-                        while (impl_raw->audit_sweeper_running.load(
-                                   std::memory_order_acquire)) {
-                            std::unique_lock<std::mutex> lk{
-                                impl_raw->audit_sweeper_mu};
-                            // cv_wait_for releases the lock while
-                            // sleeping; predicate re-checked on
-                            // wake. Returns no_timeout if cv was
-                            // notified (during shutdown) — we exit
-                            // the loop on the next condition check.
-                            impl_raw->audit_sweeper_cv.wait_for(
-                                lk, std::chrono::seconds(1),
-                                [impl_raw]() {
-                                    return !impl_raw->audit_sweeper_running
-                                        .load(std::memory_order_acquire);
-                                });
-                            if (!impl_raw->audit_sweeper_running.load(
-                                    std::memory_order_acquire)) break;
-                            lk.unlock();
-                            // Tick the heartbeat counter on EVERY
-                            // wake (regardless of whether we can
-                            // sweep this iteration) so operators see
-                            // a 10-min "thread is alive" signal even
-                            // if icmp_directory transiently goes
-                            // missing — the heartbeat is "thread
-                            // running", not "sweep ran".
-                            const bool emit_heartbeat =
-                                ++ticks_since_heartbeat >= kHeartbeatTicks;
-                            if (emit_heartbeat) {
-                                ticks_since_heartbeat = 0;
-                            }
-                            if (!impl_raw->icmp_directory.has_value()) {
-                                if (emit_heartbeat) {
-                                    SPDLOG_LOGGER_INFO(tlog,
-                                        "audit_sweeper: heartbeat "
-                                        "(cumulative tamper count={}, "
-                                        "10min interval; directory "
-                                        "currently absent)",
-                                        total_mismatches);
-                                }
-                                continue;
-                            }
-                            const size_t mm = impl_raw->icmp_directory
-                                ->audit_sweep_one_round();
-                            // Q series: every actually-executed round
-                            // bumps the rounds counter, so an
-                            // operator can read "rounds_completed=N"
-                            // and infer the observation window.
-                            ::eph::dpdk::detail::g_audit_sweep_rounds_completed
-                                .fetch_add(1, std::memory_order_relaxed);
-                            if (mm > 0) {
-                                total_mismatches += mm;
-                                // Surface to Platform getter +
-                                // detail global so Prometheus /
-                                // nicctl / dashboards see the
-                                // cumulative count without grepping
-                                // journalctl.
-                                impl_raw->audit_sweep_tamper_total
-                                    .fetch_add(mm,
-                                        std::memory_order_relaxed);
-                                ::eph::dpdk::detail::g_audit_sweep_tamper_total
-                                    .fetch_add(mm,
-                                        std::memory_order_relaxed);
-                                SPDLOG_LOGGER_WARN(tlog,
-                                    "audit_sweeper: detected {} "
-                                    "tampered entries this round "
-                                    "(cumulative={})",
-                                    mm, total_mismatches);
-                            }
-                            if (emit_heartbeat) {
-                                SPDLOG_LOGGER_INFO(tlog,
-                                    "audit_sweeper: heartbeat "
-                                    "(cumulative tamper count={}, "
-                                    "10min interval)",
-                                    total_mismatches);
-                            }
-                        }
-                        ::eph::dpdk::detail::g_audit_sweeper_alive
-                            .store(false, std::memory_order_release);
-                        SPDLOG_LOGGER_INFO(tlog,
-                            "audit_sweeper: thread exiting "
-                            "(cumulative tamper count={})",
-                            total_mismatches);
-                    });
-            }
-        }
-    }
-
     // ── 5. Announce PCI for default-NIC resolution ──────────────────
     //
     // Apps that call Platform::create({.pci=""}) auto-resolve the
@@ -3468,9 +3112,8 @@ Platform::serve_nic(NicServiceConfig cfg) {
 
     SPDLOG_LOGGER_INFO(log,
         "Platform::serve_nic: ready (pci='{}', file_prefix='{}', "
-        "total_queues={}, hmac_enabled={})",
-        cfg.pci, derived_prefix, cfg.total_queues,
-        cfg.enable_registry_hmac);
+        "total_queues={})",
+        cfg.pci, derived_prefix, cfg.total_queues);
     return plat;
 }
 
@@ -3631,12 +3274,6 @@ inline bool Platform::is_alive() const noexcept {
 inline std::atomic<bool> const* Platform::alive_flag_addr_() const noexcept {
     if (!impl_) return nullptr;
     return &impl_->is_alive;
-}
-
-inline uint64_t Platform::audit_sweep_tamper_count() const noexcept {
-    if (!impl_) return 0;
-    return impl_->audit_sweep_tamper_total.load(
-        std::memory_order_relaxed);
 }
 
 inline void Platform::mark_daemon_disconnected_() noexcept {

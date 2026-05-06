@@ -118,12 +118,15 @@ TEST(MpRegistry, CreatePrimary_WritesHeader) {
     EXPECT_EQ(hdr->procs[1].claimed.load(std::memory_order_acquire), 0);
 }
 
-TEST(MpRegistrySchema, V4VersionConstantBumped) {
-    // T2.3 wiring (2026-05-05): schema 3 -> 4 to add `header.hmac_enabled`
-    // flag + per-slot 32-byte `hmac_tag` field. Hard-pin the version
-    // constant so a future accidental revert triggers a loud unit-test
-    // failure instead of a silent cross-process corruption window.
-    EXPECT_EQ(kMpRegistryVersion, 4u);
+TEST(MpRegistrySchema, V5VersionConstantBumped) {
+    // T2.3 reverted (2026-05-06): schema 4 -> 5 removes
+    // `header.hmac_enabled` flag + per-slot 32-byte `hmac_tag` field.
+    // Hard-pin the version constant so a future accidental change
+    // triggers a loud unit-test failure instead of a silent cross-
+    // process corruption window. Bumping forward (rather than back to
+    // v3) ensures any in-memory v4 hugepages are hard-rejected at
+    // attach time.
+    EXPECT_EQ(kMpRegistryVersion, 5u);
 }
 
 TEST(MpRegistrySchema, V2RegistryRejectedByV3SecondaryAttach) {

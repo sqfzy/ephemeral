@@ -192,7 +192,7 @@ The user-facing names deliberately mirror Tokio / mio:
 or "variants" — the threading model collapsed to "whatever thread owns the
 Poller runs the callbacks in that thread."
 
-## Multi-tenant trust boundary (T2.3, 2026-05-05)
+## Threat model: tenants are trusted
 
 The DPDK backend's daemon-led multi-process model puts three POD layouts
 in shared hugepage memory that every attached secondary can `mmap-write`:
@@ -203,53 +203,29 @@ in shared hugepage memory that every attached secondary can `mmap-write`:
 | `QueueAllocator::Header` | bitmap + per-queue claim_gen + monotonic generation | single |
 | `IcmpDirectory` | per-stream (5-tuple → owner_proc_idx, generation) | 1024 entries |
 
-Without integrity protection a compromised secondary (or a wild-pointer
-write into the shared segment) can tamper with another secondary's slot
-to steal its src_port range, redirect ICMP feedback to itself, etc. T2.3
-(commits b775310b..d44d7b22) closes this gap with HMAC-SHA256 entry tags
-under a daemon-managed key:
+The project's threat model is **"tenants are trusted; defend against
+accidents"** — wild-pointer writes, ABA on PID reuse, half-init slot
+reads. Defences against accidents are layered into each layout:
 
-```
-operator        :  /etc/eph/<bdf>.toml: enable_registry_hmac = true
-                          ↓
-daemon          :  Platform::serve_nic
-                     → write 32-byte CSPRNG key to /run/eph/<bdf>.key (mode 0440)
-                     → sign every populated slot in all 3 registries
-                     → spawn 1 Hz audit-sweep thread (verify-on-suspicion)
-                          ↓
-tenant          :  Platform::create
-                     → reads key (mode 0440 → operator's group ACL)
-                     → stashes for cold-path registry-read verify
-                          ↓
-operator audit  :  eph-nicctl audit --pci=<bdf>
-                     → reads daemon's cumulative tamper counter
-                       (no fresh sweep — sweeper runs at 1 Hz already)
-                     → prints sweeper_alive / observation_window /
-                       cumulative_tamper
-                     → exit 0 healthy | 2 tampered | 1 sweeper down
-```
+- `magic` + `version` headers — wild writes that clip a header are
+  caught at attach time.
+- `claim_gen[]` per-queue + monotonic `generation` — distinguishes
+  ABA (stale release after re-claim) from a legitimate release.
+- atomic `claimed` state machine + 2-step publish in `IcmpDirectory` —
+  half-init slots are never visible as "Published".
+- bounds-checked indices and small registry sizes (1024 entries cap).
 
-**Hot path is untouched.** `IcmpDirectory::lookup()` (called per ICMP
-arrival on the RX path) does NOT verify — it would add ~150-300 ns
-above the 50-200 ns hot budget. Verification is triggered only on
-**audit-on-error** (callback rejects an entry → audit_entry surfaces
-tamper vs ABA) and **periodic sweep** (1 Hz × 64 batch → full 1024-entry
-directory in 16 s worst-case missed-detection window).
-
-For cold-path registries (`MpRegistry`, `QueueAllocator`) verify is
-done on every read (~252-1554 ns/op, depending on payload size; see
-`benchmarks/bench_registry_hmac.cpp` for measured numbers).
-
-| Registry | Auth payload | Sign/verify ns/op (aarch64 Graviton) |
-|---|---:|---:|
-| MpRegistry | 56 B | ~252 |
-| IcmpDirectory | 16 B | ~216 |
-| QueueAllocator | 2088 B | ~1554 |
-
-Single-tenant deployments leave `enable_registry_hmac = false` (default)
-and pay zero cost. The wire format flag (`hmac_enabled`) gates verify
-calls on the read path so the only overhead in unkeyed mode is the
-1-byte field load.
+A T2.3 trust-boundary HMAC layer was added in 2026-05-05 (commits
+b775310b..d44d7b22) and reverted on 2026-05-06 (see
+`eph-net-dpdk/CHANGELOG.md`). It would only have caught wild-pointer
+writes that the magic/version primitives miss; that case is rare,
+already covered by ASan / hardened malloc in dev, and the toml plumbing
+to actually enable HMAC was never wired through to `eph-nicd`. Net cost
+~1000 LOC across 11 files for zero production-path coverage. If the
+threat model ever shifts to "defend against malicious tenants" the
+trust-boundary work can be reintroduced cleanly — the registry
+layouts already reserve forward-compatible version numbers (v5
+MpRegistry, v3 QueueAllocator, v3 IcmpDirectory).
 
 ## Where to go next
 
@@ -258,5 +234,4 @@ calls on the read path so the only overhead in unkeyed mode is the
 - **Setting up DPDK for the first time?** → `docs/dpdk-setup.md`
 - **Running the latency benchmarks?** → `docs/latency-benchmark-fairness.md`
 - **Deploying to prod?** → `docs/production-config.md`, `docs/operations-runbook.md`
-- **Multi-tenant HMAC trust boundary?** → see the T2.3 section above + `eph-net-dpdk/CHANGELOG.md` entries dated 2026-05-05
 - **Need the full history?** → `.artifacts/design-eph-v3.3-architecture-20260410.md`

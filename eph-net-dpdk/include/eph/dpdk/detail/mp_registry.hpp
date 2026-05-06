@@ -58,12 +58,8 @@
 #include <rte_memzone.h>
 
 #include "eph/core/error.hpp"
-#include "eph/dpdk/detail/registry_hmac_key.hpp"  // T2.3: kRegistryHmacKeyBytes
 #include "eph/dpdk/mp_topology.hpp"
-#include "eph/net/hmac.hpp"                     // T2.3: HmacSha256Key + sign
 #include "eph/utils/scope_guard.hpp"
-
-#include <openssl/mem.h>  // CRYPTO_memcmp for constant-time tag verify
 
 namespace eph::dpdk::detail {
 
@@ -117,16 +113,19 @@ inline constexpr uint32_t kMpRegistryMagic =
 ///       loudly, not silently misbehave. Recovery: stop all
 ///       secondaries → upgrade primary (it recreates the registry)
 ///       → upgrade secondaries.
-///   v4: + `header.hmac_enabled` flag (1 byte) + 7 bytes padding +
-///       per-slot 32-byte `tag` field (HMAC-SHA256 over the slot's
-///       authenticated data). T2.3 wiring (2026-05-05). When
-///       `hmac_enabled=0` the tag bytes are zero-initialized and
-///       readers skip verification — single-tenant deployments see
-///       no behavioural change. When `hmac_enabled=1` the daemon
-///       signs every slot write with the key from
-///       `/run/eph/<sanitize_bdf(pci)>.key` and tenants verify on
-///       read; tampered slots surface as `Error::InvalidConfig`.
-inline constexpr uint32_t kMpRegistryVersion = 4;
+///   v4: T2.3 trust-boundary HMAC tags (added 2026-05-05).
+///   v5: T2.3 reverted (2026-05-06). Per the project's "tenants
+///       trusted, defend against accidents" threat model, the wild-
+///       pointer / ABA / use-after-free coverage is already provided
+///       by the magic+version+claim_gen primitives below; HMAC tags
+///       added implementation complexity without exercising in
+///       production (no operator path actually flipped the flag).
+///       Layout reverts to v3-equivalent: per-slot `hmac_tag[32]`
+///       and `header.hmac_enabled` flag removed. Bumping to v5
+///       (rather than back to v3) so any in-memory v4 hugepages
+///       are hard-rejected at attach time — recovery: stop all
+///       peers, daemon recreates the registry on next start.
+inline constexpr uint32_t kMpRegistryVersion = 5;
 
 inline constexpr size_t kMpRegistryTagCap = 32;
 
@@ -176,16 +175,6 @@ struct ProcSlot {
     /// then CAS-preempted with WARN log. Stored as int32_t for ABI
     /// stability (pid_t is typically int but ABI-portable size).
     int32_t pid;
-
-    /// HMAC-SHA256 tag over the *authenticated* slot data. v4 schema.
-    /// Authenticated bytes: `tag[]`, `queue_lo`, `queue_hi`, `port_lo`,
-    /// `port_hi`, `lcore_mask`, `pid` (everything *except* `claimed`,
-    /// which is the cross-process atomic claim flag, and the tag itself).
-    /// Zero-initialized when `header.hmac_enabled == 0` — readers
-    /// skip verification in that case.
-    /// Signed by primary at slot-write time; verified by secondaries on
-    /// every read of a claimed slot. T2.3 wiring (2026-05-05).
-    uint8_t hmac_tag[32];
 };
 
 struct alignas(64) MpRegistryHeader {
@@ -195,13 +184,6 @@ struct alignas(64) MpRegistryHeader {
     /// Caps at `MpTopology::kMaxProcs`. Secondaries verify their own
     /// `topo.procs.size() == header.total_procs`.
     uint32_t total_procs;
-    /// 1 = HMAC-SHA256 entry tags are present and must be verified by
-    /// secondaries on every slot read; 0 = single-tenant mode, slot
-    /// `hmac_tag[]` bytes are zero and readers skip verification.
-    /// v4 schema (T2.3 wiring). Single byte + 3 bytes pad to keep
-    /// `_pad0` at a 4-byte boundary unchanged from v3.
-    uint8_t  hmac_enabled;
-    uint8_t  _pad_hmac[3];
     /// Padding so `file_prefix` starts on an 8-byte boundary.
     uint32_t _pad0;
     /// Null-terminated copy of `PlatformConfig::file_prefix`. Carried
@@ -283,91 +265,6 @@ build_mp_registry_name(std::string_view file_prefix) noexcept {
     return buf;
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// T2.3 HMAC sign / verify helpers
-// ─────────────────────────────────────────────────────────────────────
-//
-// Authenticate every byte of a `ProcSlot` *except* `claimed` (cross-
-// process atomic claim flag — must remain mutable independently of
-// the rest) and `hmac_tag` (the tag itself). The unauthenticated
-// fields are the ones that change after a slot has been signed; if
-// we authenticated `claimed` the verifier would always fail after a
-// claim/release cycle.
-
-inline constexpr size_t kSlotAuthBytes =
-    sizeof(ProcSlot::tag)        +    // 32
-    sizeof(uint16_t)             +    // queue_lo
-    sizeof(uint16_t)             +    // queue_hi
-    sizeof(uint32_t)             +    // port_lo
-    sizeof(uint32_t)             +    // port_hi
-    sizeof(uint64_t)             +    // lcore_mask
-    sizeof(int32_t);                  // pid
-// = 32 + 2 + 2 + 4 + 4 + 8 + 4 = 56 bytes
-
-/// @brief Pack the authenticated bytes of `slot` into `out`. Output is
-/// little-endian byte order on every host (we emit byte-by-byte from
-/// the source uint*_t fields explicitly), so a HMAC tag computed on
-/// host A is verifiable on host B regardless of native endian — though
-/// in practice every secondary attached to the same primary is on the
-/// same machine.
-inline void
-pack_slot_for_hmac(const ProcSlot& slot,
-                   std::array<uint8_t, kSlotAuthBytes>& out) noexcept {
-    size_t off = 0;
-    std::memcpy(out.data() + off, slot.tag, sizeof(slot.tag));
-    off += sizeof(slot.tag);
-    auto put_u16 = [&](uint16_t v) {
-        out[off++] = static_cast<uint8_t>(v & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-    };
-    auto put_u32 = [&](uint32_t v) {
-        out[off++] = static_cast<uint8_t>(v & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 8) & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 16) & 0xFFu);
-        out[off++] = static_cast<uint8_t>((v >> 24) & 0xFFu);
-    };
-    auto put_u64 = [&](uint64_t v) {
-        for (int i = 0; i < 8; ++i)
-            out[off++] = static_cast<uint8_t>((v >> (8 * i)) & 0xFFu);
-    };
-    put_u16(slot.queue_lo);
-    put_u16(slot.queue_hi);
-    put_u32(slot.port_lo);
-    put_u32(slot.port_hi);
-    put_u64(slot.lcore_mask);
-    put_u32(static_cast<uint32_t>(slot.pid));
-}
-
-/// @brief Sign `slot` in place: compute HMAC-SHA256 over its
-/// authenticated bytes under `key` and store the 32-byte result into
-/// `slot.hmac_tag`. Called by the daemon (primary) at slot-write time.
-inline void
-sign_slot_in_place(ProcSlot& slot,
-                   const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kSlotAuthBytes> packed{};
-    pack_slot_for_hmac(slot, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    static_assert(sizeof(slot.hmac_tag) == sig.bytes.size(),
-                  "ProcSlot::hmac_tag size mismatch with HmacSha256Tag");
-    std::memcpy(slot.hmac_tag, sig.bytes.data(), sig.bytes.size());
-}
-
-/// @brief Verify `slot.hmac_tag` against `key` in constant time.
-/// Returns true on match. Caller (the secondary) discards the slot
-/// data on mismatch and surfaces `Error::InvalidConfig` to the
-/// application.
-[[nodiscard]] inline bool
-verify_slot(const ProcSlot& slot,
-            const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kSlotAuthBytes> packed{};
-    pack_slot_for_hmac(slot, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    return CRYPTO_memcmp(slot.hmac_tag, sig.bytes.data(),
-                         sig.bytes.size()) == 0;
-}
-
 /// @brief Initialize a fresh registry header in `dst` from `topo` +
 /// `file_prefix`. Caller has already established `dst` points at a
 /// freshly reserved memzone of >= sizeof(MpRegistryHeader) bytes.
@@ -389,11 +286,6 @@ init_mp_registry_header(MpRegistryHeader* dst,
     dst->magic        = kMpRegistryMagic;
     dst->version      = kMpRegistryVersion;
     dst->total_procs  = topo.total_procs;
-    // T2.3 wiring: the unkeyed overload zeroes hmac_enabled +
-    // hmac_tag bytes — single-tenant deployments see no behavioural
-    // change. The keyed overload below sets hmac_enabled=1 and signs.
-    dst->hmac_enabled = 0;
-    std::memset(dst->_pad_hmac, 0, sizeof(dst->_pad_hmac));
     dst->_pad0        = 0;
     std::memset(dst->file_prefix, 0, kMpRegistryFilePrefixMax);
     std::memcpy(dst->file_prefix, file_prefix.data(),
@@ -409,7 +301,6 @@ init_mp_registry_header(MpRegistryHeader* dst,
         s.port_hi    = 0;
         s.lcore_mask = 0;
         s.pid        = 0;
-        std::memset(s.hmac_tag, 0, sizeof(s.hmac_tag));
     }
 
     for (uint8_t i = 0; i < topo.total_procs; ++i) {
@@ -422,26 +313,6 @@ init_mp_registry_header(MpRegistryHeader* dst,
         s.port_lo    = src.port_lo;
         s.port_hi    = src.port_hi;
         s.lcore_mask = src.lcore_mask;
-    }
-}
-
-/// @brief T2.3 keyed overload — same as `init_mp_registry_header` but
-/// also flips `header.hmac_enabled = 1` and signs every populated
-/// `topo.procs[i]` slot with `key`. Free / unpopulated slots stay
-/// zeroed (a slot's tag is only valid once it has been claimed; the
-/// secondary attach path checks `hmac_enabled && claimed` before
-/// verifying).
-inline void
-init_mp_registry_header_with_hmac(MpRegistryHeader* dst,
-                                  std::string_view file_prefix,
-                                  MpTopology const& topo,
-                                  const ::eph::net::HmacSha256Key& key) noexcept {
-    init_mp_registry_header(dst, file_prefix, topo);
-    dst->hmac_enabled = 1;
-    // Sign the populated slots. Free slots remain zero-tagged; their
-    // `claimed == 0` already gates verifier from running on them.
-    for (uint8_t i = 0; i < topo.total_procs; ++i) {
-        sign_slot_in_place(dst->procs[i], key);
     }
 }
 
@@ -487,74 +358,6 @@ public:
 
     [[nodiscard]] explicit operator bool() const noexcept {
         return hdr_ != nullptr;
-    }
-
-    /// @brief T2.3 wiring (cold path). Flip the registry to keyed
-    /// mode and stash the key for future sign/verify. Daemon
-    /// (`Platform::serve_nic`) calls this immediately after
-    /// `create_primary` returns when `enable_registry_hmac=true`,
-    /// supplying the same key written to `/run/eph/<bdf>.key`.
-    ///
-    /// Sets `header.hmac_enabled = 1` and signs every populated
-    /// slot so the initial state is verifiable.
-    /// Idempotent. Trailing underscore reflects "internal-eph-glue"
-    /// status — applications never call this; serve_nic does.
-    void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) {
-            SPDLOG_DEBUG(
-                "MpRegistry::enable_hmac_: handle is moved-from "
-                "(noop)");
-            return;
-        }
-        const bool was_enabled = (hdr_->hmac_enabled == 1);
-        hmac_key_.emplace(std::move(key));
-        hdr_->hmac_enabled = 1;
-        for (uint8_t i = 0; i < hdr_->total_procs; ++i) {
-            sign_slot_in_place(hdr_->procs[i], *hmac_key_);
-        }
-        SPDLOG_INFO(
-            "MpRegistry::enable_hmac_: HMAC tamper protection {} "
-            "(signed {} populated slot(s); was_enabled={})",
-            was_enabled ? "rekeyed" : "enabled",
-            hdr_->total_procs, was_enabled);
-    }
-
-    /// @brief T2.3 audit-on-suspicion. Verify every populated slot
-    /// against the stashed key. Returns the number of mismatches
-    /// (0 in the healthy case). Each mismatch logged at WARN.
-    /// Returns 0 when hmac_enabled==0 (unkeyed mode → no-op).
-    /// Cold-path; called from a daemon control thread on operator
-    /// `eph-nicctl audit` requests, NOT from any hot dispatch path.
-    ///
-    /// **Race window (acceptable)**: a slot transitioning 1→0→1
-    /// (release + reclaim by a different peer) during this scan can
-    /// produce a false-positive mismatch — the reader sees `claimed=1`
-    /// and pulls torn fields across two incarnations. ProcSlot has no
-    /// generation counter to seqlock-witness the transition (cf.
-    /// IcmpDirectoryEntry which has one), and adding one would be a
-    /// v4→v5 wire-format break. The race is mitigated by frequency:
-    /// MpRegistry slot churn is ~once per process lifetime (claim on
-    /// startup, release on shutdown), vs IcmpDirectory's per-stream
-    /// register/unregister churn (potentially 100s/sec). False-positive
-    /// rate is therefore acceptably rare; operators should re-run the
-    /// audit before escalating a single mismatch.
-    [[nodiscard]] size_t audit_all() const noexcept {
-        if (hdr_ == nullptr || !hdr_->hmac_enabled ||
-            !hmac_key_.has_value()) return 0;
-        size_t mismatches = 0;
-        for (uint8_t i = 0; i < hdr_->total_procs; ++i) {
-            const auto& s = hdr_->procs[i];
-            if (s.claimed.load(std::memory_order_acquire) == 0) continue;
-            if (!verify_slot(s, *hmac_key_)) {
-                ++mismatches;
-                SPDLOG_WARN(
-                    "MpRegistry: tamper detected at slot {} "
-                    "(audit) — pid={}, queue=[{},{}), port=[{},{})",
-                    i, s.pid, s.queue_lo, s.queue_hi,
-                    s.port_lo, s.port_hi);
-            }
-        }
-        return mismatches;
     }
 
     [[nodiscard]] MpRegistryHeader const* header() const noexcept {
@@ -1371,19 +1174,6 @@ private:
     const struct rte_memzone* mz_          = nullptr;
     bool                     owns_memzone_ = false;
     uint8_t                  self_index_   = kMpRegistrySelfIndexUnset;
-    /// T2.3 wiring: when populated, sign all slot writes + verify
-    /// on audit. Daemon (Platform::serve_nic) installs via
-    /// `enable_hmac_()`. Wrapped in optional so unkeyed default
-    /// (single tenant) pays zero key construction cost.
-    std::optional<::eph::net::HmacSha256Key> hmac_key_{};
 };
-
-/// @brief T2.3 N series — process-level pointer to the daemon's
-/// MpRegistry handle. Set by `Platform::serve_nic` (primary side)
-/// alongside `g_active_queue_allocator` / `g_active_icmp_directory`;
-/// nullptr on tenants and on hosts running unkeyed mode. The
-/// `on_nicctl_audit_thunk` loads via this global to call
-/// `audit_all()` for the audit reply's mp_registry counters.
-inline std::atomic<MpRegistryHandle*> g_active_mp_registry{nullptr};
 
 } // namespace eph::dpdk::detail

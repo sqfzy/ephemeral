@@ -58,10 +58,7 @@
 #include <rte_errno.h>
 #include <rte_memzone.h>
 
-#include <openssl/mem.h>  // T2.3: CRYPTO_memcmp for constant-time tag verify
-
 #include "eph/core/error.hpp"
-#include "eph/net/hmac.hpp"  // T2.3: HmacSha256Key + sign helpers
 
 namespace eph::dpdk::detail {
 
@@ -113,11 +110,15 @@ namespace queue_allocator_impl {
 ///   * `live_releases_drop` — dropped-stale counter (diagnostic).
 struct alignas(64) Header {
     static constexpr uint32_t kMagic   = 0x51414c43;  // 'QALC'
-    /// v2 (T2.3 wiring, 2026-05-05): added `hmac_enabled` flag +
-    /// 32-byte `hmac_tag` at end. Single-tenant deployments
-    /// (`hmac_enabled == 0`) see byte-for-byte v1 layout for the
-    /// authenticated fields below.
-    static constexpr uint16_t kVersion = 2;
+    /// History:
+    ///   v1: original layout (magic / mutex / bitmap / claim_gen / gen).
+    ///   v2: T2.3 trust-boundary HMAC tag (added 2026-05-05).
+    ///   v3: T2.3 reverted (2026-05-06) — HMAC tag + hmac_enabled flag
+    ///       removed. Layout reverts to v1-equivalent for the
+    ///       authenticated fields. Bumping to v3 (rather than back to
+    ///       v1) so any in-memory v2 hugepages are hard-rejected at
+    ///       attach time — recovery: stop all peers, daemon recreates.
+    static constexpr uint16_t kVersion = 3;
 
     uint32_t magic;
     uint16_t version;
@@ -141,19 +142,6 @@ struct alignas(64) Header {
     /// Diagnostic — count of release() calls that bounced on stale
     /// generation (a benign race signal, not an error).
     std::atomic<uint64_t> stale_releases;
-
-    /// T2.3 wiring (2026-05-05). 1 = HMAC-SHA256 tag (`hmac_tag` below)
-    /// is computed by primary on every successful claim/release and
-    /// verified by callers on every read; 0 = unkeyed mode (single-
-    /// tenant), `hmac_tag` bytes are zero and verifiers skip.
-    uint8_t  hmac_enabled;
-    uint8_t  _pad_hmac[7];  // align hmac_tag to 8B for fast memcmp
-    /// HMAC-SHA256 over the *authenticated* header payload:
-    /// `bitmap[]` + `claim_gen[]` + `generation` (relaxed-load).
-    /// `mutex`, `stale_releases`, `magic`, `version`, `total_queues`,
-    /// `hmac_enabled`, `hmac_tag` itself are NOT in the payload —
-    /// see `pack_header_for_hmac` for the exact byte order.
-    uint8_t  hmac_tag[32];
 };
 
 // NOTE: not asserting `is_standard_layout_v<Header>` because
@@ -206,11 +194,6 @@ init_header(Header* hdr, uint16_t total_queues) noexcept {
     for (auto& g : hdr->claim_gen) g = 0;
     hdr->generation.store(0, std::memory_order_relaxed);
     hdr->stale_releases.store(0, std::memory_order_relaxed);
-    // T2.3: default unkeyed mode. The keyed-init helper below flips
-    // hmac_enabled=1 and signs an empty header (zero bitmap/gen).
-    hdr->hmac_enabled = 0;
-    std::memset(hdr->_pad_hmac, 0, sizeof(hdr->_pad_hmac));
-    std::memset(hdr->hmac_tag, 0, sizeof(hdr->hmac_tag));
 
     pthread_mutexattr_t attr;
     if (pthread_mutexattr_init(&attr) != 0) {
@@ -266,87 +249,6 @@ inline void clear_bit(Header& hdr, uint16_t i) noexcept {
     hdr.bitmap[i / 64] &= ~(1ULL << (i % 64));
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// T2.3 HMAC helpers (cold path — claim/release frequency)
-// ─────────────────────────────────────────────────────────────────────
-//
-// Authenticated payload (explicit little-endian byte order so a tag
-// computed by the daemon is verifiable by any tenant on the same host
-// regardless of native endian — though in practice both are on the
-// same machine):
-//
-//   bitmap[0..3]                         32 bytes (4 × uint64_t)
-//   claim_gen[0..255]                  2048 bytes (256 × uint64_t)
-//   generation (relaxed-loaded)           8 bytes
-//                                       ─────
-//                                       2088 bytes
-//
-// Excluded from the payload:
-//   - magic / version / total_queues — fixed at primary init; signing
-//     them would be redundant with the kMagic check and would force
-//     a re-sign on every claim that doesn't actually need one.
-//   - mutex — kernel-managed POSIX object, contains spurious-looking
-//     state (e.g. owner thread id) that mutates without representing
-//     allocator state.
-//   - stale_releases — diagnostic counter; benign races mutate it,
-//     not a correctness invariant.
-//   - hmac_enabled / _pad_hmac / hmac_tag — flag + tag self.
-//
-// Cost: HMAC-SHA256 over 2088 bytes ≈ 300-500 ns on aarch64
-// Graviton4. Cold path (claim/release happens at attach + teardown),
-// so this is several orders of magnitude away from the ns-level hot
-// budget.
-
-inline constexpr size_t kHeaderAuthBytes =
-    sizeof(uint64_t) * (kMaxAllocatorQueues / 64) +    // bitmap = 32
-    sizeof(uint64_t) * kMaxAllocatorQueues +           // claim_gen = 2048
-    sizeof(uint64_t);                                  // generation = 8
-// = 2088
-
-/// @brief Pack the authenticated bytes of `hdr` into `out` in explicit
-/// little-endian order. The output buffer is on the caller's stack —
-/// avoids heap allocation in the hot-mutex region.
-inline void
-pack_header_for_hmac(const Header& hdr,
-                     std::array<uint8_t, kHeaderAuthBytes>& out) noexcept {
-    size_t off = 0;
-    auto put_u64 = [&](uint64_t v) {
-        for (int i = 0; i < 8; ++i)
-            out[off++] = static_cast<uint8_t>((v >> (8 * i)) & 0xFFu);
-    };
-    for (uint64_t w : hdr.bitmap)    put_u64(w);
-    for (uint64_t g : hdr.claim_gen) put_u64(g);
-    put_u64(hdr.generation.load(std::memory_order_relaxed));
-}
-
-/// @brief Sign `hdr` in place: compute HMAC-SHA256 over the
-/// authenticated payload under `key` and store the 32-byte result
-/// into `hdr.hmac_tag`. Caller (the primary, with the allocator
-/// mutex held) is responsible for serialization.
-inline void
-sign_header_in_place(Header& hdr,
-                     const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kHeaderAuthBytes> packed{};
-    pack_header_for_hmac(hdr, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    static_assert(sizeof(hdr.hmac_tag) == sig.bytes.size(),
-                  "Header::hmac_tag size mismatch with HmacSha256Tag");
-    std::memcpy(hdr.hmac_tag, sig.bytes.data(), sig.bytes.size());
-}
-
-/// @brief Verify `hdr.hmac_tag` against `key` in constant time.
-[[nodiscard]] inline bool
-verify_header(const Header& hdr,
-              const ::eph::net::HmacSha256Key& key) noexcept {
-    std::array<uint8_t, kHeaderAuthBytes> packed{};
-    pack_header_for_hmac(hdr, packed);
-    const auto sig = ::eph::net::hmac_sha256_sign(
-        key, std::span<const uint8_t>{packed.data(), packed.size()});
-    return CRYPTO_memcmp(hdr.hmac_tag, sig.bytes.data(),
-                         sig.bytes.size()) == 0;
-}
-
 } // namespace queue_allocator_impl
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -391,40 +293,6 @@ public:
     /// `if (alloc) { ... }` after factory return.
     [[nodiscard]] explicit operator bool() const noexcept {
         return hdr_ != nullptr;
-    }
-
-    /// @brief T2.3 wiring: enable HMAC-SHA256 entry signatures. Daemon
-    /// calls this immediately after `create_primary` returns,
-    /// supplying the same key it has written to
-    /// `/run/eph/<bdf>.key` (or the test path). Sets
-    /// `header.hmac_enabled = 1` and signs the empty header so the
-    /// initial state is verifiable. Subsequent claim/release calls
-    /// re-sign automatically.
-    ///
-    /// Idempotent: calling twice with the same key is a no-op (the
-    /// second sign overwrites the same tag bytes); calling with a
-    /// different key re-signs under the new key.
-    ///
-    /// Trailing underscore reflects "internal-eph-glue" status —
-    /// applications never call this; `Platform::serve_nic` does
-    /// when `NicServiceConfig::enable_registry_hmac == true`.
-    void enable_hmac_(::eph::net::HmacSha256Key key) noexcept {
-        if (hdr_ == nullptr) {
-            SPDLOG_DEBUG(
-                "QueueAllocator::enable_hmac_: handle is moved-from "
-                "(noop)");
-            return;
-        }
-        hmac_key_.emplace(std::move(key));
-        pthread_mutex_lock(&hdr_->mutex);
-        const bool was_enabled = (hdr_->hmac_enabled == 1);
-        hdr_->hmac_enabled = 1;
-        queue_allocator_impl::sign_header_in_place(*hdr_, *hmac_key_);
-        pthread_mutex_unlock(&hdr_->mutex);
-        SPDLOG_INFO(
-            "QueueAllocator::enable_hmac_: HMAC tamper protection {} "
-            "(header re-signed; was_enabled={})",
-            was_enabled ? "rekeyed" : "enabled", was_enabled);
     }
 
     /// @brief Initialize on the primary side: configure pool of
@@ -598,13 +466,6 @@ public:
                     // mismatch.
                     hdr_->claim_gen[j] = gen;
                 }
-                // T2.3: re-sign the header now that bitmap +
-                // claim_gen + generation have advanced. Held under
-                // the same mutex that serializes claim() — no race.
-                if (hdr_->hmac_enabled && hmac_key_.has_value()) {
-                    queue_allocator_impl::sign_header_in_place(
-                        *hdr_, *hmac_key_);
-                }
                 // Snapshot the diagnostic count BEFORE unlock — the
                 // `_unlocked_` helpers' contract requires the mutex
                 // held, and a post-unlock call would race concurrent
@@ -709,11 +570,6 @@ public:
             // future re-claim overwrites it. Zeroing it would make a
             // legitimate "claim, release, claim-again" indistinguishable
             // from a stale release for the second claim.
-        }
-        // T2.3: re-sign after the bitmap mutation. Same mutex
-        // serialization as claim().
-        if (hdr_->hmac_enabled && hmac_key_.has_value()) {
-            queue_allocator_impl::sign_header_in_place(*hdr_, *hmac_key_);
         }
         // Snapshot diagnostic counts BEFORE unlock — see claim() for
         // the rationale. total_queues itself is set-once at primary
@@ -826,14 +682,6 @@ private:
     queue_allocator_impl::Header* hdr_           = nullptr;
     const struct rte_memzone*     mz_            = nullptr;
     bool                          owns_memzone_  = false;
-    /// T2.3 wiring: when populated, claim() and release() re-sign the
-    /// header after every successful mutation. The allocator only
-    /// holds the key in memory for the daemon process; tenants attach
-    /// read-only and verify against their own copy of the key (read
-    /// from `/run/eph/<bdf>.key` per the registry_hmac_key.hpp
-    /// convention). Wrapped in optional so the unkeyed default (single
-    /// tenant) doesn't pay the HmacSha256Key construction cost.
-    std::optional<::eph::net::HmacSha256Key> hmac_key_{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -854,14 +702,6 @@ inline constexpr std::string_view kQueueReleaseActionName = "eph_queue_release";
 /// plus a small handful of daemon-wide diagnostics. Read-only —
 /// nicctl never mutates daemon state.
 inline constexpr std::string_view kNicctlQueryActionName  = "eph_nicctl_query";
-
-/// @brief T2.3 N series ops-tool audit handler. nicctl secondaries
-/// send `NicctlAuditRequest` and receive `NicctlAuditReply` carrying
-/// per-registry mismatch counts. Read-only — invokes the same
-/// `audit_*` paths a daemon-side watchdog would call. Returns
-/// zeros when HMAC is disabled (caller surfaces "unkeyed mode" in
-/// CLI output).
-inline constexpr std::string_view kNicctlAuditActionName  = "eph_nicctl_audit";
 
 /// @brief Wire format for `eph_queue_claim` request — secondary →
 /// daemon. `requester_pid` is diagnostic only (logged on grant /
@@ -945,56 +785,6 @@ struct alignas(8) NicctlQueryReply {
 };
 static_assert(std::is_trivially_copyable_v<NicctlQueryReply>);
 
-/// @brief Wire format for `eph_nicctl_audit` request — nicctl → daemon.
-/// T2.3 N series. Read-only audit query.
-///
-/// Q series (2026-05-06): bumped to wire version 2. The v1 reply
-/// triggered a fresh full-coverage audit on the daemon side on every
-/// CLI invocation; that duplicated the work of the always-running
-/// 1 Hz `audit_sweeper` thread under the project's "防意外 / tenants
-/// trusted" threat model. v2 returns a snapshot of the sweeper's
-/// cumulative counters instead, with no fresh-sweep cost on the
-/// daemon. v1 daemons reject v2 requests at the parse boundary
-/// (size check) and v2 daemons reject v1 requests at the version
-/// check — operators must rebuild eph-nicctl + eph-nicd together.
-struct alignas(8) NicctlAuditRequest {
-    uint8_t  version;          ///< wire version, must be 2
-    uint8_t  reserved0;
-    uint16_t reserved1;
-    int32_t  requester_pid;    ///< diagnostic only
-};
-static_assert(std::is_trivially_copyable_v<NicctlAuditRequest>);
-static_assert(sizeof(NicctlAuditRequest) == 8);
-
-/// @brief Wire format for `eph_nicctl_audit` reply — daemon → nicctl.
-/// Q series shape: cumulative counters from the daemon's 1 Hz
-/// `audit_sweeper` thread, no fresh sweep work.
-///
-///   - `tamper_count_total`   — cumulative tamper detections across
-///     all rounds since the daemon started. 0 means either "always
-///     clean" or "sweeper never ran" (disambiguated by
-///     `sweeper_alive` + `rounds_completed`).
-///   - `rounds_completed`     — number of sweep rounds executed.
-///     Lets the operator infer the observation window: at 1 Hz
-///     this is roughly seconds-since-sweeper-start.
-///   - `sweeper_alive`        — 1 while the sweeper thread is in
-///     its loop; 0 if it never started (tenant process / unkeyed
-///     mode) or has exited (daemon shutting down).
-///   - `hmac_enabled`         — 1 if the daemon is running with
-///     `enable_registry_hmac=true`; 0 means audit is not actionable
-///     (single-tenant deployment).
-struct alignas(8) NicctlAuditReply {
-    uint8_t  version;            ///< wire version, must be 2
-    uint8_t  ok;                 ///< 1 = success, 0 = error
-    uint8_t  hmac_enabled;       ///< 1 = HMAC active; 0 = unkeyed
-    uint8_t  sweeper_alive;      ///< 1 = sweeper running; 0 = never / exited
-    uint32_t reserved0;
-    uint64_t tamper_count_total; ///< cumulative since daemon start
-    uint64_t rounds_completed;   ///< cumulative since daemon start
-    char     error[64];          ///< NUL-padded; empty on success
-};
-static_assert(std::is_trivially_copyable_v<NicctlAuditReply>);
-
 /// @brief Process-level pointer to the daemon's QueueAllocator.
 /// Set by `Platform::serve_nic` before the IPC actions register;
 /// cleared on daemon shutdown. The action thunks load via this
@@ -1046,13 +836,6 @@ inline int
 on_nicctl_query_thunk(const struct rte_mp_msg* msg,
                       const void*              peer);
 
-/// @brief T2.3 N series. DPDK rte_mp_t handler for `eph_nicctl_audit`.
-/// Walks all 3 cross-process registries' audit_* paths and replies
-/// with the mismatch counts. Read-only — never mutates state.
-inline int
-on_nicctl_audit_thunk(const struct rte_mp_msg* msg,
-                      const void*              peer);
-
 } // namespace eph::dpdk::detail
 
 
@@ -1064,9 +847,7 @@ on_nicctl_audit_thunk(const struct rte_mp_msg* msg,
 
 #include <rte_ethdev.h>
 
-#include "eph/dpdk/detail/icmp_directory.hpp"  // T2.3 N: audit thunk
 #include "eph/dpdk/detail/mp_ipc.hpp"
-#include "eph/dpdk/detail/mp_registry.hpp"      // T2.3 N: audit thunk
 
 namespace eph::dpdk::detail {
 
@@ -1319,75 +1100,6 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
         req.requester_pid, reply.total_queues, reply.free_queues,
         reply.generation, reply.stale_releases);
     (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
-    return 0;
-}
-
-/// @brief Q series — read the daemon's cumulative tamper counters
-/// from the always-running `audit_sweeper` thread and reply. No
-/// fresh sweep work is done here — that's already happening at 1 Hz
-/// in the background. Under the "tenants trusted" threat model,
-/// re-running a full-coverage sweep on every CLI invocation just
-/// duplicated the sweeper's work and added tail latency on the
-/// daemon's IPC thread for no extra detection coverage.
-inline int
-on_nicctl_audit_thunk(const struct rte_mp_msg* msg,
-                      const void*              peer) {
-    NicctlAuditReply reply{};
-    reply.version = 2;
-    reply.ok      = 0;
-
-    auto parsed = parse_payload<NicctlAuditRequest>(msg);
-    if (!parsed) {
-        std::strncpy(reply.error, "invalid audit payload",
-                     sizeof(reply.error) - 1);
-        (void)mp_ipc_reply_send(kNicctlAuditActionName, reply, peer);
-        return 0;
-    }
-    const auto& req = *parsed;
-    if (req.version != 2) {
-        SPDLOG_ERROR(
-            "on_nicctl_audit_thunk: version={} unsupported "
-            "(expected 2 — rebuild eph-nicctl alongside eph-nicd)",
-            req.version);
-        std::strncpy(reply.error,
-            "unsupported audit wire version (expected 2)",
-            sizeof(reply.error) - 1);
-        (void)mp_ipc_reply_send(kNicctlAuditActionName, reply, peer);
-        return 0;
-    }
-
-    // hmac_enabled is true iff at least one keyed registry exists in
-    // this process. Single-tenant unkeyed deployments leave all three
-    // headers' hmac_enabled=0; CLI uses this bit to print "unkeyed
-    // mode" instead of "0 mismatches".
-    auto* alloc    = g_active_queue_allocator.load(std::memory_order_acquire);
-    auto* icmp_dir = g_active_icmp_directory.load(std::memory_order_acquire);
-    auto* mp_reg   = g_active_mp_registry.load(std::memory_order_acquire);
-    bool any_keyed = false;
-    if (mp_reg != nullptr && mp_reg->header() != nullptr
-        && mp_reg->header()->hmac_enabled == 1) any_keyed = true;
-    if (alloc != nullptr && alloc->header_() != nullptr
-        && alloc->header_()->hmac_enabled == 1) any_keyed = true;
-    if (icmp_dir != nullptr && icmp_dir->header_() != nullptr
-        && icmp_dir->header_()->hmac_enabled == 1) any_keyed = true;
-
-    reply.hmac_enabled       = any_keyed ? 1 : 0;
-    reply.sweeper_alive      = g_audit_sweeper_alive
-        .load(std::memory_order_acquire) ? 1 : 0;
-    reply.tamper_count_total = g_audit_sweep_tamper_total
-        .load(std::memory_order_relaxed);
-    reply.rounds_completed   = g_audit_sweep_rounds_completed
-        .load(std::memory_order_relaxed);
-    reply.ok = 1;
-
-    SPDLOG_DEBUG(
-        "on_nicctl_audit_thunk: pid={} hmac_enabled={} "
-        "sweeper_alive={} tamper_total={} rounds={}",
-        req.requester_pid, reply.hmac_enabled,
-        reply.sweeper_alive, reply.tamper_count_total,
-        reply.rounds_completed);
-
-    (void)mp_ipc_reply_send(kNicctlAuditActionName, reply, peer);
     return 0;
 }
 
