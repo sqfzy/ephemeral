@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <benchmark/benchmark.h>
@@ -218,6 +219,74 @@ namespace {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Portfolio aggregators — called periodically by risk dashboards.
+//
+// `total_unrealized_pnl` walks all positions, looks up market price per
+// symbol, applies a (market - avg) * qty PnL, and skips NaN/Inf with a
+// WARN-log. `total_realized_pnl` sums each position's running PnL.
+// `net_exposure` sums abs(qty)*avg_price (used by the risk-check
+// max_total_exposure gate). All three scale linearly with the position
+// count, so a regression in the [[unlikely]] NaN-skip branch — or a
+// future change that adds an extra dictionary lookup per symbol — would
+// silently widen the dashboard tick cost. None had any bench coverage.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Build a PositionTracker holding `n` realistic positions and a parallel
+/// market-price map keyed by the same symbols. Used by the three
+/// aggregator benches below.
+struct Portfolio {
+    PositionTracker tracker;
+    std::unordered_map<std::string, double> market;
+};
+
+[[nodiscard]] Portfolio build_portfolio(std::size_t n) {
+    Portfolio p;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::string sym = "SYM" + std::to_string(i);
+        p.tracker.on_fill(sym, '1', 100.0 + static_cast<double>(i),
+                          150.0 + static_cast<double>(i));
+        p.market[sym] = 151.0 + static_cast<double>(i);
+    }
+    return p;
+}
+
+}  // namespace
+
+static void BM_PositionTrackerTotalUnrealizedPnl(benchmark::State& state) {
+    auto p = build_portfolio(64);
+    for (auto _ : state) {
+        double v = p.tracker.total_unrealized_pnl(p.market);
+        benchmark::DoNotOptimize(v);
+    }
+}
+BENCHMARK(BM_PositionTrackerTotalUnrealizedPnl);
+
+static void BM_PositionTrackerTotalRealizedPnl(benchmark::State& state) {
+    auto p = build_portfolio(64);
+    // Generate some realized PnL by reducing each position once.
+    for (std::size_t i = 0; i < 64; ++i) {
+        std::string sym = "SYM" + std::to_string(i);
+        p.tracker.on_fill(sym, '2', 1.0, 152.0 + static_cast<double>(i));
+    }
+    for (auto _ : state) {
+        double v = p.tracker.total_realized_pnl();
+        benchmark::DoNotOptimize(v);
+    }
+}
+BENCHMARK(BM_PositionTrackerTotalRealizedPnl);
+
+static void BM_PositionTrackerNetExposure(benchmark::State& state) {
+    auto p = build_portfolio(64);
+    for (auto _ : state) {
+        double v = p.tracker.net_exposure();
+        benchmark::DoNotOptimize(v);
+    }
+}
+BENCHMARK(BM_PositionTrackerNetExposure);
 
 static void BM_OrderManagerOnExecReportPartialFill(benchmark::State& state) {
     // Pre-build the wire bytes — the parser re-runs each iteration but
