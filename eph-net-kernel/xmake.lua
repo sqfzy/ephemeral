@@ -33,3 +33,13 @@ for _, file in ipairs(os.files("tests/**.cpp")) do
         add_files(file)
         add_deps("eph-net-kernel", "eph-codec")
 end
+
+-- Module benchmarks — one binary per bench_*.cpp file (auto-globbed via eph-bench rule).
+-- Loopback-driven microbenches that measure the user-space ByteSocket shim
+-- without any external NIC dependency.
+for _, file in ipairs(os.files("benchmarks/**.cpp")) do
+    target(path.basename(file))
+        add_rules("eph-bench")
+        add_files(file)
+        add_deps("eph-net-kernel")
+end
