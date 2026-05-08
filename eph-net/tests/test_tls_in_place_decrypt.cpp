@@ -73,7 +73,7 @@ TEST(TlsInPlaceDecrypt, RoundTripWithLegacyEncryptor) {
     constexpr const char* kPlain = "hello, in-place world!";
     const uint16_t plain_len = static_cast<uint16_t>(std::strlen(kPlain));
 
-    std::vector<uint8_t> record(en::TlsEncryptor::encrypted_size(plain_len));
+    std::vector<uint8_t> record(en::TlsEncryptor::encrypted_size_for(en::TlsRecordFormat::Tls13, plain_len));
     const uint16_t written = enc_r->encrypt(
         reinterpret_cast<const uint8_t*>(kPlain), plain_len, record.data());
     ASSERT_GT(written, 0u);
@@ -106,7 +106,7 @@ TEST(TlsInPlaceDecrypt, AuthTagMismatchRejected) {
 
     constexpr const char* kPlain = "tamper me";
     const uint16_t plain_len = static_cast<uint16_t>(std::strlen(kPlain));
-    std::vector<uint8_t> record(en::TlsEncryptor::encrypted_size(plain_len));
+    std::vector<uint8_t> record(en::TlsEncryptor::encrypted_size_for(en::TlsRecordFormat::Tls13, plain_len));
     const uint16_t written = enc_r->encrypt(
         reinterpret_cast<const uint8_t*>(kPlain), plain_len, record.data());
     ASSERT_GT(written, 0u);
@@ -136,7 +136,7 @@ TEST(TlsInPlaceDecrypt, SequenceNumberAdvancesAcrossRecords) {
 
     auto roundtrip = [&](const char* plaintext) {
         const uint16_t pl = static_cast<uint16_t>(std::strlen(plaintext));
-        std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size(pl));
+        std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size_for(en::TlsRecordFormat::Tls13, pl));
         const uint16_t w = enc_r->encrypt(
             reinterpret_cast<const uint8_t*>(plaintext), pl, rec.data());
         ASSERT_GT(w, 0u);
@@ -185,7 +185,7 @@ TEST(TlsInPlaceDecrypt, InnerContentTypeReportedForAppData) {
     // TlsEncryptor hardcodes inner_ct = 0x17 (application_data).
     constexpr const char* kPlain = "app data";
     const uint16_t pl = static_cast<uint16_t>(std::strlen(kPlain));
-    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size(pl));
+    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size_for(en::TlsRecordFormat::Tls13, pl));
     ASSERT_GT(enc_r->encrypt(reinterpret_cast<const uint8_t*>(kPlain), pl,
                               rec.data()), 0u);
 
@@ -215,7 +215,7 @@ TEST(TlsInPlaceDecrypt, InnerCtNullptrDoesNotCrash) {
 
     constexpr const char* kPlain = "null ct test";
     const uint16_t pl = static_cast<uint16_t>(std::strlen(kPlain));
-    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size(pl));
+    std::vector<uint8_t> rec(en::TlsEncryptor::encrypted_size_for(en::TlsRecordFormat::Tls13, pl));
     ASSERT_GT(enc_r->encrypt(reinterpret_cast<const uint8_t*>(kPlain), pl,
                               rec.data()), 0u);
 

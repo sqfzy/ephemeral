@@ -32,32 +32,39 @@ inline spdlog::logger* tls_dec_logger() {
 }
 } // namespace detail
 
-/// AES-GCM record-level decryption (read direction only).
+/// AEAD record-level decryption (read direction only).
 ///
-/// Owns the decryption AEAD context, read IV, and read sequence number.
-/// Created from TlsHotState after TLS 1.3 handshake key export.
+/// Owns the decryption AEAD context, read IV, sequence number, and
+/// record format. Created from TlsHotState after handshake key export.
+/// Branches on `record_format_` once per record to pick the right
+/// nonce/AAD/wire-layout — the branch is fully predictable per session.
 class TlsDecryptor {
 public:
     /// Create a TlsDecryptor from the read-direction key material in a TlsHotState.
     ///
-    /// Initializes the AEAD context with the appropriate AES-GCM algorithm
-    /// (128 or 256 bit) and copies the read IV and sequence number.
-    ///
-    /// @param state    TLS hot state containing read key, IV, and sequence
-    /// @param key_len  AES key length: 16 (AES-128) or 32 (AES-256, default)
-    /// @return Initialized TlsDecryptor, or error string on failure
+    /// AEAD selection mirrors `TlsEncryptor::create`:
+    ///   - `state.record_format == Tls12Chacha20` → CHACHA20-POLY1305 (key_len must be 32)
+    ///   - else → AES-128/256-GCM by `key_len`
     [[nodiscard]] static std::expected<TlsDecryptor, std::string>
     create(const TlsHotState& state, size_t key_len = tls_const::kAes256KeyLen) {
         TlsDecryptor dec;
 
-        const EVP_AEAD* aead;
-        if (key_len == 16) {
-            aead = EVP_aead_aes_128_gcm();
-        } else if (key_len == 32) {
-            aead = EVP_aead_aes_256_gcm();
+        const EVP_AEAD* aead = nullptr;
+        if (state.record_format == TlsRecordFormat::Tls12Chacha20) {
+            if (key_len != 32) {
+                return std::unexpected(std::format(
+                    "CHACHA20-POLY1305 requires 32-byte key, got {}", key_len));
+            }
+            aead = EVP_aead_chacha20_poly1305();
         } else {
-            return std::unexpected(std::format(
-                "Unsupported AES key length: {}", key_len));
+            if (key_len == 16) {
+                aead = EVP_aead_aes_128_gcm();
+            } else if (key_len == 32) {
+                aead = EVP_aead_aes_256_gcm();
+            } else {
+                return std::unexpected(std::format(
+                    "Unsupported AES key length: {}", key_len));
+            }
         }
 
         if (!EVP_AEAD_CTX_init(&dec.ctx_, aead,
@@ -68,7 +75,8 @@ public:
         dec.init_ = true;
 
         std::memcpy(dec.iv_, state.read.ki.iv, tls_const::kTls13NonceLen);
-        dec.seq_ = state.read.seq;
+        dec.seq_           = state.read.seq;
+        dec.record_format_ = state.record_format;
 
         return dec;
     }
@@ -89,7 +97,8 @@ public:
     static_assert(std::is_trivially_copyable_v<EVP_AEAD_CTX>,
         "EVP_AEAD_CTX is no longer trivially copyable — bitwise move is unsafe");
     TlsDecryptor(TlsDecryptor&& other) noexcept
-        : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_) {
+        : ctx_(other.ctx_), init_(other.init_), seq_(other.seq_),
+          record_format_(other.record_format_) {
         std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);
         other.init_ = false;
         // Cleanse both halves of the secret state so the moved-from
@@ -105,9 +114,10 @@ public:
     TlsDecryptor& operator=(TlsDecryptor&& other) noexcept {
         if (this != &other) {
             if (init_) EVP_AEAD_CTX_cleanup(&ctx_);
-            ctx_ = other.ctx_;
-            init_ = other.init_;
-            seq_ = other.seq_;
+            ctx_           = other.ctx_;
+            init_          = other.init_;
+            seq_           = other.seq_;
+            record_format_ = other.record_format_;
             std::memcpy(iv_, other.iv_, tls_const::kTls13NonceLen);
             OPENSSL_cleanse(&other.ctx_, sizeof(other.ctx_));
             other.init_ = false;
@@ -120,8 +130,12 @@ public:
     /// @param record       Input TLS record (header + encrypted data + tag)
     /// @param record_len   Total record length
     /// @param out          Output buffer for decrypted plaintext
-    /// @param[out] out_len Actual decrypted plaintext length (excluding content type)
-    /// @param[out] inner_ct  TLS 1.3 inner content type byte. May be nullptr.
+    /// @param[out] out_len Actual decrypted plaintext length (excluding inner type)
+    /// @param[out] inner_ct  TLS 1.3 inner content type byte (out param). For
+    ///                       TLS 1.2 the inner content type is not present in
+    ///                       plaintext — the record header carries the real
+    ///                       type, which this method writes through here for
+    ///                       symmetry with the 1.3 path. May be nullptr.
     /// @return true on success, false on decryption/authentication failure
     [[nodiscard]] bool decrypt(const uint8_t* record, uint16_t record_len,
                  uint8_t* out, uint16_t& out_len,
@@ -162,70 +176,23 @@ public:
             return false;
         }
 
-        if (payload_len < tls_record::kAuthTagLen + 1) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
-                "TLS record too short: payload_len={} < min {}",
-                payload_len, tls_record::kAuthTagLen + 1);
-            return false;
+        bool ok = false;
+        switch (record_format_) {
+            case TlsRecordFormat::Tls13:
+                ok = decrypt_tls13_(record, payload_len, out, out_len, inner_ct);
+                break;
+            case TlsRecordFormat::Tls12AesGcm:
+                ok = decrypt_tls12_aes_gcm_(record, payload_len, out, out_len,
+                                             content_type, inner_ct);
+                break;
+            case TlsRecordFormat::Tls12Chacha20:
+                ok = decrypt_tls12_chacha20_(record, payload_len, out, out_len,
+                                              content_type, inner_ct);
+                break;
         }
+        if (!ok) return false;
 
-        const uint8_t* ciphertext = record + tls_record::kRecordHeaderLen;
-
-        uint8_t nonce[tls_const::kTls13NonceLen];
-        tls_record::build_nonce(nonce, iv_, seq_);
-
-        size_t plaintext_len = 0;
-
-        if (!EVP_AEAD_CTX_open(&ctx_, out, &plaintext_len,
-                                payload_len - tls_record::kAuthTagLen,
-                                nonce, tls_const::kTls13NonceLen,
-                                ciphertext, payload_len,
-                                record, tls_record::kRecordHeaderLen)) {
-            // Pull the OpenSSL/AWS-LC error queue for actionable diagnosis
-            // (auth tag mismatch vs. invalid nonce vs. context corruption etc.).
-            char err_buf[256] = {0};
-            unsigned long err_code = ERR_get_error();
-            if (err_code != 0) {
-                ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
-            }
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
-                "EVP_AEAD_CTX_open failed: record_len={}, seq={}, "
-                "openssl_err=0x{:08x} ({})",
-                record_len, seq_, err_code,
-                err_buf[0] ? err_buf : "no error in queue");
-            // Drain any remaining queued errors so we don't leak them
-            // into a future caller's diagnosis.
-            while (ERR_get_error() != 0) { /* drain */ }
-            return false;
-        }
-
-        // TLS 1.3: the last byte of decrypted plaintext is the inner content
-        // type (RFC 8446 §5.2). A zero-length AEAD output therefore violates
-        // the spec — the inner content-type byte MUST be present. Reject
-        // rather than silently leaving `*inner_ct` uninitialized for the
-        // caller to dispatch on (the prior `if (plaintext_len > 0)` skip
-        // path) — this is the same defense-in-depth contract that
-        // `tls_inplace.hpp::open_in_place` enforces; the two implementations
-        // must agree because both feed `inner_ct` into the same Stream
-        // dispatch logic. AES-GCM is CTR-mode (plaintext_len == ciphertext_len)
-        // and the upstream `payload_len < kAuthTagLen + 1` check guarantees
-        // ≥1 byte of ciphertext reaches the AEAD, so this branch is
-        // unreachable today via a well-behaved aws-lc; the guard exists
-        // purely to bound the blast radius of any future EVP_AEAD bug
-        // that misreports output length.
-        if (plaintext_len == 0) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
-                "decrypt: AEAD reported zero-length plaintext — TLS 1.3 "
-                "requires the trailing inner content-type byte; rejecting "
-                "as malformed (record_len={}, seq={})", record_len, seq_);
-            return false;
-        }
-        if (inner_ct) *inner_ct = out[plaintext_len - 1];
-        plaintext_len--;
-
-        out_len = static_cast<uint16_t>(plaintext_len);
         seq_++;
-
         if (seq_ >= tls_record::kMaxSequenceNumber) [[unlikely]] {
             SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
                 "TLS read sequence exhausted ({}/{}): must reconnect immediately",
@@ -235,7 +202,6 @@ public:
                 "TLS read sequence approaching limit ({}/{})",
                 seq_, tls_record::kMaxSequenceNumber);
         }
-
         return true;
     }
 
@@ -243,13 +209,161 @@ public:
     /// @return Number of records decrypted so far
     [[nodiscard]] uint64_t read_seq() const noexcept { return seq_; }
 
+    /// Negotiated record format (read-only after construction).
+    [[nodiscard]] TlsRecordFormat record_format() const noexcept {
+        return record_format_;
+    }
+
 private:
     TlsDecryptor() = default;
 
-    EVP_AEAD_CTX ctx_{};
-    bool         init_ = false;
-    uint8_t      iv_[tls_const::kTls13NonceLen]{};
-    uint64_t     seq_ = 0;
+    /// TLS 1.3 record decrypt. AAD = 5B header, nonce = iv XOR seq, plaintext
+    /// trails an inner content-type byte (RFC 8446 §5.2).
+    [[nodiscard]] bool decrypt_tls13_(const uint8_t* record, uint16_t payload_len,
+                                      uint8_t* out, uint16_t& out_len,
+                                      uint8_t* inner_ct) noexcept {
+        if (payload_len < tls_record::kAuthTagLen + 1) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+                "decrypt: TLS 1.3 record too short: payload_len={} < min {}",
+                payload_len, tls_record::kAuthTagLen + 1);
+            return false;
+        }
+
+        const uint8_t* ciphertext = record + tls_record::kRecordHeaderLen;
+        uint8_t nonce[tls_const::kTls13NonceLen];
+        tls_record::build_nonce(nonce, iv_, seq_);
+
+        size_t plaintext_len = 0;
+        if (!EVP_AEAD_CTX_open(&ctx_, out, &plaintext_len,
+                                payload_len - tls_record::kAuthTagLen,
+                                nonce, tls_const::kTls13NonceLen,
+                                ciphertext, payload_len,
+                                record, tls_record::kRecordHeaderLen)) {
+            log_open_failure_("tls13", payload_len);
+            return false;
+        }
+
+        // TLS 1.3 spec violation if AEAD output is empty — the trailing
+        // inner content-type byte MUST be present. Reject defensively.
+        if (plaintext_len == 0) [[unlikely]] {
+            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+                "decrypt: TLS 1.3 AEAD reported zero-length plaintext "
+                "(seq={})", seq_);
+            return false;
+        }
+        if (inner_ct) *inner_ct = out[plaintext_len - 1];
+        out_len = static_cast<uint16_t>(plaintext_len - 1);
+        return true;
+    }
+
+    /// TLS 1.2 AES-GCM record decrypt (RFC 5288). Read 8B explicit nonce
+    /// from the record body, build the 12B nonce, AAD = 13B with
+    /// plaintext_len, decrypt the remaining ciphertext+tag.
+    [[nodiscard]] bool decrypt_tls12_aes_gcm_(const uint8_t* record,
+                                               uint16_t payload_len,
+                                               uint8_t* out, uint16_t& out_len,
+                                               uint8_t content_type,
+                                               uint8_t* inner_ct) noexcept {
+        // payload = explicit_nonce(8B) + ciphertext + tag(16B)
+        if (payload_len < tls_record_v12::kExplicitNonceLen + tls_record::kAuthTagLen) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+                "decrypt: TLS 1.2 AES-GCM record too short: payload_len={} < min {}",
+                payload_len,
+                tls_record_v12::kExplicitNonceLen + tls_record::kAuthTagLen);
+            return false;
+        }
+
+        const uint8_t* explicit_nonce = record + tls_record::kRecordHeaderLen;
+        const uint8_t* ciphertext     = explicit_nonce + tls_record_v12::kExplicitNonceLen;
+        const uint16_t ct_and_tag_len = payload_len - tls_record_v12::kExplicitNonceLen;
+        const uint16_t pt_len         = ct_and_tag_len - tls_record::kAuthTagLen;
+
+        // Construct the 12B nonce from our 4B implicit IV (first 4 bytes of iv_)
+        // and the 8B explicit nonce on the wire. We deliberately do NOT use the
+        // `seq_`-derived implicit nonce on the read path: a strict reader
+        // honours whatever the peer sends, since some TLS 1.2 stacks use a
+        // counter rather than seq for their explicit nonce. The AAD's
+        // length field below uses `pt_len`, which is the only place seq
+        // affects the read math.
+        uint8_t nonce[tls_const::kTls13NonceLen];
+        std::memcpy(nonce, iv_, tls_record_v12::kImplicitIvLen);
+        std::memcpy(nonce + tls_record_v12::kImplicitIvLen, explicit_nonce,
+                    tls_record_v12::kExplicitNonceLen);
+
+        uint8_t aad[tls_record_v12::kAadLen];
+        tls_record_v12::build_aad(aad, seq_, content_type, pt_len);
+
+        size_t plaintext_len = 0;
+        if (!EVP_AEAD_CTX_open(&ctx_, out, &plaintext_len, pt_len,
+                                nonce, tls_const::kTls13NonceLen,
+                                ciphertext, ct_and_tag_len,
+                                aad, tls_record_v12::kAadLen)) {
+            log_open_failure_("tls12-aes-gcm", payload_len);
+            return false;
+        }
+        out_len = static_cast<uint16_t>(plaintext_len);
+        // TLS 1.2 carries the real content type in the record header itself.
+        // Surface it through `inner_ct` for callers that want a uniform
+        // shape across versions.
+        if (inner_ct) *inner_ct = content_type;
+        return true;
+    }
+
+    /// TLS 1.2 ChaCha20-Poly1305 record decrypt (RFC 7905). Same nonce
+    /// construction as TLS 1.3 (XOR), 13B AAD, no explicit nonce on wire.
+    [[nodiscard]] bool decrypt_tls12_chacha20_(const uint8_t* record,
+                                                uint16_t payload_len,
+                                                uint8_t* out, uint16_t& out_len,
+                                                uint8_t content_type,
+                                                uint8_t* inner_ct) noexcept {
+        if (payload_len < tls_record::kAuthTagLen) {
+            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+                "decrypt: TLS 1.2 CHACHA20 record too short: payload_len={} < min {}",
+                payload_len, tls_record::kAuthTagLen);
+            return false;
+        }
+        const uint16_t pt_len = payload_len - tls_record::kAuthTagLen;
+
+        const uint8_t* ciphertext = record + tls_record::kRecordHeaderLen;
+
+        uint8_t nonce[tls_const::kTls13NonceLen];
+        tls_record_v12::build_nonce_chacha20(nonce, iv_, seq_);
+
+        uint8_t aad[tls_record_v12::kAadLen];
+        tls_record_v12::build_aad(aad, seq_, content_type, pt_len);
+
+        size_t plaintext_len = 0;
+        if (!EVP_AEAD_CTX_open(&ctx_, out, &plaintext_len, pt_len,
+                                nonce, tls_const::kTls13NonceLen,
+                                ciphertext, payload_len,
+                                aad, tls_record_v12::kAadLen)) {
+            log_open_failure_("tls12-chacha20", payload_len);
+            return false;
+        }
+        out_len = static_cast<uint16_t>(plaintext_len);
+        if (inner_ct) *inner_ct = content_type;
+        return true;
+    }
+
+    void log_open_failure_(const char* fmt_label, uint16_t payload_len) const noexcept {
+        char err_buf[256] = {0};
+        const unsigned long err_code = ERR_get_error();
+        if (err_code != 0) {
+            ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
+        }
+        SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+            "EVP_AEAD_CTX_open failed: format={} payload_len={} seq={} "
+            "openssl_err=0x{:08x} ({})",
+            fmt_label, payload_len, seq_, err_code,
+            err_buf[0] ? err_buf : "no error in queue");
+        while (ERR_get_error() != 0) { /* drain */ }
+    }
+
+    EVP_AEAD_CTX     ctx_{};
+    bool             init_ = false;
+    uint8_t          iv_[tls_const::kTls13NonceLen]{};
+    uint64_t         seq_ = 0;
+    TlsRecordFormat  record_format_ = TlsRecordFormat::Tls13;
 };
 
 } // namespace eph::net

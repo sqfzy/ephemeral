@@ -49,8 +49,8 @@ static_assert(tls_record::kSequenceReconnectThreshold < tls_record::kMaxSequence
 static_assert(tls_record::kSequenceWarnThreshold == tls_record::kMaxSequenceNumber * 9 / 10);
 static_assert(tls_record::kSequenceReconnectThreshold == tls_record::kMaxSequenceNumber * 95 / 100);
 
-static_assert(TlsRecordCrypto::encrypted_size(0)   == 5 + 0 + 1 + 16);
-static_assert(TlsRecordCrypto::encrypted_size(256) == 5 + 256 + 1 + 16);
+static_assert(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 0)   == 5 + 0 + 1 + 16);
+static_assert(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 256) == 5 + 256 + 1 + 16);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -195,7 +195,7 @@ TEST_P(TlsRoundtripSizes, EncryptDecryptRoundtrip) {
     std::vector<uint8_t> plaintext(payload_size + 1);
     fill_random(plaintext.data(), payload_size, 100);
 
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(payload_size);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, payload_size);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc_result->encrypt(
         plaintext.data(), payload_size, record.data());
@@ -228,7 +228,7 @@ TEST(TlsRecord, SequenceIncrements) {
     ASSERT_TRUE(crypto.has_value());
 
     std::vector<uint8_t> plaintext(64 + 1, 0xAA);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(64);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 64);
     std::vector<uint8_t> record(enc_size);
 
     for (uint64_t i = 0; i < 10; ++i) {
@@ -253,7 +253,7 @@ TEST(TlsRecord, MultipleRecordsDecryptInOrder) {
     ASSERT_TRUE(dec.has_value());
 
     constexpr int kNumRecords = 50;
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
 
     for (int i = 0; i < kNumRecords; ++i) {
         std::vector<uint8_t> plaintext(33);
@@ -294,7 +294,7 @@ TEST(TlsRecord, DecryptTamperedRecordFails) {
     ASSERT_TRUE(dec.has_value());
 
     std::vector<uint8_t> plaintext(65, 0x42);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(64);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 64);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(plaintext.data(), 64, record.data());
     ASSERT_GT(written, 0u);
@@ -439,10 +439,10 @@ TEST(TlsRecord, RecordHeaderBoundaryLength) {
 }
 
 TEST(TlsRecord, EncryptedSizeFormula) {
-    EXPECT_EQ(TlsRecordCrypto::encrypted_size(0),     22);
-    EXPECT_EQ(TlsRecordCrypto::encrypted_size(1),     23);
-    EXPECT_EQ(TlsRecordCrypto::encrypted_size(100),  122);
-    EXPECT_EQ(TlsRecordCrypto::encrypted_size(16384), 16406);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 0),     22);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 1),     23);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 100),  122);
+    EXPECT_EQ(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16384), 16406);
 }
 
 TEST(TlsRecord, EncryptPreservesPlaintextBuffer) {
@@ -454,7 +454,7 @@ TEST(TlsRecord, EncryptPreservesPlaintextBuffer) {
     for (int i = 0; i < 64; ++i) plaintext[i] = static_cast<uint8_t>(i);
     plaintext[64] = 0xFE; // sentinel (the +1 byte that encrypt temporarily modifies)
 
-    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(64));
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 64));
     uint16_t written = crypto->encrypt(plaintext.data(), 64, record.data());
     ASSERT_GT(written, 0u);
 
@@ -471,7 +471,7 @@ TEST(TlsRecord, DecryptWithWrongKeyFails) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> plaintext(65, 0x42);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(64);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 64);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(plaintext.data(), 64, record.data());
     ASSERT_GT(written, 0u);
@@ -497,7 +497,7 @@ TEST(TlsRecord, CreateWithAes128KeyLength) {
     ASSERT_TRUE(crypto.has_value()) << crypto.error();
 
     std::vector<uint8_t> plaintext(33, 0xAA);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = crypto->encrypt(plaintext.data(), 32, record.data());
     ASSERT_GT(written, 0u);
@@ -528,7 +528,7 @@ TEST(TlsRecord, DecryptWithWrongSeqFails) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(33, 0x55);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), 32, record.data());
     ASSERT_GT(written, 0u);
@@ -554,7 +554,7 @@ TEST(TlsRecord, DecryptFailureDoesNotOverrunTightBuffer) {
 
     constexpr uint16_t kPlainLen = 32;
     std::vector<uint8_t> pt(kPlainLen + 1, 0x55);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(kPlainLen);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, kPlainLen);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), kPlainLen, record.data());
     ASSERT_GT(written, 0u);
@@ -582,7 +582,7 @@ TEST(TlsRecord, NonZeroInitialSequence) {
     EXPECT_EQ(enc->read_seq(), 200u);
 
     std::vector<uint8_t> pt(17, 0);
-    std::vector<uint8_t> rec(TlsRecordCrypto::encrypted_size(16));
+    std::vector<uint8_t> rec(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
     (void)enc->encrypt(pt.data(), 16, rec.data());
     EXPECT_EQ(enc->write_seq(), 101u);
 
@@ -595,7 +595,7 @@ TEST(TlsRecord, NonZeroInitialSequence) {
 
     uint16_t dec_len;
     uint8_t out[32];
-    bool ok = dec->decrypt(rec.data(), TlsRecordCrypto::encrypted_size(16),
+    bool ok = dec->decrypt(rec.data(), TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16),
                             out, dec_len);
     EXPECT_TRUE(ok) << "Decryption with matching non-zero initial seq should work";
     EXPECT_EQ(dec_len, 16);
@@ -636,7 +636,7 @@ TEST(TlsRecord, EncryptDecryptAtHighSequence) {
 
     for (int i = 0; i < 3; ++i) {
         std::vector<uint8_t> pt(33, static_cast<uint8_t>(i));
-        uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+        uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
         std::vector<uint8_t> record(enc_size);
 
         uint16_t written = enc->encrypt(pt.data(), 32, record.data());
@@ -651,7 +651,7 @@ TEST(TlsRecord, EncryptDecryptAtHighSequence) {
 
     // The 4th encrypt should fail — seq == kMaxSequenceNumber
     std::vector<uint8_t> pt(33, 0xFF);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), 32, record.data());
     EXPECT_EQ(written, 0u) << "Should fail at sequence limit";
@@ -664,7 +664,7 @@ TEST(TlsRecord, EncryptExactlyAtMaxSequenceReturnsZero) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(17, 0xAA);
-    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
     uint16_t written = enc->encrypt(pt.data(), 16, record.data());
     EXPECT_EQ(written, 0u)
         << "Encrypt must fail when write_seq == kMaxSequenceNumber";
@@ -677,7 +677,7 @@ TEST(TlsRecord, DecryptExactlyAtMaxSequenceReturnsZero) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(17, 0xBB);
-    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
     uint16_t written = enc->encrypt(pt.data(), 16, record.data());
     ASSERT_GT(written, 0u);
 
@@ -702,12 +702,12 @@ TEST(TlsRecord, LastValidEncryptSucceeds) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(17, 0xCC);
-    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+    std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
     uint16_t written = enc->encrypt(pt.data(), 16, record.data());
     EXPECT_GT(written, 0u);
     EXPECT_EQ(enc->write_seq(), tls_record::kMaxSequenceNumber);
 
-    std::vector<uint8_t> record2(TlsRecordCrypto::encrypted_size(16));
+    std::vector<uint8_t> record2(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
     uint16_t written2 = enc->encrypt(pt.data(), 16, record2.data());
     EXPECT_EQ(written2, 0u) << "Encrypt past limit must fail";
 }
@@ -722,7 +722,7 @@ TEST(TlsRecord, SequenceCounterIncrements) {
 
     for (uint64_t i = 0; i < 5; ++i) {
         std::vector<uint8_t> pt(17, static_cast<uint8_t>(i));
-        std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size(16));
+        std::vector<uint8_t> record(TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16));
         uint16_t written = crypto->encrypt(pt.data(), 16, record.data());
         ASSERT_GT(written, 0u);
         EXPECT_EQ(crypto->write_seq(), i + 1);
@@ -760,7 +760,7 @@ TEST(TlsRecord, MoveAssignOverLiveCryptoIsSafe) {
     ASSERT_TRUE(rt1.has_value());
 
     std::vector<uint8_t> pt(33, 0x42);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
     std::vector<uint8_t> rec(enc_size);
     uint16_t written = rt1->encrypt(pt.data(), 32, rec.data());
     ASSERT_GT(written, 0u);
@@ -810,7 +810,7 @@ TEST(TlsRecord, DecryptCorruptedHeader) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(33, 0x42);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(32);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 32);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), 32, record.data());
     ASSERT_GT(written, 0u);
@@ -856,7 +856,7 @@ TEST(TlsRecord, EncryptAtWarnThresholdStillSucceeds) {
     ASSERT_TRUE(dec.has_value());
 
     std::vector<uint8_t> pt(17, 0xAB);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(16);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), 16, record.data());
     EXPECT_GT(written, 0u) << "Encrypt should succeed at warn threshold";
@@ -874,7 +874,7 @@ TEST(TlsRecord, DecryptAtMaxSequenceNumberFails) {
     ASSERT_TRUE(enc.has_value());
 
     std::vector<uint8_t> pt(17, 0xCC);
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(16);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 16);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = enc->encrypt(pt.data(), 16, record.data());
     ASSERT_GT(written, 0u);
@@ -973,7 +973,7 @@ TEST(TlsRecord, EncryptZeroLengthNullPlaintext) {
     auto crypto = TlsRecordCrypto::create(state);
     ASSERT_TRUE(crypto.has_value());
 
-    uint16_t enc_size = TlsRecordCrypto::encrypted_size(0);
+    uint16_t enc_size = TlsRecordCrypto::encrypted_size_for(TlsRecordFormat::Tls13, 0);
     std::vector<uint8_t> record(enc_size);
     uint16_t written = crypto->encrypt(nullptr, 0, record.data());
     EXPECT_GT(written, 0u) << "Encrypting zero-length payload should succeed";

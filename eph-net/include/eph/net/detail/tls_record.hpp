@@ -1,16 +1,28 @@
 #pragma once
 
 /// @file tls_record.hpp
-/// TLS record layer — AES-256-GCM encryption/decryption via aws-lc AEAD API.
+/// TLS record layer — AEAD encryption/decryption via aws-lc.
 ///
 /// This file provides:
-///   - tls_record namespace: constants, nonce building, header parsing (via tls_constants.hpp)
-///   - TlsEncryptor: write-direction AEAD (see tls_encryptor.hpp)
-///   - TlsDecryptor: read-direction AEAD (see tls_decryptor.hpp)
-///   - TlsRecordCrypto: backward-compatible composition of both
+///   - `tls_record` / `tls_record_v12` namespaces: constants, nonce builders,
+///     header parsing, AAD construction (via `tls_constants.hpp`)
+///   - `TlsEncryptor`: write-direction AEAD (see `tls_encryptor.hpp`)
+///   - `TlsDecryptor`: read-direction AEAD (see `tls_decryptor.hpp`)
+///   - `TlsRecordCrypto`: backward-compatible composition of both
 ///
-/// TLS 1.3 record format:
-///   [ContentType(1)] [Legacy version(2)] [Length(2)] [Encrypted data] [Auth tag(16)]
+/// Three wire formats are supported, dispatched by `TlsRecordFormat`:
+///
+/// TLS 1.3 (`Tls13`, RFC 8446):
+///   [ContentType(1)] [LegacyVersion=0x0303(2)] [Length(2)]
+///   [Ciphertext+InnerType] [AuthTag(16)]
+///
+/// TLS 1.2 AES-GCM (`Tls12AesGcm`, RFC 5288):
+///   [ContentType(1)] [Version=0x0303(2)] [Length(2)]
+///   [ExplicitNonce(8)] [Ciphertext] [AuthTag(16)]
+///
+/// TLS 1.2 ChaCha20-Poly1305 (`Tls12Chacha20`, RFC 7905):
+///   [ContentType(1)] [Version=0x0303(2)] [Length(2)]
+///   [Ciphertext] [AuthTag(16)]
 
 #include "eph/net/detail/tls_constants.hpp"
 #include "eph/net/detail/tls_encryptor.hpp"
@@ -76,17 +88,29 @@ struct TlsRecordCrypto {
         return dec.decrypt(record, record_len, out, out_len, inner_ct);
     }
 
-    /// Compute output size for encrypting a given plaintext length.
-    /// @param plaintext_len  Input plaintext length
-    /// @return Total TLS record size (header + ciphertext + content type + tag)
-    static constexpr uint16_t encrypted_size(uint16_t plaintext_len) noexcept {
-        return TlsEncryptor::encrypted_size(plaintext_len);
+    /// Compute the wire-record size for the given plaintext length under
+    /// the negotiated record format. Format-aware — delegates to the
+    /// internal encryptor.
+    [[nodiscard]] uint16_t encrypted_size(uint16_t plaintext_len) const noexcept {
+        return enc.encrypted_size(plaintext_len);
+    }
+
+    /// Format-explicit static helper. Useful when there's no
+    /// `TlsRecordCrypto` instance handy (e.g. unit-test buffer sizing
+    /// or `static_assert`s on layout).
+    [[nodiscard]] static constexpr uint16_t encrypted_size_for(
+            TlsRecordFormat fmt, uint16_t plaintext_len) noexcept {
+        return ::eph::net::encrypted_size_for(fmt, plaintext_len);
     }
 
     /// Current write-direction sequence number.
     [[nodiscard]] uint64_t write_seq() const noexcept { return enc.write_seq(); }
     /// Current read-direction sequence number.
     [[nodiscard]] uint64_t read_seq()  const noexcept { return dec.read_seq(); }
+    /// Negotiated record format.
+    [[nodiscard]] TlsRecordFormat record_format() const noexcept {
+        return enc.record_format();
+    }
 };
 
 } // namespace eph::net

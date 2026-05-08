@@ -622,6 +622,146 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
 
 } // namespace tls_record
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TLS 1.2 record layer (RFC 5288 GCM, RFC 7905 CHACHA20-POLY1305)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// TLS 1.2 record-layer constants and helpers.
+///
+/// Differences from `tls_record` (which targets TLS 1.3):
+///   - AAD includes `seq_num`, `content_type`, `version`, `length` —
+///     a 13-byte structure rather than the 5-byte TLS 1.3 header.
+///   - For AES-GCM the per-record nonce is `implicit_IV(4B) ‖ explicit_nonce(8B)`,
+///     where `explicit_nonce` is the 8-byte sequence number (RFC 5288). The
+///     explicit nonce is also written on the wire ahead of the ciphertext.
+///   - For CHACHA20-POLY1305 the per-record nonce is
+///     `implicit_IV(12B) XOR seq_padded(12B)` (RFC 7905), and there is NO
+///     explicit nonce on the wire — wire layout matches TLS 1.3's shape.
+///   - The plaintext is NOT extended with an inner content-type byte
+///     before encryption; the record header carries the real content type.
+///   - The AEAD `length` field embedded in the AAD is the **plaintext
+///     length** (NOT ciphertext+tag length). The record-header `length`
+///     field on the wire IS ciphertext+tag (and, for AES-GCM, also the
+///     8B explicit nonce).
+namespace tls_record_v12 {
+
+inline constexpr uint16_t kAadLen          = 13;  ///< 8(seq) + 1(type) + 2(version) + 2(length)
+inline constexpr uint16_t kExplicitNonceLen = 8; ///< AES-GCM explicit nonce on wire (RFC 5288)
+inline constexpr uint16_t kImplicitIvLen    = tls_const::kTls12ImplicitIvLen; ///< AES-GCM implicit IV (4B)
+
+/// Build the 13-byte TLS 1.2 AEAD additional_data (RFC 5246 §6.2.3.3).
+///
+/// @param[out] aad           Output buffer (must have at least 13 bytes)
+/// @param      seq           Record sequence number (host-order; written BE)
+/// @param      content_type  TLS content type byte (0x17 for application_data)
+/// @param      plaintext_len Plaintext length in bytes (NOT ciphertext+tag)
+inline void build_aad(uint8_t aad[kAadLen],
+                      uint64_t seq,
+                      uint8_t content_type,
+                      uint16_t plaintext_len) noexcept {
+    // seq_num (8 bytes, big-endian)
+    uint64_t seq_be;
+    if constexpr (std::endian::native == std::endian::little) {
+        seq_be = std::byteswap(seq);
+    } else {
+        seq_be = seq;
+    }
+    std::memcpy(aad, &seq_be, 8);
+    aad[8]  = content_type;
+    aad[9]  = static_cast<uint8_t>(tls_record::kLegacyVersion >> 8);    // 0x03
+    aad[10] = static_cast<uint8_t>(tls_record::kLegacyVersion & 0xFF);  // 0x03
+    aad[11] = static_cast<uint8_t>(plaintext_len >> 8);
+    aad[12] = static_cast<uint8_t>(plaintext_len & 0xFF);
+}
+
+/// Build the 12-byte AES-GCM nonce for a TLS 1.2 GCM record (RFC 5288 §3).
+///
+/// nonce = implicit_IV (4B from key block) ‖ explicit_nonce (8B = seq big-endian)
+///
+/// @param[out] nonce        Output buffer (must have at least 12 bytes)
+/// @param      implicit_iv  Per-direction 4-byte implicit IV
+/// @param      seq          Record sequence number (host-order; written BE
+///                          as the explicit nonce)
+inline void build_nonce_aes_gcm(
+        uint8_t nonce[tls_const::kTls13NonceLen],
+        const uint8_t implicit_iv[kImplicitIvLen],
+        uint64_t seq) noexcept {
+    std::memcpy(nonce, implicit_iv, kImplicitIvLen);
+    uint64_t seq_be;
+    if constexpr (std::endian::native == std::endian::little) {
+        seq_be = std::byteswap(seq);
+    } else {
+        seq_be = seq;
+    }
+    std::memcpy(nonce + kImplicitIvLen, &seq_be, 8);
+}
+
+/// Build the 12-byte ChaCha20-Poly1305 nonce for a TLS 1.2 CHACHA20 record
+/// (RFC 7905 §2).
+///
+/// nonce = static_iv XOR (zero_pad(4B) ‖ seq_be(8B))
+///
+/// Identical shape to the TLS 1.3 nonce construction (`tls_record::build_nonce`)
+/// — RFC 7905 deliberately reused that pattern for CHACHA20 in TLS 1.2.
+///
+/// @param[out] nonce      Output buffer (must have at least 12 bytes)
+/// @param      static_iv  Per-direction 12-byte IV (full key-block IV)
+/// @param      seq        Record sequence number (host-order; XOR'd as BE)
+inline void build_nonce_chacha20(
+        uint8_t nonce[tls_const::kTls13NonceLen],
+        const uint8_t static_iv[tls_const::kTls13NonceLen],
+        uint64_t seq) noexcept {
+    // Reuse the TLS 1.3 helper — the algorithm is bit-for-bit identical.
+    tls_record::build_nonce(nonce, static_iv, seq);
+}
+
+/// Total wire-record size for a TLS 1.2 AES-GCM record encrypting `plaintext_len`
+/// plaintext bytes: 5B header + 8B explicit nonce + plaintext + 16B auth tag.
+inline constexpr uint16_t encrypted_size_aes_gcm(uint16_t plaintext_len) noexcept {
+    return tls_record::kRecordHeaderLen + kExplicitNonceLen +
+           plaintext_len + tls_record::kAuthTagLen;
+}
+
+/// Total wire-record size for a TLS 1.2 CHACHA20-POLY1305 record:
+/// 5B header + plaintext + 16B auth tag (no explicit nonce on wire).
+inline constexpr uint16_t encrypted_size_chacha20(uint16_t plaintext_len) noexcept {
+    return tls_record::kRecordHeaderLen + plaintext_len + tls_record::kAuthTagLen;
+}
+
+} // namespace tls_record_v12
+
+/// Compute the wire-record size for `plaintext_len` plaintext bytes under
+/// the given record format. Centralizes the per-format byte-budget so
+/// buffer sizing in the kernel / DPDK fan-out paths can pick the right
+/// allocation without duplicating the layout knowledge.
+[[nodiscard]] inline constexpr uint16_t encrypted_size_for(
+        TlsRecordFormat fmt, uint16_t plaintext_len) noexcept {
+    switch (fmt) {
+        case TlsRecordFormat::Tls13:
+            // RFC 8446: 5B header + plaintext + 1B inner_type + 16B tag
+            return tls_record::kRecordHeaderLen + plaintext_len + 1 +
+                   tls_record::kAuthTagLen;
+        case TlsRecordFormat::Tls12AesGcm:
+            return tls_record_v12::encrypted_size_aes_gcm(plaintext_len);
+        case TlsRecordFormat::Tls12Chacha20:
+            return tls_record_v12::encrypted_size_chacha20(plaintext_len);
+    }
+    return 0;  // unreachable
+}
+
+/// Plaintext byte offset inside a wire record relative to its start.
+/// TLS 1.3 and TLS 1.2 CHACHA20 keep plaintext immediately after the 5B
+/// header; TLS 1.2 AES-GCM has an 8B explicit nonce in between.
+///
+/// Used by in-place decryptors so callers can locate plaintext after a
+/// successful AEAD open without duplicating the format knowledge.
+[[nodiscard]] inline constexpr uint16_t plaintext_offset_for(TlsRecordFormat fmt) noexcept {
+    return (fmt == TlsRecordFormat::Tls12AesGcm)
+         ? static_cast<uint16_t>(tls_record::kRecordHeaderLen +
+                                  tls_record_v12::kExplicitNonceLen)
+         : tls_record::kRecordHeaderLen;
+}
+
 } // namespace eph::net
 
 // ─────────────────────────────────────────────────────────────────────────────

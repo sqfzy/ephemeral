@@ -153,10 +153,14 @@ public:
         }
 
         // Build the in-place decryptor (read direction, hot path).
+        // Pass through the negotiated record format so the in-place open
+        // picks the correct AAD / nonce / wire layout for TLS 1.2 GCM,
+        // TLS 1.2 CHACHA20, or TLS 1.3.
         auto dec_r = ::eph::net::detail::TlsInPlaceDecryptor::create(
             state_r->read.ki.key, key_len,
             state_r->read.ki.iv,  ::eph::net::tls_const::kTls13NonceLen,
-            state_r->read.seq);
+            state_r->read.seq,
+            state_r->record_format);
         if (!dec_r) {
             SPDLOG_LOGGER_ERROR(log,
                 "TlsState::handshake: TlsInPlaceDecryptor::create failed "
@@ -210,7 +214,11 @@ public:
     ///
     /// `emit` is called with `(uint8_t* plaintext, size_t len)` for each
     /// decrypted record's plaintext window — the pointer aliases into
-    /// `buf` (specifically `buf + 5` for that record).
+    /// `buf`. The exact offset depends on the negotiated record format:
+    ///   - TLS 1.3 / 1.2 CHACHA20: plaintext starts at `rec + 5` (header only)
+    ///   - TLS 1.2 AES-GCM:        plaintext starts at `rec + 13`
+    ///                              (header + 8B explicit nonce)
+    /// `eph::net::plaintext_offset_for(format)` centralizes this knowledge.
     template <class Emit>
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
     process_records_in_place(uint8_t* buf, std::size_t len, Emit&& emit) noexcept {
@@ -238,21 +246,26 @@ public:
 
             std::size_t plaintext_len = 0;
             uint8_t inner_ct = 0;
-            // ★ ZERO-COPY in-place AEAD: input == output == rec+5.
+            // ★ ZERO-COPY in-place AEAD. Output offset within `rec` is
+            //   format-dependent (5B header for 1.3 / CHACHA20-1.2,
+            //   5B header + 8B explicit nonce for AES-GCM-1.2).
             if (!dec_->open_in_place(rec, total, &plaintext_len, &inner_ct)) {
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::TlsCipherFailed,
                     "TlsState::process_records_in_place: AEAD open failed"});
             }
-            // TLS 1.3 inner content type filter (RFC 8446 §5.2):
-            //   0x17 (23) = application_data → emit to codec
-            //   0x16 (22) = handshake (NewSessionTicket, KeyUpdate) → skip
-            //   0x15 (21) = alert → skip (connection will close via TCP)
-            // Only application data reaches the codec; post-handshake control
-            // messages are silently consumed to keep the sequence counter in
-            // sync without corrupting the application byte stream.
+            // Inner content-type filter:
+            //   TLS 1.3 (RFC 8446 §5.2):
+            //     0x17 = application_data → emit
+            //     0x16 = handshake (NewSessionTicket, KeyUpdate) → skip
+            //     0x15 = alert → skip
+            //   TLS 1.2: the record header carries the real type, which the
+            //   in-place decryptor surfaces through `inner_ct` for symmetry.
+            //   Same filter applies.
             if (inner_ct == 0x17 && plaintext_len > 0) {
-                emit(rec + ::eph::net::tls_record::kRecordHeaderLen, plaintext_len);
+                const uint16_t pt_off =
+                    ::eph::net::plaintext_offset_for(dec_->record_format());
+                emit(rec + pt_off, plaintext_len);
             } else {
                 SPDLOG_LOGGER_DEBUG(tls_state_logger(),
                     "TlsState: skipping non-appdata record inner_ct={:#x} len={}",
@@ -281,7 +294,11 @@ public:
         while (off < len) {
             const uint16_t chunk = static_cast<uint16_t>(std::min<std::size_t>(
                 ::eph::net::tls_const::kMaxRecordPayload, len - off));
-            const uint16_t enc_size = ::eph::net::TlsEncryptor::encrypted_size(chunk);
+            // Instance method — format-aware (TLS 1.3 / 1.2 GCM / 1.2
+            // CHACHA20). Branch is fixed for the session; the static
+            // 1.3-only helper this replaced was correct only by accident
+            // when the stack supported just one format.
+            const uint16_t enc_size = enc_->encrypted_size(chunk);
             const std::size_t out_off = out.size();
             out.resize(out_off + enc_size);
             const uint16_t written = enc_->encrypt(data + off, chunk,

@@ -1006,6 +1006,19 @@ public:
         TlsHotState state{};
 
         if (proto == TLS1_3_VERSION) {
+            // Stage 3 explicitly limits TLS 1.3 hot-path to AES-GCM. ChaCha20-
+            // Poly1305 in 1.3 is rejected here so the encrypt/decrypt branches
+            // never see a (record_format=Tls13, AEAD=CHACHA20) ambiguity.
+            // Stage 2 added 1.3 CHACHA20 cipher recognition for clean error
+            // reporting; this gate keeps it from quietly producing wrong
+            // ciphertext. Re-enable by introducing a `Tls13Chacha20` record
+            // format if a 1.3 venue ever requires it.
+            if (is_chacha20) {
+                return std::unexpected(
+                    "TLS 1.3 + CHACHA20-POLY1305 hot-path is not supported "
+                    "(use AES-GCM or set min_version=Tls12)");
+            }
+
             // TLS 1.3: derive per-direction key/IV from the traffic secret
             // via HKDF-Expand-Label (RFC 8446 §7.1).
 
@@ -1120,14 +1133,16 @@ public:
         return state;
     }
 
-    /// Return the key length for the negotiated cipher (16 or 32).
+    /// Return the key length for the negotiated cipher.
+    /// AES-128-GCM → 16, AES-256-GCM / CHACHA20-POLY1305 → 32.
     [[nodiscard]] size_t cipher_key_len() const noexcept {
         if (!ssl_) return 0;
         const SSL_CIPHER* c = SSL_get_current_cipher(ssl_);
         if (!c) return 0;
         int nid = SSL_CIPHER_get_cipher_nid(c);
-        if (nid == NID_aes_128_gcm) return 16;
-        if (nid == NID_aes_256_gcm) return 32;
+        if (nid == NID_aes_128_gcm)        return 16;
+        if (nid == NID_aes_256_gcm)        return 32;
+        if (nid == NID_chacha20_poly1305)  return 32;
         return 0;
     }
 

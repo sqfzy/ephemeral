@@ -409,7 +409,11 @@ public:
         while (off < len) {
             const uint16_t chunk = static_cast<uint16_t>(std::min<std::size_t>(
                 ::eph::net::tls_const::kMaxRecordPayload, len - off));
-            const uint16_t enc_size = ::eph::net::TlsRecordCrypto::encrypted_size(chunk);
+            // Instance method — format-aware. The negotiated format is
+            // fixed for the session, so this is a single load + branch
+            // (predictable). Was a static call before TLS 1.2 support
+            // when only the 1.3 layout existed.
+            const uint16_t enc_size = crypto_->encrypted_size(chunk);
             const std::size_t out_off = ciphertext_out.size();
             ciphertext_out.resize(out_off + enc_size);
             const uint16_t written = crypto_->encrypt(plaintext + off, chunk,
