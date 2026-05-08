@@ -228,6 +228,59 @@ TEST(TlsConfigEquality, DifferentVerifyPeerAreNotEqual) {
     EXPECT_NE(a, b);
 }
 
+TEST(TlsConfigEquality, DifferentMinVersionAreNotEqual) {
+    TlsConfig a, b;
+    a.min_version = TlsVersion::Tls13;
+    b.min_version = TlsVersion::Tls12;
+    EXPECT_NE(a, b);
+}
+
+// =======================================================================
+// TlsConfig::min_version
+// =======================================================================
+
+TEST(TlsConfigMinVersion, DefaultsToTls13) {
+    TlsConfig cfg;
+    EXPECT_EQ(cfg.min_version, TlsVersion::Tls13);
+}
+
+TEST(TlsConfigWarnings, MinVersionTls12EmitsDowngradeWarning) {
+    TlsConfig cfg;
+    cfg.hostname = "example.com";
+    cfg.min_version = TlsVersion::Tls12;
+    auto w = cfg.warnings();
+    bool found = false;
+    for (const auto& msg : w) {
+        if (msg.find("min_version=Tls12") != std::string::npos &&
+            msg.find("downgrade") != std::string::npos) {
+            // Spelling is "force the connection to 1.2"; check by keyword
+            found = true;
+            break;
+        }
+        // Accept any warning that explicitly mentions min_version=Tls12
+        if (msg.find("min_version=Tls12") != std::string::npos) {
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found) << "expected min_version=Tls12 warning";
+}
+
+TEST(TlsConfigDump, IncludesMinVersion) {
+    TlsConfig cfg;
+    cfg.hostname = "example.com";
+    cfg.min_version = TlsVersion::Tls12;
+    auto d = cfg.dump();
+    EXPECT_NE(d.find("min_version=tls12"), std::string::npos) << d;
+}
+
+TEST(TlsConfigToJson, IncludesMinVersion) {
+    TlsConfig cfg;
+    cfg.hostname = "example.com";
+    auto j = cfg.to_json();
+    EXPECT_NE(j.find("\"min_version\":\"tls13\""), std::string::npos) << j;
+}
+
 // =======================================================================
 // TlsConfig formatter
 // =======================================================================
@@ -337,8 +390,11 @@ TEST(TlsKeygen, DeriveAes128Key) {
 // TlsHotState — structural invariants
 // =======================================================================
 
-TEST(TlsHotState, SizeIs256Bytes) {
-    EXPECT_EQ(sizeof(TlsHotState), 256u);
+TEST(TlsHotState, SizeIs320Bytes) {
+    // 4 cache lines of key material + 1 cache line for the (alignas(64))
+    // version field. The extra line is read-once at encryptor / decryptor
+    // construction and never touched on the per-record hot path.
+    EXPECT_EQ(sizeof(TlsHotState), 320u);
 }
 
 TEST(TlsKeyIv, SizeIs64Bytes) {

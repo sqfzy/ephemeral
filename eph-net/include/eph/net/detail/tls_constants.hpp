@@ -44,18 +44,44 @@ inline spdlog::logger* tls_record_logger() {
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TLS protocol version
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Negotiated TLS protocol version, fixed once handshake completes.
+///
+/// Used both as a `TlsConfig` policy knob (`min_version` — minimum protocol
+/// version SSL_CTX is allowed to negotiate; security default is `Tls13`)
+/// and as a `TlsHotState` field (the version actually negotiated, set by
+/// `TlsSession::extract_hot_state()` and read by the record-layer encrypt /
+/// decrypt branches).
+///
+/// The enum values are deliberately small (1 byte) so the field fits in the
+/// existing `TlsHotState` cache-line layout without growing it.
+enum class TlsVersion : uint8_t {
+    Tls13 = 0,  ///< TLS 1.3 (RFC 8446) — default; HKDF-Expand-Label key derivation, AAD = record header (5B), nonce = static_iv XOR seq_be
+    Tls12 = 1,  ///< TLS 1.2 GCM/CHACHA20 (RFC 5246/5288/7905) — opt-in; key block from SSL_generate_key_block, AAD = seq‖type‖version‖length (13B), nonce = implicit_IV(4B) ‖ explicit_nonce(8B)
+};
+
+/// Short label for a TLS version (for logging / `dump()` / `to_json()`).
+[[nodiscard]] inline constexpr const char* to_string(TlsVersion v) noexcept {
+    return v == TlsVersion::Tls12 ? "tls12" : "tls13";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TLS constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// TLS cryptographic constants shared across the transport layer.
 ///
-/// These values are defined by the TLS 1.3 specification (RFC 8446)
-/// and the AES-GCM AEAD algorithm (NIST SP 800-38D).
+/// These values are defined by the TLS 1.3 specification (RFC 8446),
+/// the TLS 1.2 GCM specification (RFC 5288), and the AES-GCM AEAD
+/// algorithm (NIST SP 800-38D).
 namespace tls_const {
 
 inline constexpr uint16_t kMaxRecordPayload  = 16384; ///< Maximum TLS plaintext fragment size (2^14, RFC 8446 section 5.1)
 inline constexpr uint16_t kTls13NonceLen     = 12;    ///< AES-GCM nonce length in bytes (96 bits)
 inline constexpr uint16_t kAes256KeyLen      = 32;    ///< AES-256 key length in bytes (256 bits)
+inline constexpr uint16_t kTls12ImplicitIvLen = 4;    ///< TLS 1.2 GCM implicit IV (RFC 5288): static 4-byte prefix derived from the key block
 
 } // namespace tls_const
 
@@ -69,11 +95,19 @@ inline constexpr uint16_t kAes256KeyLen      = 32;    ///< AES-256 key length in
 /// direction of the TLS session. Read-only after key extraction; padding
 /// fills the remainder of the 64-byte cache line to prevent false sharing.
 ///
+/// `iv` is interpreted differently per `TlsHotState::version`:
+///   - TLS 1.3: full 12-byte static IV; per-record nonce = `iv XOR seq_be`
+///   - TLS 1.2 GCM: only `iv[0..3]` (`tls_const::kTls12ImplicitIvLen`) is
+///     populated — the implicit IV from the key block. Per-record nonce =
+///     `implicit_iv ‖ explicit_nonce(8B = seq_be)`. The remaining 8 bytes
+///     of `iv[]` are left zero so a misread under the wrong version surfaces
+///     as an immediate AEAD failure rather than a silent garbage nonce.
+///
 /// @warning Contains sensitive cryptographic material. The owning TlsHotState
 ///          destructor scrubs this struct via OPENSSL_cleanse.
 struct alignas(64) TlsKeyIv {
     uint8_t key[tls_const::kAes256KeyLen]{};  ///< AES-256 key (32 bytes)
-    uint8_t iv[tls_const::kTls13NonceLen]{};  ///< AES-GCM initialization vector (12 bytes)
+    uint8_t iv[tls_const::kTls13NonceLen]{};  ///< AES-GCM IV: 12B static IV (TLS 1.3) or 4B implicit_IV in iv[0..3] (TLS 1.2)
     // 20 bytes padding to 64
 };
 static_assert(sizeof(TlsKeyIv) == 64, "TlsKeyIv must be exactly 1 cache line");
@@ -92,20 +126,32 @@ static_assert(sizeof(TlsKeyMaterial) == 128, "TlsKeyMaterial must be exactly 2 c
 
 /// Complete TLS session key state for both directions (TX and RX).
 ///
-/// Total size: 4 cache lines (256 bytes). After handshake and key extraction,
+/// Total size: 5 cache lines (320 bytes). After handshake and key extraction,
 /// this struct is consumed by TlsEncryptor and TlsDecryptor (or the combined
 /// TlsRecordCrypto) to initialize their AEAD contexts.
+///
+/// Layout:
+///   - Lines 1-4 (offsets 0..255): write/read key material (unchanged from TLS 1.3)
+///   - Line 5  (offset 256+):      `version` plus padding. `version` is set
+///     once by `TlsSession::extract_hot_state()` and read on every record by
+///     the encrypt / decrypt branches; placed on its own cache line via
+///     alignas so it never shares with the hot `seq` write.
 ///
 /// @warning Contains sensitive key material. Destructor scrubs all key/IV data
 ///          via OPENSSL_cleanse to prevent residual secrets in freed memory.
 struct TlsHotState {
     TlsKeyMaterial write{};  ///< Write-direction key material (2 cache lines, used by TlsEncryptor)
     TlsKeyMaterial read{};   ///< Read-direction key material (2 cache lines, used by TlsDecryptor)
+    /// Negotiated TLS version. Read-only after `extract_hot_state()`. Encryptor /
+    /// decryptor branch on this once at construction; the field itself is not
+    /// re-read on the per-record hot path.
+    alignas(64) TlsVersion version = TlsVersion::Tls13;
 
     ~TlsHotState() {
         // Scrub all key material (keys + IVs) to prevent residual
         // secret data in freed memory.  OPENSSL_cleanse is a compiler-
         // barrier-protected memset that won't be optimized away.
+        // `version` is not secret — no need to cleanse.
         OPENSSL_cleanse(&write.ki, sizeof(write.ki));
         OPENSSL_cleanse(&read.ki,  sizeof(read.ki));
     }
@@ -121,21 +167,40 @@ struct TlsHotState {
     const uint8_t* read_iv()   const noexcept { return read.ki.iv; }
 };
 
-static_assert(sizeof(TlsHotState) == 256, "TlsHotState must be exactly 4 cache lines");
+static_assert(sizeof(TlsHotState) == 320, "TlsHotState must be exactly 5 cache lines (4 for key material + 1 for version)");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS session config
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Configuration for a TLS 1.3 session.
+/// Configuration for a TLS session.
 ///
 /// Controls SNI hostname, certificate verification, CA trust store,
-/// mutual TLS client credentials, and handshake timeout.
+/// mutual TLS client credentials, handshake timeout, and minimum
+/// negotiable protocol version.
+///
+/// Default `min_version = Tls13` — i.e. the SSL_CTX rejects any
+/// negotiation below TLS 1.3, which matches the historical (pre-1.2)
+/// behaviour of this stack and is the safe default. Setting
+/// `min_version = Tls12` opens the door to TLS 1.2 GCM/CHACHA20 (e.g.
+/// to traverse middleboxes that drop TLS 1.3) — see the `warnings()`
+/// output and `docs/tls-crypto-recommendations.md` for the downgrade
+/// risk discussion.
 struct TlsConfig {
     std::string hostname{};           ///< SNI hostname (sent during ClientHello for virtual hosting)
     std::string ca_cert_path{};       ///< CA certificate file path (PEM format), empty = system default
     bool        verify_peer = true;   ///< Verify server certificate chain and hostname
     std::chrono::milliseconds handshake_timeout{5000}; ///< Maximum time for the TLS handshake
+
+    /// Minimum negotiable TLS version. Default `Tls13` keeps the historical
+    /// "TLS 1.3 only" behaviour. Set `Tls12` to opt into TLS 1.2 GCM/CHACHA20
+    /// negotiation; the SSL_CTX is then configured with a strict AEAD-only
+    /// cipher whitelist (`ECDHE-{RSA,ECDSA}-AES{128,256}-GCM` +
+    /// `ECDHE-{RSA,ECDSA}-CHACHA20-POLY1305`). CBC suites are never accepted
+    /// at any version of this stack. Opting into 1.2 also accepts the
+    /// possibility of an attacker forcing a downgrade — only set Tls12 when
+    /// you actually need it (e.g. proxy interop).
+    TlsVersion min_version = TlsVersion::Tls13;
 
     /// Client certificate for mutual TLS (mTLS).
     /// Both must be set together; leave both empty to disable client authentication.
@@ -208,7 +273,8 @@ struct TlsConfig {
             && a.client_cert_path == b.client_cert_path
             && a.client_key_path == b.client_key_path
             && a.pinned_spki_sha256 == b.pinned_spki_sha256
-            && a.tls_resumption_ticket == b.tls_resumption_ticket;
+            && a.tls_resumption_ticket == b.tls_resumption_ticket
+            && a.min_version == b.min_version;
     }
 
     /// JSON-formatted config for logging/monitoring.
@@ -218,13 +284,15 @@ struct TlsConfig {
             "{{"
             "\"hostname\":\"{}\",\"ca_cert_path\":\"{}\","
             "\"verify_peer\":{},\"handshake_timeout_ms\":{},"
-            "\"client_cert_path\":\"{}\",\"has_client_key\":{}}}",
+            "\"client_cert_path\":\"{}\",\"has_client_key\":{},"
+            "\"min_version\":\"{}\"}}",
             detail::json_escape(hostname),
             detail::json_escape(ca_cert_path),
             verify_peer ? "true" : "false",
             handshake_timeout.count(),
             detail::json_escape(client_cert_path),
-            client_key_path.empty() ? "false" : "true");
+            client_key_path.empty() ? "false" : "true",
+            to_string(min_version));
     }
 
     /// Human-readable dump for debug logging.
@@ -232,11 +300,12 @@ struct TlsConfig {
     [[nodiscard]] std::string dump() const {
         return std::format(
             "TlsConfig(hostname='{}', verify_peer={}, timeout={}ms, "
-            "ca='{}', client_cert='{}', client_key='{}')",
+            "ca='{}', client_cert='{}', client_key='{}', min_version={})",
             hostname, verify_peer, handshake_timeout.count(),
             ca_cert_path,
             client_cert_path.empty() ? "(none)" : client_cert_path,
-            client_key_path.empty() ? "(none)" : "(redacted)");
+            client_key_path.empty() ? "(none)" : "(redacted)",
+            to_string(min_version));
     }
 
     /// Check for non-fatal contradictions or likely misconfigurations.
@@ -268,6 +337,12 @@ struct TlsConfig {
             w.emplace_back("ca_cert_path is set but verify_peer=false -- "
                            "CA certificate will be loaded but not used for "
                            "verification");
+        if (min_version == TlsVersion::Tls12)
+            w.emplace_back("min_version=Tls12 -- TLS 1.2 negotiation is "
+                           "permitted; an attacker who can interpose may force "
+                           "the connection to 1.2 even if the server supports "
+                           "1.3. Only opt in when interop with TLS 1.2-only "
+                           "middleboxes is actually required");
         return w;
     }
 };

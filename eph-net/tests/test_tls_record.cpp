@@ -41,7 +41,7 @@ static_assert(tls_const::kTls13NonceLen == 12);
 static_assert(tls_const::kAes256KeyLen == 32);
 
 static_assert(sizeof(TlsKeyMaterial) == 128, "Must fit two cache lines");
-static_assert(sizeof(TlsHotState) == 256, "Must fit four cache lines");
+static_assert(sizeof(TlsHotState) == 320, "Must fit five cache lines (4 key + 1 version)");
 
 // Sequence number threshold ordering
 static_assert(tls_record::kSequenceWarnThreshold < tls_record::kSequenceReconnectThreshold);
