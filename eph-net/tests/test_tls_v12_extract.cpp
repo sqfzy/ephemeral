@@ -458,6 +458,163 @@ TEST(TlsV12Roundtrip, Chacha20_WireLayout) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// TLS 1.2 data-plane interop with aws-lc
+//
+// After our `extract_hot_state()` lifts keys out of the SSL context, we
+// build encrypt/decrypt with our format-aware record layer and verify
+// the records are wire-compatible with the SAME server's SSL_read /
+// SSL_write — the strongest spec-compliance check short of a real
+// network counterparty.
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+bool drive_data_plane_v12(const V12RoundtripCase& c, const char* cipher_list) {
+    auto sc = SelfSignedCert::generate();
+    PinnedServer srv;
+    if (!srv.init(sc, TLS1_2_VERSION, cipher_list)) return false;
+
+    MockTcp tcp;
+    auto cfg = make_client_cfg(eph::net::TlsVersion::Tls12);
+    auto sess_r = eph::net::TlsSession<MockTcp>::create(tcp, cfg);
+    if (!sess_r) return false;
+    if (!drive_handshake(*sess_r, tcp, srv)) return false;
+
+    auto state_r = sess_r->extract_hot_state();
+    if (!state_r) return false;
+    EXPECT_EQ(state_r->record_format, c.format);
+
+    // Encrypt with our hot path, deliver to the server's read BIO,
+    // confirm the server's SSL_read returns the same bytes.
+    auto enc_r = eph::net::TlsEncryptor::create(*state_r, c.key_len);
+    if (!enc_r) return false;
+
+    constexpr const char* kPlaintext = "ping-from-eph-tls-v12";
+    const uint16_t pt_len = static_cast<uint16_t>(std::strlen(kPlaintext));
+    std::vector<uint8_t> rec(enc_r->encrypted_size(pt_len));
+    const uint16_t w = enc_r->encrypt(
+        reinterpret_cast<const uint8_t*>(kPlaintext), pt_len, rec.data());
+    EXPECT_GT(w, 0u);
+
+    BIO_write(srv.rbio, rec.data(), static_cast<int>(w));
+    char server_buf[256] = {};
+    const int n = SSL_read(srv.ssl, server_buf, sizeof(server_buf));
+    EXPECT_EQ(n, static_cast<int>(pt_len));
+    EXPECT_EQ(std::string_view(server_buf, n), kPlaintext);
+
+    // Server replies — confirm our decryptor accepts what aws-lc emits.
+    auto dec_r = eph::net::TlsDecryptor::create(*state_r, c.key_len);
+    if (!dec_r) return false;
+
+    constexpr const char* kReply = "pong-from-aws-lc-server";
+    const int writ = SSL_write(srv.ssl, kReply,
+                                static_cast<int>(std::strlen(kReply)));
+    EXPECT_EQ(writ, static_cast<int>(std::strlen(kReply)));
+
+    std::vector<uint8_t> server_record;
+    char buf[4096];
+    int got;
+    while ((got = BIO_read(srv.wbio, buf, sizeof(buf))) > 0) {
+        server_record.insert(server_record.end(), buf, buf + got);
+    }
+    EXPECT_FALSE(server_record.empty());
+
+    std::vector<uint8_t> recovered(256);
+    uint16_t recovered_len = 0;
+    uint8_t  inner_ct      = 0;
+    const bool ok = dec_r->decrypt(server_record.data(),
+                                    static_cast<uint16_t>(server_record.size()),
+                                    recovered.data(), recovered_len,
+                                    &inner_ct);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(recovered.data()),
+                                recovered_len),
+              kReply);
+    EXPECT_EQ(inner_ct, eph::net::tls_record::kContentTypeAppData);
+    return ok;
+}
+
+} // namespace
+
+TEST(TlsV12Interop, DataPlane_AesGcm128) {
+    EXPECT_TRUE(drive_data_plane_v12(
+        {eph::net::TlsRecordFormat::Tls12AesGcm, 16, "AES-128-GCM"},
+        "ECDHE-ECDSA-AES128-GCM-SHA256"));
+}
+
+TEST(TlsV12Interop, DataPlane_AesGcm256) {
+    EXPECT_TRUE(drive_data_plane_v12(
+        {eph::net::TlsRecordFormat::Tls12AesGcm, 32, "AES-256-GCM"},
+        "ECDHE-ECDSA-AES256-GCM-SHA384"));
+}
+
+TEST(TlsV12Interop, DataPlane_Chacha20Poly1305) {
+    EXPECT_TRUE(drive_data_plane_v12(
+        {eph::net::TlsRecordFormat::Tls12Chacha20, 32, "CHACHA20-POLY1305"},
+        "ECDHE-ECDSA-CHACHA20-POLY1305"));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Negotiation matrix — min_version policy gates
+// ═══════════════════════════════════════════════════════════════════════
+
+TEST(TlsV12Negotiation, ClientMinTls13_Vs_ServerOnly12_Fails) {
+    auto sc = SelfSignedCert::generate();
+    PinnedServer srv;
+    ASSERT_TRUE(srv.init(sc, TLS1_2_VERSION,
+                         "ECDHE-ECDSA-AES128-GCM-SHA256"));
+
+    MockTcp tcp;
+    auto cfg = make_client_cfg(eph::net::TlsVersion::Tls13);  // explicitly 1.3-only
+    auto sess_r = eph::net::TlsSession<MockTcp>::create(tcp, cfg);
+    ASSERT_TRUE(sess_r.has_value());
+
+    EXPECT_FALSE(drive_handshake(*sess_r, tcp, srv))
+        << "min_version=Tls13 must NOT downgrade to a TLS 1.2-only server";
+}
+
+TEST(TlsV12Negotiation, ClientMinTls12_Vs_ServerOnly13_Succeeds) {
+    auto sc = SelfSignedCert::generate();
+    PinnedServer srv;
+    // For TLS 1.3, cipher_list is unused.
+    ASSERT_TRUE(srv.init(sc, TLS1_3_VERSION, nullptr));
+
+    MockTcp tcp;
+    auto cfg = make_client_cfg(eph::net::TlsVersion::Tls12);  // allow 1.2 OR 1.3
+    auto sess_r = eph::net::TlsSession<MockTcp>::create(tcp, cfg);
+    ASSERT_TRUE(sess_r.has_value());
+
+    ASSERT_TRUE(drive_handshake(*sess_r, tcp, srv))
+        << "min_version=Tls12 should still negotiate 1.3 with a 1.3-only server";
+
+    auto state_r = sess_r->extract_hot_state();
+    ASSERT_TRUE(state_r.has_value());
+    EXPECT_EQ(state_r->version, eph::net::TlsVersion::Tls13)
+        << "Server is 1.3-only; negotiation must converge on 1.3";
+}
+
+// "No CBC, ever" — defense in depth across two layers:
+//   1. aws-lc / BoringSSL has removed CBC cipher suites from its built-in
+//      catalogue, so `SSL_CTX_set_cipher_list("ECDHE-ECDSA-AES128-SHA256")`
+//      fails outright (no recognised cipher in the string).
+//   2. Our own `SSL_CTX_set_cipher_list(kTls12AeadOnly)` further restricts
+//      to GCM / CHACHA20 even within the AEAD-only set aws-lc does support.
+// This test verifies (1): even before our whitelist gets a chance, the
+// crypto library refuses to install a CBC cipher. The handshake-level
+// "shared cipher" check is unreachable because the server can't even
+// configure CBC.
+TEST(TlsV12Negotiation, AwsLcRejectsCBCCipherListInstall) {
+    auto sc = SelfSignedCert::generate();
+    PinnedServer srv;
+    EXPECT_FALSE(srv.init(sc, TLS1_2_VERSION,
+                          "ECDHE-ECDSA-AES128-SHA256"))
+        << "aws-lc / BoringSSL must refuse a CBC-only cipher list. If this "
+           "starts succeeding, our own AEAD-only whitelist (kTls12AeadOnly) "
+           "becomes the load-bearing CBC defense — verify it in a separate "
+           "negotiation test.";
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // TLS 1.3 control — verify the existing path still labels correctly
 // ═══════════════════════════════════════════════════════════════════════
 

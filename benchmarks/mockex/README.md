@@ -61,6 +61,31 @@ capture a real stream, fit new mockex parameters from it, then flip back
 to mock mode and use `ks_validate.py` to confirm the mockex distribution
 matches real traffic.
 
+## TLS server (optional, per-scenario)
+
+`mockex` can wrap any TCP-based scenario in TLS by setting
+`use_tls = true` in the scenario's TOML section and pointing to cert/key
+paths in the global `[tls]` table:
+
+```ini
+[tls]
+cert_path     = benchmarks/mockex/fixtures/tls/server.crt
+key_path      = benchmarks/mockex/fixtures/tls/server.key
+# Optional: minimum negotiable TLS version. Defaults to "tls13"; set
+# "tls12" only when validating eph-net's TLS 1.2 GCM/CHACHA20 path
+# (interop with TLS 1.2-only middleboxes).
+# min_version = "tls12"
+
+[scenarios.lat_ws]
+port    = 20002
+use_tls = true
+```
+
+When `min_version = "tls12"` is set, mockex installs the same AEAD-only
+cipher whitelist as the eph-net client (ECDHE-{RSA,ECDSA}-AES{128,256}-GCM
++ ECDHE-{RSA,ECDSA}-CHACHA20-POLY1305). CBC suites are never accepted at
+either version.
+
 ## Refit workflow
 
 The checked-in `fixtures/*_sample.jsonl` and `*_params.ini` are
