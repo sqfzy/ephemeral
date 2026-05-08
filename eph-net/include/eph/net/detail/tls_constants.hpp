@@ -67,6 +67,40 @@ enum class TlsVersion : uint8_t {
     return v == TlsVersion::Tls12 ? "tls12" : "tls13";
 }
 
+/// Wire-level record format negotiated for the session.
+///
+/// `TlsVersion` answers "what protocol version did we negotiate?" — but
+/// inside a single TLS 1.2 session the wire format depends on the AEAD
+/// cipher: AES-GCM has an 8-byte explicit nonce on the wire (RFC 5288)
+/// while CHACHA20-POLY1305 has none and reuses the TLS 1.3-style nonce
+/// construction (RFC 7905). The record-layer encrypt/decrypt code
+/// therefore branches on this field, not on `TlsVersion` alone.
+///
+/// Set once by `TlsSession::extract_hot_state()`; read by encryptor /
+/// decryptor at construction. Internal — never exposed in `TlsConfig`.
+enum class TlsRecordFormat : uint8_t {
+    /// TLS 1.3 (RFC 8446): 12B static IV XOR seq nonce; 5B AAD = record header;
+    /// inner content type appended pre-encryption; wire = header‖ciphertext+tag.
+    Tls13 = 0,
+    /// TLS 1.2 AES-GCM (RFC 5288): 4B implicit_IV ‖ 8B explicit_nonce nonce;
+    /// 13B AAD = seq‖type‖version‖length; explicit_nonce on wire =
+    /// header‖explicit_nonce(8B)‖ciphertext+tag.
+    Tls12AesGcm = 1,
+    /// TLS 1.2 CHACHA20-POLY1305 (RFC 7905): 12B IV XOR seq nonce (same shape
+    /// as TLS 1.3); 13B AAD = seq‖type‖version‖length; no explicit nonce on
+    /// wire = header‖ciphertext+tag.
+    Tls12Chacha20 = 2,
+};
+
+[[nodiscard]] inline constexpr const char* to_string(TlsRecordFormat f) noexcept {
+    switch (f) {
+        case TlsRecordFormat::Tls13:         return "tls13";
+        case TlsRecordFormat::Tls12AesGcm:   return "tls12-aes-gcm";
+        case TlsRecordFormat::Tls12Chacha20: return "tls12-chacha20-poly1305";
+    }
+    return "unknown";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TLS constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,6 +180,13 @@ struct TlsHotState {
     /// decryptor branch on this once at construction; the field itself is not
     /// re-read on the per-record hot path.
     alignas(64) TlsVersion version = TlsVersion::Tls13;
+    /// Wire-level record format. Set together with `version` in
+    /// `extract_hot_state()`. The two are correlated but not redundant:
+    /// `version` is user-facing (TLS 1.2 vs 1.3), `record_format` selects
+    /// the encrypt/decrypt path inside the record layer (1.3 vs 1.2 GCM
+    /// vs 1.2 CHACHA20-POLY1305). Co-located on the same 5th cache line
+    /// as `version`; sizeof(TlsHotState) stays 320.
+    TlsRecordFormat record_format = TlsRecordFormat::Tls13;
 
     ~TlsHotState() {
         // Scrub all key material (keys + IVs) to prevent residual

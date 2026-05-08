@@ -205,16 +205,33 @@ int main(int argc, char** argv) {
                          "[tls].key_path are missing in {}", config_path);
             return 1;
         }
+
+        // Optional `[tls].min_version` ("tls13" — default — or "tls12").
+        // mockex mirrors the eph-net client policy: default is 1.3-only;
+        // operators flip to "tls12" only to test the eph-net 1.2 path.
+        auto min_version = eph::net::TlsVersion::Tls13;
+        if (auto mv = cfg_e->raw()["tls"]["min_version"].value<std::string>()) {
+            if (*mv == "tls12") {
+                min_version = eph::net::TlsVersion::Tls12;
+            } else if (*mv != "tls13") {
+                SPDLOG_ERROR("[mockex] [tls].min_version='{}' invalid "
+                             "(allowed: tls12 | tls13)", *mv);
+                return 1;
+            }
+        }
+
         auto srv_r = mockex::tls::TlsServer::create({
-            .cert_path = *cert,
-            .key_path  = *key,
+            .cert_path   = *cert,
+            .key_path    = *key,
+            .min_version = min_version,
         });
         if (!srv_r) {
             SPDLOG_ERROR("[mockex] TlsServer::create failed: {}", srv_r.error());
             return 1;
         }
         tls_server = std::shared_ptr<mockex::tls::TlsServer>(std::move(*srv_r));
-        SPDLOG_INFO("[mockex] TLS enabled (cert={}, key={})", *cert, *key);
+        SPDLOG_INFO("[mockex] TLS enabled (cert={}, key={}, min_version={})",
+                    *cert, *key, eph::net::to_string(min_version));
     }
 
     mockex::ScenarioContext ctx{

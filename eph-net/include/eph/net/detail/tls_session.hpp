@@ -1,12 +1,17 @@
 #pragma once
 
 /// @file tls_session.hpp
-/// TLS 1.3 session management with custom BIO for generic TCP transport.
+/// TLS 1.2 / 1.3 session management with custom BIO for generic TCP transport.
 ///
 /// Uses aws-lc (BoringSSL-compatible) API via custom BIO that reads/writes
 /// through a user-space TCP session. Supports:
-///   - TLS 1.3 handshake over any TcpTransport backend
-///   - Session key extraction for hot-path AEAD encryption
+///   - TLS 1.3 handshake over any TcpTransport backend (default)
+///   - TLS 1.2 GCM/CHACHA20 handshake (opt-in via `TlsConfig::min_version`,
+///     for interop with TLS 1.2-only middleboxes; AEAD-only — CBC suites
+///     are explicitly forbidden)
+///   - Session key extraction for hot-path AEAD encryption (both 1.3 via
+///     SSL_get_*_traffic_secret + HKDF-Expand-Label, and 1.2 via
+///     SSL_generate_key_block + key-block split)
 ///   - Custom BIO backed by TcpTransport send/poll_rx
 ///
 /// Responsibility: handshake + session key extraction only.
@@ -366,13 +371,51 @@ public:
             SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
         SSL_CTX_sess_set_new_cb(ctx, &TlsSession::new_session_cb_);
 
-        // Configure TLS 1.3 minimum
-        if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION)) {
+        // Configure minimum protocol version per `TlsConfig::min_version`.
+        // Default Tls13 keeps the historical 1.3-only behaviour; opting
+        // into Tls12 also installs a strict AEAD-only cipher whitelist
+        // (no CBC, ever) so even on a 1.2 negotiation the wire-level
+        // crypto stays equivalent to the 1.3 path.
+        const int min_proto = (config.min_version == TlsVersion::Tls12)
+                            ? TLS1_2_VERSION : TLS1_3_VERSION;
+        if (!SSL_CTX_set_min_proto_version(ctx, min_proto)) {
             auto err = detail::ssl_error_string();
             SSL_CTX_free(ctx);
-            SPDLOG_LOGGER_ERROR(log, "Failed to set TLS 1.3 minimum: {}", err);
+            SPDLOG_LOGGER_ERROR(log,
+                "Failed to set TLS minimum version (min_version={}): {}",
+                to_string(config.min_version), err);
             return std::unexpected(std::format(
-                "Failed to set TLS 1.3 minimum: {}", err));
+                "Failed to set TLS minimum version: {}", err));
+        }
+
+        if (config.min_version == TlsVersion::Tls12) {
+            // Strict AEAD-only cipher whitelist for TLS 1.2 negotiation.
+            // CBC suites are NEVER acceptable — refuse them at SSL_CTX
+            // setup time so a downgrade can't sneak in via cipher
+            // negotiation. The 1.3 cipher list is left at aws-lc's
+            // default (already AEAD-only by spec).
+            //
+            // Order intentionally mirrors security preference:
+            //   ECDSA before RSA (smaller, faster signatures)
+            //   AES-GCM before CHACHA20 (HW-accelerated on most x86/arm64)
+            //   256-bit before 128-bit (defence in depth, marginal cost)
+            static constexpr const char* kTls12AeadOnly =
+                "ECDHE-ECDSA-AES256-GCM-SHA384:"
+                "ECDHE-ECDSA-AES128-GCM-SHA256:"
+                "ECDHE-RSA-AES256-GCM-SHA384:"
+                "ECDHE-RSA-AES128-GCM-SHA256:"
+                "ECDHE-ECDSA-CHACHA20-POLY1305:"
+                "ECDHE-RSA-CHACHA20-POLY1305";
+            if (!SSL_CTX_set_cipher_list(ctx, kTls12AeadOnly)) {
+                auto err = detail::ssl_error_string();
+                SSL_CTX_free(ctx);
+                SPDLOG_LOGGER_ERROR(log,
+                    "Failed to install TLS 1.2 AEAD cipher whitelist: {}", err);
+                return std::unexpected(std::format(
+                    "Failed to install TLS 1.2 AEAD cipher whitelist: {}", err));
+            }
+            SPDLOG_LOGGER_INFO(log,
+                "TLS 1.2 negotiation enabled (AEAD-only ciphers, no CBC)");
         }
 
         // Load CA certificates
@@ -893,11 +936,12 @@ public:
 
     /// Extract TLS 1.3 traffic keys for direct AEAD encryption.
     ///
-    /// Uses aws-lc SSL_get_{read,write}_traffic_secret (NOT exporter keys)
-    /// to obtain the REAL application traffic secrets, then derives key/IV
-    /// via HKDF-Expand-Label. Reads the current seq numbers from SSL into
-    /// the returned `TlsHotState` so the hot-path crypto starts from the
-    /// SSL session's current next-record sequence.
+    /// Uses aws-lc SSL_get_{read,write}_traffic_secret (TLS 1.3) or
+    /// SSL_generate_key_block (TLS 1.2) to obtain the REAL application
+    /// traffic keys, then writes them into a `TlsHotState`. Reads the
+    /// current seq numbers from SSL into the returned state so the
+    /// hot-path crypto starts from the SSL session's current next-record
+    /// sequence.
     ///
     /// **Pre-condition**: the caller MUST guarantee that no further
     /// `SSL_write` / `SSL_read` will occur on this session after this call.
@@ -912,8 +956,11 @@ public:
     /// `TlsWsSink` byte-sink drives through `encrypt_for_send` /
     /// `decrypt_into` (both internally call `SSL_write` / `SSL_read`).
     ///
-    /// Key length is determined dynamically from the negotiated cipher:
-    ///   AES_128_GCM -> 16-byte key    AES_256_GCM -> 32-byte key
+    /// Key length and record format are determined dynamically from the
+    /// negotiated cipher:
+    ///   TLS 1.3 AEAD       -> HKDF-Expand-Label("key"/"iv") on traffic secret
+    ///   TLS 1.2 AES-GCM    -> SSL_generate_key_block, 4B implicit IV per dir
+    ///   TLS 1.2 CHACHA20   -> SSL_generate_key_block, 12B IV per dir
     [[nodiscard]] std::expected<TlsHotState, std::string> extract_hot_state() {
         [[maybe_unused]] auto log = detail::tls_logger();
 
@@ -921,10 +968,10 @@ public:
             return std::unexpected("Cannot extract keys: handshake not done");
         }
 
-        // Determine key length from negotiated cipher. Note we deliberately
-        // defer setting `suppress_close_notify_ = true` until *after* every
-        // fallible step below succeeds: the suppress flag's contract is
-        // "the caller has taken over the data path — do not send a
+        // Determine cipher and AEAD shape. We deliberately defer setting
+        // `suppress_close_notify_ = true` until *after* every fallible
+        // step below succeeds: the suppress flag's contract is "the
+        // caller has taken over the data path — do not send a
         // close_notify when ~TlsSession runs". On a mid-extract failure
         // the caller has NOT taken over, so the destructor should still
         // attempt the orderly close (or be cleanly ignored if the session
@@ -934,57 +981,135 @@ public:
         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
         if (!cipher) return std::unexpected("No cipher negotiated");
 
-        int cipher_nid = SSL_CIPHER_get_cipher_nid(cipher);
-        size_t key_len;
-        if (cipher_nid == NID_aes_128_gcm)      key_len = 16;
-        else if (cipher_nid == NID_aes_256_gcm)  key_len = 32;
-        else return std::unexpected(std::format(
-            "Unsupported cipher NID {} for AEAD takeover", cipher_nid));
+        const int cipher_nid = SSL_CIPHER_get_cipher_nid(cipher);
+        const int proto = SSL_version(ssl_);
 
-        // Get write (client->server) traffic secret
-        // NOTE: out_len must be initialized to buffer capacity before calling
-        uint8_t write_secret[64]; size_t ws_len = sizeof(write_secret);
-        if (!SSL_get_write_traffic_secret(ssl_, write_secret, &ws_len)) {
-            return std::unexpected("SSL_get_write_traffic_secret failed");
-        }
-
-        // Get read (server->client) traffic secret
-        uint8_t read_secret[64]; size_t rs_len = sizeof(read_secret);
-        if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
-            OPENSSL_cleanse(write_secret, sizeof(write_secret));
-            return std::unexpected("SSL_get_read_traffic_secret failed");
+        // Identify the AEAD construction. NID_chacha20_poly1305 is the
+        // BoringSSL/aws-lc-specific NID for the ChaCha20-Poly1305 AEAD
+        // (TLS 1.3 cipher TLS_CHACHA20_POLY1305_SHA256, TLS 1.2 cipher
+        // ECDHE-{RSA,ECDSA}-CHACHA20-POLY1305).
+        size_t key_len = 0;
+        bool   is_chacha20 = false;
+        if (cipher_nid == NID_aes_128_gcm) {
+            key_len = 16;
+        } else if (cipher_nid == NID_aes_256_gcm) {
+            key_len = 32;
+        } else if (cipher_nid == NID_chacha20_poly1305) {
+            key_len = 32;
+            is_chacha20 = true;
+        } else {
+            return std::unexpected(std::format(
+                "Unsupported cipher NID {} for AEAD takeover (cipher_name='{}')",
+                cipher_nid, SSL_CIPHER_get_name(cipher)));
         }
 
         TlsHotState state{};
 
-        if (!tls_keygen::derive_key_iv(write_secret, ws_len,
-                state.write.ki.key, key_len,
-                state.write.ki.iv, tls_const::kTls13NonceLen)) {
+        if (proto == TLS1_3_VERSION) {
+            // TLS 1.3: derive per-direction key/IV from the traffic secret
+            // via HKDF-Expand-Label (RFC 8446 §7.1).
+
+            // Get write (client->server) traffic secret.
+            // NOTE: out_len must be initialized to buffer capacity before calling.
+            uint8_t write_secret[64]; size_t ws_len = sizeof(write_secret);
+            if (!SSL_get_write_traffic_secret(ssl_, write_secret, &ws_len)) {
+                return std::unexpected("SSL_get_write_traffic_secret failed");
+            }
+
+            // Get read (server->client) traffic secret.
+            uint8_t read_secret[64]; size_t rs_len = sizeof(read_secret);
+            if (!SSL_get_read_traffic_secret(ssl_, read_secret, &rs_len)) {
+                OPENSSL_cleanse(write_secret, sizeof(write_secret));
+                return std::unexpected("SSL_get_read_traffic_secret failed");
+            }
+
+            if (!tls_keygen::derive_key_iv(write_secret, ws_len,
+                    state.write.ki.key, key_len,
+                    state.write.ki.iv, tls_const::kTls13NonceLen)) {
+                OPENSSL_cleanse(write_secret, sizeof(write_secret));
+                OPENSSL_cleanse(read_secret, sizeof(read_secret));
+                return std::unexpected("HKDF derive failed for write key");
+            }
+
+            if (!tls_keygen::derive_key_iv(read_secret, rs_len,
+                    state.read.ki.key, key_len,
+                    state.read.ki.iv, tls_const::kTls13NonceLen)) {
+                OPENSSL_cleanse(write_secret, sizeof(write_secret));
+                OPENSSL_cleanse(read_secret, sizeof(read_secret));
+                return std::unexpected("HKDF derive failed for read key");
+            }
+
             OPENSSL_cleanse(write_secret, sizeof(write_secret));
             OPENSSL_cleanse(read_secret, sizeof(read_secret));
-            return std::unexpected("HKDF derive failed for write key");
+
+            state.version       = TlsVersion::Tls13;
+            state.record_format = TlsRecordFormat::Tls13;
+        } else if (proto == TLS1_2_VERSION) {
+            // TLS 1.2 AEAD: derive keys from the master_secret via
+            // SSL_generate_key_block (BoringSSL/aws-lc extension —
+            // returns the legacy TLS 1.2 PRF key block).
+            //
+            // Key block layout (RFC 5246 §6.3, RFC 5288 §3, RFC 7905 §2):
+            //   client_write_key (key_len)
+            //   server_write_key (key_len)
+            //   client_write_IV  (iv_len)   <- 4B for AES-GCM, 12B for CHACHA20
+            //   server_write_IV  (iv_len)
+            // Total: 2*key_len + 2*iv_len. No MAC keys (AEAD has its own tag).
+            //
+            // This SSL is a client (set_connect_state at create()), so:
+            //   write = client_write_*  (data we send)
+            //   read  = server_write_*  (data we receive)
+            const size_t iv_len = is_chacha20
+                                ? tls_const::kTls13NonceLen        // 12B
+                                : tls_const::kTls12ImplicitIvLen;  //  4B
+            const size_t kb_len = 2 * key_len + 2 * iv_len;
+
+            // Max kb_len: 2*32 + 2*12 = 88 (CHACHA20-POLY1305).
+            uint8_t key_block[96]{};
+            if (kb_len > sizeof(key_block)) {
+                return std::unexpected(std::format(
+                    "Internal: key block size {} exceeds buffer", kb_len));
+            }
+
+            if (!SSL_generate_key_block(ssl_, key_block, kb_len)) {
+                auto err = detail::ssl_error_string();
+                OPENSSL_cleanse(key_block, sizeof(key_block));
+                return std::unexpected(std::format(
+                    "SSL_generate_key_block failed: {}", err));
+            }
+
+            const uint8_t* p = key_block;
+            std::memcpy(state.write.ki.key, p, key_len); p += key_len;
+            std::memcpy(state.read.ki.key,  p, key_len); p += key_len;
+            // For AES-GCM (iv_len=4) we leave the upper 8 bytes of ki.iv
+            // zero — those bytes are populated by `explicit_nonce(seq)` per
+            // record, not at extract time. For CHACHA20 (iv_len=12) the
+            // full 12B IV is the static-IV-for-XOR.
+            std::memcpy(state.write.ki.iv, p, iv_len); p += iv_len;
+            std::memcpy(state.read.ki.iv,  p, iv_len);
+
+            OPENSSL_cleanse(key_block, sizeof(key_block));
+
+            state.version       = TlsVersion::Tls12;
+            state.record_format = is_chacha20
+                                ? TlsRecordFormat::Tls12Chacha20
+                                : TlsRecordFormat::Tls12AesGcm;
+        } else {
+            return std::unexpected(std::format(
+                "Unsupported negotiated protocol version 0x{:04X}", proto));
         }
 
-        if (!tls_keygen::derive_key_iv(read_secret, rs_len,
-                state.read.ki.key, key_len,
-                state.read.ki.iv, tls_const::kTls13NonceLen)) {
-            OPENSSL_cleanse(write_secret, sizeof(write_secret));
-            OPENSSL_cleanse(read_secret, sizeof(read_secret));
-            return std::unexpected("HKDF derive failed for read key");
-        }
-
-        // Current TLS record sequence numbers from SSL
+        // Current TLS record sequence numbers from SSL — works for both 1.2 and 1.3.
         state.write.seq = SSL_get_write_sequence(ssl_);
         state.read.seq  = SSL_get_read_sequence(ssl_);
 
         SPDLOG_LOGGER_INFO(log,
-            "TLS traffic keys extracted: cipher={}, key_len={}, "
-            "write_seq={}, read_seq={}",
+            "TLS traffic keys extracted: version={} format={} cipher={} "
+            "key_len={} write_seq={} read_seq={}",
+            to_string(state.version), to_string(state.record_format),
             SSL_CIPHER_get_name(cipher), key_len,
             state.write.seq, state.read.seq);
 
-        OPENSSL_cleanse(write_secret, sizeof(write_secret));
-        OPENSSL_cleanse(read_secret, sizeof(read_secret));
         // Commit the takeover only now — every fallible step above has
         // succeeded. ~TlsSession will skip close_notify because the
         // caller now owns the AEAD context (see suppress_close_notify_

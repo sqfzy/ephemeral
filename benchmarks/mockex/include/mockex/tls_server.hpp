@@ -1,5 +1,5 @@
 /// @file mockex/tls_server.hpp
-/// Minimal TLS 1.3 server for the mockex bench harness.
+/// Minimal TLS 1.2 / 1.3 server for the mockex bench harness.
 ///
 /// `eph-net`'s `TlsSession` is intentionally client-side only — it
 /// uses `TLS_client_method()` and exposes no `accept_state` path
@@ -27,6 +27,8 @@
 #include <utility>
 
 #include <unistd.h>
+
+#include "eph/net/detail/tls_constants.hpp"  // eph::net::TlsVersion / to_string
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -167,6 +169,11 @@ private:
 struct TlsServerConfig {
     std::string cert_path;   ///< Server cert (PEM)
     std::string key_path;    ///< Server private key (PEM, unencrypted)
+    /// Minimum negotiable TLS version. Default `Tls13` mirrors the
+    /// historical mockex behaviour. Set `Tls12` to test the eph-net
+    /// client's TLS 1.2 GCM/CHACHA20 path; mockex installs the same
+    /// AEAD-only cipher whitelist as the client (no CBC, ever).
+    eph::net::TlsVersion min_version = eph::net::TlsVersion::Tls13;
 };
 
 /// Server-side TLS context. One instance per mockex process; wraps
@@ -174,8 +181,10 @@ struct TlsServerConfig {
 class TlsServer {
 public:
     /// Build a server context from a cert+key on disk. Pins min version
-    /// to TLS 1.3 to match the eph-net client. Returns an error string
-    /// (logged at create time) on any aws-lc failure.
+    /// per `cfg.min_version` (default Tls13 — mirrors the eph-net client
+    /// default). When set to Tls12, an AEAD-only cipher whitelist is
+    /// installed; CBC suites are forbidden at every version. Returns an
+    /// error string (logged at create time) on any aws-lc failure.
     [[nodiscard]] static std::expected<std::unique_ptr<TlsServer>, std::string>
     create(const TlsServerConfig& cfg) noexcept {
         if (cfg.cert_path.empty() || cfg.key_path.empty()) {
@@ -185,10 +194,27 @@ public:
         SSL_CTX* ctx = SSL_CTX_new(TLS_server_method());
         if (!ctx) return std::unexpected{detail::pop_ssl_error("SSL_CTX_new")};
 
-        // TLS 1.3 only. Mirrors the client (tls_session.hpp:334).
-        if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION)) {
+        const int min_proto = (cfg.min_version == eph::net::TlsVersion::Tls12)
+                            ? TLS1_2_VERSION : TLS1_3_VERSION;
+        if (!SSL_CTX_set_min_proto_version(ctx, min_proto)) {
             SSL_CTX_free(ctx);
             return std::unexpected{detail::pop_ssl_error("set_min_proto_version")};
+        }
+
+        if (cfg.min_version == eph::net::TlsVersion::Tls12) {
+            // Server-side AEAD-only cipher whitelist for TLS 1.2.
+            // Same set as the client (tls_session.hpp); CBC forbidden.
+            static constexpr const char* kTls12AeadOnly =
+                "ECDHE-ECDSA-AES256-GCM-SHA384:"
+                "ECDHE-ECDSA-AES128-GCM-SHA256:"
+                "ECDHE-RSA-AES256-GCM-SHA384:"
+                "ECDHE-RSA-AES128-GCM-SHA256:"
+                "ECDHE-ECDSA-CHACHA20-POLY1305:"
+                "ECDHE-RSA-CHACHA20-POLY1305";
+            if (!SSL_CTX_set_cipher_list(ctx, kTls12AeadOnly)) {
+                SSL_CTX_free(ctx);
+                return std::unexpected{detail::pop_ssl_error("set_cipher_list")};
+            }
         }
 
         if (SSL_CTX_use_certificate_file(
@@ -214,8 +240,9 @@ public:
         // No client cert verification (verify_peer=false on the client).
         SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
 
-        SPDLOG_INFO("[tls_server] context ready (cert={}, key={}, TLSv1.3 only)",
-                    cfg.cert_path, cfg.key_path);
+        SPDLOG_INFO("[tls_server] context ready (cert={}, key={}, min_version={})",
+                    cfg.cert_path, cfg.key_path,
+                    eph::net::to_string(cfg.min_version));
 
         return std::unique_ptr<TlsServer>(new TlsServer(ctx));
     }

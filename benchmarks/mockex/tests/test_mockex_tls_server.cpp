@@ -67,3 +67,14 @@ TEST(MockexTlsServer, CreateEmptyPathsRejected) {
     auto srv_r = mockex::tls::TlsServer::create({});
     EXPECT_FALSE(srv_r.has_value());
 }
+
+// TLS 1.2 negotiation enabled — SSL_CTX must accept the AEAD-only cipher
+// list. Smoke-only at this stage; the real 1.2 client/server handshake is
+// covered by the integration suite added in Stage 4.
+TEST(MockexTlsServer, CreateWithTls12MinVersion) {
+    auto cfg = good_cfg();
+    cfg.min_version = eph::net::TlsVersion::Tls12;
+    auto srv_r = mockex::tls::TlsServer::create(cfg);
+    ASSERT_TRUE(srv_r.has_value()) << srv_r.error();
+    ASSERT_NE(*srv_r, nullptr);
+}
