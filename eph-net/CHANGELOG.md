@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Added (2026-05-08) — TLS 1.2 GCM / CHACHA20-POLY1305 opt-in support
+
+`TlsConfig::min_version` (default `TlsVersion::Tls13`) opens the door
+to TLS 1.2 negotiation when set to `Tls12`. Use case: 1.2-only
+middleboxes (Clash and similar TLS-intercepting proxies) that strip
+TLS 1.3 with `close_notify`.
+
+When 1.2 is enabled the SSL_CTX cipher list is restricted to the AEAD
+suites `ECDHE-{RSA,ECDSA}-AES{128,256}-GCM` and
+`ECDHE-{RSA,ECDSA}-CHACHA20-POLY1305`. CBC suites are never accepted
+at any version.
+
+The hot-path record layer (`TlsEncryptor` / `TlsDecryptor` /
+`TlsInPlaceDecryptor`) gained a `record_format` field set once at
+`extract_hot_state()` time and consumed by an `if/switch` per record.
+The branch is fixed for the lifetime of a session, so prediction is
+100% per stream and the per-record overhead is in the nanosecond range.
+
+User-facing API:
+  - `TlsConfig::min_version` (new field, default `Tls13`)
+  - `TlsHotState::version` / `record_format` (new fields, set by
+    `extract_hot_state`)
+  - `TlsConfig::operator==` / `to_json` / `dump` / `warnings` cover
+    the new field; `warnings()` emits a downgrade-risk message when
+    `min_version = Tls12`.
+  - `sizeof(TlsHotState)` grows 256 → 320 bytes (4 → 5 cache lines).
+    Hot-path read/write key material lines are unchanged; the version
+    flag lives on its own alignas(64) line.
+  - `TlsRecordCrypto::encrypted_size(N)` is now an instance method
+    (format-aware). The static helper that returned a hardcoded
+    TLS-1.3-shape size is replaced by `encrypted_size_for(format, N)`.
+
+See `docs/tls-crypto-recommendations.md` "TLS Version Policy" section
+for opt-in guidance and downgrade-attack discussion. Test coverage
+(`tests/test_tls_v12_extract.cpp`, 16 tests) covers all 3 in-scope
+ciphers, the negotiation matrix, data-plane interop with aws-lc, and
+the "no CBC, ever" defense-in-depth.
+
 ### Added (2026-05-03) — pax loop batch 13
 
   * `fuzzers/fuzz_http_response.cpp` + 10-input seed corpus —

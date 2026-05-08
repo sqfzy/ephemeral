@@ -20,7 +20,7 @@ the hot path.
 - **Tokio-aligned naming.** `TcpStream` / `UdpSocket` / `Poller` mirror
   `tokio::net::{TcpStream,UdpSocket}` / `mio::Poll`. The concept names and lifetimes
   read the same way in Rust and C++.
-- **Production building blocks.** TLS 1.3 (aws-lc), WebSocket (RFC 6455), HTTP/1.1,
+- **Production building blocks.** TLS 1.3 (aws-lc, default) with opt-in TLS 1.2 GCM/CHACHA20 for 1.2-only middleboxes, WebSocket (RFC 6455), HTTP/1.1,
   MoldUDP64, FIX 4.4, ITCH 5.0, OUCH, order books, latency histograms, CPU pinning,
   hugepage allocators, audit logs — all header-only and composable.
 - **Physical kernel/DPDK separation.** The DPDK build weight lives entirely in

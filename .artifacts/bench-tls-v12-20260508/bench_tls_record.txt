@@ -1,0 +1,36 @@
+2026-05-08T06:51:56+00:00
+Running /home/ec2-user/ephemeral_dev/build/linux/arm64/release/bench_tls_record
+Run on (8 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 64 KiB (x8)
+  L1 Instruction 64 KiB (x8)
+  L2 Unified 2048 KiB (x8)
+  L3 Unified 36864 KiB (x1)
+Load Average: 0.50, 0.53, 0.62
+--------------------------------------------------------------------------------------------
+Benchmark                                  Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------
+BM_Tls13_Aes128_Encrypt/32               111 ns          111 ns      6321291 bytes_per_second=275.668Mi/s
+BM_Tls13_Aes128_Encrypt/256              142 ns          142 ns      4942513 bytes_per_second=1.68361Gi/s
+BM_Tls13_Aes128_Encrypt/1024             254 ns          254 ns      2760827 bytes_per_second=3.7592Gi/s
+BM_Tls13_Aes256_Encrypt/32               118 ns          118 ns      5940220 bytes_per_second=258.945Mi/s
+BM_Tls13_Aes256_Encrypt/256              151 ns          151 ns      4622904 bytes_per_second=1.57464Gi/s
+BM_Tls13_Aes256_Encrypt/1024             285 ns          285 ns      2458373 bytes_per_second=3.3492Gi/s
+BM_Tls12AesGcm_128_Encrypt/32           90.3 ns         90.2 ns      7755138 bytes_per_second=338.146Mi/s
+BM_Tls12AesGcm_128_Encrypt/256           130 ns          130 ns      5387361 bytes_per_second=1.83427Gi/s
+BM_Tls12AesGcm_128_Encrypt/1024          240 ns          240 ns      2914348 bytes_per_second=3.97054Gi/s
+BM_Tls12AesGcm_256_Encrypt/32           92.6 ns         92.6 ns      7561890 bytes_per_second=329.642Mi/s
+BM_Tls12AesGcm_256_Encrypt/256           139 ns          139 ns      5023473 bytes_per_second=1.71118Gi/s
+BM_Tls12AesGcm_256_Encrypt/1024          270 ns          270 ns      2594522 bytes_per_second=3.53456Gi/s
+BM_Tls12Chacha20_Encrypt/32              283 ns          283 ns      2475466 bytes_per_second=107.892Mi/s
+BM_Tls12Chacha20_Encrypt/256             382 ns          382 ns      1834696 bytes_per_second=639.811Mi/s
+BM_Tls12Chacha20_Encrypt/1024           1024 ns         1024 ns       683435 bytes_per_second=953.564Mi/s
+BM_Tls13_Aes128_Roundtrip/32             231 ns          231 ns      3024583 bytes_per_second=131.858Mi/s
+BM_Tls13_Aes128_Roundtrip/256            297 ns          297 ns      2354581 bytes_per_second=821.236Mi/s
+BM_Tls13_Aes128_Roundtrip/1024           514 ns          514 ns      1361457 bytes_per_second=1.85473Gi/s
+BM_Tls12AesGcm_128_Roundtrip/32          190 ns          190 ns      3691427 bytes_per_second=160.948Mi/s
+BM_Tls12AesGcm_128_Roundtrip/256         264 ns          264 ns      2650607 bytes_per_second=924.395Mi/s
+BM_Tls12AesGcm_128_Roundtrip/1024        477 ns          477 ns      1466911 bytes_per_second=1.99814Gi/s
+BM_Tls12Chacha20_Roundtrip/32            579 ns          579 ns      1210898 bytes_per_second=52.7251Mi/s
+BM_Tls12Chacha20_Roundtrip/256           876 ns          876 ns       799474 bytes_per_second=278.819Mi/s
+BM_Tls12Chacha20_Roundtrip/1024         2186 ns         2186 ns       320210 bytes_per_second=446.743Mi/s

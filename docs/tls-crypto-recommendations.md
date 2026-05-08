@@ -16,12 +16,13 @@ decoder).
 
 ## TL;DR
 
-| Venue | `verify_peer` | `ca_cert_path` | `pinned_spki_sha256` | Why |
-|---|---|---|---|---|
-| Binance (`stream.binance.com`, `fstream.binance.com`, `api.binance.com`) | `true` | `""` (system) | empty | CDN-fronted, issuer rotates |
-| OKX (`ws.okx.com`, `aws.okx.com`, `www.okx.com`) | `true` | `""` (system) | empty | CDN-fronted, issuer rotates |
-| Bybit (`stream.bybit.com`, `api.bybit.com`) | `true` | `""` (system) | empty | CDN-fronted, issuer rotates |
-| Coinbase Advanced Trade (`advanced-trade-ws.coinbase.com`, `api.coinbase.com`) | `true` | `""` (system) | empty | ACM/CDN-fronted, issuer rotates |
+| Venue | `verify_peer` | `ca_cert_path` | `pinned_spki_sha256` | `min_version` | Why |
+|---|---|---|---|---|---|
+| Binance (`stream.binance.com`, `fstream.binance.com`, `api.binance.com`) | `true` | `""` (system) | empty | `Tls13` (default) | CDN-fronted, issuer rotates |
+| OKX (`ws.okx.com`, `aws.okx.com`, `www.okx.com`) | `true` | `""` (system) | empty | `Tls13` (default) | CDN-fronted, issuer rotates |
+| Bybit (`stream.bybit.com`, `api.bybit.com`) | `true` | `""` (system) | empty | `Tls13` (default) | CDN-fronted, issuer rotates |
+| Coinbase Advanced Trade (`advanced-trade-ws.coinbase.com`, `api.coinbase.com`) | `true` | `""` (system) | empty | `Tls13` (default) | ACM/CDN-fronted, issuer rotates |
+| **Behind a TLS-1.2-only proxy** (Clash, broker / corporate egress mid-box) | `true` | `""` (system) | empty | `Tls12` (opt-in) | TLS 1.3 handshake gets `close_notify`'d; only 1.2 traverses |
 
 For all four: trust the system store, do **not** pin. SPKI pinning is
 appropriate when (a) you control both endpoints (private interconnect,
@@ -35,6 +36,87 @@ is: trust the system store, watch for `Error::TlsHandshakeFailed`
 (in `eph-core/include/eph/core/error.hpp`) bubbling up through
 `ReconnectOrchestrator`, and alert on a sustained spike in
 `net.reconnect.failures` (see `docs/observability-metrics.md`).
+
+---
+
+## TLS Version Policy — `min_version`
+
+`TlsConfig::min_version` controls the minimum TLS protocol version the
+SSL_CTX is allowed to negotiate. Two values:
+
+| Value | Behaviour |
+|---|---|
+| `TlsVersion::Tls13` (default) | Reject any negotiation below TLS 1.3. Identical to the historical "1.3-only" stack. |
+| `TlsVersion::Tls12` | Allow TLS 1.2 GCM/CHACHA20 if the peer can't do 1.3. CBC suites are NEVER acceptable at any version — the SSL_CTX cipher list is restricted to ECDHE-{RSA,ECDSA}-AES{128,256}-GCM and ECDHE-{RSA,ECDSA}-CHACHA20-POLY1305. |
+
+### Why default to 1.3
+
+TLS 1.3 is the historical default and the only version this stack
+shipped with prior to the 2026-05 reshape. Keeping `Tls13` as the
+default means existing deployments don't suddenly start accepting 1.2
+just because their dependency was bumped — opt-in is required.
+
+### When to opt into 1.2
+
+Set `cfg.tls.min_version = TlsVersion::Tls12` if and only if you have a
+specific interop need:
+
+- Clash and similar SOCKS-over-TLS proxies that intercept TLS 1.3 with a
+  `close_notify` (only 1.2 records traverse cleanly).
+- Some broker / corporate egress mid-boxes that haven't been updated to
+  speak 1.3.
+- Older OKX / Coinbase deployments that still pin to 1.2 (verify with
+  `openssl s_client -connect host:443 -tls1_3` — if it negotiates, you
+  don't need 1.2).
+
+The 4 listed crypto venues (Binance, OKX, Bybit, Coinbase Advanced
+Trade) all support TLS 1.3 on their public CDN edges in 2026-05; only
+flip `min_version = Tls12` when you actually observe a 1.3 handshake
+failure that 1.2 fixes. `TlsConfig::warnings()` emits a downgrade-risk
+warning whenever `min_version = Tls12` so the choice is auditable.
+
+### Downgrade attack risk
+
+`min_version = Tls12` opens the door to an attacker who can interpose
+between client and server forcing the negotiation down to 1.2. Whether
+that matters depends on the threat model:
+
+- For HFT exchange connectivity, the attacker capable of in-line MITM
+  already has stronger primitives (cert MITM, account compromise).
+- For mTLS / private-interconnect scenarios, the downgrade matters more
+  — leave `min_version = Tls13` if both endpoints support 1.3.
+
+### What's *not* supported in 1.2
+
+- **CBC suites**: rejected at SSL_CTX setup time (`SSL_CTX_set_cipher_list`
+  whitelist is AEAD-only). aws-lc itself has dropped CBC from its built-in
+  catalogue; our whitelist is defense in depth.
+- **TLS 1.2 + 0-RTT**: TLS 1.2 has no 0-RTT, so this isn't a regression.
+- **TLS 1.3 + ChaCha20-Poly1305 hot path**: extracting keys for 1.3
+  CHACHA20 isn't wired through (`extract_hot_state` rejects it
+  explicitly). Negotiating CHACHA20 only works under 1.2 right now —
+  the 1.3 path remains AES-GCM-only, matching the pre-1.2-support
+  behaviour.
+
+### Programmatic example
+
+```cpp
+StreamConfig cfg{};
+cfg.remote = SocketAddr{...};
+
+// Default: TLS 1.3 only — the secure historical behaviour.
+cfg.tls = TlsConfig{ .hostname = "stream.binance.com" };
+
+// Opt-in: allow 1.2 negotiation for a 1.2-only proxy path.
+cfg.tls = TlsConfig{
+    .hostname    = "stream.binance.com",
+    .min_version = TlsVersion::Tls12,
+};
+auto stream = KernelTcpStream<WsCodec>::create(cfg, poller);
+```
+
+`TlsConfig::warnings()` returns a non-empty list when `min_version =
+Tls12` so configuration audit tooling can catch unintentional opt-ins.
 
 ---
 

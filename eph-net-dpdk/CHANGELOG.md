@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added (2026-05-08) — TLS 1.2 GCM/CHACHA20 in-place decrypt
+
+`TlsInPlaceDecryptor::create()` accepts an optional `record_format`
+parameter; `DpdkTcpStream`'s `TlsState::handshake` plumbs the
+negotiated format through from `extract_hot_state()` so the zero-copy
+in-place decrypt path correctly handles all three wire formats:
+
+  TLS 1.3                 [hdr(5)] [ciphertext + inner_type] [tag(16)]
+  TLS 1.2 AES-GCM         [hdr(5)] [explicit_nonce(8)] [ciphertext] [tag(16)]
+  TLS 1.2 CHACHA20        [hdr(5)] [ciphertext] [tag(16)]
+
+`TlsState::process_records_in_place` consults
+`eph::net::plaintext_offset_for(format)` before emitting plaintext
+slices to the codec — TLS 1.2 AES-GCM correctly advances past the
+8B explicit nonce so the codec sees the right plaintext window
+without copying.
+
+The DPDK encrypt-side buffer-sizing call also moves from the static
+`TlsEncryptor::encrypted_size` (1.3-shape only, would have allocated
+too few bytes for AES-GCM-1.2's N+29 layout) to the format-aware
+instance method.
+
 ### Reverted — T2.3 trust-boundary HMAC stack (R series, 2026-05-06)
 
 **BREAKING.** Wire formats for all 3 cross-process registries change.

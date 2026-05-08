@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added (2026-05-08) — TLS 1.2 GCM/CHACHA20 transparent support
+
+The kernel `TlsState::encrypt_for_send` now sizes its per-record
+output buffer through the format-aware
+`TlsRecordCrypto::encrypted_size(chunk)` instance method instead of
+the old static helper. When the user opts into TLS 1.2 via
+`cfg.tls.min_version = Tls12`, the kernel data-plane correctly
+handles the AES-GCM-1.2 wire format (5B header + 8B explicit nonce +
+ciphertext + 16B tag = N+29 bytes/record) and the CHACHA20-1.2 format
+(5B header + ciphertext + 16B tag = N+21 bytes/record).
+
+No public API change for the kernel backend itself — the visible
+delta is buffer sizing math, which the user does not see. See
+`eph-net/CHANGELOG.md` for the cross-module TLS 1.2 details.
+
 ### Added — InFlightStatus three-state classification on send paths (J series, 2026-05-05)
 
 `KernelTcpStream::send` and `KernelUdpSocket::send_to` now populate
