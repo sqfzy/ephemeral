@@ -55,11 +55,12 @@ struct WsConfig {
     ///        `Sec-WebSocket-Extensions: permessage-deflate`; if the server
     ///        accepts, inbound RSV1 frames are inflated by the codec.
     ///
-    /// Default true so HFT venues that may opt into compression
-    /// (Binance / Bybit / OKX) get correct behaviour out of the box. Set
-    /// to false to suppress the offer for venues that mis-implement the
-    /// extension.
-    bool permessage_deflate{true};
+    /// Default FALSE: eph is an ultra-low-latency HFT library, and
+    /// permessage-deflate adds a per-message zlib inflate on the hot RX path
+    /// (~3us/msg measured) — trading latency for bandwidth, which HFT does not
+    /// want. Compression is opt-in: set true to offer it for bandwidth-bound
+    /// or non-latency-critical WS streams.
+    bool permessage_deflate{false};
 
     /// @brief True iff the WS upgrade is disabled (path empty). Backends
     ///        use this to short-circuit handshake plumbing.

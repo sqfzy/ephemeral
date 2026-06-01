@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
     // ── Smoke-boot: no --host means just describe the wiring and exit ────
     if (args.host.empty()) {
         spdlog::info("ws_deflate_demo: smoke-boot (no --host given)");
-        spdlog::info("  StreamConfig::ws.permessage_deflate default = true");
+        spdlog::info("  StreamConfig::ws.permessage_deflate default = false (opt-in; this demo enables it)");
         spdlog::info("    handshake injects 'Sec-WebSocket-Extensions: "
                      "permessage-deflate; client_no_context_takeover'");
         spdlog::info("    set --no-deflate to opt out (some venues mis-implement)");

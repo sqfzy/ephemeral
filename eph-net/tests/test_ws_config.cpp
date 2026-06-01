@@ -28,7 +28,7 @@ TEST(WsConfig, DefaultConstructedIsEmptyAndValid) {
     EXPECT_TRUE(cfg.host.empty());
     EXPECT_TRUE(cfg.extra_headers.empty());
     EXPECT_GT(cfg.timeout.count(), 0);
-    EXPECT_TRUE(cfg.permessage_deflate); // default on
+    EXPECT_FALSE(cfg.permessage_deflate); // default off (HFT: compression is opt-in)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
