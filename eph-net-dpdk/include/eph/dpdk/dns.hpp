@@ -102,6 +102,21 @@ struct DnsConfig {
     uint16_t port          = kDnsPort;
     std::chrono::milliseconds timeout{3000};
 
+    /// Whether RSS queue prediction is trustworthy on this NIC, i.e. whether
+    /// the readable RSS key actually matches hardware steering. Set from
+    /// `Platform::rss_key_trusted()`.
+    ///   true  → RSS-aware src_port reverse-pick so the reply hashes back to
+    ///           the resolver's queue (multi-queue NICs with a verified key).
+    ///   false (default, honest) → single-queue semantics: a random ephemeral
+    ///           src_port. Correct when the Platform is effectively single
+    ///           queue for DNS (reply lands on the sole/polled queue). On a
+    ///           multi-queue NIC with an UNVERIFIABLE key (notably ENA, where
+    ///           the probed key predicts the landing queue at chance — see
+    ///           flow_steering.hpp doc) DNS-reply delivery to the resolver's
+    ///           queue is NOT guaranteed; run DNS on a single-queue Platform
+    ///           or pre-resolve the hostname out-of-band.
+    bool rss_prediction_trusted = false;
+
     [[nodiscard]] friend bool operator==(const DnsConfig&,
                                           const DnsConfig&) = default;
 
@@ -213,8 +228,27 @@ inline uint16_t random_ephemeral_port() noexcept {
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 select_dns_src_port(uint16_t port_id, uint16_t queue_id,
                     uint32_t nameserver_ip, uint32_t local_ip,
-                    uint16_t dns_server_port) noexcept {
+                    uint16_t dns_server_port,
+                    bool rss_prediction_trusted) noexcept {
     [[maybe_unused]] auto* log = dns_logger();
+
+    // Single-queue semantics when RSS prediction is not trustworthy
+    // (RSS-unification reshape, DnsConfig::rss_prediction_trusted=false —
+    // notably ENA, whose probed key predicts the landing queue at chance).
+    // A random ephemeral src_port; the reply is assumed to land on the
+    // resolver's (sole/polled) queue. RSS-aware reverse-pick below is used
+    // ONLY when the key is verified to match hardware steering.
+    if (!rss_prediction_trusted) {
+        uint16_t p = random_ephemeral_port();
+        if (p == 0) {
+            return std::unexpected(
+                "select_dns_src_port: CSPRNG failure for ephemeral port");
+        }
+        SPDLOG_LOGGER_DEBUG(log,
+            "select_dns_src_port: RSS prediction untrusted → random "
+            "src_port={} (single-queue semantics)", p);
+        return p;
+    }
 
     // RSS-aware reverse-pick. find_src_port_for_queue queries the NIC's
     // RSS state and loops the ephemeral port range, returning the first
@@ -962,7 +996,8 @@ public:
         // helper itself; ErrorInfo carries a static-lifetime literal so the
         // caller can branch on the kind without depending on heap detail.
         if (auto sp = detail::select_dns_src_port(
-                port_id_, queue_id_, cfg_.nameserver_ip, src_ip_, cfg_.port);
+                port_id_, queue_id_, cfg_.nameserver_ip, src_ip_, cfg_.port,
+                cfg_.rss_prediction_trusted);
             sp) {
             src_port_ = *sp;
         } else {
@@ -1404,7 +1439,8 @@ resolve(uint16_t port_id,
     // state and either reverse-picks a hash-aligned port (RSS active) or
     // falls back to random_ephemeral_port (single-queue / no RSS).
     auto src_port_r = detail::select_dns_src_port(
-        port_id, queue_id, cfg.nameserver_ip, src_ip, cfg.port);
+        port_id, queue_id, cfg.nameserver_ip, src_ip, cfg.port,
+        cfg.rss_prediction_trusted);
     if (!src_port_r) {
         SPDLOG_LOGGER_ERROR(log,
             "DNS resolve: src_port selection failed: {}", src_port_r.error());
