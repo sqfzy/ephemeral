@@ -1,0 +1,34 @@
+#!/usr/bin/env bpftrace
+/*
+ * clean_nic.bt —— 干净网卡上无非业务流量
+ *
+ * 入参（位置参数）:
+ *   $1 = 干净网卡 ifindex (ens6 = 3)
+ *
+ * Hook:
+ *   kprobe:ip_rcv_core (skb_iif==$1)  → 干净网卡上每个 IPv4 入包,按 (源IP,协议) 计数
+ *
+ * 为什么 ip_rcv_core: kernel 6.1 + busy-poll 走批量收包路径 ip_list_rcv（kprobe:ip_rcv
+ *   触发 0 次,实测）。ip_rcv_core 是 ip_rcv 和 ip_list_rcv 的公共 per-skb 入口,两条路
+ *   都覆盖。此处 skb->skb_iif 已赋值（napi_gro_receive_entry 处还是 0,故不能用那里过滤）。
+ *
+ * 输出 map:
+ *   @ingress[源IP, 协议号]  —— 该网卡所有 IPv4 入站流的来源（协议: 6=TCP 17=UDP 1=ICMP）
+ *
+ * 判定（harness）:
+ *   把 @ingress 里源 IP 属于 exchange（bench 实连 peer IP 集合,从 bench 日志 / ss 取,
+ *   不要用新 DNS 解析——CloudFront 会返回不同 IP）的剔除,
+ *   剩下若全为空 → PASS；剩 TCP/UDP 应用流 → FAIL；仅 ICMP → 标黄。
+ *
+ * 说明: ip_rcv_core 只见 IPv4,天然排除 ARP/IPv6-ND（契合宽口径）。
+ */
+
+kprobe:ip_rcv_core {
+    $skb = (struct sk_buff *)arg0;
+    if ($skb->skb_iif == $1) {
+        $iph = (struct iphdr *)($skb->head + $skb->network_header);
+        $saddr = $iph->saddr;    // network order
+        $proto = $iph->protocol; // 6=TCP 17=UDP 1=ICMP
+        @ingress[ntop($saddr), $proto] = count();
+    }
+}

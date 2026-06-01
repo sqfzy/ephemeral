@@ -1,0 +1,81 @@
+#!/usr/bin/env bpftrace
+/*
+ * nic_check.bt —— 按进程 (comm, pid) 归因 socket 收发字节
+ *
+ * 入参: 无 (无位置参数; 全机扫描所有进程)
+ *
+ * Hook:
+ *   kretprobe:sock_recvmsg                → 所有 socket RX (read / recv* / recvmsg 汇聚于此)
+ *   kretprobe:tcp_sendmsg, udp_sendmsg    → AF_INET TX 主路径 (TCP + UDP)
+ *
+ * 为什么 RX 走 sock_recvmsg 而 TX 走 tcp_+udp_ (不对称):
+ *   理论上 sock_{recv,send}msg 是所有 socket I/O 的漏斗, 应该一对 hook 覆盖全部.
+ *   实测在 kernel 6.6 (WSL2): sock_recvmsg 仍是真实函数调用, kprobe 正常触发;
+ *   但 sock_sendmsg 被编译器完全内联 —— kallsyms 中仍有符号 (EXPORT_SYMBOL),
+ *   kretprobe attach 成功但**永不触发** (无实际调用点). 所以 TX 必须下沉到
+ *   tcp_sendmsg + udp_sendmsg.
+ *
+ *   覆盖代价: TX 漏 AF_UNIX / raw / packet (这些场景在交易 app 上几乎不出现);
+ *   RX 维持广覆盖. 老内核 (≤ 5.x) 若 sock_sendmsg 未内联, 可改回 sock_sendmsg
+ *   做更广覆盖, 见文末"fallback 切换"段.
+ *
+ *   sock_recvmsg / tcp_sendmsg / udp_sendmsg 都跑在调用进程上下文, current = 流量
+ *   真正归属的进程, 直接拿 comm + curtask->tgid 即可.
+ *
+ * 输出 map:
+ *   @rx_bytes[comm, pid]  进程接收字节累计 (sum of positive retval)
+ *   @rx_calls[comm, pid]  进程 recv 调用次数
+ *   @tx_bytes[comm, pid]  进程发送字节累计
+ *   @tx_calls[comm, pid]  进程 send 调用次数
+ *
+ * 判定 (harness):
+ *   bpftrace 退出时按 map 内部排序自动 dump; 关注 top-N entry 即可.
+ *   字节量 / 调用次数比 ≈ 平均包大小, 可辅助判断是 streaming (大包少调用) 还是
+ *   chatty (小包多调用) 的流量模式.
+ *
+ * 注意:
+ *   - 盲区 (本脚本看不到的流量):
+ *     1. sendfile() / splice() zero-copy: 走 do_splice / tcp_sendpage, 不经
+ *        sock_sendmsg. Nginx 静态文件 / Kafka producer 这类场景必漏.
+ *        如需覆盖, 追加 kprobe:tcp_sendpage.
+ *     2. 内核线程自发流量 (nfsd, ksoftirqd, kernel TCP probes): 直接走协议栈,
+ *        不经 sock_*msg.
+ *     3. DPDK / 用户态 PMD: 完全绕过内核协议栈, eBPF 不可达.
+ *   - 语义: 计的是"进程实际消耗/发出"的字节, 不是"到达进程"的字节. 数据堆在
+ *     sk_receive_queue 没被 recv 走的不算 (这通常正是想要的"业务消耗"语义).
+ *   - comm 字段最大 15 字节 (TASK_COMM_LEN-1), 长线程名被截断 (同一进程不同
+ *     线程若共享前 15 字节会被合并; 需要严格区分时按 pid 看).
+ *   - retval 是 uint64 而 sock_*msg 内核返回 int (32 位): 高 32 位含 garbage,
+ *     必须 (int32)retval 强制符号扩展, 否则负 errno 会被当成巨大正数穿透 retval>0 过滤.
+ *   - pid 用 curtask->tgid (内核全局 TGID), 而不是 bpftrace 0.21+ 引入的 ns-aware
+ *     pid builtin —— 后者在 WSL2 / 部分容器下 bpf_get_ns_current_pid_tgid 返 -EINVAL,
+ *     pid 退化为 0; curtask->tgid 是 task_struct 直读, 不走 ns helper, 稳定可靠.
+ *   - fallback 切换: 若在某内核上发现 sock_recvmsg 也被内联 (RX 空数据), 改用
+ *     tcp_recvmsg + udp_recvmsg 对称下沉; 反之若旧内核 sock_sendmsg 未被内联,
+ *     可把 TX 改回 sock_sendmsg 一条 hook 拿更广协议族覆盖.
+ *   - 最低内核版本: 5.4. 最低 bpftrace 版本: 0.14.
+ *   - 探针开销: kretprobe 在高频路径 ~50-200ns; 长期常驻不建议, 短时 ad-hoc
+ *     (≤ 5 分钟) 用法即可.
+ */
+
+BEGIN {
+    printf("nic_check started (Ctrl-C 退出并 dump map; 短时观测 ad-hoc 用法)\n");
+}
+
+kretprobe:sock_recvmsg {
+    $ret = (int32)retval;
+    if ($ret > 0) {
+        @rx_bytes[comm, curtask->tgid] = sum($ret);
+        @rx_calls[comm, curtask->tgid] = count();
+    }
+}
+
+// TX 下沉到 tcp_sendmsg + udp_sendmsg (sock_sendmsg 被内核 6.6 完全内联, 见 doc)
+kretprobe:tcp_sendmsg,
+kretprobe:udp_sendmsg {
+    $ret = (int32)retval;
+    if ($ret > 0) {
+        @tx_bytes[comm, curtask->tgid] = sum($ret);
+        @tx_calls[comm, curtask->tgid] = count();
+    }
+}

@@ -1,4 +1,4 @@
-# `scripts/doc_drift_check.sh`
+# `tools/doc_drift_check.sh`
 
 Mechanical detector for the doc/code drift classes that recurred across
 multiple `/pax --loop --auto review eph-net-dpdk` sessions (rounds 3
@@ -11,7 +11,7 @@ runs.
 ## Quick start
 
 ```bash
-$ bash scripts/doc_drift_check.sh
+$ bash tools/doc_drift_check.sh
 
 doc_drift_check.sh — scanning /home/me/eph
 
@@ -121,7 +121,7 @@ CI is added, the simplest gate is:
 
 ```yaml
 - name: Doc/code drift check
-  run: bash scripts/doc_drift_check.sh
+  run: bash tools/doc_drift_check.sh
   # Treat exit 2 (mechanical drift) as a failure; exit 1 (warnings) as
   # informational — log but don't block.
 ```

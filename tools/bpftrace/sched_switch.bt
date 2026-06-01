@@ -1,0 +1,46 @@
+#!/usr/bin/env bpftrace
+/*
+ * sched_switch.bt —— 业务核无杂线程抢占
+ *
+ * 入参（位置参数）:
+ *   $1 = 业务核 CPU 号 (1)
+ *   $2 = 业务线程 comm (如 "bybit_race")
+ *
+ * Hook:
+ *   tracepoint:sched:sched_switch (cpu==$1)  → 业务核上的上下文切换
+ *
+ * 输出 map:
+ *   @switch[prev_comm, next_comm]  —— 业务核上发生的切换对及次数（看谁抢占）
+ *   @stolen_ns                     —— 业务线程被切走→切回累计的 off-CPU 时间（被抢占偷走的 ns）
+ *   @preempt_n                     —— 业务线程被切走的次数
+ *
+ * 判定（harness）:
+ *   @stolen_ns / 窗口时长 < 阈值（如 <1%）且无意外 next_comm → PASS；
+ *   ksoftirqd/kworker 等真抢占且偷走时间显著 → FAIL。
+ *
+ * 说明: isolcpus + nohz_full 把调度器赶走,但 per-CPU kthread(ksoftirqd/kworker)仍绑核,
+ *       只在有活时才跑。本脚本量化它们到底偷走多少 CPU 时间。
+ */
+
+tracepoint:sched:sched_switch / cpu == $1 / {
+    @switch[args->prev_comm, args->next_comm] = count();
+}
+
+// 业务线程被切出 → 记下时刻
+tracepoint:sched:sched_switch / cpu == $1 && args->prev_comm == str($2) / {
+    @off_start[args->prev_pid] = nsecs;
+    @preempt_n = count();
+}
+
+// 业务线程切回 → 累计 off-CPU 时长
+tracepoint:sched:sched_switch / cpu == $1 && args->next_comm == str($2) / {
+    $st = @off_start[args->next_pid];
+    if ($st > 0) {
+        @stolen_ns = sum(nsecs - $st);
+        delete(@off_start[args->next_pid]);
+    }
+}
+
+END {
+    clear(@off_start);
+}

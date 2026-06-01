@@ -35,7 +35,7 @@
 #      no false positive)
 #
 # Usage:
-#   bash scripts/doc_drift_check.sh [REPO_ROOT]
+#   bash tools/doc_drift_check.sh [REPO_ROOT]
 #
 # Default REPO_ROOT = current directory. Robust against being invoked
 # from any subdir as long as REPO_ROOT is passed or pwd is the root.
