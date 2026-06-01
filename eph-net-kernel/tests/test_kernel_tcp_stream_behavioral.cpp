@@ -5,8 +5,9 @@
 /// `eph-net/tests/test_socket_transport.cpp` (86 cases):
 /// the legacy `SocketTransport` class no longer exists — its responsibilities
 /// are now split across `KernelTcpStream` (connect + data plane),
-/// `KernelPoller` (epoll multiplexer), `StreamConfig` (construction contract)
-/// and `ReconnectPolicy` (pure-math retry policy).
+/// `KernelPoller` (epoll multiplexer) and `StreamConfig` (construction
+/// contract). The exponential-backoff retry math now lives in
+/// `eph::utils::ExponentialBackoff` (unit-tested in eph-utils/test_backoff.cpp).
 ///
 /// Strategy:
 ///   - Loopback TCP echo server (kernel socket, reused across all cases),
@@ -23,9 +24,10 @@
 ///   2. Send / recv correctness        (~20 cases)
 ///   3. Close behaviour                (~10 cases)
 ///   4. Error propagation              (~10 cases)
-///   5. Reconnect-policy semantics     (~5  cases)
 ///   ---------------------------------------------
-///                                     ≥60 cases total
+///                                     ≥55 cases total
+/// (Reconnect-policy semantics moved with the math to
+///  eph-utils/test_backoff.cpp.)
 
 #include <span>
 
@@ -50,7 +52,6 @@
 #include "eph/net/concepts.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/test/fake_stream.hpp"
 #include "eph/net/test/test_poller.hpp"
 
@@ -796,75 +797,4 @@ TEST(KernelTcpStreamBehavioral, Err_PollerAddDuplicateIsInvalidConfig) {
     auto r = poller->add(s.get());
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// 5. Reconnect-policy semantics (5 cases)
-// ═══════════════════════════════════════════════════════════════════════
-//
-// ReconnectPolicy is pure math: callers drive the actual reconnect
-// loop. These tests therefore exercise the policy state machine directly
-// rather than replaying TransportCore's legacy reconnect driver.
-
-TEST(KernelTcpStreamBehavioral, Reconnect_BackoffInitialIsHonored) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{50};
-    cfg.max_backoff     = std::chrono::milliseconds{400};
-    cfg.multiplier      = 2.0;
-    cfg.jitter_factor   = 0.0;  // deterministic
-    en::ReconnectPolicy p{cfg};
-    const auto first = p.next_backoff();
-    EXPECT_EQ(first, std::chrono::milliseconds{50});
-}
-
-TEST(KernelTcpStreamBehavioral, Reconnect_BackoffDoublesUntilCap) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{10};
-    cfg.max_backoff     = std::chrono::milliseconds{40};
-    cfg.multiplier      = 2.0;
-    cfg.jitter_factor   = 0.0;
-    en::ReconnectPolicy p{cfg};
-    EXPECT_EQ(p.next_backoff(), std::chrono::milliseconds{10});
-    EXPECT_EQ(p.next_backoff(), std::chrono::milliseconds{20});
-    EXPECT_EQ(p.next_backoff(), std::chrono::milliseconds{40});
-    EXPECT_EQ(p.next_backoff(), std::chrono::milliseconds{40});  // capped
-}
-
-TEST(KernelTcpStreamBehavioral, Reconnect_MaxAttemptsStopsRetry) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{1};
-    cfg.max_backoff     = std::chrono::milliseconds{1};
-    cfg.max_attempts    = 3;
-    cfg.jitter_factor   = 0.0;
-    en::ReconnectPolicy p{cfg};
-    EXPECT_TRUE(p.should_reconnect());
-    (void)p.next_backoff();
-    (void)p.next_backoff();
-    (void)p.next_backoff();
-    EXPECT_FALSE(p.should_reconnect());
-}
-
-TEST(KernelTcpStreamBehavioral, Reconnect_ResetRewindsCounterAndBackoff) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{10};
-    cfg.max_backoff     = std::chrono::milliseconds{80};
-    cfg.jitter_factor   = 0.0;
-    en::ReconnectPolicy p{cfg};
-    (void)p.next_backoff();
-    (void)p.next_backoff();
-    EXPECT_GE(p.attempts(), 2u);
-    p.reset();
-    EXPECT_EQ(p.attempts(), 0u);
-    EXPECT_EQ(p.next_backoff(), std::chrono::milliseconds{10});
-}
-
-TEST(KernelTcpStreamBehavioral, Reconnect_UnlimitedMaxAttemptsAllowsIndef) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{1};
-    cfg.max_backoff     = std::chrono::milliseconds{1};
-    cfg.max_attempts    = 0;  // unlimited
-    cfg.jitter_factor   = 0.0;
-    en::ReconnectPolicy p{cfg};
-    for (int i = 0; i < 1000; ++i) (void)p.next_backoff();
-    EXPECT_TRUE(p.should_reconnect());
 }

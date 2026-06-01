@@ -12,7 +12,7 @@
 ///      catches (reasm_capacity==0, bad proxy, bad TLS, etc.).
 ///   4. `ProxyConfig::validate()` direct calls for each rule.
 ///   5. `TlsConfig::validate()` direct calls for each rule.
-///   6. `ReconnectPolicy` clamping behavior (invalid cfg is auto-fixed).
+///   6. (Reconnect-policy clamping moved to eph-utils/tests/test_backoff.cpp.)
 ///
 /// Baseline parentage: `test_transport_config.cpp` (83 cases) — validation
 /// intent ported, `TransportConfig` → `StreamConfig`, new 9.5/9.6 fields
@@ -37,7 +37,6 @@
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
 #include "eph/net/proxy.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
 
 namespace ek = eph::net::kernel;
@@ -520,58 +519,12 @@ TEST(StreamConfigValidation, Tls_VerifyPeerFalseAccepted) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 6. Reconnect policy clamping (≥5 cases)
+// 6. Reconnect policy clamping — MOVED to eph-utils
 // ═══════════════════════════════════════════════════════════════════════
 //
-// Unlike the baseline (which returned errors), ReconnectPolicy clamps
-// invalid values at construction so a default config is always safe.
-
-TEST(StreamConfigValidation, Reconnect_MultiplierBelowOneClamped) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.multiplier = 0.5;  // invalid
-    en::ReconnectPolicy p{cfg};
-    EXPECT_GT(p.config().multiplier, 1.0);
-}
-
-TEST(StreamConfigValidation, Reconnect_NegativeJitterClampedToZero) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.jitter_factor = -0.5;
-    en::ReconnectPolicy p{cfg};
-    EXPECT_GE(p.config().jitter_factor, 0.0);
-}
-
-TEST(StreamConfigValidation, Reconnect_JitterAtOneClampedBelow) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.jitter_factor = 1.0;
-    en::ReconnectPolicy p{cfg};
-    EXPECT_LT(p.config().jitter_factor, 1.0);
-}
-
-TEST(StreamConfigValidation, Reconnect_MaxBelowInitialBackoffClamped) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.initial_backoff = std::chrono::milliseconds{500};
-    cfg.max_backoff     = std::chrono::milliseconds{100};  // < initial
-    en::ReconnectPolicy p{cfg};
-    EXPECT_GE(p.config().max_backoff, p.config().initial_backoff);
-}
-
-TEST(StreamConfigValidation, Reconnect_MaxAttemptsZeroMeansUnlimited) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.max_attempts = 0;
-    en::ReconnectPolicy p{cfg};
-    // With max_attempts == 0, should_reconnect must remain true indefinitely.
-    EXPECT_TRUE(p.should_reconnect());
-}
-
-TEST(StreamConfigValidation, Reconnect_MaxAttemptsFiniteStopsAfterN) {
-    en::ReconnectPolicyConfig cfg{};
-    cfg.max_attempts  = 2;
-    cfg.jitter_factor = 0.0;
-    en::ReconnectPolicy p{cfg};
-    (void)p.next_backoff();
-    (void)p.next_backoff();
-    EXPECT_FALSE(p.should_reconnect());
-}
+// The exponential-backoff retry math (formerly eph::net::ReconnectPolicy)
+// now lives in eph::utils::ExponentialBackoff. Its clamping / growth / jitter
+// tests moved with it to eph-utils/tests/test_backoff.cpp.
 
 // ═══════════════════════════════════════════════════════════════════════
 // 7. WS / Proxy field consistency with create() (≥7 cases)

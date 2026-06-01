@@ -3,7 +3,7 @@
 /// Shows the production-quality knobs a real HFT client wires onto a
 /// KernelTcpStream: TLS on, TCP_NODELAY, bounded reasm buffer,
 /// signal-driven shutdown, and an outer reconnect loop driven by
-/// `eph::net::ReconnectPolicy`. The reconnect loop lives in the caller —
+/// `eph::utils::ExponentialBackoff`. The reconnect loop lives in the caller —
 /// the stream layer itself does not retry (by design: real recovery
 /// needs protocol-layer state the stream cannot see, e.g. FIX Logon
 /// seq numbers, kill-switch gates, primary/backup routing).
@@ -38,9 +38,9 @@
 #include "eph/core/metrics_concept.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
 #include "eph/net/stream_metrics.hpp"
+#include "eph/utils/backoff.hpp"
 
 namespace en = eph::net::kernel;
 namespace ec = eph::codec;
@@ -179,10 +179,9 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
     // replay, kill-switch check) that a stream-local retry cannot see.
     // Production-sane defaults: exponential back-off, unbounded
     // attempts, ±25% jitter.
-    eph::net::ReconnectPolicy reconnect{eph::net::ReconnectPolicyConfig{}};
+    eph::utils::ExponentialBackoff reconnect{eph::utils::ExponentialBackoff::Config{}};
 
-    while (g_running.load(std::memory_order_acquire)
-           && reconnect.should_reconnect()) {
+    while (g_running.load(std::memory_order_acquire)) {
         const auto outcome = use_tls ? run_one_session<true>(cfg, *poller)
                                      : run_one_session<false>(cfg, *poller);
         if (outcome == SessionOutcome::SignalStop) break;
@@ -194,7 +193,7 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
         // the documented pattern in session_reconnect.cpp / the
         // production loop in binance_latency.cpp. The create-failure
         // path deliberately skips the reset so the exponential chain
-        // continues to grow as documented in ReconnectPolicy.
+        // continues to grow as documented in ExponentialBackoff.
         if (outcome == SessionOutcome::Connected) {
             reconnect.reset();
         }
@@ -203,11 +202,14 @@ static int run_session(const std::string& host, uint16_t port, bool use_tls) {
         // trying again. A real strategy would re-check kill-switch,
         // consult a backup remote, or refresh credentials here before
         // reconnecting.
-        const auto delay = reconnect.next_backoff();
+        const auto delay = reconnect.next_delay();
+        if (!delay) break;  // backoff budget exhausted (never with the
+                            // default unlimited config; honored if a finite
+                            // max_attempts is configured)
         spdlog::warn("session dropped; sleeping {}ms before reconnect "
                      "(attempt {})",
-                     delay.count(), reconnect.attempts());
-        std::this_thread::sleep_for(delay);
+                     delay->count(), reconnect.attempts());
+        std::this_thread::sleep_for(*delay);
     }
     return 0;
 }

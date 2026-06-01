@@ -121,8 +121,9 @@ namespace eph::net {
 /// Linear progression with two terminal forks:
 ///   `Idle` → `Connecting` → `Connected` ↔ `Backoff` ↔ `Connecting` → `Failed`
 ///
-/// `Failed` is reached only when `ReconnectPolicy::should_reconnect()`
-/// returns `false` after a factory failure. A user-initiated `stop()` also
+/// `Failed` is reached only when the backoff is exhausted
+/// (`ExponentialBackoff::next_delay()` returns `std::nullopt`) after a factory
+/// failure. A user-initiated `stop()` also
 /// halts reconnect attempts but preserves the current Stream (state stays
 /// at `Connected` or whatever it was; further `tick()` calls are no-ops).
 enum class ReconnectState : uint8_t {

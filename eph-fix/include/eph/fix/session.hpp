@@ -748,7 +748,7 @@ public:
         // every tick disconnects). Fall back to disabling the dead-
         // server check (treat as effectively-infinite budget) when the
         // product is non-finite — same fail-soft policy as the
-        // ReconnectPolicy NaN clamp.
+        // eph::utils::ExponentialBackoff NaN clamp.
         const double timeout_d =
             static_cast<double>(hb_sec) * cfg_.heartbeat_timeout_factor;
         const int64_t timeout_secs =

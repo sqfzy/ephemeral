@@ -2,15 +2,15 @@
 ///
 /// Minimal demonstration of the idiomatic reconnect pattern for eph:
 ///
-///     ReconnectPolicy policy{ReconnectPolicyConfig{...}};
-///     while (policy.should_reconnect()) {
-///         auto stream_r = KernelTcpStream<Codec>::create(cfg);
-///         if (stream_r) {
-///             policy.reset();       // back to initial_backoff
-///             run_session(*stream_r); // protocol layer (Logon, seq sync, ...)
-///             continue;             // loop to reconnect after clean drop
-///         }
-///         std::this_thread::sleep_for(policy.next_backoff());
+///     while (running) {
+///         // connect-with-backoff is a generic retry; `when` aborts on shutdown
+///         auto stream_r = eph::utils::retry(
+///             [&]{ return KernelTcpStream<Codec>::create(cfg); },
+///             eph::utils::ExponentialBackoff{{...}},
+///             [](const auto&){ return running.load(); });
+///         if (!stream_r) break;     // gave up (shutdown requested)
+///         run_session(*stream_r);   // protocol layer (Logon, seq sync, ...)
+///         // loop back to reconnect; next retry() builds a fresh backoff chain
 ///     }
 ///
 /// Why the reconnect loop is in the caller, not inside
@@ -23,16 +23,18 @@
 ///      need to consult `eph::utils::KillSwitch` and refuse to
 ///      reconnect. A stream-local retry cannot see that state.
 ///   3. **Multi-path routing.** Primary/backup datacenter failover is
-///      business logic, not a `ReconnectPolicyConfig` field.
+///      business logic, not an `ExponentialBackoff::Config` field.
 ///   4. **Poller supervision.** A stream only becomes observable to
 ///      the `Poller` after `poller.add(stream)`. A retry loop inside
 ///      `create()` runs in a blind-spot where no supervisor can
 ///      enforce timeouts or kill gates.
 ///
-/// `ReconnectPolicy` itself is just exponential-backoff math (see
-/// `eph/net/reconnect_policy.hpp`). It does not sleep, does not call
-/// connect — the caller drives both. That is what makes it trivially
-/// unit-testable and composable with the patterns above.
+/// `eph::utils::ExponentialBackoff` itself is just exponential-backoff math
+/// (see `eph/utils/backoff.hpp`); `eph::utils::retry` is the blocking driver
+/// that sleeps between attempts. The connect call and the reconnect loop both
+/// stay in the caller — that is what makes them composable with the patterns
+/// above (and `eph::net::ReconnectOrchestrator` lifts the whole loop into a
+/// non-blocking, poller-friendly state machine when you need it).
 
 #include <atomic>
 #include <chrono>
@@ -45,11 +47,12 @@
 #include "eph/codec/raw_stream_codec.hpp"
 #include "eph/net/kernel/poller.hpp"
 #include "eph/net/kernel/tcp_stream.hpp"
-#include "eph/net/reconnect_policy.hpp"
 #include "eph/net/socket_addr.hpp"
+#include "eph/utils/retry.hpp"
 
 namespace en = eph::net::kernel;
 namespace ec = eph::codec;
+namespace eu = eph::utils;
 using namespace std::chrono_literals;
 
 static std::atomic<bool> g_running{true};
@@ -66,22 +69,28 @@ int main() {
     cfg.connect_timeout = 3s;
     cfg.kernel.tcp_nodelay = true;
 
-    eph::net::ReconnectPolicy policy{eph::net::ReconnectPolicyConfig{
+    const eu::ExponentialBackoff::Config backoff_cfg{
         .initial_backoff = 100ms,
         .max_backoff     = 5s,
         .multiplier      = 2.0,
         .jitter_factor   = 0.25,
-        .max_attempts    = 0,  // unlimited — outer loop bounded by g_running
-    }};
+        .max_attempts    = 0,  // unlimited — bounded by g_running (see `when`)
+    };
 
-    while (g_running.load() && policy.should_reconnect()) {
-        auto sr = en::KernelTcpStream<ec::RawStreamCodec>::create(cfg);
+    while (g_running.load()) {
+        // Connect with exponential backoff via the generic retry driver. The
+        // `when` predicate aborts the backoff the instant shutdown is
+        // requested, so a SIGTERM during a sleep cycle is honored without an
+        // unbounded wait — and each fresh retry() call starts a new backoff
+        // chain, so no explicit policy.reset() after a clean session.
+        auto sr = eu::retry(
+            [&] { return en::KernelTcpStream<ec::RawStreamCodec>::create(cfg); },
+            eu::ExponentialBackoff{backoff_cfg},
+            [](const eph::core::ErrorInfo&) { return g_running.load(); });
         if (!sr) {
-            const auto delay = policy.next_backoff();
-            spdlog::warn("connect failed: {} — retry in {}ms (attempt {})",
-                         sr.error().detail, delay.count(), policy.attempts());
-            std::this_thread::sleep_for(delay);
-            continue;
+            spdlog::info("giving up reconnect: {} (shutdown requested)",
+                         sr.error().detail);
+            break;
         }
 
         auto stream = std::move(*sr);
@@ -97,9 +106,6 @@ int main() {
             return 1;
         }
 
-        // Connected — reset the backoff so the NEXT failure starts
-        // fresh instead of inheriting the previous chain's delay.
-        policy.reset();
         spdlog::info("connected to {}:{}",
                      cfg.remote.ip.to_string(), cfg.remote.port);
 
@@ -113,9 +119,9 @@ int main() {
         (void)poller->remove(stream.get());
         spdlog::info("session dropped (state={})",
                      eph::net::tcp_state_name(stream->state()));
-        // Loop back to reconnect. `policy.should_reconnect()` stays
-        // true because max_attempts==0; use a non-zero max_attempts
-        // if you want the loop to eventually give up.
+        // Loop back to reconnect: the next retry() builds a fresh backoff
+        // chain. Set backoff_cfg.max_attempts to a non-zero value if you want
+        // a bounded per-cycle reconnect budget.
     }
 
     spdlog::info("shutdown");

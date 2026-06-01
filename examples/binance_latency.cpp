@@ -26,7 +26,7 @@
 /// (set-of-sets / coremask); mutually exclusive with `--pin` in one call.
 ///
 /// Reconnect behaviour: the stream lifecycle is wrapped in an
-/// `eph::net::ReconnectPolicy` exponential-backoff loop with ±25% jitter.
+/// `eph::utils::ExponentialBackoff` exponential-backoff loop with ±25% jitter.
 /// DNS / ARP / mempool / src MAC are resolved ONCE on startup and reused
 /// across reconnects — re-resolving DNS on every drop would add noise to a
 /// latency probe and the L2 gateway is stable on a single-segment LAN.
@@ -98,7 +98,7 @@
 // DPDK stream / poller.
 #include "eph/net/dpdk/poller.hpp"
 #include "eph/net/dpdk/tcp_stream.hpp"
-#include "eph/net/reconnect_policy.hpp"
+#include "eph/utils/backoff.hpp"
 
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/recorder.hpp"
@@ -159,7 +159,7 @@ struct AppConfig {
     std::uint32_t dst_ip = 0;          // optional — 0 means "use DPDK DNS"
     std::uint32_t nameserver_ip = 0x08080808;  // 8.8.8.8 default
 
-    // ReconnectPolicy knobs. Sane defaults for exchange-grade endpoints:
+    // ExponentialBackoff knobs. Sane defaults for exchange-grade endpoints:
     // fast initial retry, capped at 10s, unlimited attempts (outer loop
     // is bounded by --duration and SIGINT).
     int reconnect_initial_ms = 250;
@@ -436,15 +436,17 @@ int main(int argc, char** argv) {
 
     // ── 9) Reconnect policy + stats (persist across sessions) ────────────
     //
-    // ReconnectPolicy is just exponential-backoff math — no sleep, no
+    // ExponentialBackoff is just exponential-backoff math — no sleep, no
     // connect. The outer loop below drives the actual connect / drop
     // cycle. On a clean drop (FIN, close handshake, TLS alert) the
     // stream leaves Established, the inner poll loop exits, we destroy
     // the stream, and the outer loop picks a fresh ephemeral src port
     // and tries again. `policy.reset()` is called after each successful
     // connect so a later drop starts backoff fresh instead of inheriting
-    // the previous chain's delay.
-    eph::net::ReconnectPolicy policy{eph::net::ReconnectPolicyConfig{
+    // the previous chain's delay. (3 distinct failure points each drive
+    // their own backoff, so this stays a direct backoff loop rather than a
+    // single eph::utils::retry call.)
+    eph::utils::ExponentialBackoff policy{eph::utils::ExponentialBackoff::Config{
         .initial_backoff = std::chrono::milliseconds{app_cfg.reconnect_initial_ms},
         .max_backoff     = std::chrono::milliseconds{app_cfg.reconnect_max_ms},
         .multiplier      = 2.0,
@@ -525,8 +527,7 @@ int main(int argc, char** argv) {
     bool warned_src_port_override = false;
 
     while (g_running.load(std::memory_order_acquire)
-           && std::chrono::steady_clock::now() < deadline
-           && policy.should_reconnect()) {
+           && std::chrono::steady_clock::now() < deadline) {
 
         // ── 10a) Fresh ephemeral src port per attempt ───────────────────
         // DPDK has no kernel ephemeral-port allocator, so DpdkPoller
@@ -538,11 +539,12 @@ int main(int argc, char** argv) {
             /*range_begin=*/32768, /*range_end=*/60999,
             /*preferred=*/app_cfg.src_port);
         if (!src_port_r) {
-            const auto delay = policy.next_backoff();
+            const auto delay = policy.next_delay();
+            if (!delay) break;  // backoff budget exhausted
             spdlog::warn("pick_src_port failed: {} — retry in {}ms (attempt {})",
-                         src_port_r.error().detail, delay.count(),
+                         src_port_r.error().detail, delay->count(),
                          policy.attempts());
-            std::this_thread::sleep_for(delay);
+            std::this_thread::sleep_for(*delay);
             continue;
         }
         const std::uint16_t src_port = *src_port_r;
@@ -579,20 +581,22 @@ int main(int argc, char** argv) {
 
         auto sr = Stream::create(std::move(scfg));
         if (!sr) {
-            const auto delay = policy.next_backoff();
+            const auto delay = policy.next_delay();
+            if (!delay) break;  // backoff budget exhausted
             spdlog::warn("DpdkTcpStream::create failed: {} — retry in {}ms (attempt {})",
-                         sr.error().detail, delay.count(), policy.attempts());
-            std::this_thread::sleep_for(delay);
+                         sr.error().detail, delay->count(), policy.attempts());
+            std::this_thread::sleep_for(*delay);
             continue;
         }
         auto stream = std::move(*sr);
         stream->on_message = on_message_handler;
 
         if (auto r = poller->add(stream.get()); !r) {
-            const auto delay = policy.next_backoff();
+            const auto delay = policy.next_delay();
+            if (!delay) break;  // backoff budget exhausted
             spdlog::warn("poller->add failed: {} — retry in {}ms (attempt {})",
-                         r.error().detail, delay.count(), policy.attempts());
-            std::this_thread::sleep_for(delay);
+                         r.error().detail, delay->count(), policy.attempts());
+            std::this_thread::sleep_for(*delay);
             continue;
         }
 
