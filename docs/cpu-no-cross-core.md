@@ -1,0 +1,195 @@
+# CPU 不跨核 (no-cross-core) — 概念、机制、工具与工作流
+
+> Mode: freeform（综合指南）｜ 生成 2026-06-01 16:45 (UTC+8)｜ 锚定 HEAD `6d97ac4a`
+> 适用：在本项目(eph)上让业务流的收包路径不跨核的工程实践。Host 实证基线：
+> AWS EC2 Graviton aarch64 + ENA NIC。
+
+## TL;DR
+
+"不跨核" = **业务流的收包处理和 app 消费在同一个物理 CPU 上**,避免 socket
+队列/skb/缓存行在核间弹跳。本项目两条腿的达成路径不同:
+
+- **kernel 路径**:让"软中断协议栈核 == app recv 核"。靠 `RSS → 队列 → IRQ
+  affinity → 核` 三段对齐 + app 绑同核。
+- **DPDK 路径**:run-to-completion,**没有软中断 → 没有 kernel 式跨核**。但
+  RSS 仍决定流落哪条队列 → 哪个 lcore → 哪个 CPU(影响"被 poll 到"和"摆放")。
+
+**关键约束(本机 ENA 实测)**:AWS ENA 的 RSS key 是 **Nitro 托管、guest 读到
+的是占位**,离线 Toeplitz 预测 `src_port→queue` **不可靠**(命中率≈随机)。所以
+src_port 选择必须**经验实测**,不能算。工具链与库已据此重构(见 §5/§6)。
+
+完整工具链:`nic_lowlat_setup.sh`(地基) → `rss_srcport_finder.py`(选 src_port)
+→ app 绑核 → `run_bpf_checks.sh` / `cross_core_check.bt`(验证)。
+
+---
+
+## 1. 什么是"跨核",为什么伤延迟
+
+收包从 NIC 到 app 经过若干阶段,每阶段在某个 CPU 上执行。若**生产数据的核**和
+**消费数据的核**不同,socket 接收队列 + socket lock + skb/payload 的缓存行要跨
+核(尤其跨 NUMA/CCX)弹跳 → 延迟与抖动。HFT 热路径上这是要消除的。
+
+**注意落点**:`recvmsg` 的 copy_to_user **永远在 app 核**(系统调用在进程上下文
+跑)。所以"copy 用的核 == app 核"是恒真废话,**不是**判据。真正决定跨核的是
+**"哪个核把数据塞进 socket 接收队列(生产)" vs "app 在哪个核消费"**。
+
+---
+
+## 2. kernel 路径:对齐软中断核与 app 核
+
+```
+  包到达
+    │ ① RSS：NIC 硬件 Toeplitz 哈希 4-tuple → 选 RX 队列 Q   （硬件,不可改 on ENA）
+    ▼
+  队列 Q
+    │ ② IRQ affinity：Q 的 MSI-X 中断 → smp_affinity → 核 C    （/proc/irq）
+    ▼
+  核 C 跑 NET_RX_SOFTIRQ → ip_rcv → tcp_v4_rcv → 持 socket lock 入 sk_receive_queue  ← 生产
+    │
+  ③ app 在核 C recvmsg → copy_to_user 出队                                          ← 消费
+```
+
+**不跨核 ⟺ ② 的核 == ③ 的 app 核**(① 正常情况下与 ② 同核同次软中断,RPS 是唯一
+能拆开它们的东西)。要做到:
+- (a) 让业务流的 4-tuple 经 RSS 落到队列 Q —— **凑 src_port**(ENA 无 ntuple,见 §5)。
+- (b) 把 Q 的 IRQ 绑到目标核 C(`smp_affinity_list`)。
+- (c) app 线程绑核 C。
+- 关掉会动态搬核的:RPS / RFS / aRFS / irqbalance;关中断合并降单包延迟。
+
+> 验证用 `tools/bpftrace/cross_core_check.bt`:`@softirq_cpu`(tcp_v4_rcv,按
+> ifindex+sport 过滤)`== @recv_cpu`(tcp_recvmsg,按 comm 过滤)`== 业务核` → PASS。
+> (注:NAPI poll 落核不是承重判据——它不 copy payload、不碰 socket 队列,正常
+> 又恒等于 ②;只在诊断 RPS 时单挂 napi tracepoint。)
+
+---
+
+## 3. DPDK 路径:没有软中断,但 RSS 仍要管
+
+DPDK 是 kernel-bypass:PMD 在某 lcore 上 **poll 队列**,eph 的 `DpdkPoller` 是
+**run-to-completion**——poll 到包就在**同一 lcore** 上跑 `on_message`。**poll 核 =
+处理核,无交接 → kernel 式软中断跨核不存在。**
+
+但 RSS 在 DPDK 里管两件事:
+
+| | 作用 | 不对齐的后果 |
+|---|---|---|
+| **投递** | 多队列(尤其 daemon-led 多进程):流只有落在**某 lcore 真在 poll 的队列**才被处理 | 落到没人 poll 的队列 = **静默丢** |
+| **摆放** | 队列 → lcore → 物理 CPU | 流落到非预期 lcore = NUMA/cache 错位 |
+
+**重要**:**单 lcore** 的 DPDK(一条关键连接一个 poll 核)**不需要 RSS 工程**——
+流落哪条队列都被那个 lcore poll 到、就地处理,没有"选哪个核"。只有**多 lcore
+各绑不同 CPU、在意流落哪个核**时,才需要把流的队列 steer 到目标 lcore。
+
+DPDK 的 `queue → cpu` = **lcore 绑定 = app 配置**(不是 IRQ,探测不出来),由
+operator 提供(见 §5 的 `--queue-cpu-map`)。
+
+---
+
+## 4. RSS key 的硬约束(AWS ENA 实测,这是全局前提)
+
+实证(`.artifacts/experiment-20260601-142315.md`,commit `23305023`):
+
+> **AWS ENA 上 guest 能读到的 RSS hash key 是占位,不是硬件真正 steering 用的
+> key——真 key 被 Nitro 藏死。**
+
+| | kernel(ethtool) | DPDK(rte_eth probe) |
+|---|---|---|
+| guest 读到的 key | 固定占位 `55:14:…`(实为 per-boot 随机 netdev_rss_key) | per-attach 随机占位 |
+| set key | 接受但只是驱动缓存,硬件不认 | `rss_hash_update` 直接拒(-95) |
+| `Toeplitz(读到的 key)` 预测落核 | **零相关**(均匀分布) | **命中 3/16 = 随机** |
+
+⟹ **离线 Toeplitz 计算 `src_port→queue` 在 ENA 上根本不成立**(两后端皆然)。
+⟹ 唯一可靠手段是**经验实测**:实际发包、看回包落哪个队列/napi。
+⟹ 不可跨 attach/重启复用:ENA reset 可能换 key,每次现测。
+
+(能设 key 的 NIC 如 mlx5/i40e 不受此限——可装已知 key、离线算可行。本约束特定于 ENA。)
+
+---
+
+## 5. 怎么做:三步工作流
+
+### 第 1 步 — 铺地基:`tools/nic_lowlat_setup.sh <nic> <business_cpu>`
+建立确定的 队列↔核 映射 + 去掉动态搬核:停 irqbalance、队列 IRQ 1:1 绑核(业务
+队列→业务核且该核独占)、关 RPS/RFS/aRFS、XPS 对齐 TX、关中断合并(ENA 需
+`adaptive-rx off`)。幂等、`--dry-run`、`--restore`。NIC reset 会丢 affinity → 可重放。
+
+### 第 2 步 — 选 src_port:`tools/rss_srcport_finder.py`
+**统一 backend 无关 planner**(commit `6d97ac4a`),两后端同一 `per_cpu:{cpu:[src_port]}`
+schema:
+- `--backend kernel`(默认):`Toeplitz(读到的 key)` 算候选 + **强制 verify**
+  (真 bind+connect 读 `SO_INCOMING_NAPI_ID` 比对实测落核;不符则**不出文件**)。
+  在 ENA 上 verify 会戳穿占位 key → 实际靠经验实测兜底。
+- `--backend dpdk`:**纯经验实测**(shell `dpdk_rsskey_probe --finder`,实测
+  `src_port→queue`),按 operator 的 `--queue-cpu-map "0:4,1:5,…"`(lcore 绑定)
+  分桶 → `src_port→cpu`。对 ENA 占位 key 天然免疫(测量,不算)。
+
+```
+$ sudo tools/rss_srcport_finder.py --backend dpdk --nic 0000:00:05.0 \
+    --src-ip <ip> --dst <ip> --dst-port <p> --queue-cpu-map 0:1,1:0,2:2,3:3 --per-cpu 1
+  → JSON: per_cpu:{ "1":[{src_port:40004,method:empirical}], … }
+```
+
+### 第 3 步 — 喂进连接 + 绑 app
+- kernel:`cfg.kernel.local_bind.port = <选中的 src_port>`;app 线程绑业务核。
+- DPDK:`cfg.dpdk.wire.tuple.src_port = <选中>` + `cfg.dpdk.pin_to_queue = <队列>`;
+  lcore 绑业务核。
+
+### 验证:`sudo tools/run_bpf_checks.sh <ifindex> <sport> <comm> <cpu>`
+并发跑 4 个 bpftrace 检查(`cross_core_check`/`clean_nic`/`nic_check`/`sched_switch`)。
+不跨核判据:`@softirq_cpu == @recv_cpu == 业务核`。
+
+---
+
+## 6. 库侧:eph-net-dpdk 退役了运行时 RSS 预测(2026-06-01 reshape)
+
+因为 §4 的占位 key,eph 库**曾在 ENA 上静默把 src_port 选到错队列**(=悄悄跨核,
+正是要消除的东西)。reshape(commit `1b0e276b`/`e9d674bf`/`92e2a421`,均 BREAKING):
+
+- `DpdkTcpStream/UdpSocket::create_and_attach` 的 `RssPartitioned` 模式**不再自动
+  凑 src_port**;调用方必须 `pin_to_queue` + 显式 `cfg.dpdk.wire[.tuple].src_port`
+  (从上面的 finder 实测得来),缺失 → 明确 error。
+- DNS:`DnsConfig::rss_prediction_trusted`(默认 false=单队列语义/随机 src_port);
+  仅可信 key NIC 上设 true 才走 RSS-aware。
+- `Platform::rss_key_trusted()` == `!rss_using_probed_key()` 暴露"预测是否可信"
+  (ENA 上 false)。`predict_rss_queue`/`queue_for_tuple`/`find_src_port_for_queue`
+  降为 trusted-key-only / 诊断 helper,不在运行时 stream 创建路径。
+
+详见 `eph-net-dpdk/CHANGELOG.md` 的 BREAKING 条目。
+
+---
+
+## 7. 工具参考
+
+| 工具 | 路径 | 作用 | commit |
+|---|---|---|---|
+| NIC 地基 setup | `tools/nic_lowlat_setup.sh` | IRQ 绑核 + 关 RPS/RFS/aRFS/irqbalance/coalescing + XPS | `d2de749f` |
+| src_port planner | `tools/rss_srcport_finder.py` | 经验式选 src_port(kernel/dpdk 双后端,统一 schema) | `9fc142e2`/`6d97ac4a` |
+| 不跨核验证套件 | `tools/run_bpf_checks.sh` + `tools/bpftrace/*.bt` | cross_core / clean_nic / nic_check / sched_switch | `6c4d949c`/`c61b8460` |
+| DPDK RSS-key 真伪 / finder 后端 | `examples/dpdk_rsskey_probe.cpp` | 实测 `src_port→queue`(VPC-DNS 反射器绕同实例阻断) | `e6784167`/`6d97ac4a` |
+| ENA key 实证报告 | `.artifacts/experiment-20260601-142315.md` | key 占位的完整证据链 | `23305023` |
+
+---
+
+## 8. 陷阱 / caveat
+
+- **ENA RSS key 不可信**:别在 ENA 上信 `ethtool -x` / `rss_hash_conf_get` 的 key 去
+  算 src_port。一律经验实测。
+- **不可跨 attach/重启复用**:finder 产物只对当前 NIC RSS 状态有效;reset/重启/
+  重跑 nic_lowlat_setup 后须**重跑 finder**。
+- **同实例 ENI 互通被 AWS 屏蔽**:本机造流量验证 DPDK 收包时,同实例 ENI→ENI
+  不通(bench 用 `bench_ns` netns 绕开;DPDK 实测用 VPC DNS 当反射器)。
+- **DPDK 单 lcore 无需 RSS 工程**:别给单 poll 核的部署套 src_port 选择——多余。
+- **DPDK queue→cpu 探测不出来**:它是 lcore 绑定(app 配置),finder dpdk 后端必须
+  靠 `--queue-cpu-map` 提供。
+- **NAPI 落核不是判据**:验不跨核看 `@softirq_cpu == @recv_cpu`,不是 NAPI 核。
+- **vfio on Graviton 需 noiommu**:`/sys/kernel/iommu_groups` 有项但 guest
+  passthrough 不可用 → `enable_unsafe_noiommu_mode=1`。
+
+---
+
+## 9. 相关文档
+
+- `eph-net-dpdk/CHANGELOG.md` — RSS-unification reshape 的 BREAKING + 迁移
+- `.artifacts/experiment-20260601-142315.md` — ENA RSS key 占位实证(假设/方法/数据/结论)
+- `docs/dpdk-setup.md` — hugepages / vfio-pci 绑定环境
+- `CLAUDE.md` — `create_and_attach` / `rss_key_trusted()` 的库侧描述
