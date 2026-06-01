@@ -18,7 +18,7 @@
 的是占位**,离线 Toeplitz 预测 `src_port→queue` **不可靠**(命中率≈随机)。所以
 src_port 选择必须**经验实测**,不能算。工具链与库已据此重构(见 §5/§6)。
 
-完整工具链:`nic_lowlat_setup.sh`(地基) → `rss_srcport_finder.py`(选 src_port)
+完整工具链:`nic_lowlat_setup.sh`(地基) → `rss_queue_probe.py`(kernel)/`dpdk_rsskey_probe --finder`(DPDK)选 src_port
 → app 绑核 → `run_bpf_checks.sh` / `cross_core_check.bt`(验证)。
 
 ---
@@ -113,21 +113,23 @@ operator 提供(见 §5 的 `--queue-cpu-map`)。
 队列→业务核且该核独占)、关 RPS/RFS/aRFS、XPS 对齐 TX、关中断合并(ENA 需
 `adaptive-rx off`)。幂等、`--dry-run`、`--restore`。NIC reset 会丢 affinity → 可重放。
 
-### 第 2 步 — 选 src_port:`tools/rss_srcport_finder.py`
-**统一 backend 无关 planner**(commit `6d97ac4a`),两后端同一 `per_cpu:{cpu:[src_port]}`
-schema:
-- `--backend kernel`(默认):`Toeplitz(读到的 key)` 算候选 + **强制 verify**
-  (真 bind+connect 读 `SO_INCOMING_NAPI_ID` 比对实测落核;不符则**不出文件**)。
-  在 ENA 上 verify 会戳穿占位 key → 实际靠经验实测兜底。
-- `--backend dpdk`:**纯经验实测**(shell `dpdk_rsskey_probe --finder`,实测
-  `src_port→queue`),按 operator 的 `--queue-cpu-map "0:4,1:5,…"`(lcore 绑定)
-  分桶 → `src_port→cpu`。对 ENA 占位 key 天然免疫(测量,不算)。
+### 第 2 步 — 选 src_port(纯经验,不算 Toeplitz)
+RSS key 在 ENA 是占位 → 预测不可信,只能实测。两后端各有专用经验探测:
+- **kernel:`tools/rss_queue_probe.py`** —— 无状态 raw SYN 勾包 + eBPF 在
+  `tcp_v4_rcv` 读**真实 `skb->queue_mapping`**(= RX 队列;实测与 softirq 落核
+  100% 自洽、跨次确定)。不建连接、不需 key、限速抗批处理。输出 `by_queue`/
+  `by_cpu` 的 src_port,挑落"业务队列(IRQ 已钉 app 核)"的端口。
+- **DPDK:`examples/dpdk_rsskey_probe --finder`** —— DPDK 自己发探针实测
+  `src_port→queue`(`FINDERMAP <src_port> <queue>`),按 operator 的 lcore→queue
+  绑定挑端口。同样纯经验、对占位 key 免疫。
 
 ```
-$ sudo tools/rss_srcport_finder.py --backend dpdk --nic 0000:00:05.0 \
-    --src-ip <ip> --dst <ip> --dst-port <p> --queue-cpu-map 0:1,1:0,2:2,3:3 --per-cpu 1
-  → JSON: per_cpu:{ "1":[{src_port:40004,method:empirical}], … }
+# kernel(与 app 用同一 dst IP)
+$ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --count 16
+  → JSON: by_cpu:{ "1":[33072,33073,…], … } / by_queue:{ "1":[…] }
 ```
+> 旧的 predict-then-verify `rss_srcport_finder.py` 已退役(commit `885212e1`):
+> ENA 占位 key 下它 verify 戳穿后拒绝出文件,产不出 src_port。
 
 ### 第 3 步 — 喂进连接 + 绑 app
 - kernel:`cfg.kernel.local_bind.port = <选中的 src_port>`;app 线程绑业务核。
@@ -163,7 +165,7 @@ $ sudo tools/rss_srcport_finder.py --backend dpdk --nic 0000:00:05.0 \
 | 工具 | 路径 | 作用 | commit |
 |---|---|---|---|
 | NIC 地基 setup | `tools/nic_lowlat_setup.sh` | IRQ 绑核 + 关 RPS/RFS/aRFS/irqbalance/coalescing + XPS | `d2de749f` |
-| src_port planner | `tools/rss_srcport_finder.py` | 经验式选 src_port(kernel/dpdk 双后端,统一 schema) | `9fc142e2`/`6d97ac4a` |
+| src_port 探测(kernel) | `tools/rss_queue_probe.py` | raw SYN + eBPF 读 queue_mapping,纯经验选 src_port(取代退役的 rss_srcport_finder) | `885212e1` |
 | 不跨核验证套件 | `tools/run_bpf_checks.sh` + `tools/bpftrace/*.bt` | cross_core / clean_nic / nic_check / sched_switch | `6c4d949c`/`c61b8460` |
 | DPDK RSS-key 真伪 / finder 后端 | `examples/dpdk_rsskey_probe.cpp` | 实测 `src_port→queue`(VPC-DNS 反射器绕同实例阻断) | `e6784167`/`6d97ac4a` |
 | ENA key 实证报告 | `.artifacts/experiment-20260601-142315.md` | key 占位的完整证据链 | `23305023` |

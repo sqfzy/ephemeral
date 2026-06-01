@@ -109,7 +109,7 @@ The scope decisions for the current feature set are archived in
   that predicts the landing queue at chance (see `eph-net-dpdk/CHANGELOG.md`
   BREAKING + `.artifacts/experiment-20260601-142315.md`). The caller must set
   `cfg.dpdk.pin_to_queue` + an explicit `cfg.dpdk.wire.tuple.src_port`
-  measured via `tools/rss_srcport_finder.py`; missing → actionable error. The
+  measured via `examples/dpdk_rsskey_probe (--finder)`; missing → actionable error. The
   older `create(cfg, poller)` overload was removed — its narrow subset is
   covered by `create_and_attach`. `Platform::rss_key_trusted()` ==
   `!rss_using_probed_key()` reports whether Toeplitz prediction is trustworthy

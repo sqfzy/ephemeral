@@ -4,7 +4,7 @@
 ///  (1) 诊断(默认):DPDK NIC 的 probed RSS key 到底是不是硬件真正用来 steering 的 key。
 ///      向 VPC DNS 反射器发不同 src_port 的 DNS 查询,比对 predict_rss_queue(probed key)
 ///      预测的队列 vs 实际落的 RX 队列。全不符 = probed key 是占位(ENA 实测如此)。
-///  (2) finder 后端(--finder):被 tools/rss_srcport_finder.py 的 dpdk 后端调用。
+///  (2) finder 后端(--finder):DPDK 侧 src_port→queue 经验探测(standalone)。
 ///      实测 src_port→queue,机器可读输出 `FINDERMAP <src_port> <queue>`(每队列至多 M 个)。
 ///      经验式、不信 key——对 ENA 的占位 key 天然免疫。
 ///

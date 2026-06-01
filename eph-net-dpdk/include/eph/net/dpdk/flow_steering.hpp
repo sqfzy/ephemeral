@@ -1253,7 +1253,7 @@ struct RssState {
 ///     genuinely usable — `predict_rss_queue` / `queue_for_tuple` over
 ///     this key are SILENTLY WRONG. Treat `rss_using_probed_key()==true`
 ///     (i.e. `!rss_key_trusted()`) as "key unverifiable, do NOT predict";
-///     pick src_port empirically instead (tools/rss_srcport_finder.py).
+///     pick src_port empirically instead (examples/dpdk_rsskey_probe (--finder)).
 ///   * Older / exotic PMDs: may reject `rss_hash_conf_get` entirely
 ///     (`key_len` stays 0). `Platform::create` treats that as a
 ///     hard-fail when the caller asked for `nb_rx_queues > 1`; see
@@ -1378,7 +1378,7 @@ queue_for_tuple(const RssState& state,
 /// and this predicts the landing queue at CHANCE. NOT used by the runtime
 /// stream/DNS creation path anymore — those take an explicit, empirically
 /// measured src_port. Used by trusted-key DNS + correctness tests +
-/// `tools/rss_srcport_finder.py`'s verified-key fast path.
+/// `examples/dpdk_rsskey_probe (--finder)`'s verified-key fast path.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 predict_rss_queue(uint16_t port_id,
                   uint32_t src_ip, uint16_t src_port,
@@ -1547,7 +1547,7 @@ find_src_port_for_queue_with_state(
 /// `create_and_attach` path (callers now supply explicit measured src_port);
 /// remaining runtime use is trusted-key DNS (`select_dns_src_port`, gated on
 /// `DnsConfig::rss_prediction_trusted`). For unverifiable-key NICs (ENA),
-/// measure empirically via `tools/rss_srcport_finder.py` instead.
+/// measure empirically via `examples/dpdk_rsskey_probe (--finder)` instead.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
                         uint32_t remote_ip, uint16_t remote_port,

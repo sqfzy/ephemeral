@@ -687,12 +687,12 @@ public:
             // doc + .artifacts/experiment-20260601-142315.md). So we no
             // longer predict: the caller MUST pin_to_queue AND supply an
             // explicit cfg.dpdk.wire.tuple.src_port that they measured (via
-            // the empirical tools/rss_srcport_finder.py) to land on it.
+            // the empirical examples/dpdk_rsskey_probe (--finder)) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
                 SPDLOG_LOGGER_ERROR(log,
                     "DpdkTcpStream::create_and_attach: RssPartitioned requires "
                     "pin_to_queue + an explicit measured src_port (RSS queue "
-                    "prediction retired; run rss_srcport_finder). "
+                    "prediction retired; run dpdk_rsskey_probe --finder). "
                     "rss_key_trusted={}", platform.rss_key_trusted());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
@@ -713,7 +713,7 @@ public:
                     "DpdkTcpStream::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit "
                     "cfg.dpdk.wire.tuple.src_port measured to land on that "
-                    "queue (RSS prediction retired; run rss_srcport_finder). "
+                    "queue (RSS prediction retired; run dpdk_rsskey_probe --finder). "
                     "rss_key_trusted={}", want, platform.rss_key_trusted());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
