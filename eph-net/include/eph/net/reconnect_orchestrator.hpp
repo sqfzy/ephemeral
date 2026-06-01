@@ -3,7 +3,7 @@
 /// @file reconnect_orchestrator.hpp
 ///
 /// `ReconnectOrchestrator<S>` — backend-agnostic connection lifecycle
-/// orchestrator. Composes `eph::net::ReconnectPolicy` with user-provided
+/// orchestrator. Composes `eph::utils::ExponentialBackoff` with user-provided
 /// callbacks (factory / on_disconnect / on_reconnect / attach / detach),
 /// and exposes 4 metrics.
 ///
@@ -105,9 +105,10 @@
 #include "eph/core/tcp_state.hpp"
 #include "eph/utils/time.hpp"
 
+#include "eph/utils/backoff.hpp"
+
 #include "eph/net/concepts.hpp"
 #include "eph/net/detail/reconnect_logger.hpp"
-#include "eph/net/reconnect_policy.hpp"
 
 namespace eph::net {
 
@@ -280,8 +281,8 @@ struct ReconnectEvent {
 /// @brief Construction-time settings for `ReconnectOrchestrator`.
 struct ReconnectConfig {
     /// @brief Backoff policy parameters. Forwarded into the orchestrator's
-    ///        owned `ReconnectPolicy`.
-    ReconnectPolicyConfig policy{};
+    ///        owned `eph::utils::ExponentialBackoff`.
+    eph::utils::ExponentialBackoff::Config policy{};
 
     /// @brief When `true` (default), `tick()` reads `current()->state()` and
     ///        treats `Closed` (and any non-`Established` non-transitional
@@ -521,7 +522,7 @@ public:
 
 private:
     ReconnectConfig    cfg_;
-    ReconnectPolicy    policy_;
+    eph::utils::ExponentialBackoff policy_;
     Factory            factory_;
     OnDisconnect       on_disconnect_;
     OnReconnect        on_reconnect_;
@@ -831,7 +832,11 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
 template <Stream S>
 inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept {
     auto* log = detail::reconnect_logger();
-    if (!policy_.should_reconnect()) {
+    // next_delay() merges the old should_reconnect()+next_backoff() pair: it
+    // returns nullopt exactly when the attempt budget is exhausted (and is
+    // absorbing thereafter), otherwise the delay for this attempt.
+    const auto delay_opt = policy_.next_delay();
+    if (!delay_opt) {
         state_ = ReconnectState::Failed;
         SPDLOG_LOGGER_WARN(log,
             "ReconnectOrchestrator: reconnect budget exhausted after {} attempts; "
@@ -842,7 +847,7 @@ inline void ReconnectOrchestrator<S>::enter_backoff_(uint64_t now_tsc) noexcept 
         emit_event_(ReconnectEventKind::Failed, now_tsc);
         return;
     }
-    const auto delay = policy_.next_backoff();
+    const auto delay = *delay_opt;
     const auto cycles_opt = eph::utils::TSC::to_cycles(delay);
     // Fallback when TSC is uncalibrated: assume 3 GHz so we still progress
     // in tests / unusual setups. Production paths must call TSC::init() per
