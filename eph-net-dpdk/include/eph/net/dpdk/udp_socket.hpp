@@ -184,82 +184,56 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
-            // Mirror of tcp_stream.hpp's RSS-aware fix (reshape/
-            // rss-aware-connect): always engineer src_port via
-            // find_src_port_for_queue so the inbound reply
-            // Toeplitz-hashes onto a queue this process owns.
-            // Pre-fix the no-pin branch used predict_rss_queue on
-            // the caller's random src_port and then required a
-            // poller on whichever queue the hash happened to land —
-            // which under autojoin would frequently be a queue
-            // owned by a different peer process (manifested as
-            // "no Poller registered for target queue" at attach
-            // time). Single-process callers see no behavioural
-            // change because all queues belong to one Platform.
-            if (cfg.dpdk.pin_to_queue) {
-                const uint16_t want = *cfg.dpdk.pin_to_queue;
-                if (want >= nb_q) {
-                    SPDLOG_LOGGER_ERROR(log,
-                        "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
-                        ">= nb_rx_queues={} (RssPartitioned)",
-                        want, nb_q);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::InvalidConfig,
-                        "create_and_attach: pin_to_queue >= nb_rx_queues"});
-                }
-                target_qid = want;
-            } else {
-                static std::atomic<uint16_t> rr_counter{0};
-                const auto [qlo, qhi] = platform.effective_rx_queue_range();
-                if (qhi <= qlo) {
-                    SPDLOG_LOGGER_ERROR(log,
-                        "DpdkUdpSocket::create_and_attach: empty "
-                        "effective_rx_queue_range [{}, {}) — Platform "
-                        "moved-from or misconfigured",
-                        qlo, qhi);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::InvalidConfig,
-                        "create_and_attach: empty effective_rx_queue_range "
-                        "(Platform moved-from or misconfigured)"});
-                }
-                const uint16_t qrange = qhi - qlo;
-                target_qid = qlo + (rr_counter.fetch_add(1,
-                                std::memory_order_relaxed) % qrange);
-            }
-
-            // RSS input "src" is the REMOTE end on the inbound reply
-            // (peer→local). find_src_port_for_queue puts the local sp
-            // in the dst_port slot. port_range narrows the search
-            // to this peer's autojoin-derived window when present.
-            const auto pr = platform.port_range();
-            const uint16_t port_lo_arg =
-                pr ? static_cast<uint16_t>(pr->first)
-                   : uint16_t{32768};
-            const uint16_t port_hi_arg =
-                pr ? static_cast<uint16_t>(pr->second - 1)
-                   : uint16_t{60999};
-            auto sp = ::eph::net::dpdk::find_src_port_for_queue(
-                platform.port_id(), target_qid,
-                /*remote_ip=*/  cfg.dpdk.wire.dst_ip,
-                /*remote_port=*/cfg.dpdk.wire.dst_port,
-                /*local_ip=*/   cfg.dpdk.wire.src_ip,
-                port_lo_arg, port_hi_arg);
-            if (!sp) {
-                SPDLOG_LOGGER_WARN(log,
-                    "create_and_attach: find_src_port_for_queue({}) failed: {}",
-                    target_qid, sp.error());
+            // RSS queue prediction RETIRED (RSS-unification reshape).
+            // eph used to engineer src_port via find_src_port_for_queue so
+            // the inbound reply Toeplitz-hashes onto the target queue. That
+            // relied on the NIC's RSS key being readable+correct — false on
+            // ENA, where the probed key is a placeholder that predicts the
+            // landing queue at CHANCE (see flow_steering.hpp doc +
+            // .artifacts/experiment-20260601-142315.md). So we no longer
+            // predict: the caller MUST pin_to_queue AND supply an explicit
+            // cfg.dpdk.wire.src_port that they measured (via the empirical
+            // tools/rss_srcport_finder.py) to land on that queue.
+            if (!cfg.dpdk.pin_to_queue) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkUdpSocket::create_and_attach: RssPartitioned requires "
+                    "pin_to_queue + an explicit measured src_port (RSS queue "
+                    "prediction retired; run rss_srcport_finder). "
+                    "rss_key_trusted={}", platform.rss_key_trusted());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
-                    "create_and_attach: find_src_port_for_queue exhausted"});
+                    "create_and_attach: RssPartitioned needs pin_to_queue + "
+                    "explicit src_port (queue prediction retired)"});
             }
-            cfg.dpdk.wire.src_port = *sp;
+            const uint16_t want = *cfg.dpdk.pin_to_queue;
+            if (want >= nb_q) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
+                    ">= nb_rx_queues={} (RssPartitioned)", want, nb_q);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue >= nb_rx_queues"});
+            }
+            if (cfg.dpdk.wire.src_port == 0) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkUdpSocket::create_and_attach: RssPartitioned with "
+                    "pin_to_queue={} requires an explicit cfg.dpdk.wire.src_port "
+                    "measured to land on that queue (RSS prediction retired; "
+                    "run rss_srcport_finder). rss_key_trusted={}",
+                    want, platform.rss_key_trusted());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: RssPartitioned requires explicit "
+                    "cfg.dpdk.wire.src_port (queue prediction retired)"});
+            }
+            target_qid = want;
             // TX queue alignment: same family as RX. UdpConfig has no
-            // rx_queue_id field by design (Poller owns the RX queue);
-            // see the long comment removed alongside this rewrite.
+            // rx_queue_id field by design (Poller owns the RX queue).
             cfg.dpdk.wire.tx_queue_id = target_qid;
             SPDLOG_LOGGER_INFO(log,
-                "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
-                *sp, target_qid, cfg.dpdk.pin_to_queue.has_value());
+                "create_and_attach: RssPartitioned explicit src_port={} pinned "
+                "to queue={} (prediction retired; caller-measured)",
+                cfg.dpdk.wire.src_port, target_qid);
         } else {  // FlowDirector
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue >= nb_q) {
                 SPDLOG_LOGGER_ERROR(log,
