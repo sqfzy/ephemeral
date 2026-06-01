@@ -497,6 +497,128 @@ def persist(out_path: str, payload: dict) -> str:
     return real
 
 
+def _find_probe_binary() -> Optional[str]:
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(here)
+    for m in ("release", "debug"):
+        p = os.path.join(root, "build", "linux", "arm64", m, "dpdk_rsskey_probe")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def run_dpdk_backend(args) -> int:
+    """DPDK 后端:经验式实测 src_port→queue(shell dpdk_rsskey_probe --finder),
+    按 operator 提供的 queue→cpu(lcore 绑定)映射分桶 → 统一 per_cpu schema。
+
+    与 kernel 后端的差异:DPDK 无 IRQ→cpu;queue→cpu = lcore 配置,探测不出来,
+    故必须由 --queue-cpu-map 提供。测量本身是经验式(实际发包看落核),对 ENA
+    的占位 key 天然免疫——不算 Toeplitz。
+    """
+    if not args.nic or not args.dst or args.dst_port is None:
+        log_error("dpdk: 缺少必需参数 --nic <PCI BDF> --dst --dst-port")
+        return EXIT_USAGE
+    if not args.queue_cpu_map:
+        log_error("dpdk: 必须提供 --queue-cpu-map（如 '0:4,1:5,2:6,3:7'）—— "
+                  "DPDK 的 queue→cpu 是 lcore 绑定，探测不出来")
+        return EXIT_USAGE
+    if not args.src_ip:
+        log_error("dpdk: --src-ip 必填（vfio NIC 无 kernel IP 可探测）")
+        return EXIT_USAGE
+    try:
+        q2c = {}
+        for pair in args.queue_cpu_map.split(","):
+            q, c = pair.split(":")
+            q2c[int(q)] = int(c)
+    except ValueError:
+        log_error("dpdk: --queue-cpu-map 格式应为 'q:cpu,q:cpu,…'")
+        return EXIT_USAGE
+
+    if os.geteuid() != 0:
+        log_error("dpdk: 需要 root（EAL + vfio）；用 sudo 重跑")
+        return EXIT_RUNTIME
+    probe = _find_probe_binary()
+    if not probe:
+        log_error("dpdk: 找不到 dpdk_rsskey_probe，先 `xmake build dpdk_rsskey_probe`")
+        return EXIT_RUNTIME
+
+    dst_ip = _resolve_dst(args.dst)
+    nb_rxq = max(q2c.keys()) + 1 if q2c else 4
+    cmd = [probe, "-l", args.eal_cores, "-n", "4", "-a", args.nic,
+           "--file-prefix=rssfinder", "--",
+           "--finder", "--per-queue", str(args.per_cpu),
+           "--local-ip", args.src_ip, "--dst-ip", dst_ip,
+           "--dst-port", str(args.dst_port), "--nb-rxq", str(nb_rxq)]
+    if args.dst_mac:
+        cmd += ["--dst-mac", args.dst_mac]
+    if args.local_mac:
+        cmd += ["--local-mac", args.local_mac]
+    if args.port_range:
+        try:
+            lo, hi = args.port_range.split("-")
+            cmd += ["--port-lo", lo, "--port-hi", hi]
+        except ValueError:
+            log_error("--port-range 格式应为 LO-HI")
+            return EXIT_USAGE
+
+    log_info(f"dpdk: 运行 probe 实测 src_port→queue（NIC 须已绑 vfio-pci）…")
+    log_debug(" ".join(cmd))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        log_error(f"dpdk: probe 退出码 {r.returncode}；stderr 尾部:\n{r.stderr[-800:]}")
+        return EXIT_RUNTIME
+
+    # 解析 FINDERMAP <src_port> <queue>
+    per_cpu: Dict[int, List[int]] = {}
+    mapped = 0
+    for line in r.stdout.splitlines():
+        if line.startswith("FINDERMAP"):
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            sp, q = int(parts[1]), int(parts[2])
+            cpu = q2c.get(q)
+            if cpu is None:
+                continue  # 该队列不在 operator 的 map 里（非本进程拥有）
+            per_cpu.setdefault(cpu, []).append(sp)
+            mapped += 1
+    done = next((l for l in r.stdout.splitlines() if l.startswith("FINDERDONE")), "")
+    log_info(f"dpdk: 实测映射 {mapped} 个 src_port；probe: {done}")
+    for cpu in sorted(per_cpu):
+        log_info(f"  cpu{cpu}: {per_cpu[cpu]}")
+    if not per_cpu:
+        log_error("dpdk: 没测到任何 src_port→queue（probe 无回包？路径不通？看 -v）")
+        return EXIT_RUNTIME
+
+    ts = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+    out_path = args.out or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "outputs", f"rss-srcports-dpdk-{ts}.json")
+    payload = {
+        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(),
+        "backend": "dpdk",
+        "nic": args.nic,
+        "tuple": {"src_ip": args.src_ip, "dst_ip": dst_ip, "dst_port": args.dst_port},
+        "queue_to_cpu": {str(q): c for q, c in q2c.items()},
+        "per_cpu": {
+            str(cpu): [
+                # empirical: measured by actually sending + observing landing queue
+                {"src_port": sp, "verified": True, "method": "empirical"}
+                for sp in ports
+            ]
+            for cpu, ports in sorted(per_cpu.items())
+        },
+        "caveat": (
+            "DPDK 经验式实测(非 Toeplitz),对 ENA 占位 key 免疫。queue→cpu 来自 "
+            "--queue-cpu-map(operator 的 lcore 绑定)。仅对当前 NIC RSS 状态有效;"
+            "NIC reset 后须重跑。src_port→queue 是 NIC 当前 RSS 的实测结果。"
+        ),
+    }
+    real = persist(out_path, payload)
+    log_info(f"落盘: {real}")
+    log_info(f"✅ dpdk: {len(per_cpu)} 个 cpu，共 {mapped} 个实测 src_port。")
+    return EXIT_OK
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     global _VERBOSE
     p = argparse.ArgumentParser(
@@ -504,10 +626,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="RSS source-port finder — 算出让本机收包落到指定 CPU 的 src_port 并 verify。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--nic", help="网卡名（如 ens6）")
+    p.add_argument("--backend", choices=["kernel", "dpdk"], default="kernel",
+                   help="kernel: ethtool+SO_INCOMING_NAPI_ID 实测(默认); "
+                        "dpdk: 经验式实测(shell dpdk_rsskey_probe)，需 --queue-cpu-map")
+    p.add_argument("--nic", help="kernel: 网卡名(如 ens6); dpdk: PCI BDF(如 0000:00:05.0)")
     p.add_argument("--dst", help="目标 IP 或域名")
     p.add_argument("--dst-port", type=int, help="目标端口")
-    p.add_argument("--src-ip", help="本地源 IP（默认探测 nic 主 IPv4，多地址则报错）")
+    p.add_argument("--src-ip", help="本地源 IP（kernel 默认探测 nic 主 IPv4；dpdk 必填）")
+    # ── dpdk 后端专属 ──
+    p.add_argument("--queue-cpu-map", help="dpdk: 队列→cpu(lcore 绑定)映射，如 '0:4,1:5,2:6,3:7'")
+    p.add_argument("--eal-cores", default="0-1", help="dpdk: EAL lcore 列表(默认 0-1)")
+    p.add_argument("--dst-mac", help="dpdk: 反射器 MAC(子网内=目标自身,先 ping 用 ip neigh 取)")
+    p.add_argument("--local-mac", help="dpdk: 本机 NIC MAC")
     p.add_argument("--per-cpu", type=int, default=1, help="每个 CPU 找几个 src_port（默认 1）")
     p.add_argument("--port-range", help="候选 src_port 范围 LO-HI（默认读 ip_local_port_range）")
     p.add_argument("--include-cpu0", action="store_true", help="包含 CPU0（默认排除）")
@@ -523,7 +653,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.selftest:
         return _selftest()
 
-    # ── 输入校验 ──
+    if args.backend == "dpdk":
+        return run_dpdk_backend(args)
+
+    # ── 输入校验（kernel 后端）──
     if not args.nic or not args.dst or args.dst_port is None:
         log_error("缺少必需参数：--nic --dst --dst-port（-h 看用法）")
         return EXIT_USAGE

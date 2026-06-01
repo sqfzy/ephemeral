@@ -1,23 +1,33 @@
 /// @file examples/dpdk_rsskey_probe.cpp
 ///
-/// 一次性诊断：DPDK ENA 的 probed RSS key 到底是不是硬件真正用来 steering 的 key。
+/// 两用工具:
+///  (1) 诊断(默认):DPDK NIC 的 probed RSS key 到底是不是硬件真正用来 steering 的 key。
+///      向 VPC DNS 反射器发不同 src_port 的 DNS 查询,比对 predict_rss_queue(probed key)
+///      预测的队列 vs 实际落的 RX 队列。全不符 = probed key 是占位(ENA 实测如此)。
+///  (2) finder 后端(--finder):被 tools/rss_srcport_finder.py 的 dpdk 后端调用。
+///      实测 src_port→queue,机器可读输出 `FINDERMAP <src_port> <queue>`(每队列至多 M 个)。
+///      经验式、不信 key——对 ENA 的占位 key 天然免疫。
 ///
-/// 裸 DPDK 起本端口(4 RSS 队列)，读 `query_rss_state` 探到的 key，向 VPC DNS
-/// (172.31.0.2:53) 发 N 个不同 src_port 的 DNS 查询。DNS 回包(入站 4-tuple =
-/// src=DNS:53, dst=本机:src_port)会被 NIC 算 RSS 哈希并写进 `mbuf->hash.rss`。
-/// 对比 `mbuf->hash.rss` 与 `toeplitz_hash_ipv4(probed_key, 入站tuple)`：
-///   全部相等 → probed key 是真 key（case i），eph 的 predict_rss_queue 在 ENA 上成立。
-///   不相等   → probed key 是软件占位（case ii），eph 的 ENA RSS 假设是错的。
+/// 用 VPC DNS 当反射器,绕开同实例 ENI 不通的限制(DNS 解析器不在本实例上)。
 ///
-/// 这是 test_dpdk_rss_key_correctness 的核心断言，但用 VPC DNS 当反射器，绕开了
-/// 同实例 ENI 不通的限制（DNS 解析器不在本实例上）。
-///
-/// 用法（ens5 已绑 vfio-pci，hugepages 已分配）:
-///   sudo dpdk_rsskey_probe -l 0-1 -n 4 -a 0000:00:05.0 --file-prefix=rsskeyprobe --
+/// 用法(NIC 已绑 vfio-pci、hugepages 已分配):
+///   sudo dpdk_rsskey_probe -l 0-1 -n 4 -a <bdf> --file-prefix=p -- [app-args]
+/// app-args(均可选,默认本会话 ens5/VPC-DNS 值):
+///   --local-ip A.B.C.D     本机 IP(发包源)
+///   --dst-ip A.B.C.D       反射器 IP(VPC DNS,在子网内可达)
+///   --dst-port N           反射器端口(53)
+///   --local-mac aa:..:ff   本机 MAC
+///   --dst-mac aa:..:ff     反射器 MAC(子网内 = 目标自身 MAC;先用 kernel ARP 取)
+///   --nb-rxq N             RX 队列数(默认 4)
+///   --port-lo / --port-hi  候选 src_port 范围(默认 40001..40512)
+///   --per-queue M          每队列至多收集 M 个 src_port(finder,默认 1)
+///   --finder               机器可读 finder 模式(无诊断 verdict)
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -35,21 +45,54 @@
 
 namespace {
 
-// ── 本机 / 目标固定参数（本会话实测值）──
-constexpr uint32_t LOCAL_IP = 0xAC1F023E;  // 172.31.2.62 (ens5)
-constexpr uint32_t DNS_IP   = 0xAC1F0002;  // 172.31.0.2  (VPC resolver)
-constexpr uint16_t DNS_PORT = 53;
-const rte_ether_addr LOCAL_MAC{{0x0a, 0x4c, 0x71, 0xa7, 0x29, 0xff}};  // ens5
-const rte_ether_addr DST_MAC{{0x0a, 0x8a, 0xc5, 0x41, 0x9c, 0xc9}};    // 172.31.0.2 的 MAC
+// ── 目标参数(默认 = 本会话 ens5 / VPC DNS 实测值;可被 argv 覆盖)──
+uint32_t LOCAL_IP = 0xAC1F023E;  // 172.31.2.62 (ens5)
+uint32_t DNS_IP   = 0xAC1F0002;  // 172.31.0.2  (VPC resolver)
+uint16_t DNS_PORT = 53;
+rte_ether_addr LOCAL_MAC{{0x0a, 0x4c, 0x71, 0xa7, 0x29, 0xff}};  // ens5
+rte_ether_addr DST_MAC{{0x0a, 0x8a, 0xc5, 0x41, 0x9c, 0xc9}};    // 172.31.0.2 的 MAC
 
-constexpr uint16_t NB_RXQ = 4;
+uint16_t NB_RXQ   = 4;
+uint16_t PORT_LO  = 40001;
+uint16_t PORT_HI  = 40512;
+uint16_t PER_QUEUE = 1;
+bool     FINDER   = false;
+
 constexpr uint16_t NB_TXQ = 1;
 
-// 一组候选 src_port（ephemeral 段，覆盖到不同队列）
-const std::vector<uint16_t> SRC_PORTS = {
-    40001, 40002, 40003, 40004, 40005, 40006, 40007, 40008,
-    40010, 40012, 40014, 40016, 40020, 40025, 40030, 40040,
-};
+bool parse_ipv4(const char* s, uint32_t& out) {
+    unsigned a, b, c, d;
+    if (std::sscanf(s, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+    out = (a << 24) | (b << 16) | (c << 8) | d;  // host order (MSB = first octet)
+    return true;
+}
+
+bool parse_mac(const char* s, rte_ether_addr& out) {
+    unsigned x[6];
+    if (std::sscanf(s, "%x:%x:%x:%x:%x:%x", &x[0], &x[1], &x[2], &x[3], &x[4], &x[5]) != 6)
+        return false;
+    for (int i = 0; i < 6; ++i) out.addr_bytes[i] = uint8_t(x[i]);
+    return true;
+}
+
+void parse_app_args(int argc, char** argv) {
+    auto need = [&](int& i) -> const char* { return (i + 1 < argc) ? argv[++i] : nullptr; };
+    for (int i = 0; i < argc; ++i) {
+        std::string a = argv[i];
+        const char* v = nullptr;
+        if (a == "--finder") { FINDER = true; }
+        else if (a == "--local-ip"  && (v = need(i))) parse_ipv4(v, LOCAL_IP);
+        else if (a == "--dst-ip"    && (v = need(i))) parse_ipv4(v, DNS_IP);
+        else if (a == "--dst-port"  && (v = need(i))) DNS_PORT = uint16_t(std::atoi(v));
+        else if (a == "--local-mac" && (v = need(i))) parse_mac(v, LOCAL_MAC);
+        else if (a == "--dst-mac"   && (v = need(i))) parse_mac(v, DST_MAC);
+        else if (a == "--nb-rxq"    && (v = need(i))) NB_RXQ = uint16_t(std::atoi(v));
+        else if (a == "--port-lo"   && (v = need(i))) PORT_LO = uint16_t(std::atoi(v));
+        else if (a == "--port-hi"   && (v = need(i))) PORT_HI = uint16_t(std::atoi(v));
+        else if (a == "--per-queue" && (v = need(i))) PER_QUEUE = uint16_t(std::atoi(v));
+    }
+}
 
 uint16_t ipv4_csum(const void* hdr, size_t len) {
     const uint16_t* p = static_cast<const uint16_t*>(hdr);
@@ -59,12 +102,11 @@ uint16_t ipv4_csum(const void* hdr, size_t len) {
     return static_cast<uint16_t>(~sum);
 }
 
-// 构造一个最小 DNS A 查询 ("amazonaws.com")
 size_t build_dns_query(uint8_t* p, uint16_t id) {
     size_t n = 0;
     auto put16 = [&](uint16_t v) { p[n++] = v >> 8; p[n++] = v & 0xff; };
-    put16(id); put16(0x0100);            // id, flags=RD
-    put16(1); put16(0); put16(0); put16(0);  // qd=1 an=ns=ar=0
+    put16(id); put16(0x0100);
+    put16(1); put16(0); put16(0); put16(0);
     const char* name = "amazonaws.com";
     const char* seg = name;
     while (true) {
@@ -75,15 +117,14 @@ size_t build_dns_query(uint8_t* p, uint16_t id) {
         if (!dot) break;
         seg = dot + 1;
     }
-    p[n++] = 0;                          // root
-    put16(1); put16(1);                  // qtype=A qclass=IN
+    p[n++] = 0;
+    put16(1); put16(1);
     return n;
 }
 
-// 在 mbuf 里组一个 DNS 查询包 (Eth/IPv4/UDP/DNS)，返回是否成功
 bool craft(rte_mbuf* m, uint16_t src_port) {
     uint8_t dns[64];
-    size_t dns_len = build_dns_query(dns, src_port);  // 用 src_port 当 DNS id，便于辨识
+    size_t dns_len = build_dns_query(dns, src_port);
     size_t udp_len = sizeof(rte_udp_hdr) + dns_len;
     size_t ip_len  = sizeof(rte_ipv4_hdr) + udp_len;
     size_t tot     = sizeof(rte_ether_hdr) + ip_len;
@@ -110,7 +151,7 @@ bool craft(rte_mbuf* m, uint16_t src_port) {
     udp->src_port = htons(src_port);
     udp->dst_port = htons(DNS_PORT);
     udp->dgram_len = htons(uint16_t(udp_len));
-    udp->dgram_cksum = 0;  // IPv4 UDP 校验和可为 0
+    udp->dgram_cksum = 0;
 
     std::memcpy(d + sizeof(rte_ether_hdr) + ip_len - udp_len + sizeof(rte_udp_hdr),
                 dns, dns_len);
@@ -120,11 +161,14 @@ bool craft(rte_mbuf* m, uint16_t src_port) {
     return true;
 }
 
+void log_info(const std::string& s) { if (!FINDER) spdlog::info("{}", s); }
+
 }  // namespace
 
 int main(int argc, char** argv) {
     int consumed = rte_eal_init(argc, argv);
     if (consumed < 0) { spdlog::error("rte_eal_init failed"); return 2; }
+    parse_app_args(argc - consumed, argv + consumed);
 
     const uint16_t port = 0;
     if (rte_eth_dev_count_avail() < 1) { spdlog::error("no DPDK port"); return 2; }
@@ -134,11 +178,11 @@ int main(int argc, char** argv) {
     if (!pool) { spdlog::error("mbuf pool create failed"); return 2; }
 
     rte_eth_dev_info dev_info{};
-    rte_eth_dev_info_get(port, &dev_info);
+    if (rte_eth_dev_info_get(port, &dev_info) != 0) { spdlog::error("dev_info_get"); return 2; }
 
     rte_eth_conf pc{};
     pc.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
-    pc.rx_adv_conf.rss_conf.rss_key = nullptr;  // 用 PMD 默认 key（本次 attach 的那把）
+    pc.rx_adv_conf.rss_conf.rss_key = nullptr;
     pc.rx_adv_conf.rss_conf.rss_hf =
         (RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP | RTE_ETH_RSS_TCP) &
         dev_info.flow_type_rss_offloads;
@@ -157,28 +201,32 @@ int main(int argc, char** argv) {
     }
     if (rte_eth_dev_start(port) < 0) { spdlog::error("dev_start failed"); return 2; }
 
-    // ── 探 RSS key ──
     auto st = eph::net::dpdk::query_rss_state(port);
     if (!st) { spdlog::error("query_rss_state: {}", st.error()); return 2; }
     auto key = st->key();
-    std::string keyhex;
-    for (auto b : key) { char t[3]; std::snprintf(t, 3, "%02x", b); keyhex += t; }
-    spdlog::info("probed key_len={} reta_size={} key={}", st->key_len, st->reta_size, keyhex);
+    if (!FINDER) {
+        std::string keyhex;
+        for (auto b : key) { char t[3]; std::snprintf(t, 3, "%02x", b); keyhex += t; }
+        spdlog::info("probed key_len={} reta_size={} key={}", st->key_len, st->reta_size, keyhex);
+    }
 
-    // ── 发 DNS 查询 ──
-    for (uint16_t sp : SRC_PORTS) {
+    // ── 发候选 src_port 的 DNS 查询(范围扫描)──
+    std::vector<uint16_t> ports;
+    for (uint32_t p = PORT_LO; p <= PORT_HI; ++p) ports.push_back(uint16_t(p));
+    for (uint16_t sp : ports) {
         rte_mbuf* m = rte_pktmbuf_alloc(pool);
         if (!m) continue;
         craft(m, sp);
         if (rte_eth_tx_burst(port, 0, &m, 1) < 1) rte_pktmbuf_free(m);
     }
-    spdlog::info("sent {} DNS queries to 172.31.0.2:53, polling replies…", SRC_PORTS.size());
+    log_info(std::format("sent {} DNS queries to {}.{}.{}.{}:{}, polling…",
+             ports.size(), (DNS_IP>>24)&0xff,(DNS_IP>>16)&0xff,(DNS_IP>>8)&0xff,DNS_IP&0xff, DNS_PORT));
 
-    // ── 收回包，按 dst_port 认出对应 src_port，读 mbuf->hash.rss ──
+    // ── 收回包,按 dst_port 认出 src_port,记录实际落的队列 ──
     struct Obs { bool got=false; uint32_t hash=0; bool flag=false; uint16_t qid=0; };
-    std::array<Obs, 65536> obs{};
+    std::vector<Obs> obs(65536);
     const uint64_t hz = rte_get_timer_hz();
-    const uint64_t deadline = rte_get_timer_cycles() + hz * 4;  // 收 4 秒
+    const uint64_t deadline = rte_get_timer_cycles() + hz * 4;
     while (rte_get_timer_cycles() < deadline) {
         for (uint16_t q = 0; q < NB_RXQ; ++q) {
             rte_mbuf* burst[32];
@@ -207,36 +255,48 @@ int main(int argc, char** argv) {
         }
     }
 
-    // ── 比对 ──
-    // ENA 不把 RSS hash 值写进 mbuf（实测 hash.rss 恒为 0，即便 flag 置位），
-    // 所以改用「队列」对比：predict_rss_queue(probed key + 真实 RETA, 入站tuple)
-    // vs 包实际落的 RX 队列。入站方向：src=DNS:53, dst=本机:sp（见 queue_for_tuple 注释）。
-    int got = 0, qmatch = 0, qmismatch = 0; bool hash_exposed = false;
-    spdlog::info("--- per src_port: 预测队列(probed key+RETA) vs 实际落的 RX 队列 ---");
-    for (uint16_t sp : SRC_PORTS) {
-        if (!obs[sp].got) { spdlog::warn("src_port={} : 无回包", sp); continue; }
-        ++got;
-        if (obs[sp].hash != 0) hash_exposed = true;
-        uint16_t pred_q = eph::net::dpdk::queue_for_tuple(*st, DNS_IP, DNS_PORT, LOCAL_IP, sp);
-        uint32_t pred_h = eph::net::dpdk::toeplitz_hash_ipv4(key, DNS_IP, DNS_PORT, LOCAL_IP, sp);
-        bool ok = (pred_q == obs[sp].qid);
-        if (ok) ++qmatch; else ++qmismatch;
-        spdlog::info("src_port={} actual_q={} predicted_q={} (pred_hash=0x{:08x} nic_hash=0x{:08x}) {}",
-                     sp, obs[sp].qid, pred_q, pred_h, obs[sp].hash, ok ? "QMATCH" : "QMISMATCH");
-    }
-    spdlog::info("================ 判定 ================");
-    spdlog::info("回包 {}/{}，队列预测 match={} mismatch={}；NIC 是否暴露 hash 值={}",
-                 got, SRC_PORTS.size(), qmatch, qmismatch, hash_exposed);
-    if (got == 0) {
-        spdlog::warn("没收到任何 DNS 回包 —— DPDK 口到 VPC DNS 的路径没通，无法判定");
-    } else if (qmismatch == 0) {
-        spdlog::info("→ ✅ probed key 是真 key（case i）：predict_rss_queue 与实际落核全一致，"
-                     "eph 的 ENA RSS 假设成立");
-    } else if (qmatch == 0) {
-        spdlog::info("→ ❌ probed key 是软件占位（case ii）：predict_rss_queue 与实际落核全不符，"
-                     "eph 的 ENA RSS 假设错误（probed key 不是硬件真正用的 key）");
+    if (FINDER) {
+        // ── finder 模式:每队列至多 PER_QUEUE 个 src_port,机器可读输出 ──
+        std::vector<uint16_t> per_q_count(NB_RXQ, 0);
+        for (uint16_t sp : ports) {
+            if (!obs[sp].got) continue;
+            uint16_t q = obs[sp].qid;
+            if (q < NB_RXQ && per_q_count[q] < PER_QUEUE) {
+                std::printf("FINDERMAP %u %u\n", unsigned(sp), unsigned(q));
+                ++per_q_count[q];
+            }
+        }
+        int filled = 0;
+        for (uint16_t q = 0; q < NB_RXQ; ++q) if (per_q_count[q] >= PER_QUEUE) ++filled;
+        std::printf("FINDERDONE filled=%d/%u per_queue=%u\n", filled, unsigned(NB_RXQ), unsigned(PER_QUEUE));
+        std::fflush(stdout);
     } else {
-        spdlog::warn("→ ⚠️ 部分一致（{}/{})，看上面逐条", qmatch, got);
+        // ── 诊断模式:predict_rss_queue(probed key) vs 实际落核 ──
+        int got = 0, qmatch = 0, qmismatch = 0; bool hash_exposed = false;
+        spdlog::info("--- per src_port: 预测队列(probed key+RETA) vs 实际落的 RX 队列 ---");
+        int shown = 0;
+        for (uint16_t sp : ports) {
+            if (!obs[sp].got) continue;
+            ++got;
+            if (obs[sp].hash != 0) hash_exposed = true;
+            uint16_t pred_q = eph::net::dpdk::queue_for_tuple(*st, DNS_IP, DNS_PORT, LOCAL_IP, sp);
+            bool ok = (pred_q == obs[sp].qid);
+            if (ok) ++qmatch; else ++qmismatch;
+            if (shown++ < 24)
+                spdlog::info("src_port={} actual_q={} predicted_q={} {}",
+                             sp, obs[sp].qid, pred_q, ok ? "QMATCH" : "QMISMATCH");
+        }
+        spdlog::info("================ 判定 ================");
+        spdlog::info("回包 {}/{}，队列预测 match={} mismatch={}；NIC 暴露 hash 值={}",
+                     got, ports.size(), qmatch, qmismatch, hash_exposed);
+        if (got == 0)
+            spdlog::warn("没收到任何回包 —— DPDK 口到反射器路径没通,无法判定");
+        else if (qmismatch == 0)
+            spdlog::info("→ ✅ probed key 是真 key:predict 与实际落核全一致");
+        else if (qmatch == 0)
+            spdlog::info("→ ❌ probed key 是占位:predict 与实际落核全不符");
+        else
+            spdlog::warn("→ ⚠️ 部分一致 {}/{}", qmatch, got);
     }
 
     rte_eth_dev_stop(port);
