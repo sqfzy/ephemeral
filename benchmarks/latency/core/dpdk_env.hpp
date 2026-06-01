@@ -14,7 +14,7 @@
 /// `Platform::create(PlatformConfig)` (secondary attach to a daemon-managed
 /// NIC). An `eph-nicd@<pci>` daemon must already be running for
 /// `cfg.networking.nic_b_pci` — the `lat` wrapper script handles the
-/// vfio-pci binding (via `eph-net-dpdk/scripts/dpdk-setup.sh`) but does
+/// vfio-pci binding (via `eph-net-dpdk/tools/dpdk-setup.sh`) but does
 /// NOT spawn the daemon; the operator is expected to start it (e.g.
 /// `sudo systemctl start eph-nicd@<bdf>` or, in dev settings,
 /// `eph::dpdk::dev::ensure_local_daemon` from `eph/dpdk/dev_helpers.hpp`).

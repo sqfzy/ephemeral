@@ -374,7 +374,7 @@ the DPDK hot paths. Auto-globbed via the `eph-bench` rule; build with
 
 The RX hot-path baseline lives in
 `.artifacts/bench-rx-hot-path-20260423.txt`. Re-run with
-`scripts/check-rx-hot-path-regression.sh` (default 5% threshold, exit
+`tools/check-rx-hot-path-regression.sh` (default 5% threshold, exit
 code 1 on regression) — suitable as a pre-PR gate or local canary.
 
 ## Fuzzers
@@ -398,7 +398,7 @@ minimized crash reproducers should be committed alongside the fix.
 
 ## Scripts
 
-`eph-net-dpdk/scripts/` holds operational helpers:
+`eph-net-dpdk/tools/` holds operational helpers:
 
 | Script                                  | Purpose                                                        |
 |-----------------------------------------|----------------------------------------------------------------|

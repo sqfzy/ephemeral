@@ -70,7 +70,7 @@
 /// `--pin` in one call.
 ///
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
-/// See `eph-net-dpdk/scripts/dpdk-setup.sh`. The daemon and every app
+/// See `eph-net-dpdk/tools/dpdk-setup.sh`. The daemon and every app
 /// peer must use the SAME `--pci` — file_prefix is auto-derived from
 /// the BDF, so identical pci → identical hugepage namespace →
 /// secondary's `rte_mempool_lookup` finds the daemon's mempool.

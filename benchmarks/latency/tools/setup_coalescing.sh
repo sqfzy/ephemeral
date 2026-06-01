@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# benchmarks/latency/scripts/setup_coalescing.sh
+# benchmarks/latency/tools/setup_coalescing.sh
 #   — tune NIC RX coalescing for reproducible bench latency
 #
 # ┌── Script roles in this repo ────────────────────────────────────────────┐
-# │ eph-net-dpdk/scripts/dpdk-setup.sh     one-shot host env: vfio + hugepg │
-# │ eph-net-dpdk/scripts/dpdk-teardown.sh  undo dpdk-setup, restore kernel  │
-# │ benchmarks/latency/scripts/            this script — RX coalescing tune │
+# │ eph-net-dpdk/tools/dpdk-setup.sh     one-shot host env: vfio + hugepg │
+# │ eph-net-dpdk/tools/dpdk-teardown.sh  undo dpdk-setup, restore kernel  │
+# │ benchmarks/latency/tools/            this script — RX coalescing tune │
 # │   setup_coalescing.sh                                                   │
 # │ benchmarks/latency/lat                 per-run bench wrapper            │
 # └─────────────────────────────────────────────────────────────────────────┘
@@ -100,7 +100,7 @@ VERBOSE=false
 
 usage() {
     cat <<EOF
-${BOLD}Usage${NC}: sudo ./benchmarks/latency/scripts/setup_coalescing.sh [options] [<nic> [<netns>]]
+${BOLD}Usage${NC}: sudo ./benchmarks/latency/tools/setup_coalescing.sh [options] [<nic> [<netns>]]
 
 ${BOLD}Tune NIC RX coalescing to a fixed (adaptive=off, rx-usecs=0) workpoint${NC}
 so kernel-vs-DPDK latency benchmarks measure the stack itself, not the
@@ -120,9 +120,9 @@ ${BOLD}Options${NC}:
   -h, --help       Show this help
 
 ${BOLD}Single-NIC mode${NC} (positional args override bench.conf):
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens34                # default ns
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens35 $BENCH_NS_NAME             # in $BENCH_NS_NAME
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh ens5 my_custom_ns    # any netns
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh ens34                # default ns
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh ens35 $BENCH_NS_NAME             # in $BENCH_NS_NAME
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh ens5 my_custom_ns    # any netns
 
 ${BOLD}Environment variables${NC}:
   BENCH_CONFIG       Override bench.conf path (default: $BENCH_CONFIG)
@@ -131,10 +131,10 @@ ${BOLD}Environment variables${NC}:
   TARGET_ADAPTIVE    adaptive-rx setting (default: off)
 
 ${BOLD}Examples${NC}:
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh                # tune both NICs from bench.conf
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh --check        # inspect current state
-  sudo ./benchmarks/latency/scripts/setup_coalescing.sh --restore      # back to driver defaults
-  sudo TARGET_RX_USECS=8 ./benchmarks/latency/scripts/setup_coalescing.sh  # use 8 us instead of 0
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh                # tune both NICs from bench.conf
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh --check        # inspect current state
+  sudo ./benchmarks/latency/tools/setup_coalescing.sh --restore      # back to driver defaults
+  sudo TARGET_RX_USECS=8 ./benchmarks/latency/tools/setup_coalescing.sh  # use 8 us instead of 0
 EOF
 }
 
@@ -329,7 +329,7 @@ elif [[ -f "$BENCH_CONFIG" ]]; then
         # not applicable while bound to vfio. Warn and skip.
         log_warn "$NIC_B not found in any netns — possibly bound to vfio-pci, skipping"
         log_info "  if running a DPDK bench, this is expected; coalescing only matters in kernel mode"
-        log_info "  to apply now, first re-bind: sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
+        log_info "  to apply now, first re-bind: sudo ./eph-net-dpdk/tools/dpdk-teardown.sh"
     else
         TARGETS+=("$NIC_B|$nic_b_ns")
     fi

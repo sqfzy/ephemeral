@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# benchmarks/latency/scripts/dpdk-teardown.sh — DEPRECATED LOCATION.
+# benchmarks/latency/tools/dpdk-teardown.sh — DEPRECATED LOCATION.
 #
 # The canonical script lives at:
 #
-#     eph-net-dpdk/scripts/dpdk-teardown.sh
+#     eph-net-dpdk/tools/dpdk-teardown.sh
 #
 # This shim only forwards arguments so anyone who memorised the old
 # path still gets the current behaviour. The stale copy that used to
@@ -12,7 +12,7 @@
 # to regex the EAL file_prefix as a PID), so it would happily unbind
 # a NIC the eph-nicd daemon was still mapping and SIGBUS the daemon.
 #
-# Migration: invoke `eph-net-dpdk/scripts/dpdk-teardown.sh` directly.
+# Migration: invoke `eph-net-dpdk/tools/dpdk-teardown.sh` directly.
 # The `lat` dispatcher already does so; CLAUDE.md / production-config.md
 # / ONBOARDING.md all point there. This shim will be removed in a
 # future cleanup pass.
@@ -25,11 +25,11 @@ if PROJECT_DIR=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); th
 else
     PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 fi
-CANONICAL="$PROJECT_DIR/eph-net-dpdk/scripts/dpdk-teardown.sh"
+CANONICAL="$PROJECT_DIR/eph-net-dpdk/tools/dpdk-teardown.sh"
 
 if [[ ! -x "$CANONICAL" ]]; then
     echo "ERROR: canonical dpdk-teardown.sh not found at $CANONICAL" >&2
-    echo "       did the eph-net-dpdk module move? check git log -- eph-net-dpdk/scripts/" >&2
+    echo "       did the eph-net-dpdk module move? check git log -- eph-net-dpdk/tools/" >&2
     exit 1
 fi
 

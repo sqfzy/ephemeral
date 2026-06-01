@@ -368,7 +368,7 @@ sudo dpdk-devbind.py -b vfio-pci 0000:00:05.0
 dpdk-devbind.py --status | head -20
 ```
 
-The `eph-net-dpdk/scripts/dpdk-setup.sh` and `dpdk-teardown.sh` scripts
+The `eph-net-dpdk/tools/dpdk-setup.sh` and `dpdk-teardown.sh` scripts
 encapsulate this idempotently. The `benchmarks/latency/lat` dispatcher
 handles transitions automatically.
 

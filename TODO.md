@@ -93,7 +93,7 @@ _None at this time._
 
   **Trade-off (v1)**: the gate is refcount-only — abnormal peer exit
   (`kill -9`, OOM) leaves a stale claimed slot and primary then
-  defers teardown indefinitely. `scripts/dpdk-teardown.sh` recovers
+  defers teardown indefinitely. `eph-net-dpdk/tools/dpdk-teardown.sh` recovers
   between sessions. v2 candidate (IPC heartbeat reaper) parked.
 
 ---

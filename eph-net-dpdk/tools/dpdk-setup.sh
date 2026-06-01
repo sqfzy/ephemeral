@@ -2,9 +2,9 @@
 # dpdk-setup.sh — one-shot host environment preparation for DPDK
 #
 # ┌── Script roles in this repo ────────────────────────────────────────────┐
-# │ eph-net-dpdk/scripts/dpdk-setup.sh         this script — host env prep      │
-# │ eph-net-dpdk/scripts/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
-# │ benchmarks/latency/scripts/            NIC RX coalescing tuning         │
+# │ eph-net-dpdk/tools/dpdk-setup.sh         this script — host env prep      │
+# │ eph-net-dpdk/tools/dpdk-teardown.sh      undo dpdk-setup, restore kernel  │
+# │ benchmarks/latency/tools/            NIC RX coalescing tuning         │
 # │   setup_coalescing.sh                                                   │
 # │ benchmarks/latency/lat                 per-run bench wrapper            │
 # └─────────────────────────────────────────────────────────────────────────┘
@@ -17,14 +17,14 @@
 #
 # It does NOT:
 #   - Handle netns (the NIC must be in default ns to be detected)
-#   - Tune NIC coalescing (that's benchmarks/latency/scripts/setup_coalescing.sh)
+#   - Tune NIC coalescing (that's benchmarks/latency/tools/setup_coalescing.sh)
 #   - Per-run bench orchestration (that's benchmarks/latency/lat)
 #
 # After this script runs once (typically right after a fresh boot), bench
 # tools like benchmarks/latency/lat can switch the NIC between vfio-pci and
 # bench_ns kernel mode without re-running setup.
 #
-# 用法：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh [选项]
+# 用法：sudo ./eph-net-dpdk/tools/dpdk-setup.sh [选项]
 
 set -euo pipefail
 
@@ -132,7 +132,7 @@ SCRIPT_ARGS_DISPLAY="$*"  # cached for retry hints in error messages
 
 usage() {
     cat <<EOF
-${BOLD}用法${RESET}：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh [选项]
+${BOLD}用法${RESET}：sudo ./eph-net-dpdk/tools/dpdk-setup.sh [选项]
 
 ${BOLD}配置 DPDK 独占网卡环境：加载 VFIO、分配 hugepages、绑定网卡到 vfio-pci。${RESET}
 自动检测 SSH 网卡并选择另一张网卡用于 DPDK，无需手动指定。
@@ -151,14 +151,14 @@ ${BOLD}环境变量${RESET}（覆盖自动检测）：
   KERNEL_DRIVER     网卡的内核驱动名（自动检测）
 
 ${BOLD}示例${RESET}：
-  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh                     # 自动检测网卡并配置
-  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --verbose            # 详细模式（推荐初次使用）
-  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --check-only         # 只查看当前状态
-  sudo ./eph-net-dpdk/scripts/dpdk-setup.sh -y                   # 跳过确认
-  sudo DPDK_PCI=0000:29:00.0 ./eph-net-dpdk/scripts/dpdk-setup.sh  # 手动指定网卡
+  sudo ./eph-net-dpdk/tools/dpdk-setup.sh                     # 自动检测网卡并配置
+  sudo ./eph-net-dpdk/tools/dpdk-setup.sh --verbose            # 详细模式（推荐初次使用）
+  sudo ./eph-net-dpdk/tools/dpdk-setup.sh --check-only         # 只查看当前状态
+  sudo ./eph-net-dpdk/tools/dpdk-setup.sh -y                   # 跳过确认
+  sudo DPDK_PCI=0000:29:00.0 ./eph-net-dpdk/tools/dpdk-setup.sh  # 手动指定网卡
 
 ${BOLD}恢复${RESET}：
-  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh
+  sudo ./eph-net-dpdk/tools/dpdk-teardown.sh
 EOF
 }
 
@@ -169,7 +169,7 @@ while [[ $# -gt 0 ]]; do
         --check-only)   CHECK_ONLY=true; shift ;;
         --dry-run)      DRY_RUN=true; shift ;;
         -h|--help)      usage; exit 0 ;;
-        *)              die "未知选项：$1" "  查看帮助：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh --help" ;;
+        *)              die "未知选项：$1" "  查看帮助：sudo ./eph-net-dpdk/tools/dpdk-setup.sh --help" ;;
     esac
 done
 
@@ -281,7 +281,7 @@ detect_nic() {
     vfio_bound=$("$DEVBIND" --status 2>/dev/null | grep 'drv=vfio-pci' | grep -oP '\S+(?= .*)' || true)
     if [[ -n "$vfio_bound" ]]; then
         warn "发现已绑定到 vfio-pci 的设备：${vfio_bound}"
-        info "如果是上次未恢复，先运行：sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
+        info "如果是上次未恢复，先运行：sudo ./eph-net-dpdk/tools/dpdk-teardown.sh"
     fi
 
     if [[ ${#dpdk_candidates[@]} -eq 0 ]]; then
@@ -351,7 +351,7 @@ pre_check() {
 
     if [[ $EUID -ne 0 ]]; then
         die "需要 root 权限" \
-            "  运行方式：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh\n  保留环境变量：sudo -E ./eph-net-dpdk/scripts/dpdk-setup.sh"
+            "  运行方式：sudo ./eph-net-dpdk/tools/dpdk-setup.sh\n  保留环境变量：sudo -E ./eph-net-dpdk/tools/dpdk-setup.sh"
     fi
     ok "root 权限"
 
@@ -402,7 +402,7 @@ confirm_action() {
         y|yes) ok "已确认" ;;
         *)
             info "已取消。"
-            info "跳过确认：sudo ./eph-net-dpdk/scripts/dpdk-setup.sh -y"
+            info "跳过确认：sudo ./eph-net-dpdk/tools/dpdk-setup.sh -y"
             exit 0
             ;;
     esac
@@ -552,7 +552,7 @@ setup_hugepages() {
 
     if [[ "$actual" -lt "$NR_HUGEPAGES" ]]; then
         warn "请求 ${NR_HUGEPAGES} 页但只分配到 ${actual} 页（内存不足或碎片化）"
-        info "尝试：NR_HUGEPAGES=${actual} sudo ./eph-net-dpdk/scripts/dpdk-setup.sh"
+        info "尝试：NR_HUGEPAGES=${actual} sudo ./eph-net-dpdk/tools/dpdk-setup.sh"
         info "或重启后重试（减少碎片）"
     fi
 
@@ -646,7 +646,7 @@ report_results() {
     echo -e "      --count 3 --msg 'hello dpdk'"
     echo ""
     suggest "恢复网卡："
-    info "  sudo ./eph-net-dpdk/scripts/dpdk-teardown.sh"
+    info "  sudo ./eph-net-dpdk/tools/dpdk-teardown.sh"
 }
 
 # ──────────────────────────────────────────

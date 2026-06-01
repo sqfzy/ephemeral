@@ -256,7 +256,7 @@ caller's responsibility.
    is the **caller's** responsibility (eph-net-dpdk does not
    auto-allocate src_port and has no global view to enforce
    disjointness). See `eph-net-dpdk/docs/dpdk-multiprocess.md`.
-9. Idempotent setup script (`eph-net-dpdk/scripts/dpdk-setup.sh`) runs
+9. Idempotent setup script (`eph-net-dpdk/tools/dpdk-setup.sh`) runs
    green on a fresh host
 
 For deeper operational guidance see `docs/operations-runbook.md`,

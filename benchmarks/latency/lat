@@ -41,7 +41,7 @@
 # mode take the fast path (no change).
 #
 # History: Phase 7 removed the eph-dpdk module; the dpdk-setup.sh +
-# dpdk-teardown.sh helpers live at benchmarks/latency/scripts/ now.
+# dpdk-teardown.sh helpers live at benchmarks/latency/tools/ now.
 
 set -euo pipefail
 
@@ -53,12 +53,12 @@ else
     PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 DEFAULT_CONFIG="$PROJECT_DIR/benchmarks/latency/config.toml"
-# Canonical NIC bring-up / tear-down lives under eph-net-dpdk/scripts/
+# Canonical NIC bring-up / tear-down lives under eph-net-dpdk/tools/
 # (referenced by CLAUDE.md, production-config.md, ONBOARDING.md). The
-# older copies under benchmarks/latency/scripts/ are stale shims kept
+# older copies under benchmarks/latency/tools/ are stale shims kept
 # only for backward-compat with anyone who memorised the old path.
-DPDK_SETUP="$PROJECT_DIR/eph-net-dpdk/scripts/dpdk-setup.sh"
-DPDK_TEARDOWN="$PROJECT_DIR/eph-net-dpdk/scripts/dpdk-teardown.sh"
+DPDK_SETUP="$PROJECT_DIR/eph-net-dpdk/tools/dpdk-setup.sh"
+DPDK_TEARDOWN="$PROJECT_DIR/eph-net-dpdk/tools/dpdk-teardown.sh"
 
 # ── Valid scenarios + their mock implementations ────────────────────
 #

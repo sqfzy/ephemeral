@@ -23,7 +23,7 @@
 ///
 /// Required environment:
 ///   - NIC bound to vfio-pci, ≥ 256 hugepages free
-///     (see `eph-net-dpdk/scripts/dpdk-setup.sh`)
+///     (see `eph-net-dpdk/tools/dpdk-setup.sh`)
 ///   - `eph-nicd@<pci>.service` running for the target PCI BDF (the daemon
 ///     owns the NIC primary; this example attaches as secondary). The
 ///     daemon binary lives at `eph-net-dpdk/tools/eph-nicd.cpp` and is

@@ -220,7 +220,7 @@ code) the slot is never released. Subsequent primary `~Platform()`
 calls then never see "is last alive" and **never stop the port**.
 Hugepage / vfio state leaks until the next clean session.
 
-**Recovery** is `scripts/dpdk-teardown.sh`, which any user already
+**Recovery** is `tools/dpdk-teardown.sh`, which any user already
 runs between DPDK benchmark sessions to recycle hugepages. The
 tradeoff was deliberate: heartbeat-based liveness checking is more
 complex (background thread, pid tracking, signal semantics) and adds

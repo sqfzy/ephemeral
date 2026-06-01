@@ -121,7 +121,7 @@ pin_client_from_cfg(const BenchConfig& cfg,
     // current config — mlockall ONLY, on both halves — eliminates
     // the page-fault class of spikes without introducing the RT-
     // starvation class. See the lat_ws hardening notes / trail in
-    // benchmarks/latency/scripts/irq_steer.sh's docstring for the
+    // benchmarks/latency/tools/irq_steer.sh's docstring for the
     // bisect details.
 }
 

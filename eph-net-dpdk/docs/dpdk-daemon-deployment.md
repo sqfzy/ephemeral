@@ -25,7 +25,7 @@ A new host going from bare metal to first running tenant:
 
 ```bash
 # 1. Bind the NIC to vfio-pci (one-time per boot; persisted via
-# scripts/dpdk-setup.sh on supported hosts).
+# tools/dpdk-setup.sh on supported hosts).
 sudo dpdk-devbind --bind=vfio-pci 0000:01:00.1
 
 # 2. Install the daemon binary + systemd unit.

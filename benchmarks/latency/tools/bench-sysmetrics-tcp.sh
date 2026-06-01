@@ -13,19 +13,19 @@
 # === Usage ===
 #
 #   # Generate the temp config (idempotent, can be inspected)
-#   ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh --gen-config
+#   ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh --gen-config
 #
 #   # Run one trial (writes <OUTDIR>/<MODE>/trial-<TRIAL>.{json,perf.txt,...})
 #   MODE=kernel TRIAL=1 DURATION=300 OUTDIR=.artifacts/bench-sysmetrics-tcp-echo-20260506 \
-#     ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh
+#     ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh
 #
 #   # After all 6 trials, build the report
-#   ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh --aggregate \
+#   ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh --aggregate \
 #     .artifacts/bench-sysmetrics-tcp-echo-20260506
 #
 #   # Help / dry-run
-#   ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh --help
-#   DRY_RUN=1 MODE=kernel TRIAL=1 DURATION=30 OUTDIR=/tmp/dry ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh
+#   ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh --help
+#   DRY_RUN=1 MODE=kernel TRIAL=1 DURATION=30 OUTDIR=/tmp/dry ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh
 #
 # === Exit codes ===
 #   0  trial completed and JSON written
@@ -517,7 +517,7 @@ rows.append('## 复现')
 rows.append('')
 rows.append('```bash')
 rows.append('# Pre-flight: NIC ena, hugepages free, no daemon residue')
-rows.append('# (see benchmarks/latency/scripts/bench-sysmetrics-tcp.sh comment header)')
+rows.append('# (see benchmarks/latency/tools/bench-sysmetrics-tcp.sh comment header)')
 rows.append('')
 rows.append('mkdir -p ' + root)
 rows.append('for mode in kernel dpdk; do')
@@ -529,12 +529,12 @@ rows.append('  fi')
 rows.append('  for trial in 1 2 3; do')
 rows.append('    MODE=$mode TRIAL=$trial DURATION=300 \\')
 rows.append('      OUTDIR=' + root + ' \\')
-rows.append('      ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh')
+rows.append('      ./benchmarks/latency/tools/bench-sysmetrics-tcp.sh')
 rows.append('    sleep 10')
 rows.append('  done')
 rows.append('  if [[ "$mode" == "dpdk" ]]; then sudo pkill -f eph_nicd; fi')
 rows.append('done')
-rows.append('./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh --aggregate ' + root)
+rows.append('./benchmarks/latency/tools/bench-sysmetrics-tcp.sh --aggregate ' + root)
 rows.append('```')
 rows.append('')
 

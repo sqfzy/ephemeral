@@ -60,7 +60,7 @@
 ///     path the focus.
 ///
 /// Required environment: NIC bound to vfio-pci, ≥ 256 hugepages free.
-/// See `eph-net-dpdk/scripts/dpdk-setup.sh`.
+/// See `eph-net-dpdk/tools/dpdk-setup.sh`.
 ///
 /// **Required**: the number of `--pin` lcores must equal `--nb-queues`
 /// (one lcore per RSS RX queue). The mapping is positional:

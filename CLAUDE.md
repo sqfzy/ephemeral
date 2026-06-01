@@ -401,7 +401,7 @@ DPDK PMDs need whole-archive linking. The root xmake.lua exposes a helper
 `apply_dpdk_pmd_linkgroups()` — call it on any target that links `eph-net-dpdk` (see the
 `*_dpdk` example targets at the bottom of the root xmake.lua for the pattern).
 
-DPDK environment setup is via `eph-net-dpdk/scripts/dpdk-setup.sh` and
+DPDK environment setup is via `eph-net-dpdk/tools/dpdk-setup.sh` and
 `dpdk-teardown.sh`; see `docs/dpdk-setup.md`.
 
 ## Conventions specific to this codebase

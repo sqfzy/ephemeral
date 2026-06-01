@@ -8,7 +8,7 @@
 # review (.artifacts/bench-rx-hot-path-20260423.txt).
 #
 # Usage:
-#   eph-net-dpdk/scripts/check-rx-hot-path-regression.sh [--baseline PATH]
+#   eph-net-dpdk/tools/check-rx-hot-path-regression.sh [--baseline PATH]
 #                                                        [--threshold PCT]
 #
 # Defaults: baseline = .artifacts/bench-rx-hot-path-20260423.txt
@@ -29,7 +29,7 @@ set -euo pipefail
 
 # Resolve repo root from this script's location so the default
 # BASELINE path resolves regardless of caller's cwd. The script
-# lives at <repo>/eph-net-dpdk/scripts/<this>; go up two levels.
+# lives at <repo>/eph-net-dpdk/tools/<this>; go up two levels.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"

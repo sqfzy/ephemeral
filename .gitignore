@@ -38,7 +38,7 @@ perf.data.old
 **/.bench/
 benchmarks/latency/outputs/
 
-# DPDK runtime state (per-host, set by scripts/dpdk-setup.sh)
+# DPDK runtime state (per-host, set by eph-net-dpdk/tools/dpdk-setup.sh)
 .dpdk_state
 
 # .discuss/

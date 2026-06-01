@@ -41,7 +41,7 @@ where the client transport actually differs.
 Each scenario is a single self-contained `lat_<name>.cpp` translation
 unit. `xmake.lua` discovers them all with a glob and emits two targets
 per file — `lat_<name>` (kernel client) and `lat_<name>_dpdk` (same
-source, `EPH_USE_DPDK=1`). The runner script `scripts/lat` drives
+source, `EPH_USE_DPDK=1`). The runner script `lat` drives
 NIC-B between `bench_ns` (kernel) and `vfio-pci` (DPDK) states
 idempotently and then execs the right binary. The binary forks, runs
 the mock in the child, and drives the client in the parent. Nothing
@@ -69,7 +69,7 @@ the single `lat_<name>.cpp` file.
 
 ```
  +--------------------------------------------------------------+
- |                       scripts/lat                            |
+ |                       lat                            |
  |  reads bench.conf, drives NIC-B state (host<->ns<->vfio),    |
  |  execs lat_<scenario>[_dpdk]                                 |
  +----------------------------+---------------------------------+
@@ -109,7 +109,7 @@ the single `lat_<name>.cpp` file.
 |---------------------------------------|-----------------------------------------------------------------|------------------------------------------|------------------------------|
 | `xmake.lua`                           | Discover `**/lat_*.cpp`, emit kernel + DPDK targets             | -                                        | `eph-utils`, `eph-net-dpdk`  |
 | `bench.conf`                          | Single source of tuning (NIC, CPU, sweeps)                      | -                                        | -                            |
-| `lat` (bash)                          | NIC-B state machine + exec binary                               | -                                        | `eph-net-dpdk/scripts/dpdk-*.sh` |
+| `lat` (bash)                          | NIC-B state machine + exec binary                               | -                                        | `eph-net-dpdk/tools/dpdk-*.sh` |
 | `core/config.hpp`                     | Parse `bench.conf`; also legacy `CommonConfig` CLI              | `BenchConfig`, `load_bench_conf`         | `<expected>`                 |
 | `core/runner.hpp`                     | Warmup -> measurement -> report orchestration                   | `BenchRunner`                            | `eph::utils::{Recorder,PhasedTimer}` |
 | `core/sample.hpp`                     | Latency sample structs                                          | `RttSample`, `OneWaySample`              | -                            |
@@ -272,7 +272,7 @@ variant uses POSIX sockets and enters `bench_ns`; the DPDK variant
 (same file, `EPH_USE_DPDK=1`) calls `DpdkBenchEnv::create_full` and
 runs in the host namespace.
 
-### `scripts/lat`
+### `lat`
 
 **File**: `lat` (bash, at the subproject root)
 **Purpose**: Single-command runner. Parses args, loads `bench.conf`,
@@ -290,7 +290,7 @@ inconsistent state that the next run won't recover from.
 
 | Entrypoint            | Type        | Description                                                |
 |-----------------------|-------------|------------------------------------------------------------|
-| `scripts/lat`         | bash CLI    | User-facing runner; argument is the scenario name          |
+| `lat`         | bash CLI    | User-facing runner; argument is the scenario name          |
 | `lat_tcp[_dpdk]`      | binary      | Raw TCP echo RTT sweep                                     |
 | `lat_udp[_dpdk]`      | binary      | Raw UDP echo RTT sweep                                     |
 | `lat_ws[_dpdk]`       | binary      | Plain WebSocket echo RTT sweep                             |
@@ -329,8 +329,8 @@ All public APIs are header-only under `core/`.
               |                                      arp::resolve)
               |                                        [only for _dpdk builds]
               |
-              +-- scripts/lat --> eph-net-dpdk/scripts/dpdk-setup.sh
-                                  eph-net-dpdk/scripts/dpdk-teardown.sh
+              +-- lat --> eph-net-dpdk/tools/dpdk-setup.sh
+                                  eph-net-dpdk/tools/dpdk-teardown.sh
 ```
 
 ### External

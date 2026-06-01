@@ -36,7 +36,7 @@ DPDK-backed examples (`simple_hft`, `dpdk_mp_demo`, `dpdk_rss_demo`,
 `dpdk_multicast_md`, `async_dns_multi_resolve`, `binance_latency`)
 need a system `libdpdk`
 (pkg-config) and a NIC bound to `vfio-pci`. See `docs/dpdk-setup.md`
-and `eph-net-dpdk/scripts/dpdk-setup.sh`. DPDK binaries must be run
+and `eph-net-dpdk/tools/dpdk-setup.sh`. DPDK binaries must be run
 with `sudo`, and EAL args come before a literal `--` separator.
 
 `dpdk_mp_demo` covers DPDK single-NIC multi-process: same binary in
