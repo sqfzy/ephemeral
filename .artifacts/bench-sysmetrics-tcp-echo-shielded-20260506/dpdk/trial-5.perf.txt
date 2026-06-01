@@ -1,0 +1,16 @@
+# started on Wed May  6 12:00:17 2026
+
+
+ Performance counter stats for process id '326503':
+
+      836445490328      cycles                                                               (60.00%)
+     1267745538781      instructions                     #    1.52  insn per cycle           (60.00%)
+      465353208156      cache-references                                                     (60.00%)
+         202833689      cache-misses                     #    0.044 % of all cache refs      (40.00%)
+          19830796      branch-misses                                                        (40.00%)
+              4170      context-switches                                                   
+                 0      cpu-migrations                                                     
+               224      page-faults                                                        
+
+     301.294212398 seconds time elapsed
+

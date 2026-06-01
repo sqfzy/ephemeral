@@ -125,3 +125,34 @@ EOF
 done
 ./benchmarks/latency/scripts/bench-sysmetrics-tcp.sh --aggregate .artifacts/bench-sysmetrics-tcp-echo-20260506
 ```
+
+## 延迟数据（lat_tcp 3-trial mean ± stddev）
+
+### RTT / TX / RX percentile（直接看用户感受）
+
+| leg / pct | kernel | dpdk | k − d | k/d ratio |
+|---|---:|---:|---:|---:|
+| RTT (round-trip) p50 | 24.29 µs | 19.00 µs | 5.29 µs | 1.28× |
+| RTT (round-trip) p90 | 27.48 µs | 20.33 µs | 7.15 µs | 1.35× |
+| RTT (round-trip) p99 | 69.64 µs | 68.89 µs | 746 ns | 1.01× |
+| RTT (round-trip) p99.9 | 110.31 µs | 74.29 µs | 36.02 µs | 1.48× |
+| TX (client→server) p50 | 13.33 µs | 10.81 µs | 2.52 µs | 1.23× |
+| TX (client→server) p90 | 15.01 µs | 11.83 µs | 3.18 µs | 1.27× |
+| TX (client→server) p99 | 58.21 µs | 60.56 µs | 2.35 µs | 0.96× |
+| TX (client→server) p99.9 | 67.91 µs | 63.17 µs | 4.74 µs | 1.08× |
+| RX (server→client) p50 | 10.78 µs | 8.06 µs | 2.73 µs | 1.34× |
+| RX (server→client) p90 | 12.34 µs | 8.85 µs | 3.48 µs | 1.39× |
+| RX (server→client) p99 | 55.61 µs | 10.12 µs | 45.49 µs | 5.50× |
+| RX (server→client) p99.9 | 66.53 µs | 34.78 µs | 31.75 µs | 1.91× |
+
+### throughput
+
+- kernel: **36,074 ± 649** samples/s
+- dpdk:   **49,061 ± 2582** samples/s（DPDK +36.0% 吞吐）
+
+### 用户感受（30 秒读完版）
+
+- **DPDK p50 RTT 比 kernel 快 4.5-5.9 µs**（kernel ~24 µs → dpdk ~19 µs）
+- **RX leg p99 戏剧性差异：kernel 56 µs, DPDK 10 µs**（5.5×）— DPDK 把"NIC IRQ → softirq → epoll → recv"那一串硬延迟全砍了
+- **TX leg + RTT p99 几乎相等**（58-60 µs / 69 µs）— tail 由 hypervisor preempt + 偶发中断决定，跟协议栈选型无关
+- **DPDK 吞吐 +30%** — busy-poll 把 cycles 用在 application 而非 syscall + softirq

@@ -1,0 +1,16 @@
+# started on Wed May  6 11:49:28 2026
+
+
+ Performance counter stats for process id '311811':
+
+      837522116338      cycles                                                               (60.00%)
+     1475977734828      instructions                     #    1.76  insn per cycle           (60.00%)
+      404186171393      cache-references                                                     (60.00%)
+         959252353      cache-misses                     #    0.237 % of all cache refs      (40.00%)
+         143593586      branch-misses                                                        (40.00%)
+              1078      context-switches                                                   
+                 1      cpu-migrations                                                     
+               176      page-faults                                                        
+
+     301.291212979 seconds time elapsed
+

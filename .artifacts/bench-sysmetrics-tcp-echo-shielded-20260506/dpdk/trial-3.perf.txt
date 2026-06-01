@@ -1,0 +1,16 @@
+# started on Wed May  6 11:26:22 2026
+
+
+ Performance counter stats for process id '281730':
+
+      836544448804      cycles                                                               (60.00%)
+     1312247270933      instructions                     #    1.57  insn per cycle           (60.00%)
+      481547184483      cache-references                                                     (60.00%)
+         195118497      cache-misses                     #    0.041 % of all cache refs      (40.00%)
+          22858942      branch-misses                                                        (40.00%)
+              3993      context-switches                                                   
+                 0      cpu-migrations                                                     
+               222      page-faults                                                        
+
+     301.287171709 seconds time elapsed
+

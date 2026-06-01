@@ -1,0 +1,16 @@
+# started on Wed May  6 11:44:04 2026
+
+
+ Performance counter stats for process id '304431':
+
+      809285065347      cycles                                                               (60.00%)
+     1385029278619      instructions                     #    1.71  insn per cycle           (59.97%)
+      387113232822      cache-references                                                     (60.01%)
+        2730002055      cache-misses                     #    0.705 % of all cache refs      (40.03%)
+         181576256      branch-misses                                                        (39.99%)
+             50583      context-switches                                                   
+                 0      cpu-migrations                                                     
+               176      page-faults                                                        
+
+     301.283026120 seconds time elapsed
+

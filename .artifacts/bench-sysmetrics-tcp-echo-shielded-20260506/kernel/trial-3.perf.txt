@@ -1,0 +1,16 @@
+# started on Wed May  6 11:09:52 2026
+
+
+ Performance counter stats for process id '259540':
+
+      830236888707      cycles                                                               (59.98%)
+     1506150723516      instructions                     #    1.81  insn per cycle           (59.98%)
+      419178677443      cache-references                                                     (60.01%)
+         685013622      cache-misses                     #    0.163 % of all cache refs      (40.02%)
+         155414515      branch-misses                                                        (39.99%)
+             66378      context-switches                                                   
+                 0      cpu-migrations                                                     
+               176      page-faults                                                        
+
+     301.290105022 seconds time elapsed
+

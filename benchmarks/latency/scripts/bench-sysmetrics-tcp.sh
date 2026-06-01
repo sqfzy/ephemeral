@@ -669,17 +669,23 @@ PERF_PID=$!
 log "  perf pid=$PERF_PID"
 
 # ── Background /proc/<pid>/status poller ──
-# Refresh PROC_POST every 1s while the pid is alive. When lat_tcp exits the
-# poller's `cat` fails and the loop terminates — leaving the last successful
-# read in PROC_POST. This avoids the race where the post-snapshot tries to
-# read /proc/<pid>/status after the pid has already been reaped.
+# Refresh PROC_POST every 1s while the pid is alive. Writes to a `.tmp`
+# first then atomic-mv to PROC_POST only on success, so:
+#   1. the final `kill` from main doesn't truncate PROC_POST mid-write
+#      (race seen under cgroup-shielded scope);
+#   2. when lat_tcp exits, the loop terminates leaving the last-good
+#      snapshot in PROC_POST.
 (
-  while sudo cat /proc/$LAT_TCP_PID/status > "$PROC_POST" 2>/dev/null; do
+  while sudo cat /proc/$LAT_TCP_PID/status > "$PROC_POST.tmp" 2>/dev/null; do
+    if [[ -s "$PROC_POST.tmp" ]]; then
+      mv -f "$PROC_POST.tmp" "$PROC_POST"
+    fi
     sleep 1
   done
+  rm -f "$PROC_POST.tmp" 2>/dev/null || true
 ) &
 PROC_POLLER_PID=$!
-log "  proc-status poller pid=$PROC_POLLER_PID (refreshes $PROC_POST every 1s)"
+log "  proc-status poller pid=$PROC_POLLER_PID (refreshes $PROC_POST every 1s, atomic)"
 
 # ── Wait for lat to finish ──
 log "waiting for lat to finish (~${DURATION}s + warmup/teardown)"

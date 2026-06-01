@@ -1,0 +1,16 @@
+# started on Wed May  6 10:57:24 2026
+
+
+ Performance counter stats for process id '242917':
+
+      836855936115      cycles                                                               (60.00%)
+     1449476688300      instructions                     #    1.73  insn per cycle           (60.00%)
+      398108970358      cache-references                                                     (60.00%)
+        1288320707      cache-misses                     #    0.324 % of all cache refs      (40.00%)
+         131042736      branch-misses                                                        (40.00%)
+              1561      context-switches                                                   
+                 0      cpu-migrations                                                     
+               177      page-faults                                                        
+
+     301.282981612 seconds time elapsed
+

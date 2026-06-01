@@ -1,0 +1,16 @@
+# started on Wed May  6 12:38:26 2026
+
+
+ Performance counter stats for process id '376229':
+
+      836151567839      cycles                                                               (60.00%)
+     1309640218196      instructions                     #    1.57  insn per cycle           (60.00%)
+      480537856011      cache-references                                                     (60.00%)
+         259739227      cache-misses                     #    0.054 % of all cache refs      (40.00%)
+          24678146      branch-misses                                                        (40.00%)
+              3390      context-switches                                                   
+                 0      cpu-migrations                                                     
+                 0      page-faults                                                        
+
+     301.291882331 seconds time elapsed
+
