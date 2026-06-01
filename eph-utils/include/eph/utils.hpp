@@ -8,6 +8,7 @@
 
 #include "eph/utils/alignment.hpp"
 #include "eph/utils/audit_log.hpp"
+#include "eph/utils/backoff.hpp"
 #include "eph/utils/console_sink.hpp"
 #include "eph/utils/cpu.hpp"
 #include "eph/utils/ema.hpp"
