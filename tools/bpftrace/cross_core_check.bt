@@ -1,49 +1,47 @@
 #!/usr/bin/env bpftrace
 /*
- * cross_core_check.bt —— 网卡 → 业务 CPU 端到端不跨核观测（三层测量点）
+ * cross_core_check.bt —— 业务流"软中断协议栈核 == app recv 核"观测
  *
  * 入参（位置参数）:
  *   $1 = 业务网卡 ifindex (如 ens6 = 3)
  *   $2 = 业务/exchange 源端口 (如 443)
  *   $3 = 业务线程 comm (如 "bybit_race"; ≤ 15 字节, 超出被 TASK_COMM_LEN-1 截断)
  *
- * 三层 hook —— 沿收包路径依次取每一跳的 CPU, 把"跨核"定位到具体那一跳:
- *   tracepoint:net:napi_gro_receive_entry         → ① 源头 CPU
- *       CPU 第一次触碰包数据的点 (NAPI poll 里, RPS 决策之前). 此处 skb_iif 还未赋值,
- *       无法按网卡过滤 —— map 含全机所有 NAPI, dominant napi_id (计数最大的那个) = 业务 NAPI.
- *   kprobe:tcp_v4_rcv (skb_iif==$1 && sport==$2)   → ② RPS 之后 softirq CPU
- *       已过 RPS 决策点, 且 skb_iif 已赋值 → 可按网卡 + 源端口精确过滤到业务流.
- *   kretprobe:tcp_recvmsg (comm==$3, ret>0)        → ③ 业务线程 recvmsg CPU
+ * 两层 hook —— 取收包路径上真正决定 cache 局部性的两个核:
+ *   kprobe:tcp_v4_rcv (skb_iif==$1 && sport==$2)   → ① softirq 协议栈 CPU
+ *       skb 被持 socket lock 入 sk_receive_queue 的核 ("生产"). 已过 RPS 决策点
+ *       且 skb_iif 已赋值, 可按网卡 + 源端口精确过滤到业务流.
+ *   kretprobe:tcp_recvmsg (comm==$3, ret>0)        → ② 业务线程 recvmsg CPU
+ *       copy_to_user 出队的核 ("消费"), 即 app 核.
  *
- * 为什么三层都要, 而不是只看 tcp_v4_rcv:
- *   tcp_v4_rcv 在 RPS 决策点之后 —— 若 RPS 把 skb 从 CPU 7 推到 CPU 1, 只看 tcp_v4_rcv
- *   会看到 CPU 1 = 业务核, 给出假阳性"不跨核". 加上 ① napi_entry 的源头 CPU 才能识破
- *   RPS 跨核: ① 与 ② 不同 = RPS/aRFS 搬过核. ② 与 ③ 不同 = 唤醒/调度把业务线程拉到别的核.
+ * 为什么只看这两层 (不挂 NAPI poll):
+ *   真正会跨核弹跳的热数据是 socket 接收队列 + socket lock + skb 元数据 —— ① 持锁入队、
+ *   ② 持锁出队 + copy. 这条 ①↔② 生产者→消费者边界才是跨核代价的大头. NAPI poll 只读
+ *   包头 / 建 skb / 跑 GRO, 不 copy payload、不碰 socket 队列, 且正常情况下 NAPI 与
+ *   tcp_v4_rcv 跑在同一次 softirq、同一个核 (唯一能拆开的是 RPS). 故 NAPI 落核不是承重
+ *   判据, 不值得在收包热路径上多挂一个探针.
+ *
+ *   附带影响: 去掉 NAPI 层后, ①≠② 时无法直接区分"RPS 搬核"还是"RSS/IRQ 没对齐到 app
+ *   核" —— 但两者都表现为业务流软中断没落在 app 核上, ① 已能测出. 真要区分根因时再单独
+ *   挂 tracepoint:net:napi_gro_receive_entry 看源头 CPU.
  *
  * 输出 map:
- *   @napi[napi_id]            各 NAPI 实例触发计数; dominant id = 业务 NAPI.
- *   @napi_cpu[napi_id, cpu]   每个 napi_id (= 一条 RX 队列) 落在哪个 CPU. 业务 napi 是
- *                             业务网卡某队列的唯一 id, 按 id 过滤即等价于按队列过滤 ——
- *                             验"目标 napi 只落目标核", 隔离了其他核的队列.   ① 源头判据
- *   @softirq_cpu[cpu]         业务流 RX softirq 落核 (已按 skb_iif + sport 过滤干净). ② 主判据
- *   @recv_cpu[cpu]            业务线程 recvmsg 落核 (已按 comm 过滤干净).         ③ 主判据
- *   @recv_calls              业务 recvmsg 命中数; = 0 暗示 comm 过滤未命中 (即时诊断).
- *
- *   注: napi 一致性的权威来源是 socket 级 SO_INCOMING_NAPI_ID (bench 已逐连接 log);
- *       @napi / @napi_cpu 是 eBPF 旁证.
+ *   @softirq_cpu[cpu]   业务流 RX softirq 落核 (已按 skb_iif + sport 过滤干净).  ① 主判据
+ *   @recv_cpu[cpu]      业务线程 recvmsg 落核 (已按 comm 过滤干净).             ② 主判据
+ *   @recv_calls         业务 recvmsg 命中数; = 0 暗示 comm 过滤未命中 (即时诊断).
  *
  * 判定（harness 应执行的逻辑）:
- *   business_napi_id := argmax( sum over cpu of @napi_cpu[id, *] )
- *   napi_cpu_set     := { cpu | @napi_cpu[business_napi_id, cpu] > 0 }
- *   softirq_cpu_set  := { cpu | @softirq_cpu[cpu] > 0 }
- *   recv_cpu_set     := { cpu | @recv_cpu[cpu] > 0 }
+ *   softirq_cpu_set := { cpu | @softirq_cpu[cpu] > 0 }
+ *   recv_cpu_set    := { cpu | @recv_cpu[cpu] > 0 }
  *
- *   三集合都恰为单一 CPU, 彼此相等, 且 == 业务核
- *     → PASS (端到端无跨核)
+ *   两集合都恰为单一 CPU, 彼此相等, 且 == 业务核
+ *     → PASS (软中断在 app 核生产、app 核消费, socket 队列不跨核弹跳)
  *
- *   napi_cpu_set != softirq_cpu_set  → RPS/aRFS 把 skb 跨核搬运 → FAIL
- *   softirq_cpu_set != recv_cpu_set  → 唤醒/调度把业务线程拉到别核 → FAIL (检查 affinity)
- *   任一集合 > 1 个 CPU              → 该层分布多核 (RSS 配置错 / 线程在迁移) → FAIL
+ *   softirq_cpu_set != recv_cpu_set  → 业务流软中断没落在 app 核 → FAIL
+ *                                       (查 RSS 队列 → IRQ affinity 是否对齐到 app 核;
+ *                                        或 RPS 把 skb 搬走了)
+ *   |softirq_cpu_set| > 1            → 业务流软中断分布多核 (RSS 配置错) → FAIL
+ *   |recv_cpu_set| > 1               → 业务线程在迁移 → FAIL (检查 affinity)
  *
  * 注意:
  *   - 收包热路径挂 kprobe/kretprobe 有 ~50-200ns 探针开销; 本脚本仅判"是否同核"布尔量,
@@ -54,7 +52,7 @@
  *   - 若 kretprobe:tcp_recvmsg attach 失败 (内核内联), fallback:
  *       kfunc:tcp_recvmsg 或 fentry:tcp_recvmsg (kernel ≥ 5.5).
  *   - 仅覆盖 IPv4 TCP (tcp_v4_rcv); IPv6 业务流需改挂 tcp_v6_rcv.
- *   - 最低内核版本: 5.4 (含 napi_gro_receive_entry tracepoint). 最低 bpftrace 版本: 0.14.
+ *   - 最低内核版本: 5.4. 最低 bpftrace 版本: 0.14.
  */
 
 BEGIN {
@@ -62,13 +60,7 @@ BEGIN {
            $1, $2, str($3));
 }
 
-// ① 源头 CPU —— RPS 决策之前, CPU 第一次触碰包数据
-tracepoint:net:napi_gro_receive_entry {
-    @napi[args->napi_id] = count();
-    @napi_cpu[args->napi_id, cpu] = count();
-}
-
-// ② RPS 之后 softirq CPU —— skb_iif 已赋值, 按业务网卡 + 源端口过滤
+// ① softirq 协议栈 CPU —— skb 持锁入 sk_receive_queue, 按业务网卡 + 源端口过滤
 kprobe:tcp_v4_rcv {
     $skb = (struct sk_buff *)arg0;
     if ($skb->skb_iif == $1) {
@@ -81,7 +73,7 @@ kprobe:tcp_v4_rcv {
     }
 }
 
-// ③ 业务线程 recvmsg CPU —— (int32)retval 符号扩展后再判 ret>0
+// ② 业务线程 recvmsg CPU —— (int32)retval 符号扩展后再判 ret>0
 kretprobe:tcp_recvmsg / comm == str($3) / {
     $ret = (int32)retval;
     if ($ret > 0) {
