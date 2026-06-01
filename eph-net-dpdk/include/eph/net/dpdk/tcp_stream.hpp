@@ -660,13 +660,11 @@ public:
         // primary. See .artifacts/reshape-rss-aware-connect-final-*.md.
         uint16_t target_qid = 0;
 
-        // Capture the caller's requested src_port BEFORE any reverse-pick
-        // overwrite, so post-create we can populate
-        // `StreamSnapshot::Endpoint::src_port_rewritten` truthfully.
-        // RssPartitioned now always rewrites; we treat src_port==0 as
-        // "caller didn't care" and never flag rewriting in that case.
-        const uint16_t original_src_port =
-            cfg.dpdk.wire.tuple.src_port;
+        // NOTE: since the RSS-prediction retirement (RSS-unification
+        // reshape) create_and_attach NEVER rewrites src_port — every mode
+        // uses the caller's explicit `cfg.dpdk.wire.tuple.src_port` as-is.
+        // So `StreamSnapshot::Endpoint::src_port_rewritten` is always false
+        // (member default); the old reverse-pick detection was removed.
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
@@ -680,81 +678,58 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
-            // Determine target_qid:
-            //   pin_to_queue set       → use it (validated < nb_q)
-            //   pin_to_queue unset     → rr_counter % qrange + qlo
-            //                            (range-aware for autojoin / mp_topology)
-            if (cfg.dpdk.pin_to_queue) {
-                const uint16_t want = *cfg.dpdk.pin_to_queue;
-                if (want >= nb_q) {
-                    SPDLOG_LOGGER_ERROR(log,
-                        "DpdkTcpStream::create_and_attach: pin_to_queue={} "
-                        ">= nb_rx_queues={} (RssPartitioned)",
-                        want, nb_q);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::InvalidConfig,
-                        "create_and_attach: pin_to_queue >= nb_rx_queues"});
-                }
-                target_qid = want;
-            } else {
-                static std::atomic<uint16_t> rr_counter{0};
-                const auto [qlo, qhi] = platform.effective_rx_queue_range();
-                if (qhi <= qlo) {
-                    SPDLOG_LOGGER_ERROR(log,
-                        "DpdkTcpStream::create_and_attach: empty "
-                        "effective_rx_queue_range [{}, {}) — Platform "
-                        "moved-from or misconfigured",
-                        qlo, qhi);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::InvalidConfig,
-                        "create_and_attach: empty effective_rx_queue_range "
-                        "(Platform moved-from or misconfigured)"});
-                }
-                const uint16_t qrange = qhi - qlo;
-                target_qid = qlo + (rr_counter.fetch_add(1,
-                                std::memory_order_relaxed) % qrange);
-            }
-
-            // Engineer src_port whose RSS Toeplitz hash lands on target_qid.
-            // RSS input "src" is the REMOTE end on the inbound SYN-ACK
-            // (peer→local direction): find_src_port_for_queue takes
-            // (remote_ip, remote_port, local_ip) explicitly and searches
-            // the local sp in the dst_port slot. port_range gives
-            // autojoin / mp_topology a disjoint segment per process;
-            // single-process Platform returns nullopt → use Linux default
-            // ephemeral range. The helper takes a CLOSED upper bound, so
-            // we hand it `port_hi - 1`.
-            const auto& t = cfg.dpdk.wire.tuple;
-            const auto pr = platform.port_range();
-            const uint16_t port_lo_arg =
-                pr ? static_cast<uint16_t>(pr->first)
-                   : uint16_t{32768};
-            const uint16_t port_hi_arg =
-                pr ? static_cast<uint16_t>(pr->second - 1)
-                   : uint16_t{60999};
-            auto sp = ::eph::net::dpdk::find_src_port_for_queue(
-                platform.port_id(), target_qid,
-                /*remote_ip=*/  t.dst_ip,
-                /*remote_port=*/t.dst_port,
-                /*local_ip=*/   t.src_ip,
-                port_lo_arg, port_hi_arg);
-            if (!sp) {
-                SPDLOG_LOGGER_WARN(log,
-                    "create_and_attach: find_src_port_for_queue({}) failed: {}",
-                    target_qid, sp.error());
+            // RSS queue prediction RETIRED (RSS-unification reshape).
+            // eph used to engineer src_port via find_src_port_for_queue so
+            // the inbound SYN-ACK Toeplitz-hashes onto the target queue.
+            // That relied on the NIC's RSS key being readable+correct —
+            // false on ENA, where the probed key is a placeholder that
+            // predicts the landing queue at CHANCE (see flow_steering.hpp
+            // doc + .artifacts/experiment-20260601-142315.md). So we no
+            // longer predict: the caller MUST pin_to_queue AND supply an
+            // explicit cfg.dpdk.wire.tuple.src_port that they measured (via
+            // the empirical tools/rss_srcport_finder.py) to land on it.
+            if (!cfg.dpdk.pin_to_queue) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkTcpStream::create_and_attach: RssPartitioned requires "
+                    "pin_to_queue + an explicit measured src_port (RSS queue "
+                    "prediction retired; run rss_srcport_finder). "
+                    "rss_key_trusted={}", platform.rss_key_trusted());
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
-                    "create_and_attach: find_src_port_for_queue exhausted"});
+                    "create_and_attach: RssPartitioned needs pin_to_queue + "
+                    "explicit src_port (queue prediction retired)"});
             }
-            cfg.dpdk.wire.tuple.src_port = *sp;
-            // Critical: align rx/tx_queue_id with target_qid so the
-            // SYN/SYN-ACK/ACK handshake in TStream::create() polls the
-            // queue where the engineered SYN-ACK will actually land.
+            const uint16_t want = *cfg.dpdk.pin_to_queue;
+            if (want >= nb_q) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkTcpStream::create_and_attach: pin_to_queue={} "
+                    ">= nb_rx_queues={} (RssPartitioned)", want, nb_q);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: pin_to_queue >= nb_rx_queues"});
+            }
+            if (cfg.dpdk.wire.tuple.src_port == 0) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "DpdkTcpStream::create_and_attach: RssPartitioned with "
+                    "pin_to_queue={} requires an explicit "
+                    "cfg.dpdk.wire.tuple.src_port measured to land on that "
+                    "queue (RSS prediction retired; run rss_srcport_finder). "
+                    "rss_key_trusted={}", want, platform.rss_key_trusted());
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::InvalidConfig,
+                    "create_and_attach: RssPartitioned requires explicit "
+                    "cfg.dpdk.wire.tuple.src_port (queue prediction retired)"});
+            }
+            target_qid = want;
+            // Align rx/tx_queue_id with target_qid so the SYN/SYN-ACK/ACK
+            // handshake in TStream::create() polls the queue where the
+            // caller-measured SYN-ACK will land.
             cfg.dpdk.wire.rx_queue_id = target_qid;
             cfg.dpdk.wire.tx_queue_id = target_qid;
             SPDLOG_LOGGER_INFO(log,
-                "create_and_attach: RSS-aware → src_port={} hashes to queue={} (pin={})",
-                *sp, target_qid, cfg.dpdk.pin_to_queue.has_value());
+                "create_and_attach: RssPartitioned explicit src_port={} pinned "
+                "to queue={} (prediction retired; caller-measured)",
+                cfg.dpdk.wire.tuple.src_port, target_qid);
         } else {  // FlowDirector
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue >= nb_q) {
                 return std::unexpected(core::ErrorInfo{
@@ -847,14 +822,8 @@ public:
         if (!sr) return std::unexpected(sr.error());
         auto stream = std::move(*sr);
 
-        // Snapshot bookkeeping: flag if the RSS+pin path mutated the
-        // caller's pre-chosen src_port. `original_src_port == 0` means
-        // the caller didn't pre-choose anything, so we never call that
-        // a "rewrite" — the library is allowed to populate an empty slot.
-        if (original_src_port != 0 &&
-            stream->cfg_.dpdk.wire.tuple.src_port != original_src_port) {
-            stream->src_port_rewritten_ = true;
-        }
+        // src_port_rewritten_ stays false: create_and_attach no longer
+        // rewrites src_port (RSS-prediction retired — see Phase 1 note).
 
         // TD-2: propagate effective strict mode from Platform. Only set
         // here (not in plain create()) because create() has no Platform
