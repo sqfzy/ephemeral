@@ -1371,6 +1371,14 @@ queue_for_tuple(const RssState& state,
 ///
 /// @note `src_ip / src_port` describe the RSS *input* "source" — see
 /// `queue_for_tuple` for the full RX-direction caveat.
+///
+/// @warning TRUSTED-KEY / DIAGNOSTIC ONLY (post-2026-06-01 RSS-unification).
+/// Correct only when `Platform::rss_key_trusted()` (the readable key matches
+/// hardware steering). On a probe-fallback NIC (ENA) the key is a placeholder
+/// and this predicts the landing queue at CHANCE. NOT used by the runtime
+/// stream/DNS creation path anymore — those take an explicit, empirically
+/// measured src_port. Used by trusted-key DNS + correctness tests +
+/// `tools/rss_srcport_finder.py`'s verified-key fast path.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 predict_rss_queue(uint16_t port_id,
                   uint32_t src_ip, uint16_t src_port,
@@ -1532,6 +1540,14 @@ find_src_port_for_queue_with_state(
 /// @return the chosen src_port (== inbound dst_port), or an error string
 /// starting with "RssHashPredictExhausted" if no port in the range hashes
 /// to the target queue.
+///
+/// @warning TRUSTED-KEY ONLY (post-2026-06-01 RSS-unification). Builds on the
+/// probed RSS key via `queue_for_tuple`; only correct when
+/// `Platform::rss_key_trusted()`. Retired from the runtime
+/// `create_and_attach` path (callers now supply explicit measured src_port);
+/// remaining runtime use is trusted-key DNS (`select_dns_src_port`, gated on
+/// `DnsConfig::rss_prediction_trusted`). For unverifiable-key NICs (ENA),
+/// measure empirically via `tools/rss_srcport_finder.py` instead.
 [[nodiscard]] inline std::expected<uint16_t, std::string>
 find_src_port_for_queue(uint16_t port_id, uint16_t target_queue,
                         uint32_t remote_ip, uint16_t remote_port,

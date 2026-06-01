@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Changed — BREAKING (2026-06-01) — RSS src_port unification: retire runtime queue prediction
+
+Empirically, on AWS ENA the guest-readable RSS hash key is a **placeholder**
+that does NOT match hardware steering — `toeplitz_hash_ipv4` over it predicts
+the landing queue at chance (~1/4). See
+`.artifacts/experiment-20260601-142315.md` and `examples/dpdk_rsskey_probe.cpp`.
+eph's runtime `find_src_port_for_queue` engineering therefore silently
+mis-steered traffic on ENA. The library no longer predicts queues at runtime;
+src_port selection moves to an explicit, empirically-measured value supplied
+by the operator (`tools/rss_srcport_finder.py`).
+
+- `DpdkTcpStream::create_and_attach` / `DpdkUdpSocket::create_and_attach`:
+  in `RxDispatchMode::RssPartitioned` no longer auto-engineer src_port. The
+  caller MUST set `cfg.dpdk.pin_to_queue` **and** an explicit
+  `cfg.dpdk.wire[.tuple].src_port` (measured via `rss_srcport_finder`). A
+  missing pin or `src_port == 0` returns an actionable error. The no-pin
+  round-robin auto-spread path is removed. `create(cfg)` strict mode
+  (already explicit-src_port) is unchanged. `StreamSnapshot::Endpoint::
+  src_port_rewritten` is now always false (create_and_attach never rewrites).
+  Migration: run `rss_srcport_finder` to get a src_port that lands on the
+  target queue, set `pin_to_queue` + `wire.src_port`.
+- DNS (`dns::resolve` / `AsyncDnsResolverT`): new `DnsConfig::
+  rss_prediction_trusted` (default `false`). When false, DNS uses a random
+  ephemeral src_port (single-queue semantics) instead of an RSS-aware
+  reverse-pick. To keep RSS-aware DNS on a multi-queue NIC with a verified
+  key, set it from `Platform::rss_key_trusted()`. On a multi-queue NIC with
+  an unverifiable key (ENA), reply delivery to the resolver's queue is a
+  documented limitation (run DNS single-queue or pre-resolve out-of-band).
+
+### Added (2026-06-01)
+- `Platform::rss_key_trusted()` == `!rss_using_probed_key()` — positive-sense
+  alias; true ⟺ `configure_rss` installed eph's known key (prediction
+  trustworthy), false ⟺ probe fallback (ENA placeholder; do not predict).
+- `flow_steering.hpp` `query_rss_state` PMD-notes corrected: the ENA bullet
+  no longer claims the probed key is "the NIC's actual hash key … genuinely
+  usable" — it is a placeholder. `predict_rss_queue` / `queue_for_tuple` /
+  `find_src_port_for_queue` are now trusted-key-only / offline-diagnostic
+  helpers (still used by trusted-key DNS + correctness tests), not the
+  runtime stream-creation path.
+
 ### Added (2026-05-08) — TLS 1.2 GCM/CHACHA20 in-place decrypt
 
 `TlsInPlaceDecryptor::create()` accepts an optional `record_format`

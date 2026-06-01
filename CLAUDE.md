@@ -102,10 +102,20 @@ The scope decisions for the current feature set are archived in
   and unregisters safely even if the registry predeceases it.
 - `DpdkTcpStream::create_and_attach(cfg, platform)` — turnkey production
   factory. Handles queue selection (Software / RSS-pinned / FlowDirector),
-  src_port allocation (rebinding to match RSS hash when pinning), TCP/TLS/
-  WS handshakes, Poller attach, FlowDirector rule install, and ICMP
-  registration. The older `create(cfg, poller)` overload was removed —
-  its narrow subset is covered by `create_and_attach`.
+  TCP/TLS/WS handshakes, Poller attach, FlowDirector rule install, and ICMP
+  registration. In `RssPartitioned` mode it **no longer auto-engineers
+  src_port** (post-2026-06-01 RSS-unification reshape): runtime RSS queue
+  prediction was retired because on ENA the readable RSS key is a placeholder
+  that predicts the landing queue at chance (see `eph-net-dpdk/CHANGELOG.md`
+  BREAKING + `.artifacts/experiment-20260601-142315.md`). The caller must set
+  `cfg.dpdk.pin_to_queue` + an explicit `cfg.dpdk.wire.tuple.src_port`
+  measured via `tools/rss_srcport_finder.py`; missing → actionable error. The
+  older `create(cfg, poller)` overload was removed — its narrow subset is
+  covered by `create_and_attach`. `Platform::rss_key_trusted()` ==
+  `!rss_using_probed_key()` reports whether Toeplitz prediction is trustworthy
+  (false on ENA). `predict_rss_queue` / `find_src_port_for_queue` /
+  `queue_for_tuple` are now trusted-key-only / offline-diagnostic helpers, not
+  the runtime path.
 - `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
   noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
   registered entry — used by TCP keepalive; UDP implements as no-op.
