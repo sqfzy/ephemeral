@@ -311,7 +311,7 @@ and teardown.
 ## Dependencies
 
 - `eph-net` (public) — concepts (Stream/Datagram/Poller/Pollable), SocketAddr,
-  HttpHeader, ProxyConfig, TlsConfig, ReconnectPolicy, TLS detail
+  HttpHeader, ProxyConfig, TlsConfig, ReconnectOrchestrator, TLS detail
 - `eph-core`, `eph-utils`, `eph-containers` (transitive)
 - system `libdpdk` (public, via pkg-config) — the vcpkg DPDK path was
   retired because it dragged vcpkg's bundled libssl headers into the DPDK

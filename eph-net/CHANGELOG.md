@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### BREAKING (2026-06-01) — `ReconnectPolicy` moved to `eph::utils::ExponentialBackoff`
+
+`eph::net::ReconnectPolicy` and `eph::net::ReconnectPolicyConfig` are removed.
+The exponential-backoff math now lives in `eph::utils::ExponentialBackoff`
+(header `eph/utils/backoff.hpp`) so it can back both `ReconnectOrchestrator`
+and the new generic `eph::utils::retry` driver from one source.
+
+Migration:
+
+| Before                                   | After                                            |
+|------------------------------------------|--------------------------------------------------|
+| `#include "eph/net/reconnect_policy.hpp"`| `#include "eph/utils/backoff.hpp"`               |
+| `eph::net::ReconnectPolicy`              | `eph::utils::ExponentialBackoff`                 |
+| `eph::net::ReconnectPolicyConfig`        | `eph::utils::ExponentialBackoff::Config`         |
+| `p.should_reconnect()` + `p.next_backoff()` | `auto d = p.next_delay();` (`nullopt` = exhausted) |
+| `p.reset()` / `p.attempts()` / `p.config()` | unchanged                                       |
+
+`ReconnectOrchestrator` / `ReconnectConfig` are source-compatible for callers
+using `ReconnectConfig{.policy = {...}}` — the field type changed but the
+designated-initializer field names are identical.
+
+Behavioral change: `multiplier == 1.0` is now a legal constant backoff; the
+old `ReconnectPolicy` silently promoted it to `2.0`.
+
 ### Added (2026-05-08) — TLS 1.2 GCM / CHACHA20-POLY1305 opt-in support
 
 `TlsConfig::min_version` (default `TlsVersion::Tls13`) opens the door

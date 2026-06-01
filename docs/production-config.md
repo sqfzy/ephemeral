@@ -71,7 +71,7 @@ kernel backend has no internal `tx_cpu` / `rx_cpu` knob — pinning is the
 caller's responsibility (see CLAUDE rule "Bench 每个线程必须绑独立 CPU").
 
 **Key decisions:**
-- `connect_timeout=1000ms` — fail fast; reconnect via `ReconnectPolicy`.
+- `connect_timeout=1000ms` — fail fast; reconnect via `eph::utils::ExponentialBackoff`.
 - `ws.permessage_deflate=false` — order acks are tiny; deflate adds
   decode CPU without saving bytes.
 - `verify_peer=true` always in production. Only flip to `false` for

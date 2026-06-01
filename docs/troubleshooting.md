@@ -35,7 +35,7 @@ errors back through the stream's own state.
 ## Connection Lifecycle Errors
 
 Returned by `KernelTcpStream::create()`, `DpdkTcpStream::create_and_attach()`,
-and reconnection paths driven by `eph::net::ReconnectPolicy`.
+and reconnection paths driven by `eph::utils::ExponentialBackoff`.
 
 ### `Error::InvalidConfig`
 
@@ -81,7 +81,7 @@ the error from the first poll cycle's writability check.
 socket).
 
 **Diagnosis**:
-- Check the cadence at which `ReconnectPolicy` is consuming attempts —
+- Check the cadence at which `ExponentialBackoff` is consuming attempts —
   is it periodic? See "Connection drops every N minutes" below. The
   policy's metrics live on `ReconnectMetric` (counters
   `kReconnectCount` for successful reconnects, `kReconnectFailures`
@@ -194,7 +194,7 @@ if (!result && result.error().code == eph::core::Error::WsHandshakeFailed) {
 | `401` / `403` | Auth required / forbidden | Add auth token to `cfg.ws.extra_headers` |
 | `404` | Wrong path | Fix `cfg.ws.path` |
 | `426` | Upgrade required (rare) | Server expects different protocol; check vendor docs |
-| `429` | Rate limited | Backoff via `ReconnectPolicy`, reduce conn frequency |
+| `429` | Rate limited | Backoff via `eph::utils::ExponentialBackoff`, reduce conn frequency |
 | `503` | Server overloaded | Retry later |
 
 ### `Error::WsFrameBad`

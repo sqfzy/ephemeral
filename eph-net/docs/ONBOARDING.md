@@ -12,7 +12,8 @@ Public surface, grouped:
 
 - Concepts: `Pollable`, `Stream`, `Datagram`, `Poller` (+ the finer
   `PollerOf<T, Obj>` refinement).
-- Value types: `Ipv4Addr`, `SocketAddr`, `TcpState`, `ReconnectPolicy`.
+- Value types: `Ipv4Addr`, `SocketAddr`, `TcpState`. (Backoff math moved to
+  `eph::utils::ExponentialBackoff`.)
 - HTTP/1.1: `parse_http_request` / `parse_http_response` /
   `build_http_request` / `build_http_response` (incremental, zero-heap).
 - HMAC-SHA256: `HmacSha256Key` (RAII, zero-on-destroy), `HmacSha256Tag`,
@@ -32,8 +33,8 @@ Public surface, grouped:
 
 1. `include/eph/net/concepts.hpp` — the four concepts. Start here.
 2. `include/eph/net/socket_addr.hpp` — trivial value type.
-3. `include/eph/net/reconnect_policy.hpp` — how reconnection backoff is
-   computed.
+3. `eph-utils/include/eph/utils/backoff.hpp` — how reconnection backoff is
+   computed (`eph::utils::ExponentialBackoff`, shared with `eph::utils::retry`).
 4. `include/eph/net/test/fake_stream.hpp` — the simplest `Stream`
    implementation. Read it to internalise what "satisfies the concept"
    means.

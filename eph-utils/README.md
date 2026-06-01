@@ -7,8 +7,9 @@ and latency recorders, CPU topology / affinity / strict pinning / real-time
 scheduling, huge-page allocation, cache-line alignment, a regulatory audit
 trail, wall-clock helpers, EMAs, a two-phase bench timer, a metrics console
 sink, a `getrusage`-based system profiler, HFT-grade compliance primitives
-(kill switch, token-bucket rate limiter), a cooperative shutdown flag, and
-a `setns(2)` helper for Linux netns-isolated test fixtures.
+(kill switch, token-bucket rate limiter), generic retry-backoff strategies
+plus a blocking `retry()` driver (backon-style), a cooperative shutdown
+flag, and a `setns(2)` helper for Linux netns-isolated test fixtures.
 
 Designed for HFT hot paths where nanosecond-level determinism matters:
 every primitive is zero-allocation on the hot path, `noexcept` where it
@@ -26,6 +27,8 @@ eph-utils/
 │   └── utils/
 │       ├── alignment.hpp          -- CACHE_LINE_SIZE, Align<T>
 │       ├── audit_log.hpp          -- AuditLog<N>, AuditEntry, AuditEvent
+│       ├── backoff.hpp            -- Backoff concept, ExponentialBackoff,
+│       │                             ConstantBackoff (retry-backoff math)
 │       ├── console_sink.hpp       -- ConsoleSink (core::MetricsSink impl)
 │       ├── cpu.hpp                -- topology, set_thread_affinity,
 │       │                             set_thread_realtime, cpu_relax,
@@ -45,6 +48,8 @@ eph-utils/
 │       ├── record.hpp             -- aggregation header (hdr + recorder +
 │       │                             system_stats)
 │       ├── recorder.hpp           -- Recorder, ConcurrentRecorder
+│       ├── retry.hpp              -- retry(fn, backoff[, when][, sleeper])
+│       │                             blocking retry driver (backon-style)
 │       ├── shutdown_signal.hpp    -- g_shutdown_flag +
 │       │                             install_shutdown_handlers()
 │       ├── system_stats.hpp       -- SystemStats, SystemResourceStats
@@ -52,7 +57,7 @@ eph-utils/
 │       ├── timestamp.hpp          -- wall-clock helpers, ISO 8601 format
 │       └── linux/
 │           └── netns.hpp          -- enter_netns() for test fixtures
-├── tests/                         -- GoogleTest unit tests (22 files)
+├── tests/                         -- GoogleTest unit tests (24 files)
 ├── benchmarks/                    -- Google Benchmark microbenchmarks (9)
 └── xmake.lua                      -- build description
 ```
@@ -60,9 +65,9 @@ eph-utils/
 ### Aggregation header
 
 `include/eph/utils.hpp` pulls in every header under `include/eph/utils/`
-(`alignment`, `audit_log`, `console_sink`, `cpu`, `ema`,
+(`alignment`, `audit_log`, `backoff`, `console_sink`, `cpu`, `ema`,
 `hdr_histogram`, `hugepage`, `kill_switch`, `phased_timer`,
-`rate_limiter`, `record`, `recorder`, `shutdown_signal`,
+`rate_limiter`, `record`, `recorder`, `retry`, `shutdown_signal`,
 `system_stats`, `time`, `timestamp`).
 
 The only public header **not** transitively included is

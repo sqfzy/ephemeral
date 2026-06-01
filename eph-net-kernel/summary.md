@@ -160,11 +160,11 @@ struct PollerConfig {
 TLS selection is template-parametric (`EnableTls`), not a runtime bool —
 `tls` is ignored unless `EnableTls=true`. Stream-local reconnect state was
 removed on 2026-04-14; callers drive the retry loop via
-`eph::net::ReconnectPolicy`.
+`eph::utils::ExponentialBackoff` / `eph::utils::retry`.
 
 ## Dependencies
 
-- `eph-net` (public) — concepts, `SocketAddr`, `ReconnectPolicy`, TLS detail
+- `eph-net` (public) — concepts, `SocketAddr`, `ReconnectOrchestrator`, TLS detail
 - `eph-core`, `eph-utils`, `eph-containers` (transitive)
 - `spdlog`, `aws-lc` (public packages)
 

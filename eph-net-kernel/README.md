@@ -128,7 +128,8 @@ your stack and `write(2)` is called directly. There is no TX worker queue.
 
 Reconnection is not performed inside the stream. `KernelTcpStream` surfaces
 hard errors via `std::expected` / `TcpState::Closed` and expects the caller
-to drive the retry loop (e.g. via `eph::net::ReconnectPolicy`). See
+to drive the retry loop (e.g. via `eph::utils::ExponentialBackoff` /
+`eph::utils::retry`). See
 `../eph-net-kernel/CHANGELOG.md` for the rationale behind removing the
 stream-local reconnect field in 2026-04-14.
 
@@ -154,7 +155,7 @@ for the full enum):
 
 ## Dependencies
 
-- `eph-net` (public) — concepts, `SocketAddr`, `ReconnectPolicy`, TLS detail
+- `eph-net` (public) — concepts, `SocketAddr`, `ReconnectOrchestrator`, TLS detail
 - `eph-core` (public, transitive via `eph-net`)
 - `eph-utils` (transitive) — TSC timer, HDR histogram
 - `eph-containers` (transitive)

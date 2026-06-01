@@ -7,6 +7,24 @@ on the `dev` branch touching `eph-utils/`.
 
 ## [Unreleased]
 
+### Added (2026-06-01) — generic retry-backoff library (`backoff.hpp` / `retry.hpp`)
+
+- `Backoff` concept + `ExponentialBackoff` / `ConstantBackoff` (`backoff.hpp`):
+  stateful delay generators exposing `next_delay() -> std::optional<ms>`
+  (`nullopt` = exhausted, absorbing). `ExponentialBackoff` is the
+  exponential-backoff math moved here from `eph::net::ReconnectPolicy` so that
+  `eph::net::ReconnectOrchestrator` and the new `retry()` driver share one
+  implementation (and one copy of the saturating-cast UB guards). It keeps
+  `reset()` / `attempts()` / `config()` for cross-cycle reuse.
+- `eph::utils::retry(fn, backoff[, when][, sleeper])` (`retry.hpp`): backon-
+  style blocking retry driver over a `std::expected`-returning callable. `when`
+  predicate (default retry-all) stops early on non-retriable errors; `sleeper`
+  (default `ThreadSleeper`) is injectable so tests don't sleep. Zero
+  `std::function` / zero allocation; per-attempt `SPDLOG_DEBUG`.
+- **Behavioral note:** `ExponentialBackoff` treats `multiplier == 1.0` as a
+  legal constant backoff, whereas the legacy `ReconnectPolicy` silently
+  promoted it to `2.0`.
+
 ### Fixed (2026-05-03) — pax loop batch 13
 
 - `detail::read_cpu_list_file` (used to ingest

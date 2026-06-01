@@ -43,7 +43,7 @@ eph-utils       TSC timer, CPU pinning, HDR histogram, hugepage, audit log
 eph-containers  SPSC queues, evicting queues, ring buffer
 eph-core        Error / ErrorInfo / Codec concepts / OutputBuffer / PacketView contract
 eph-codec       WsCodec, RawStreamCodec, LengthPrefixCodec, RawDatagramCodec, Mold64Codec
-eph-net         Stream/Datagram/Pollable/Poller concepts, SocketAddr, ReconnectPolicy,
+eph-net         Stream/Datagram/Pollable/Poller concepts, SocketAddr, ReconnectOrchestrator,
                 test mocks (FakeStream/FakeDatagram/TestPoller), TLS/WS wire detail
 eph-net-kernel  KernelTcpStream, KernelUdpSocket, KernelPoller (epoll)
 eph-net-dpdk    DpdkTcpStream, DpdkUdpSocket, DpdkPoller, Eal (lcore burst)

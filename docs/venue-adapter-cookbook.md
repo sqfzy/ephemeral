@@ -531,11 +531,11 @@ glob in `tests/integration/xmake.lua` picks it up automatically.
    sharing the secret, and the wire format won't match the other venue's
    verifier. Construct one `SignedRequest` per venue.
 
-3. **Don't roll your own backoff loop.** `ReconnectPolicy` (the math
-   primitive) and `ReconnectOrchestrator` (the lifecycle wrapper)
+3. **Don't roll your own backoff loop.** `eph::utils::ExponentialBackoff`
+   (the math primitive) and `ReconnectOrchestrator` (the lifecycle wrapper)
    already handle exponential backoff with jitter and attempt-cap.
    `examples/binance_latency.cpp` predates the orchestrator and uses
-   `ReconnectPolicy` directly in a hand-rolled loop — that pattern is
+   `ExponentialBackoff` directly in a hand-rolled loop — that pattern is
    still legal but new adapters should prefer the orchestrator.
 
 4. **Don't bump `note_subscribe_replay()` from `factory_fn`.** The factory

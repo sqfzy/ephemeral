@@ -89,42 +89,46 @@ clamped frame.
 - `TcpState` (re-exported from `eph/core/tcp_state.hpp`) plus
   `tcp_state_name()`.
 
-### ReconnectPolicy
+### Backoff (`eph::utils::ExponentialBackoff`, `eph-utils/backoff.hpp`)
+
+The exponential-backoff math lives in **eph-utils**, not eph-net — moved
+there so it backs both `ReconnectOrchestrator` and the generic
+`eph::utils::retry` driver from one source.
 
 ```cpp
-struct ReconnectPolicyConfig {
-    std::chrono::milliseconds initial_backoff{100};
-    std::chrono::milliseconds max_backoff{1600};
-    double                    multiplier{2.0};
-    double                    jitter_factor{0.25};
-    uint32_t                  max_attempts{0};   // 0 = unlimited
-};
-
-class ReconnectPolicy {
-    explicit ReconnectPolicy(ReconnectPolicyConfig) noexcept;
-    bool                      should_reconnect() const noexcept;
-    std::chrono::milliseconds next_backoff() noexcept;   // advances state
+class eph::utils::ExponentialBackoff {
+    struct Config {
+        std::chrono::milliseconds initial_backoff{100};
+        std::chrono::milliseconds max_backoff{1600};
+        double                    multiplier{2.0};      // 1.0 = constant
+        double                    jitter_factor{0.25};
+        uint32_t                  max_attempts{0};       // 0 = unlimited
+    };
+    explicit ExponentialBackoff(Config) noexcept;
+    std::optional<std::chrono::milliseconds> next_delay() noexcept; // nullopt = exhausted
     void                      reset() noexcept;
     uint32_t                  attempts() const noexcept;
-    const ReconnectPolicyConfig& config() const noexcept;
+    const Config&             config() const noexcept;
 };
 ```
 
-Constructor clamps invalid configs (`multiplier <= 1.0` → 2.0,
-`jitter_factor` clamped to `[0, 0.999]`, `max_backoff < initial_backoff`
-raised to `initial_backoff`). Thread-local RNG keeps jitter decorrelated
-across threads. Not internally synchronised — one policy per connection.
-Used by both `KernelTcpStream` and `DpdkTcpStream`.
+Constructor clamps invalid configs (`multiplier < 1.0` / NaN / Inf → 2.0
+— note `1.0` is now a legal constant backoff; `jitter_factor` clamped to
+`[0, 0.999]`; `max_backoff < initial_backoff` raised to `initial_backoff`).
+`next_delay()` merges the old `should_reconnect()` + `next_backoff()` pair;
+exhaustion is absorbing. Thread-local RNG keeps jitter decorrelated across
+threads. Not internally synchronised — one instance per connection.
 
 ### ReconnectOrchestrator (`eph/net/reconnect_orchestrator.hpp`)
 
-State machine that drives `ReconnectPolicy` and a user-supplied stream
-factory through the connect → connected → disconnected → backoff loop.
-Header-only; one orchestrator per logical connection.
+State machine that drives an `eph::utils::ExponentialBackoff` and a
+user-supplied stream factory through the connect → connected →
+disconnected → backoff loop. Header-only; one orchestrator per logical
+connection.
 
 ```cpp
 struct ReconnectConfig {
-    ReconnectPolicyConfig policy;
+    eph::utils::ExponentialBackoff::Config policy;
     bool auto_detect_via_state = true;   // tick() polls current()->state()
 };
 

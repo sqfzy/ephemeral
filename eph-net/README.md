@@ -35,9 +35,10 @@ frame lengths into the historical `uint16_t` callback signature.
   legacy `inet_aton`-style short forms.
 - `TcpState` (`include/eph/net/tcp_state.hpp`, re-exported from
   `eph/core/tcp_state.hpp`) — RFC 793 connection states.
-- `ReconnectPolicy` / `ReconnectPolicyConfig`
-  (`include/eph/net/reconnect_policy.hpp`) — exponential backoff with
-  ±jitter. Owned by `KernelTcpStream` and `DpdkTcpStream`.
+- Exponential-backoff reconnection is provided by
+  `eph::utils::ExponentialBackoff` (`eph-utils`, header
+  `eph/utils/backoff.hpp`) — moved out of `eph-net` so it backs both
+  `ReconnectOrchestrator` and the generic `eph::utils::retry` driver.
 
 ### Shared sub-configs and post-create snapshot
 
@@ -82,7 +83,7 @@ lives in `jwt_signed_request.hpp` — see the next section.
 
 ### Reconnect orchestrator (`include/eph/net/reconnect_orchestrator.hpp`)
 
-`ReconnectOrchestrator<S>` composes `ReconnectPolicy` with
+`ReconnectOrchestrator<S>` composes `eph::utils::ExponentialBackoff` with
 user-supplied callbacks (factory / on_disconnect / on_reconnect /
 attach / detach) into the canonical multi-venue reconnect loop —
 `disconnect_detected → backoff → factory → attach → resubscribe →

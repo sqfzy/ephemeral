@@ -39,6 +39,19 @@ The scope decisions for the current feature set are archived in
   tick_keepalive`. Replaces the DPDK-only `cfg.legacy.keepalive_*` path.
 - `eph::utils::KillSwitch` — single-fire, non-resettable compliance primitive.
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
+- `eph::utils::Backoff` concept + `ExponentialBackoff` / `ConstantBackoff` —
+  generic retry-backoff strategies (`backoff.hpp`); `next_delay() ->
+  std::optional<ms>`, `nullopt` = exhausted (absorbing). `ExponentialBackoff`
+  is the math formerly in `eph::net::ReconnectPolicy` (moved here so
+  `ReconnectOrchestrator` and `retry` share one source); `multiplier == 1.0`
+  is now legal (constant backoff). `ExponentialBackoff` also exposes
+  `reset()` / `attempts()` for the orchestrator's cross-cycle reuse.
+- `eph::utils::retry(fn, backoff[, when][, sleeper])` — backon-style blocking
+  retry driver (`retry.hpp`). Drives a `std::expected`-returning callable,
+  sleeping between attempts per a `Backoff`, until success / non-retriable
+  error (`when` predicate, default retry-all) / exhaustion. `sleeper` defaults
+  to `ThreadSleeper` and is injectable so tests don't actually sleep. Blocking
+  only — for non-blocking poll-loop reconnection use `ReconnectOrchestrator`.
 - `eph::core::MetricsSink` concept + `NullSink` / `eph::utils::ConsoleSink` — the
   generic push sink for observability. Any user type with `push_counter` /
   `push_gauge` / `push_histogram` / `flush` satisfies it (duck-typed).
@@ -294,8 +307,9 @@ eph-utils  ←  eph-containers
       Codec,        Pollable /         keep the legacy
       Mold64-       Poller concepts,   framer API; they still
       Codec, …)     SocketAddr,        satisfy the Codec
-                    ReconnectPolicy,   concept so they plug into
-                    test mocks, TLS    eph-net-kernel / -dpdk)
+                    Reconnect-         concept so they plug into
+                    Orchestrator,      eph-net-kernel / -dpdk)
+                    test mocks, TLS
                     session detail)
                          ↑
                 ┌────────┴────────┐
