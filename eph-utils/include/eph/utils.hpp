@@ -19,6 +19,7 @@
 #include "eph/utils/rate_limiter.hpp"
 #include "eph/utils/record.hpp"
 #include "eph/utils/recorder.hpp"
+#include "eph/utils/retry.hpp"
 #include "eph/utils/scope_guard.hpp"
 #include "eph/utils/shutdown_signal.hpp"
 #include "eph/utils/system_stats.hpp"
