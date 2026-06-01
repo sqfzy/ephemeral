@@ -171,17 +171,25 @@ private:
         if (!RssKeyEnv::ready()) GTEST_SKIP() << RssKeyEnv::reason(); \
     } while (0)
 
-/// Multi-queue probe-key correctness tests remain gated off pending
-/// end-to-end reactivation under the post-S5 daemon model — the
-/// QueueAllocator + RETA-tracking IPC is live in `Platform::create`,
-/// but the kNbQueues=4 fixture (mock dispatcher + per-queue UDP echo
-/// + Toeplitz-hash queue prediction) hasn't been re-verified end-to-end
-/// on this host. Remove this macro once a reactivation pass confirms
-/// the full path still works.
+/// Multi-queue probe-key correctness tests remain gated off pending a
+/// fixture rework (tracked: RSS-unification reshape stage 6).
+///
+/// The original fixture (same-instance UDP echo mock + `mbuf->hash.rss`
+/// comparison) does NOT work on this host's ENA: (1) same-instance
+/// ENI→ENI traffic is blocked by AWS, and (2) the ENA PMD leaves
+/// `mbuf->hash.rss == 0` (RTE_MBUF_F_RX_RSS_HASH set but value zero).
+/// Reactivation therefore adopts `examples/dpdk_rsskey_probe.cpp`'s
+/// approach: VPC-DNS resolver as a reflector (sidesteps same-instance)
+/// + QUEUE comparison (predict_rss_queue vs actual RX queue) instead of
+/// hash-value comparison. The reframed assertion: `rss_key_trusted()`
+/// must AGREE with measured prediction accuracy — on ENA the probed key
+/// predicts at chance (~1/4) and `rss_key_trusted()` is false, which is
+/// the PASS condition. Empirical basis:
+/// .artifacts/experiment-20260601-142315.md.
 #define EPH_DAEMON_RESHAPE_S5_SKIP()                                     \
     GTEST_SKIP()                                                         \
-        << "Multi-queue probe-key correctness fixture pending post-S5 " \
-           "reactivation verification."
+        << "Multi-queue probe-key correctness fixture pending rework to " \
+           "VPC-DNS-reflector + queue comparison (RSS-unification stage 6)."
 
 // Fork the gtest env once for the whole binary.
 [[maybe_unused]] auto* g_env = ::testing::AddGlobalTestEnvironment(new RssKeyEnv);

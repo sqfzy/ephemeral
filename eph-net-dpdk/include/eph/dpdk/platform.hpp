@@ -855,6 +855,24 @@ public:
     /// / query_rss_state already use whichever key is in effect.
     [[nodiscard]] bool rss_using_probed_key() const noexcept;
 
+    /// @brief Whether the RSS key in effect can be TRUSTED for offline
+    /// Toeplitz queue prediction (`predict_rss_queue` / `queue_for_tuple`).
+    ///
+    /// `true`  ⟺ `configure_rss` installed eph's own `kRssDefaultKey` and
+    ///           the NIC genuinely steers with it → prediction is correct.
+    /// `false` ⟺ we fell back to the probe path (`rss_using_probed_key()`),
+    ///           where the readback key is a placeholder that does NOT match
+    ///           hardware steering (notably ENA — see flow_steering.hpp doc
+    ///           + .artifacts/experiment-20260601-142315.md). In this case
+    ///           callers MUST NOT rely on predicted queues; supply an
+    ///           explicitly, empirically-measured src_port instead.
+    ///
+    /// Exactly `!rss_using_probed_key()`. Provided as a positive-sense
+    /// alias so call sites read as intent ("is prediction trustworthy?").
+    [[nodiscard]] bool rss_key_trusted() const noexcept {
+        return !rss_using_probed_key();
+    }
+
     /// @brief Resolved RX-queue range `[lo, hi)` this Platform process owns.
     ///
     /// Cold getter — read once at `create_and_attach` time to drive

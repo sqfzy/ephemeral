@@ -1242,10 +1242,18 @@ struct RssState {
 /// PMD coverage notes (empirical, DPDK 24.11):
 ///   * Mellanox / Intel: `rss_hash_conf_get` returns the installed key
 ///     (whatever `configure_rss` set, defaulting to `kRssDefaultKey`).
-///   * ENA (AWS Graviton, current driver): `rss_hash_conf_get` returns
-///     the NIC's actual hash key (64 bytes) even though
-///     `rss_hash_update` is rejected — so the probe path makes
-///     RssPartitioned mode genuinely usable on ENA.
+///   * ENA (AWS Graviton, current driver): `rss_hash_conf_get` SUCCEEDS
+///     (returns a 64-byte buffer, key_len>0) but the returned key is a
+///     PLACEHOLDER — a per-PMD-attach software-generated key that the
+///     device does NOT steer with (the real key is Nitro-managed and
+///     unreadable). Empirically (.artifacts/experiment-20260601-142315.md):
+///     the probed key changes every attach, and `toeplitz_hash_ipv4`
+///     over it predicts the landing queue at CHANCE level (~1/4 for 4
+///     queues). So on ENA the probe path does NOT make RssPartitioned
+///     genuinely usable — `predict_rss_queue` / `queue_for_tuple` over
+///     this key are SILENTLY WRONG. Treat `rss_using_probed_key()==true`
+///     (i.e. `!rss_key_trusted()`) as "key unverifiable, do NOT predict";
+///     pick src_port empirically instead (tools/rss_srcport_finder.py).
 ///   * Older / exotic PMDs: may reject `rss_hash_conf_get` entirely
 ///     (`key_len` stays 0). `Platform::create` treats that as a
 ///     hard-fail when the caller asked for `nb_rx_queues > 1`; see
