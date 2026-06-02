@@ -865,7 +865,7 @@ refresh_reta_for_claimed_(QueueAllocator& alloc, uint16_t port_id) noexcept {
                      "rc={} — skip RETA refresh (PMD may not support it from "
                      "this proc; allocator state still consistent)",
                      port_id, rc);
-        return true;   // benign — same degrade-on-failure as configure_rss
+        return true;   // benign — degrade-on-failure, allocator stays consistent
     }
     uint16_t reta_size = dev_info.reta_size;
     if (reta_size == 0) reta_size = 128;  // common default

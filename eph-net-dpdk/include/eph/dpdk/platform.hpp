@@ -333,16 +333,15 @@ struct BringupConfig {
     // NOTE on source-port partitioning across MP processes:
     //
     // `eph-net-dpdk` does NOT auto-allocate source ports. The TCP/UDP
-    // `create_and_attach` paths take the source port from the caller-
+    // `create_and_attach` takes the source port verbatim from the caller-
     // supplied `cfg.dpdk.wire.tuple.src_port` (TCP) /
-    // `cfg.dpdk.wire.src_port` (UDP) in Software / FlowDirector
-    // mode, or rebind it to one that hashes to the desired queue
-    // (RSS-pinned mode via `find_src_port_for_queue`). In a multi-process
-    // setup it is
-    // therefore the *caller*'s job to ensure that the primary and each
-    // secondary draw their source ports from disjoint sub-ranges — the
-    // library has no global view to enforce this. See
-    // `docs/dpdk-multiprocess.md` for guidance on partitioning.
+    // `cfg.dpdk.wire.src_port` (UDP) in every mode; it never predicts or
+    // rebinds it. In RssPartitioned mode the caller measures which src_port
+    // lands on the desired queue (`dpdk_rsskey_probe --finder`) and pins it.
+    // In a multi-process setup it is therefore the *caller*'s job to ensure
+    // that the primary and each secondary draw their source ports from
+    // disjoint sub-ranges — the library has no global view to enforce this.
+    // See `docs/dpdk-multiprocess.md` for guidance on partitioning.
 
     /// Defaulted equality — all fields must match exactly.
     [[nodiscard]] friend bool operator==(const BringupConfig&,
@@ -938,11 +937,10 @@ public:
     /// @brief This process's `[port_lo, port_hi)` src_port window when
     /// the multi-process topology has been resolved (daemon-led
     /// `serve_nic`/`create` or the internal `mp_topology` path);
-    /// `std::nullopt` otherwise. Stream
-    /// `create_and_attach` consults this to constrain
-    /// `find_src_port_for_queue`'s search range — letting the library
-    /// auto-pick a non-colliding ephemeral src_port instead of asking
-    /// the caller to hand-partition src_port ranges across processes.
+    /// `std::nullopt` otherwise. The operator measures src_ports within
+    /// this window (via `dpdk_rsskey_probe --finder`) and supplies them
+    /// explicitly via `cfg.dpdk.wire[.tuple].src_port`, so per-process
+    /// src_port ranges stay disjoint.
     /// Cold getter; safe on moved-from instances (returns nullopt).
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>>
     port_range() const noexcept;
