@@ -844,34 +844,6 @@ public:
     /// NIC-cap clamping). Returns 0 for moved-from Platforms.
     [[nodiscard]] uint16_t nb_rx_queues() const noexcept;
 
-    /// @brief True iff RSS is active and the prediction key was *probed*
-    /// from the NIC (via `rte_eth_dev_rss_hash_conf_get`) rather than
-    /// installed by `configure_rss`. Selected automatically when the PMD
-    /// rejects `rte_eth_dev_rss_hash_update` but exposes the hash key via
-    /// readback (notably newer ENA). Returns false when RSS is inactive
-    /// (single-queue Platforms, moved-from), and false on Platforms where
-    /// `configure_rss` installed eph's own key in the normal path.
-    /// Diagnostic only — does not change hot-path behaviour; predict_rss_queue
-    /// / query_rss_state already use whichever key is in effect.
-    [[nodiscard]] bool rss_using_probed_key() const noexcept;
-
-    /// @brief Whether the RSS key in effect can be TRUSTED for offline
-    /// Toeplitz queue prediction (`predict_rss_queue` / `queue_for_tuple`).
-    ///
-    /// `true`  ⟺ `configure_rss` installed eph's own `kRssDefaultKey` and
-    ///           the NIC genuinely steers with it → prediction is correct.
-    /// `false` ⟺ we fell back to the probe path (`rss_using_probed_key()`),
-    ///           where the readback key is a placeholder that does NOT match
-    ///           hardware steering (notably ENA — see flow_steering.hpp doc
-    ///           + .artifacts/experiment-20260601-142315.md). In this case
-    ///           callers MUST NOT rely on predicted queues; supply an
-    ///           explicitly, empirically-measured src_port instead.
-    ///
-    /// Exactly `!rss_using_probed_key()`. Provided as a positive-sense
-    /// alias so call sites read as intent ("is prediction trustworthy?").
-    [[nodiscard]] bool rss_key_trusted() const noexcept {
-        return !rss_using_probed_key();
-    }
 
     /// @brief Resolved RX-queue range `[lo, hi)` this Platform process owns.
     ///
@@ -1335,15 +1307,8 @@ struct Platform::Impl {
     bool           promiscuous_active{false};
 
     // RSS / multi-queue dispatch state (stage 3).
-    bool           rss_active{false};   ///< True if configure_rss() succeeded
-                                        ///< OR probe-based bring-up resolved.
-    /// True iff `rss_active` was set via the probe path
-    /// (rte_eth_dev_rss_hash_conf_get) rather than via configure_rss
-    /// installing eph's own key. Selected automatically on PMDs that
-    /// reject rss_hash_update but expose hash_conf_get (notably newer
-    /// ENA). predict_rss_queue / query_rss_state pick up the actual
-    /// NIC key transparently in this mode.
-    bool           rss_using_probed_key{false};
+    bool           rss_active{false};   ///< True if RSS is enabled
+                                        ///< (configure_port kept mq_mode=RSS).
     ::eph::net::dpdk::RxDispatchMode dispatch_mode{
         ::eph::net::dpdk::RxDispatchMode::Software};
     /// Per-queue Poller registry. Populated by Stream::create_and_attach
@@ -1810,7 +1775,14 @@ struct Platform::Impl {
                 "eth_dev_configure failed for port {} (ret={}): {}",
                 config.port_id, ret, rte_strerror(-ret)));
         }
-        SPDLOG_LOGGER_DEBUG(log, "port={} configured", config.port_id);
+        // RSS is genuinely active iff configure_port kept mq_mode=RSS (the NIC
+        // advertised IPv4 TCP/UDP hash offloads). This — NOT key installation —
+        // is what makes the NIC spread packets across queues. On ENA the key is
+        // a placeholder, so we never install/read it; queue landing is measured
+        // empirically (dpdk_rsskey_probe --finder). See docs/cpu-no-cross-core.md.
+        rss_active = (eth_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS);
+        SPDLOG_LOGGER_DEBUG(log, "port={} configured (rss_active={})",
+                            config.port_id, rss_active);
         return {};
     }
 
@@ -2165,36 +2137,13 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     if (auto r = impl->configure_port(dev_info); !r) return std::unexpected(r.error());
     if (auto r = impl->setup_queues(dev_info);   !r) return std::unexpected(r.error());
 
-    // RSS hash key + RETA must be installed BEFORE rte_eth_dev_start.
-    // configure_port already set mq_mode=RTE_ETH_MQ_RX_RSS in eth_conf when
-    // nb_rx_queues > 1; here we wire up the actual hash params.
-    //
-    // Failure is NOT silently absorbed any more (commit BREAKING CHANGE):
-    //   * If configure_rss succeeds: rss_active=true (eph's own key
-    //     installed). Common path for non-ENA PMDs.
-    //   * If configure_rss fails: we record the error and try a
-    //     probe-based bring-up after `start_port` (some PMDs — notably
-    //     ENA — reject `rte_eth_dev_rss_hash_update` but expose the
-    //     in-use hash key via `rte_eth_dev_rss_hash_conf_get`, which we
-    //     can use for `predict_rss_queue` predictions).
-    //   * If both fail and the user asked for `nb_rx_queues > 1`,
-    //     `Platform::create` returns an error rather than silently
-    //     collapsing to single-queue (the previous behaviour, which hid
-    //     a real configuration mismatch behind an INFO log).
-    std::string configure_rss_error;
-    if (impl->config.nb_rx_queues > 1) {
-        auto rss_r = ::eph::net::dpdk::configure_rss(
-            config.port_id, impl->config.nb_rx_queues);
-        if (rss_r) {
-            impl->rss_active = true;
-        } else {
-            configure_rss_error = rss_r.error();
-            SPDLOG_LOGGER_WARN(log,
-                "configure_rss(port={}, queues={}) failed: {} -- "
-                "will attempt probe-based bring-up after port start",
-                config.port_id, impl->config.nb_rx_queues, configure_rss_error);
-        }
-    }
+    // RSS enablement (mq_mode=RTE_ETH_MQ_RX_RSS + rss_hf) was done in
+    // configure_port; impl->rss_active reflects whether the NIC advertised
+    // IPv4 TCP/UDP hash offloads and is genuinely spreading packets across
+    // queues. We do NOT install or read an RSS key: on ENA the key is a
+    // placeholder (predicts the landing queue at chance), so RSS queue landing
+    // is measured empirically (dpdk_rsskey_probe --finder), never computed.
+    // See docs/cpu-no-cross-core.md.
 
     if (auto r = impl->start_port();             !r) return std::unexpected(r.error());
     impl->wait_link_up();
@@ -2205,59 +2154,13 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     impl->dispatch_mode =
         ::eph::net::dpdk::detect_rx_dispatch_mode(config.port_id);
 
-    // ── Probe-based RSS bring-up (post-start) ────────────────────────────
-    //
-    // configure_rss earlier may have failed because the PMD rejects
-    // rte_eth_dev_rss_hash_update (notably ENA, regardless of the
-    // rss_key argument). Many such PMDs still expose their in-use hash
-    // key via rte_eth_dev_rss_hash_conf_get; if so, predict_rss_queue
-    // can use the probed key transparently and multi-queue RSS is
-    // genuinely usable. We probe AFTER port start because some PMDs
-    // only return meaningful RSS state once the device is running.
-    if (impl->config.nb_rx_queues > 1 && !impl->rss_active) {
-        SPDLOG_LOGGER_WARN(log,
-            "Platform: configure_rss failed earlier on port={} ('{}'); "
-            "attempting probe-based bring-up via "
-            "rte_eth_dev_rss_hash_conf_get",
-            config.port_id, configure_rss_error);
-        auto probed = ::eph::net::dpdk::query_rss_state(config.port_id);
-        if (probed && probed->key_len > 0) {
-            SPDLOG_LOGGER_INFO(log,
-                "Platform: probe succeeded on port={} (key_len={}, "
-                "reta_size={}); RSS active via probed key — multi-queue "
-                "RssPartitioned usable",
-                config.port_id, probed->key_len, probed->reta_size);
-            impl->rss_active           = true;
-            impl->rss_using_probed_key = true;
-        } else {
-            const std::string probe_err = probed
-                ? std::string{"rss_hash_conf_get returned key_len=0 (PMD "
-                              "won't expose its hash key)"}
-                : probed.error();
-            SPDLOG_LOGGER_ERROR(log,
-                "Platform: RSS bring-up failed on port={}: configure_rss "
-                "rejected ('{}') AND probe also failed ('{}'); cannot "
-                "safely route packets to nb_rx_queues={}",
-                config.port_id, configure_rss_error, probe_err,
-                impl->config.nb_rx_queues);
-            return std::unexpected(std::format(
-                "Multi-queue RSS bring-up failed on port={}: "
-                "configure_rss rejected ('{}') AND rss_hash_conf_get "
-                "probe also failed ('{}'). Cannot safely route packets "
-                "to nb_rx_queues={}. Recovery: set "
-                "PlatformConfig::nb_rx_queues=1.",
-                config.port_id, configure_rss_error, probe_err,
-                impl->config.nb_rx_queues));
-        }
-    }
-
     // Reflect what THIS Platform is actually doing, not just NIC capability.
     // detect_rx_dispatch_mode reports the NIC's intrinsic capabilities;
     // if we didn't bring up RSS (single-queue config: nb_rx_queues == 1),
     // dispatch_mode is effectively Software for the purposes of stream
     // attach decisions. Without this pin, Stream::create_and_attach would
-    // walk the RssPartitioned branch and call predict_rss_queue + attach
-    // to a non-existent target Poller.
+    // walk the RssPartitioned branch and attach to a non-existent target
+    // Poller.
     if (impl->config.nb_rx_queues <= 1 || !impl->rss_active) {
         if (impl->dispatch_mode !=
                 ::eph::net::dpdk::RxDispatchMode::Software) {
@@ -2272,36 +2175,31 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
         }
     }
 
-    // ── Hard-fail the legitimate-but-unsafe combination "nb_rx_queues>1
-    //    with no functional RSS path" — happens when the PMD rejected both
-    //    `configure_rss` (rss_hash_update) AND the probe-based fallback
-    //    (rss_hash_conf_get returned key_len=0). The previous behaviour
-    //    silently collapsed the RETA to queue 0, which masked the
-    //    misconfiguration; we now refuse so the caller makes an explicit
-    //    decision. (The configure_rss-failed-but-probe-succeeded path
-    //    has set rss_active=true above and is exempt; the both-failed
-    //    path returned earlier and never reaches here.)
+    // ── Hard-fail "nb_rx_queues>1 but RSS not enabled" — happens when the
+    //    NIC does not advertise IPv4 TCP/UDP RSS hash offloads, so
+    //    configure_port reverted mq_mode to NONE and rss_active is false.
+    //    We refuse rather than silently collapse all traffic onto queue 0
+    //    (which would mask the misconfiguration). Single-queue Platforms
+    //    (nb_rx_queues==1) are exempt.
     if (impl->config.nb_rx_queues > 1 && !impl->rss_active) {
         SPDLOG_LOGGER_ERROR(log,
             "Platform: nb_rx_queues={} but rss_active=false on port={}; "
             "cannot route packets to multiple queues without functional RSS",
             impl->config.nb_rx_queues, config.port_id);
         return std::unexpected(std::format(
-            "PlatformConfig has nb_rx_queues={} but RSS bring-up failed "
-            "(both rss_hash_update and rss_hash_conf_get were rejected by "
-            "the PMD); eph cannot route packets to multiple queues without "
-            "a functional RSS path. Recovery: set nb_rx_queues=1 to use "
-            "single-queue Software dispatch, or use a NIC whose PMD "
-            "supports rss_hash_update or rss_hash_conf_get.",
-            impl->config.nb_rx_queues));
+            "PlatformConfig has nb_rx_queues={} but RSS is not active on "
+            "port {} (the NIC does not advertise IPv4 TCP/UDP RSS hash "
+            "offloads, so packets cannot be spread across queues). "
+            "Recovery: set nb_rx_queues=1 to use single-queue Software "
+            "dispatch, or use a NIC/PMD that supports IPv4 RSS.",
+            impl->config.nb_rx_queues, config.port_id));
     }
 
     SPDLOG_LOGGER_INFO(log,
         "Platform ready (port={}, nb_rx_queues={}, rss_active={}, "
-        "using_probed_key={}, dispatch_mode={})",
+        "dispatch_mode={})",
         config.port_id, impl->config.nb_rx_queues,
         impl->rss_active ? "true" : "false",
-        impl->rss_using_probed_key ? "true" : "false",
         ::eph::net::dpdk::rx_dispatch_mode_name(impl->dispatch_mode));
     return Platform(std::move(impl));
 }
@@ -2618,8 +2516,8 @@ Platform::secondary_bringup_(detail::BringupConfig config,
     }
 
     // Skip: enumerate_ports (primary did it) / create_mempool (lookup
-    // above) / configure_port / setup_queues / configure_rss /
-    // start_port / wait_link_up — all primary-only.
+    // above) / configure_port / setup_queues / start_port / wait_link_up
+    // — all primary-only.
     impl->port_started = true;
 
     // Probe the live NIC dispatch capability just like create() does.
@@ -3222,10 +3120,6 @@ Platform::dispatch_mode() const noexcept {
 
 inline uint16_t Platform::nb_rx_queues() const noexcept {
     return impl_ ? impl_->config.nb_rx_queues : 0;
-}
-
-inline bool Platform::rss_using_probed_key() const noexcept {
-    return impl_ && impl_->rss_using_probed_key;
 }
 
 inline std::pair<uint16_t, uint16_t>
