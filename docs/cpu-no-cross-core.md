@@ -203,7 +203,34 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 
 ---
 
-## 9. 相关文档
+## 9. 两条腿一致吗:统一心智模型与漏点(kernel vs DPDK)
+
+**高层一致**(reshape 刻意做的):两边都能收敛成一句——
+
+> 不跨核 = 让"我这条流被 RSS 分到的队列" ↔ "我的业务核" 对齐。三步:① 队列绑到核;
+> ② 经验实测挑一个 src_port 让流落到那个队列;③ 把 src_port 显式喂给 eph。
+
+eph 旋钮也是**镜像**的:探测 `rss_queue_probe` ↔ `dpdk_rsskey_probe`;喂 src_port
+`cfg.kernel.local_bind.port` ↔ `cfg.dpdk.wire.tuple.src_port`(都必须显式、都退役了自动预测)。
+
+**但有 4 处 intrinsic 漏点,拿 kernel 直觉套 DPDK 会踩坑:**
+
+1. **单核不对称**:DPDK **单 lcore 啥都不用做**(run-to-completion,poll 核=处理核);
+   kernel 单连接仍要把队列 IRQ 钉到 app 核(或 busy-poll)。别给单 lcore DPDK 套 src_port 工程。
+2. **做错的后果不同(correctness 级,最危险)**:kernel 没对齐 = **慢**(跨核弹跳,数据还在);
+   DPDK 没对齐 = 流落到没人 poll 的队列 = **静默丢包**(broken)。拿 kernel 的"最多慢点"
+   直觉套 DPDK 会丢数据还查不出原因。
+3. **"队列→核"这端不对称**:kernel 是 IRQ 亲和,**可探测**(`/proc/irq`);DPDK 是你的
+   lcore 绑定 = app 配置,**探不出来**,要你用 `--queue-cpu-map` 告诉探测工具。
+4. **探测工具天然两套**:kernel 内核看得到包 → eBPF 探(`rss_queue_probe`);DPDK 内核
+   bypass、看不到包 → 只能 DPDK 内部自探(`dpdk_rsskey_probe`)。
+
+**记法**:心智模型与 eph 旋钮已统一;但**"DPDK 单核免做"**和**"DPDK 错=丢包而非变慢"**
+是 intrinsic 差异,统一不掉,必须分清。
+
+---
+
+## 10. 相关文档
 
 - `eph-net-dpdk/CHANGELOG.md` — RSS-unification reshape 的 BREAKING + 迁移
 - `.artifacts/experiment-20260601-142315.md` — ENA RSS key 占位实证(假设/方法/数据/结论)
