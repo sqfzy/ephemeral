@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Removed — BREAKING (2026-06-02) — delete the trusted-key RSS prediction line (ENA-first)
+
+The 2026-06-01 unification retired runtime prediction but kept the Toeplitz
+machinery as "offline-diagnostic" helpers. On ENA (this project's deployment
+target) those helpers are dead weight: the readable RSS key is a placeholder,
+so prediction never works. RSS is now a single model — **enable RSS → probe →
+pin** — with no key install/read and no trusted/untrusted branching. The
+"spread packets across queues" enablement was always `configure_port`'s
+`mq_mode=RTE_ETH_MQ_RX_RSS`; `Platform::Impl::rss_active` is now derived there.
+
+Removed (public API — BREAKING):
+
+| Removed symbol | Replacement |
+|----------------|-------------|
+| `Platform::rss_using_probed_key()` / `Platform::rss_key_trusted()` | none — RSS landing is always empirical; no "trusted key" concept |
+| `eph::net::dpdk::predict_rss_queue` / `queue_for_tuple` / `find_src_port_for_queue[_with_state]` | measure src_port→queue with `examples/dpdk_rsskey_probe --finder`; pass via `cfg.dpdk.pin_to_queue` + `cfg.dpdk.wire[.tuple].src_port` |
+| `eph::net::dpdk::query_rss_state` / `RssState` / `kRssDefaultKey` | none |
+| `eph::net::dpdk::toeplitz_hash` / `toeplitz_hash_ipv4` / `queue_for_hash` | none |
+| `eph::net::dpdk::configure_rss` | none — RSS is enabled by `configure_port` (internal); no key is installed |
+| `DnsConfig::rss_prediction_trusted` + RSS-aware DNS reverse-pick | DNS always uses a random ephemeral src_port (single-queue semantics) |
+
+Behaviour change: `Platform::create` hard-fail for `nb_rx_queues>1` now fires
+when the NIC advertises no IPv4 TCP/UDP RSS hash offloads (`rss_hf==0`) rather
+than "both `rss_hash_update` and `rss_hash_conf_get` rejected". On ENA the
+normal multi-queue path no longer hard-fails (RSS enables via `mq_mode`).
+
+Migration: drop any branch on `rss_key_trusted()`/`rss_using_probed_key()`;
+for RssPartitioned, run `examples/dpdk_rsskey_probe --finder` and set
+`cfg.dpdk.pin_to_queue` + `cfg.dpdk.wire.tuple.src_port`. See
+`docs/cpu-no-cross-core.md` for the unified kernel-vs-DPDK model.
+
 ### Changed — BREAKING (2026-06-01) — RSS src_port unification: retire runtime queue prediction
 
 Empirically, on AWS ENA the guest-readable RSS hash key is a **placeholder**

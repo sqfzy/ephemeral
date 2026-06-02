@@ -159,18 +159,20 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 ## 6. 库侧:eph-net-dpdk 退役了运行时 RSS 预测(2026-06-01 reshape)
 
 因为 §4 的占位 key,eph 库**曾在 ENA 上静默把 src_port 选到错队列**(=悄悄跨核,
-正是要消除的东西)。reshape(commit `1b0e276b`/`e9d674bf`/`92e2a421`,均 BREAKING):
+正是要消除的东西)。两轮 reshape(均 BREAKING)后,DPDK RSS 收敛成**单一经验模型**:
 
-- `DpdkTcpStream/UdpSocket::create_and_attach` 的 `RssPartitioned` 模式**不再自动
-  凑 src_port**;调用方必须 `pin_to_queue` + 显式 `cfg.dpdk.wire[.tuple].src_port`
-  (从上面的 finder 实测得来),缺失 → 明确 error。
-- DNS:`DnsConfig::rss_prediction_trusted`(默认 false=单队列语义/随机 src_port);
-  仅可信 key NIC 上设 true 才走 RSS-aware。
-- `Platform::rss_key_trusted()` == `!rss_using_probed_key()` 暴露"预测是否可信"
-  (ENA 上 false)。`predict_rss_queue`/`queue_for_tuple`/`find_src_port_for_queue`
-  降为 trusted-key-only / 诊断 helper,不在运行时 stream 创建路径。
+- **开 RSS**:`Platform::create` 在 `configure_port` 里设 `mq_mode=RTE_ETH_MQ_RX_RSS`
+  + `rss_hf`(与 NIC 能力取交集)。`nb_rx_queues>1` 且 `rss_hf!=0` → `rss_active`;
+  `rss_hf==0` → 硬失败(不静默塌缩到队列 0)。eph **不装也不读 RSS key**。
+- **probe**:用 `examples/dpdk_rsskey_probe --finder` 实测 `src_port→queue`。
+- **pin**:`DpdkTcpStream/UdpSocket::create_and_attach` 的 `RssPartitioned` 模式
+  要求 `pin_to_queue` + 显式 `cfg.dpdk.wire[.tuple].src_port`(finder 实测得来),
+  缺失 → 明确 error;**从不预测/改写 src_port**。
+- DNS:恒用随机 ephemeral src_port(单队列语义)。`rss_prediction_trusted` 字段已删。
 
-详见 `eph-net-dpdk/CHANGELOG.md` 的 BREAKING 条目。
+整条 trusted-key 预测面(`rss_using_probed_key`/`rss_key_trusted`/`predict_rss_queue`/
+`queue_for_tuple`/`find_src_port_for_queue`/`configure_rss`/`query_rss_state`/`RssState`)
+**已删除**。详见 `eph-net-dpdk/CHANGELOG.md` 的 2026-06-02 BREAKING 条目。
 
 ---
 
@@ -235,4 +237,4 @@ eph 旋钮也是**镜像**的:探测 `rss_queue_probe` ↔ `dpdk_rsskey_probe`;�
 - `eph-net-dpdk/CHANGELOG.md` — RSS-unification reshape 的 BREAKING + 迁移
 - `.artifacts/experiment-20260601-142315.md` — ENA RSS key 占位实证(假设/方法/数据/结论)
 - `docs/dpdk-setup.md` — hugepages / vfio-pci 绑定环境
-- `CLAUDE.md` — `create_and_attach` / `rss_key_trusted()` 的库侧描述
+- `CLAUDE.md` — `create_and_attach` / DPDK RSS 单一经验模型的库侧描述

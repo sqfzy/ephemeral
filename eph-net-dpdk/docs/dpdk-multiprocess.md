@@ -142,10 +142,12 @@ removes a low-priority tenant.
 ## Source-port partitioning across tenants
 
 `eph-net-dpdk` does **not** auto-allocate source ports across
-processes. The `create_and_attach` paths take the source port from
-the caller-supplied `cfg.dpdk.wire.tuple.src_port` (TCP) or
-`cfg.dpdk.wire.src_port` (UDP), or rebind it to one that hashes to
-the desired queue (RSS-pinned mode via `find_src_port_for_queue`).
+processes, and (ENA-first) does **not** predict or rebind src_port.
+The `create_and_attach` paths take the source port verbatim from the
+caller-supplied `cfg.dpdk.wire.tuple.src_port` (TCP) or
+`cfg.dpdk.wire.src_port` (UDP). In RssPartitioned mode the caller
+measures which src_port lands on the desired queue empirically
+(`examples/dpdk_rsskey_probe --finder`) and pins it.
 
 ### Library-enforced disjointness (post-2026-05-02 daemon-led model)
 
@@ -166,11 +168,11 @@ audit, found to already be implemented):
    Overlapping ranges fail validation; the daemon refuses to start.
 3. A tenant's `Platform::create` resolves the topology via the
    daemon's registry handshake and exposes its window via
-   `Platform::port_range()`. `DpdkTcpStream::create_and_attach` /
-   `DpdkUdpSocket::create_and_attach` consult this window when
-   running `find_src_port_for_queue`, so auto-picked ephemeral
-   src_ports are always inside the tenant's allocated window.
-4. If the caller passes an *explicit* `cfg.dpdk.wire.tuple.src_port`
+   `Platform::port_range()`. The operator measures src_ports within
+   this window (`dpdk_rsskey_probe --finder`) and supplies them
+   explicitly, so the caller-pinned src_ports stay inside the
+   tenant's allocated window.
+4. If the caller passes a `cfg.dpdk.wire.tuple.src_port`
    outside `Platform::port_range()`, the stream-attach path emits a
    WARN with the conflict — operator override is allowed (escape
    hatch for legacy configs) but no longer silent.
@@ -311,7 +313,8 @@ NIC's primary role.
   reconnect template for daemon restarts.
 - [`lcore-pin-integration.md`](lcore-pin-integration.md) —
   EAL lcore × `eph::utils::pin_thread` interaction.
-- [`rss-control-plane.md`](rss-control-plane.md) — DNS / ARP /
-  multicast under multi-queue RSS.
+- [`../../docs/cpu-no-cross-core.md`](../../docs/cpu-no-cross-core.md) —
+  the unified kernel-vs-DPDK no-cross-core model; empirical RSS
+  src_port→queue measurement (`dpdk_rsskey_probe --finder`).
 - `eph-net-dpdk/CHANGELOG.md` — BREAKING entry for the daemon-led
   reshape with full before/after migration table.

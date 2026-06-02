@@ -52,11 +52,11 @@ validation before any I/O.
 | `tls.hostname empty with verify_peer=true` | Set `cfg.tls.hostname` for SNI / cert verify |
 | `client_cert without client_key` | Set both fields or neither (mTLS) |
 | `proxy on DPDK backend` | Kernel only — DPDK rejects HTTP CONNECT |
-| `enable_rss=false with nb_rx_queues>1` | Either enable RSS or set `nb_rx_queues=1` |
+| `nb_rx_queues>1 but NIC advertises no IPv4 RSS hash offloads` | Use an RSS-capable NIC or set `nb_rx_queues=1` |
 
-The DPDK platform also hard-fails (no silent collapse to queue 0) when RSS
-bring-up fails on every path; see `eph::dpdk::Platform::create` and the
-`rss_using_probed_key()` diagnostic getter.
+The DPDK platform also hard-fails (no silent collapse to queue 0) when
+`nb_rx_queues>1` but the NIC advertises no IPv4 RSS hash offloads
+(`rss_hf==0`); see `eph::dpdk::Platform::create`.
 
 ### `Error::ConnectFailed`
 
@@ -372,22 +372,21 @@ The `eph-net-dpdk/tools/dpdk-setup.sh` and `dpdk-teardown.sh` scripts
 encapsulate this idempotently. The `benchmarks/latency/lat` dispatcher
 handles transitions automatically.
 
-### DPDK: RSS bring-up fails on ENA / aged PMD
+### DPDK: RSS bring-up fails (NIC advertises no IPv4 RSS hash offloads)
 
-**Symptom**: `Platform::create` returns
-`InvalidConfig: rss_hash_update rejected; probe also failed`.
+**Symptom**: `Platform::create` returns an error containing
+`RSS is not active … the NIC does not advertise IPv4 TCP/UDP RSS hash offloads`.
 
-**Cause**: PMD doesn't support `rte_eth_dev_rss_hash_update` and the probe
-via `rte_eth_dev_rss_hash_conf_get` also failed (driver doesn't expose
-the active key).
+**Cause**: with `nb_rx_queues>1`, `configure_port` could not enable RSS
+because the NIC reports `flow_type_rss_offloads` without IPv4 TCP/UDP/IP
+bits (`rss_hf==0`). eph refuses to spread traffic without functional RSS
+rather than silently collapse everything onto queue 0.
 
 **Fix**:
-- For diagnostic: `Platform::rss_using_probed_key()` returns `true` if the
-  fallback path resolved. If `Platform::create` hard-fails, neither path
-  worked.
-- Confirm PMD version (some ENA versions in 21.x predate
-  `rss_hash_conf_get`).
-- Workaround: drop to `nb_rx_queues=1` and disable RSS (single-queue mode).
+- Confirm the NIC/PMD supports IPv4 RSS hashing.
+- Workaround: drop to `nb_rx_queues=1` (single-queue Software dispatch).
+- (RSS queue landing, when active, is measured empirically with
+  `examples/dpdk_rsskey_probe --finder` — see `docs/cpu-no-cross-core.md`.)
 
 ### Path MTU shrinkage
 

@@ -66,10 +66,11 @@ When running with RSS multi-queue dispatch
 (`Platform::dispatch_mode() == eph::net::dpdk::RxDispatchMode::RssPartitioned`
 && `Platform::nb_rx_queues() > 1`), the blocking control-plane APIs
 (`dns::resolve`, `arp::resolve`, `MulticastReceiver`) need a small
-contract to route their replies back to the caller's queue. DNS
-reverse-picks a hashed src_port, ARP hardcodes queue 0, Multicast
-fail-fasts unless single-queued or FlowDirector-pinned. Full
-integration story: [`docs/rss-control-plane.md`](docs/rss-control-plane.md).
+contract to route their replies back to the caller's queue. DNS uses a
+random ephemeral src_port (single-queue semantics; ENA RSS landing can't
+be predicted), ARP hardcodes queue 0, Multicast fail-fasts unless
+single-queued or FlowDirector-pinned. Unified no-cross-core model:
+[`../docs/cpu-no-cross-core.md`](../docs/cpu-no-cross-core.md).
 
 ## Lower-level DPDK primitives (`eph/dpdk/*`)
 
@@ -106,8 +107,8 @@ headers (no `detail/` prefix), so the API is stable:
 - `tcp.hpp` — `TcpSession<ReorderSlots=64>` (the TCP state machine
   `DpdkTcpStream` wraps).
 - `udp.hpp` — UDP sender primitives.
-- `arp.hpp`, `dns.hpp` — link-layer resolution helpers (RSS-safe
-  reply routing, see `docs/rss-control-plane.md`).
+- `arp.hpp`, `dns.hpp` — link-layer resolution helpers (DNS uses a
+  random ephemeral src_port; see `../docs/cpu-no-cross-core.md`).
 - `multicast.hpp` — multicast group management (`MulticastReceiver`).
 - `packet_core.hpp` — protocol constants, byte-order helpers, Internet
   / TCP / UDP checksum algorithms, `ConnectionTuple`.
@@ -304,7 +305,7 @@ the internal-primitive tests under `tests/detail/` (renamed from
 | `test_dpdk_ws_sink`                | WS codec → `DpdkTcpStream` sink integration                             |
 | `test_dpdk_reasm_overflow`         | Reassembly capacity exhaustion + RX cksum TD-6 precise-mask cases       |
 | `test_dpdk_fault_tolerance`        | Keepalive exhaustion / link-down / reconnect policy                     |
-| `test_flow_steering`               | RSS + `install_flow_rule` / `FlowRule` RAII + Toeplitz queue predictor  |
+| `test_flow_steering`               | `RxDispatchMode` / `FlowProtocol` / `install_flow_rule` / `FlowRule` RAII |
 | `test_flow_rule_variant`           | `FlowRule`/`FlowHandle` variant dispatch + move-ctor / move-assign semantics |
 | `test_dpdk_drain`                  | `DpdkTcpStream::drain` input validation + RX session reset metric wiring |
 | `test_dpdk_poller_timeout`         | `DpdkPoller` no-blocking-poll contract + idle deadline behaviour        |

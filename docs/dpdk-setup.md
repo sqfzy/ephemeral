@@ -236,44 +236,29 @@ sudo ./benchmarks/latency/lat tcp --dpdk
 
 ## 8. RSS bring-up paths (multi-queue)
 
-`Platform::create` resolves multi-queue RSS via two paths, transparently:
+`Platform::create` brings up multi-queue RSS with a single model
+(ENA-first; no RSS key is installed or read):
 
 ```
-nb_rx_queues > 1 && enable_rss=true
+nb_rx_queues > 1
        │
        ▼
-configure_rss (rte_eth_dev_rss_hash_update)
-   ┌───┴────┐
-   │ ok     │ rejected (notably ENA)
-   ▼        ▼
-rss_active  query_rss_state (rte_eth_dev_rss_hash_conf_get)
-=true       ┌────┴─────┐
-            │ key_len>0│ no key
-            ▼          ▼
-        rss_active   Platform::create returns error
-        =true        ("Recovery: set nb_rx_queues=1")
-        using_probed
-        _key=true
+configure_port: mq_mode = RTE_ETH_MQ_RX_RSS, rss_hf ∩ NIC caps
+   ┌───┴──────────────┐
+   │ rss_hf != 0      │ rss_hf == 0 (NIC advertises no IPv4 RSS hash)
+   ▼                  ▼
+rss_active = true   Platform::create returns error
+(packets spread     ("RSS is not active … Recovery: set nb_rx_queues=1")
+ across queues)
 ```
 
-The probe path uses the NIC's actual hash key, so `predict_rss_queue`
-returns the correct queue id even on PMDs that won't accept eph's key.
-There is no silent fallback to single-queue any more — operators must
-make an explicit choice when the NIC can't host multi-queue RSS.
-
-`Platform::rss_using_probed_key()` reports which path resolved, useful
-for assertions in production code or operational dashboards:
-
-```cpp
-auto plat = eph::dpdk::Platform::create(cfg);
-if (plat) {
-    spdlog::info("Platform up (using_probed_key={})",
-                 plat->rss_using_probed_key());
-}
-```
-
-The hard-fail path on `enable_rss=false + nb_rx_queues>1` exists
-because eph cannot route packets to multiple queues without a
-functional RSS path; the previous silent-collapse-to-queue-0 behaviour
-(which appeared to "work" with N queues but actually used 1) was
-removed.
+eph does **not** install (`rte_eth_dev_rss_hash_update`) or read
+(`rte_eth_dev_rss_hash_conf_get`) an RSS key: on ENA the readable key is
+a placeholder that predicts the landing queue at chance. RSS queue
+landing is therefore **measured empirically** — run
+`examples/dpdk_rsskey_probe --finder` to learn which `src_port` lands on
+which queue, then pin via `cfg.dpdk.pin_to_queue` +
+`cfg.dpdk.wire.tuple.src_port`. There is no silent fallback to
+single-queue: operators make an explicit choice when the NIC can't host
+multi-queue RSS. See `docs/cpu-no-cross-core.md` for the unified
+kernel-vs-DPDK model.

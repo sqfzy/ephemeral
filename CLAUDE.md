@@ -74,17 +74,21 @@ The scope decisions for the current feature set are archived in
   (`DpdkPoller::poll`) the tick fires on every poll cycle via the
   `on_poll_tick_` hook; single-stream users driving `poll_once_`
   directly must tick themselves.
-- `eph::dpdk::Platform::rss_using_probed_key()` — diagnostic getter
-  reflecting which RSS bring-up path resolved. `Platform::create` for
-  `enable_rss=true && nb_rx_queues>1` first tries `configure_rss`
-  (installs eph's key); if the PMD rejects `rte_eth_dev_rss_hash_update`
-  (notably ENA), it falls back to a probe via
-  `rte_eth_dev_rss_hash_conf_get` and uses the NIC's actual key for
-  `predict_rss_queue`. `rss_using_probed_key()` returns true on that
-  fallback path. If the probe also fails, `Platform::create` hard-fails
-  with a recovery hint; the previous silent-collapse-to-queue-0 path
-  was removed (BREAKING CHANGE — see `eph-net-dpdk/CHANGELOG.md`). The
-  hard-fail also fires for `enable_rss=false && nb_rx_queues>1`.
+- DPDK RSS bring-up — single empirical model (ENA-first; post-2026-06-02
+  reshape). `Platform::create` enables RSS in `configure_port`
+  (`mq_mode=RTE_ETH_MQ_RX_RSS` + `rss_hf` intersected with NIC caps); when
+  `nb_rx_queues>1` and the NIC advertises IPv4 TCP/UDP RSS hash offloads,
+  RSS is active and packets spread across queues. eph does **not** install
+  or read an RSS key: on ENA the readable key is a placeholder that predicts
+  the landing queue at chance, so RSS queue landing is **measured
+  empirically** (`examples/dpdk_rsskey_probe --finder`), never computed.
+  `Platform::create` hard-fails (recovery hint) when `nb_rx_queues>1` but the
+  NIC advertises no IPv4 RSS hash offloads (`rss_hf==0`); the previous
+  silent-collapse-to-queue-0 path remains removed. The Toeplitz prediction
+  surface (`rss_using_probed_key()` / `rss_key_trusted()` / `predict_rss_queue`
+  / `queue_for_tuple` / `find_src_port_for_queue` / `configure_rss` /
+  `query_rss_state` / `RssState`) was **removed** — BREAKING, see
+  `eph-net-dpdk/CHANGELOG.md` + `.artifacts/experiment-20260601-142315.md`.
 - `eph::dpdk::TcpSession::effective_mss()` / `peer_mss_negotiated()` —
   connection MSS is clamped to `min(local, peer SYN-ACK MSS)` and may shrink
   further on ICMP Frag Needed; exposed read-only for diagnostics.
@@ -109,13 +113,11 @@ The scope decisions for the current feature set are archived in
   that predicts the landing queue at chance (see `eph-net-dpdk/CHANGELOG.md`
   BREAKING + `.artifacts/experiment-20260601-142315.md`). The caller must set
   `cfg.dpdk.pin_to_queue` + an explicit `cfg.dpdk.wire.tuple.src_port`
-  measured via `examples/dpdk_rsskey_probe (--finder)`; missing → actionable error. The
+  measured via `examples/dpdk_rsskey_probe --finder`; missing → actionable error. The
   older `create(cfg, poller)` overload was removed — its narrow subset is
-  covered by `create_and_attach`. `Platform::rss_key_trusted()` ==
-  `!rss_using_probed_key()` reports whether Toeplitz prediction is trustworthy
-  (false on ENA). `predict_rss_queue` / `find_src_port_for_queue` /
-  `queue_for_tuple` are now trusted-key-only / offline-diagnostic helpers, not
-  the runtime path.
+  covered by `create_and_attach`. RSS queue landing is always empirical on
+  ENA-first hardware; there is no "trusted key" concept and no Toeplitz
+  prediction (those helpers were removed — see above).
 - `eph::net::dpdk::DpdkPollable` concept grew `on_poll_tick_(uint64_t tsc)
   noexcept`. Invoked once per poll cycle by `DpdkPoller::poll()` for every
   registered entry — used by TCP keepalive; UDP implements as no-op.

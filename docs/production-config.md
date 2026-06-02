@@ -159,7 +159,8 @@ end::StreamConfig scfg{
         },
         .pool = mempool_ptr,
         // .pin_to_queue: nullopt = RSS-decides / FlowDirector RR / SW q0.
-        // See eph-net-dpdk/docs/rss-control-plane.md.
+        // RssPartitioned needs an explicit pin + measured src_port; see
+        // docs/cpu-no-cross-core.md.
     },
 };
 

@@ -57,9 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Platform::create_primary` / `create_secondary`. See
   `eph-net-dpdk/docs/dpdk-multiprocess.md`.
 - RSS bring-up hardening: `Platform::create` no longer silently falls back
-  to queue 0 when RSS hash update fails; `rss_using_probed_key()`
-  diagnostic getter exposes which path resolved. **BREAKING CHANGE** vs
-  pre-v3.3 silent collapse — see `eph-net-dpdk/CHANGELOG.md`.
+  to queue 0 when RSS can't be enabled — it hard-fails with a recovery hint.
+  **BREAKING CHANGE** vs pre-v3.3 silent collapse. (The later 2026-06-02
+  reshape removed the trusted-key prediction surface entirely and made RSS
+  queue landing fully empirical — see `eph-net-dpdk/CHANGELOG.md`.)
 
 #### Net / Kernel
 - `eph::net::HttpConnectConfig` + `StreamConfig::proxy` — HTTP CONNECT

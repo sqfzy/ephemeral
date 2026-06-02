@@ -46,10 +46,12 @@ auto-derives disjoint queue / src_port windows. See the file header
 for the launch commands.
 
 `dpdk_rss_demo` is the single-process RSS counterpart: one Platform
-with `enable_rss=true` and `nb_rx_queues > 1`, one Poller per queue,
-several `DpdkUdpSocket`s spawned via `create_and_attach` with
-`pin_to_queue` set so each lands on a distinct RX queue via Toeplitz
-reverse-pick. Pairs with `eph-net-dpdk/docs/rss-control-plane.md`.
+with `nb_rx_queues > 1` (RSS enabled by `configure_port`), one Poller per
+queue, several `DpdkUdpSocket`s spawned via `create_and_attach` with
+`pin_to_queue` + an explicit measured `cfg.dpdk.wire.src_port` so each
+lands on a distinct RX queue. RSS landing is measured empirically
+(`dpdk_rsskey_probe --finder`), not predicted — see
+`docs/cpu-no-cross-core.md`.
 
 ---
 
@@ -72,7 +74,7 @@ reverse-pick. Pairs with `eph-net-dpdk/docs/rss-control-plane.md`.
 | `ws_deflate_demo.cpp`     | Kernel / WS deflate | RFC 7692 permessage-deflate over `KernelTcpStream<WsCodec, true>`. Reads `kWsDeflateBytesIn` / `kWsDeflateBytesOut` directly via `stream->metric(...)` AND publishes the `eph::net::publish_ws_deflate_ratio` derived gauge into a `ConsoleSink` once a second. `--no-deflate` opts out for venues that mis-implement the extension. | `eph-net-kernel`, `eph-codec`, `eph-utils` |
 | `dpdk_multicast_md.cpp`   | DPDK / multicast    | `eph::dpdk::MulticastReceiver` — RFC 1112 multicast MAC filter, `join_group` / `on_packet` / `start` / `stop` shape. Demonstrates `total_rx_packets` / `rx_unmatched_packets` / `rx_ssm_rejected_packets` diagnostics (the SSM counter is disjoint from unmatched — see receiver docs). `--rss-fail-test` exercises the RSS multi-queue safety gate (start() refuses with `rss_active_multi_queue=true` because the receiver cannot reverse-pick the sender's 5-tuple). | `eph-net-dpdk`                             |
 | `dpdk_mp_demo.cpp`        | DPDK / multi-process | Single-NIC tenant secondary. One binary, attaches as a secondary via `Platform::create(PlatformConfig{...})` to an already-running `eph-nicd` daemon for the configured PCI BDF, attaches a `DpdkUdpSocket<RawDatagramCodec>` from this process' owned RX queue range, drives `poll()` for 5 s. Demonstrates the daemon-led model + the secondary cleanup branch. See `eph-net-dpdk/docs/dpdk-multiprocess.md` for partitioning rules and `dpdk-daemon-deployment.md` for the `eph-nicd` toml. | `eph-net-dpdk`, `eph-codec`            |
-| `dpdk_rss_demo.cpp`       | DPDK / RSS          | Single-process RSS multi-queue: `Platform::create(PlatformConfig)` against a daemon configured with `total_queues>=N`, claims `cfg.queues=N` queue pairs, prints the diagnostic getters (`dispatch_mode` / `rss_using_probed_key` / `effective_rx_queue_range`), spawns one `DpdkPoller` per owned queue, then attaches `DpdkUdpSocket`s via `create_and_attach`. NOTE (post-2026-06-01 RSS-unification): `create_and_attach` no longer reverse-picks src_port; in `RssPartitioned` mode the caller must set `pin_to_queue` + an explicit `cfg.dpdk.wire.src_port` measured via `examples/dpdk_rsskey_probe (--finder)` (RSS queue prediction retired — the readable key is a placeholder on ENA). This demo needs updating to supply explicit src_ports; see `eph-net-dpdk/CHANGELOG.md` BREAKING. | `eph-net-dpdk`, `eph-codec`            |
+| `dpdk_rss_demo.cpp`       | DPDK / RSS          | Single-process RSS multi-queue: `Platform::create(PlatformConfig)` against a daemon configured with `total_queues>=N`, claims `cfg.queues=N` queue pairs, prints the diagnostic getters (`dispatch_mode` / `effective_rx_queue_range`), spawns one `DpdkPoller` per owned queue, then attaches `DpdkUdpSocket`s via `create_and_attach`. In `RssPartitioned` mode the caller sets `pin_to_queue` + an explicit `cfg.dpdk.wire.src_port` measured via `examples/dpdk_rsskey_probe --finder` (RSS queue landing is empirical — the readable key is a placeholder on ENA; see `docs/cpu-no-cross-core.md`). | `eph-net-dpdk`, `eph-codec`            |
 | `async_dns_multi_resolve.cpp` | DPDK / DNS      | Parallel DNS resolution via `eph::dpdk::dns::AsyncDnsResolver` driven from one `DpdkPoller<>` burst loop. Constructs one resolver per hostname, `start()` + `poller->add()` each, drives `poll()` until all reach a terminal state. Smoke-boot when mempool / gateway-MAC are absent. | `eph-net-dpdk`                             |
 | `binance_latency.cpp`     | DPDK / production   | Full-stack DPDK probe to Binance: `Platform` bring-up, ARP + DPDK-native DNS, `DpdkTcpStream<WsCodec, true>` (TLS 1.3 + WS Upgrade), single-lcore burst loop, reconnect policy, `CLOCK_REALTIME` latency histogram via `eph::utils::Recorder`. | `eph-net-dpdk`, `eph-codec`, `eph-json`    |
 
