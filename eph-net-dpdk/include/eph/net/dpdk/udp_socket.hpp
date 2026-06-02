@@ -184,22 +184,17 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
-            // RSS queue prediction RETIRED (RSS-unification reshape).
-            // eph used to engineer src_port via find_src_port_for_queue so
-            // the inbound reply Toeplitz-hashes onto the target queue. That
-            // relied on the NIC's RSS key being readable+correct — false on
-            // ENA, where the probed key is a placeholder that predicts the
-            // landing queue at CHANCE (see flow_steering.hpp doc +
-            // .artifacts/experiment-20260601-142315.md). So we no longer
-            // predict: the caller MUST pin_to_queue AND supply an explicit
-            // cfg.dpdk.wire.src_port that they measured (via the empirical
-            // examples/dpdk_rsskey_probe (--finder)) to land on that queue.
+            // RSS queue landing is EMPIRICAL, never predicted: on ENA the
+            // readable RSS key is a placeholder that predicts the landing
+            // queue at CHANCE (see docs/cpu-no-cross-core.md +
+            // .artifacts/experiment-20260601-142315.md). The caller MUST
+            // pin_to_queue AND supply an explicit cfg.dpdk.wire.src_port
+            // measured (via examples/dpdk_rsskey_probe --finder) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
                 SPDLOG_LOGGER_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: RssPartitioned requires "
-                    "pin_to_queue + an explicit measured src_port (RSS queue "
-                    "prediction retired; run dpdk_rsskey_probe --finder). "
-                    "rss_key_trusted={}", platform.rss_key_trusted());
+                    "pin_to_queue + an explicit measured src_port "
+                    "(run dpdk_rsskey_probe --finder)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: RssPartitioned needs pin_to_queue + "
@@ -218,9 +213,9 @@ public:
                 SPDLOG_LOGGER_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit cfg.dpdk.wire.src_port "
-                    "measured to land on that queue (RSS prediction retired; "
-                    "run dpdk_rsskey_probe --finder). rss_key_trusted={}",
-                    want, platform.rss_key_trusted());
+                    "measured to land on that queue "
+                    "(run dpdk_rsskey_probe --finder)",
+                    want);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: RssPartitioned requires explicit "

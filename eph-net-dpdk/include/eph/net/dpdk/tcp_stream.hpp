@@ -648,23 +648,14 @@ public:
                 "(moved-from or never created)"});
         }
 
-        // ── Phase 1: pre-create — pick target queue, possibly rebind src_port ──
-        // RxDispatchMode::RssPartitioned ALWAYS engineers src_port via
-        // find_src_port_for_queue so the SYN-ACK Toeplitz-hashes to the
-        // target queue this process owns. Whether target_qid comes from
-        // pin_to_queue or rr_counter, the engineering step is identical —
-        // before the unify (commit c267b9d6) the no-pin branch deferred
-        // selection to post-create predict_rss_queue, which left src_port
-        // untouched and caused autojoin secondaries to silently miss
-        // SYN-ACK ~50% of the time when RSS hashed to a queue owned by
-        // primary. See .artifacts/reshape-rss-aware-connect-final-*.md.
+        // ── Phase 1: pre-create — pick target queue ──────────────────────────
+        // create_and_attach NEVER rewrites src_port: every mode uses the
+        // caller's explicit `cfg.dpdk.wire.tuple.src_port` as-is. On ENA the
+        // RSS key is a placeholder (prediction at chance), so RSS queue
+        // landing is determined empirically — the caller measures a src_port
+        // (dpdk_rsskey_probe --finder) and pins it. `StreamSnapshot::Endpoint::
+        // src_port_rewritten` is therefore always false (member default).
         uint16_t target_qid = 0;
-
-        // NOTE: since the RSS-prediction retirement (RSS-unification
-        // reshape) create_and_attach NEVER rewrites src_port — every mode
-        // uses the caller's explicit `cfg.dpdk.wire.tuple.src_port` as-is.
-        // So `StreamSnapshot::Endpoint::src_port_rewritten` is always false
-        // (member default); the old reverse-pick detection was removed.
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
@@ -678,22 +669,17 @@ public:
             }
             target_qid = 0;
         } else if (mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned) {
-            // RSS queue prediction RETIRED (RSS-unification reshape).
-            // eph used to engineer src_port via find_src_port_for_queue so
-            // the inbound SYN-ACK Toeplitz-hashes onto the target queue.
-            // That relied on the NIC's RSS key being readable+correct —
-            // false on ENA, where the probed key is a placeholder that
-            // predicts the landing queue at CHANCE (see flow_steering.hpp
-            // doc + .artifacts/experiment-20260601-142315.md). So we no
-            // longer predict: the caller MUST pin_to_queue AND supply an
-            // explicit cfg.dpdk.wire.tuple.src_port that they measured (via
-            // the empirical examples/dpdk_rsskey_probe (--finder)) to land on it.
+            // RSS queue landing is EMPIRICAL, never predicted: on ENA the
+            // readable RSS key is a placeholder that predicts the landing
+            // queue at CHANCE (see docs/cpu-no-cross-core.md +
+            // .artifacts/experiment-20260601-142315.md). The caller MUST
+            // pin_to_queue AND supply an explicit cfg.dpdk.wire.tuple.src_port
+            // measured (via examples/dpdk_rsskey_probe --finder) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
                 SPDLOG_LOGGER_ERROR(log,
                     "DpdkTcpStream::create_and_attach: RssPartitioned requires "
-                    "pin_to_queue + an explicit measured src_port (RSS queue "
-                    "prediction retired; run dpdk_rsskey_probe --finder). "
-                    "rss_key_trusted={}", platform.rss_key_trusted());
+                    "pin_to_queue + an explicit measured src_port "
+                    "(run dpdk_rsskey_probe --finder)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: RssPartitioned needs pin_to_queue + "
@@ -713,8 +699,8 @@ public:
                     "DpdkTcpStream::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit "
                     "cfg.dpdk.wire.tuple.src_port measured to land on that "
-                    "queue (RSS prediction retired; run dpdk_rsskey_probe --finder). "
-                    "rss_key_trusted={}", want, platform.rss_key_trusted());
+                    "queue (run dpdk_rsskey_probe --finder)",
+                    want);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: RssPartitioned requires explicit "
@@ -737,9 +723,9 @@ public:
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
             // KNOWN LIMITATION (FlowDirector handshake race):
-            // Unlike the RssPartitioned branch above — which engineers a
-            // src_port that hashes to target_qid via find_src_port_for_queue
-            // and then aligns cfg.dpdk.wire.{rx,tx}_queue_id = target_qid so the
+            // Unlike the RssPartitioned branch above — which uses a
+            // caller-measured src_port landing on target_qid and aligns
+            // cfg.dpdk.wire.{rx,tx}_queue_id = target_qid so the
             // SYN/SYN-ACK/ACK loop in TStream::create() polls the right queue
             // — the FlowDirector branch does NOT touch cfg.dpdk.wire.{rx,tx}_
             // queue_id here. The reason is timing: the rte_flow rule that
