@@ -248,10 +248,9 @@ TEST(PlatformRss, RegistryAndDispatchMode) {
     auto& platform = RssPlatformEnv::env().platform;
 
     // Post-reshape: dispatch_mode stays at the detected capability when
-    // RSS is active (whether installed by configure_rss or resolved via
-    // probe), and pins to Software only in the single-queue / no-RSS
-    // paths. On ENA with probe support this is typically RssPartitioned;
-    // we just assert the value is one of the three known modes.
+    // RSS is active (enabled by configure_port), and pins to Software only
+    // in the single-queue / no-RSS paths. On ENA this is typically
+    // RssPartitioned; we just assert the value is one of the three modes.
     const auto mode = platform.dispatch_mode();
     EXPECT_TRUE(mode == ::eph::net::dpdk::RxDispatchMode::Software ||
                 mode == ::eph::net::dpdk::RxDispatchMode::RssPartitioned ||

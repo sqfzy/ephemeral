@@ -17,7 +17,7 @@
 --   * eph::dpdk::TcpSession / UdpSender / Connector / Multicast /
 --     ARP / DNS / packet_* / platform / EalGuard
 -- And in `eph::net::dpdk`:
---   * FlowSteering / configure_rss / install_flow_rule / FlowRule
+--   * FlowSteering / detect_rx_dispatch_mode / install_flow_rule / FlowRule
 --
 -- Dependency rule: eph-core + eph-utils + eph-containers + eph-net +
 -- aws-lc + DPDK.
@@ -128,8 +128,9 @@ target("test_dpdk_e2e")
 
 -- Stage 3 RSS Platform integration test (real-NIC).  Forks the kernel
 -- mock dispatcher (TCP echo etc on NIC_A) and brings up DpdkBenchEnv
--- on NIC_B with enable_rss=true; verifies the Platform RSS registry
--- AND drives an end-to-end create_and_attach Software-mode round trip.
+-- on NIC_B (multi-queue → RSS enabled by configure_port); verifies the
+-- Platform RSS registry AND drives an end-to-end create_and_attach
+-- Software-mode round trip.
 -- SKIPs when NIC_B is not bound to vfio-pci.
 target("test_dpdk_rss_platform")
     add_rules("eph-test")
@@ -146,32 +147,13 @@ target("test_dpdk_rss_platform")
     apply_dpdk_pmd_linkgroups()
 
 -- RSS bring-up failure-path reshape integration test (real-NIC). Constructs
--- multiple PlatformConfig shapes (multi-queue + enable_rss=true /
--- multi-queue + enable_rss=false / single-queue) within one EAL session
--- to verify the probe + hard-fail behaviour. SKIPs when NIC_B is not
+-- multi-queue and single-queue PlatformConfig shapes within one EAL session
+-- to verify RSS-enable-or-hard-fail behaviour. SKIPs when NIC_B is not
 -- bound to vfio-pci.
 target("test_dpdk_rss_bringup")
     add_rules("eph-test")
     add_files("tests/integration/test_dpdk_rss_bringup.cpp")
     add_deps("eph-net-dpdk")
-    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
-    add_packages("tomlplusplus")
-    add_defines("EPH_USE_DPDK=1")
-    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
-        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
-    apply_dpdk_pmd_linkgroups()
-
--- RSS probed-key correctness verification (real-NIC). Sends N UDP probes
--- to a kernel echo on NIC_A and compares NIC-computed mbuf->hash.rss vs
--- software Toeplitz over the probed key, plus observed RX queue vs
--- queue_for_tuple prediction. SKIPs when NIC_B isn't on vfio-pci or when
--- the probe path doesn't activate (configure_rss already worked).
-target("test_dpdk_rss_key_correctness")
-    add_rules("eph-test")
-    add_files("tests/integration/test_dpdk_rss_key_correctness.cpp")
-    add_includedirs("tests/integration")
-    -- eph-net for posix_listener / posix_io helpers used by echo_mocks.hpp.
-    add_deps("eph-net-dpdk", "eph-net")
     add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
     add_packages("tomlplusplus")
     add_defines("EPH_USE_DPDK=1")
@@ -201,25 +183,6 @@ target("test_dpdk_daemon_recovery")
     add_rules("eph-test")
     add_files("tests/integration/test_dpdk_daemon_recovery.cpp")
     add_deps("eph-net-dpdk")
-    apply_dpdk_pmd_linkgroups()
-
--- RSS multi-queue fan-out regression test (real-NIC). N concurrent
--- DpdkTcpStream attaches all pinned to the same queue + same endpoint
--- — the canonical HFT producer pattern that previously trampled
--- itself due to the deterministic find_src_port_for_queue scan.
--- Forks the kernel mock dispatcher on NIC_A and brings up multi-queue
--- enable_rss=true on NIC_B. SKIPs when NIC_B is not bound to vfio-pci
--- or when the runtime dispatch_mode is not RssPartitioned.
-target("test_dpdk_rss_fanout")
-    add_rules("eph-test")
-    add_files("tests/integration/test_dpdk_rss_fanout.cpp")
-    add_includedirs("tests/integration")
-    add_deps("eph-net-dpdk", "eph-net", "eph-codec")
-    add_includedirs(path.join(os.projectdir(), "benchmarks/latency"))
-    add_packages("tomlplusplus")
-    add_defines("EPH_USE_DPDK=1")
-    add_defines('EPH_BENCH_CONF_ABS_PATH="' ..
-        path.join(os.projectdir(), "benchmarks/latency/bench.conf") .. '"')
     apply_dpdk_pmd_linkgroups()
 
 -- The autojoin e2e binaries (dpdk_mp_dynamic_primary / _secondary,

@@ -210,57 +210,42 @@ void run_in_subprocess(std::function<void()> body) {
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MultiQueue_OnEna_ResolvesViaProbeOrFails
+// MultiQueue_OnEna_EnablesRssOrFails
 //
-// `nb_rx_queues=4`: on ENA the legacy `rte_eth_dev_rss_hash_update` is
-// rejected, and the post-reshape code either (a) probes the NIC's
-// actual key via `rte_eth_dev_rss_hash_conf_get` and brings RSS up via
-// the probed key, or (b) hard-fails when the PMD also won't expose its
-// key. Both are valid outcomes — the test asserts that the result lands
-// in exactly one of those two buckets, never the previous "silently
-// degrade to single queue" trap.
+// `nb_rx_queues=4`: configure_port sets mq_mode=RTE_ETH_MQ_RX_RSS. When the
+// NIC advertises IPv4 TCP/UDP RSS hash offloads (ENA does), RSS is genuinely
+// active and bring-up succeeds with dispatch_mode != Software. If the NIC
+// advertises no IPv4 RSS hash offloads (rss_hf==0), Platform::create
+// hard-fails rather than silently collapsing all traffic onto queue 0.
+// Either is a valid outcome; the test asserts the result lands in exactly
+// one of those two buckets. There is no "probed key" concept any more —
+// RSS queue landing is measured empirically (dpdk_rsskey_probe --finder).
 // ─────────────────────────────────────────────────────────────────────────────
 
-TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
+TEST(RssBringup, MultiQueue_OnEna_EnablesRssOrFails) {
     EPH_RSS_BRINGUP_SKIP_IF_NOT_READY();
-    // T1.3 from the 2026-05-05 action list: previously unconditionally
-    // skipped via EPH_DAEMON_RESHAPE_S5_SKIP() pending S5 fixture
-    // reactivation. The S5 deps (QueueAllocator + multi-queue secondary
-    // attach IPC) are live in Platform::create today; the
-    // EPH_RSS_BRINGUP_SKIP_IF_NOT_READY env probe correctly skips when
-    // NIC_B isn't on vfio-pci or the daemon isn't running, so the test
-    // body now runs end-to-end whenever the environment is ready.
     run_in_subprocess([] {
         auto pcfg = make_pcfg();
-        pcfg.queues = 4;  // S5: multi-queue secondary claim
+        pcfg.queues = 4;  // multi-queue secondary claim
 
         auto plat_r = ::eph::dpdk::Platform::create(pcfg);
         if (plat_r) {
-            // Path (a): probe-based bring-up succeeded — multi-queue
-            // RssPartitioned is genuinely usable on this PMD.
+            // RSS enabled by configure_port — multi-queue RssPartitioned is
+            // usable. Queue landing is measured empirically, not predicted.
             const auto& plat = *plat_r;
-            EXPECT_TRUE(plat.rss_using_probed_key())
-                << "configure_rss must have failed AND probe must have "
-                   "succeeded for this Platform to exist with nb_rx_queues=4 "
-                   "on ENA — but rss_using_probed_key() is false. Either the "
-                   "PMD now accepts hash_update (relax to allow false in that "
-                   "case) or bring-up logic regressed.";
             EXPECT_NE(plat.dispatch_mode(),
                       ::eph::net::dpdk::RxDispatchMode::Software)
-                << "probe-based RSS bring-up should leave dispatch_mode at "
+                << "multi-queue RSS bring-up should leave dispatch_mode at "
                    "the NIC's native capability, not pin to Software.";
-            SPDLOG_INFO(
-                "RssBringup: probe path succeeded "
-                "(dispatch_mode={}, rss_using_probed_key=true)",
+            SPDLOG_INFO("RssBringup: RSS enabled (dispatch_mode={})",
                 ::eph::net::dpdk::rx_dispatch_mode_name(plat.dispatch_mode()));
         } else {
-            // Path (b): both configure_rss and probe failed → hard-fail.
+            // Hard-fail: NIC advertises no IPv4 RSS hash offloads (rss_hf==0).
             const std::string& err = plat_r.error();
             SPDLOG_INFO("RssBringup: hard-fail path triggered: {}", err);
-            EXPECT_NE(err.find("probe also failed"), std::string::npos)
-                << "error message must mention 'probe also failed' so "
-                   "operators can distinguish this from configure_rss-only "
-                   "failure: " << err;
+            EXPECT_NE(err.find("RSS is not active"), std::string::npos)
+                << "error message must explain RSS could not be enabled: "
+                << err;
             EXPECT_NE(err.find("nb_rx_queues=1"), std::string::npos)
                 << "error message must include the recovery hint "
                    "'nb_rx_queues=1': " << err;
@@ -271,8 +256,7 @@ TEST(RssBringup, MultiQueue_OnEna_ResolvesViaProbeOrFails) {
 // ─────────────────────────────────────────────────────────────────────────────
 // SingleQueue_Unchanged
 //
-// `nb_rx_queues=1`: must build, dispatch_mode pinned to Software,
-// rss_using_probed_key=false (probe never runs in single-queue mode).
+// `nb_rx_queues=1`: must build, dispatch_mode pinned to Software.
 // Sanity check that the reshape didn't disturb the single-queue path.
 //
 // Post-derivation note: the previous matrix had two cases here
@@ -296,8 +280,6 @@ TEST(RssBringup, SingleQueue_Unchanged) {
         auto plat_r = ::eph::dpdk::Platform::create(pcfg);
         ASSERT_TRUE(plat_r.has_value())
             << "single-queue Platform must still build: " << plat_r.error();
-        EXPECT_FALSE(plat_r->rss_using_probed_key())
-            << "probe path must not run in single-queue mode";
         EXPECT_EQ(plat_r->dispatch_mode(),
                   ::eph::net::dpdk::RxDispatchMode::Software)
             << "single-queue dispatch_mode must remain pinned to Software";
