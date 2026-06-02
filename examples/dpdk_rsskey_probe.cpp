@@ -1,16 +1,18 @@
 /// @file examples/dpdk_rsskey_probe.cpp
 ///
-/// 两用工具:
-///  (1) 诊断(默认):DPDK NIC 的 probed RSS key 到底是不是硬件真正用来 steering 的 key。
-///      向 VPC DNS 反射器发不同 src_port 的 DNS 查询,比对 predict_rss_queue(probed key)
-///      预测的队列 vs 实际落的 RX 队列。全不符 = probed key 是占位(ENA 实测如此)。
-///  (2) finder 后端(--finder):DPDK 侧 src_port→queue 经验探测(standalone)。
-///      实测 src_port→queue,机器可读输出 `FINDERMAP <src_port> <queue>`(每队列至多 M 个)。
-///      经验式、不信 key——对 ENA 的占位 key 天然免疫。
+/// DPDK 侧 src_port→RX队列 **经验探测器**(finder)。
+///
+/// 向 VPC DNS 反射器发不同 src_port 的 DNS 查询,收回包后按 dst_port 认出
+/// src_port,记录它**实际落的 RX 队列**(rx_burst 的队列号),机器可读输出
+/// `FINDERMAP <src_port> <queue>`(每队列至多 M 个)。
+///
+/// 纯经验、不信 RSS key——对 ENA 的占位 key 天然免疫(RSS 队列落点在 ENA 上
+/// 无法用 Toeplitz 预测,只能实测;见 docs/cpu-no-cross-core.md)。把输出的
+/// src_port 喂给 cfg.dpdk.wire.tuple.src_port + cfg.dpdk.pin_to_queue。
 ///
 /// 用 VPC DNS 当反射器,绕开同实例 ENI 不通的限制(DNS 解析器不在本实例上)。
 ///
-/// 用法(NIC 已绑 vfio-pci、hugepages 已分配):
+/// 用法(NIC 已绑 vfio-pci、hugepages 已分配;本机 DPDK 只用 ens5):
 ///   sudo dpdk_rsskey_probe -l 0-1 -n 4 -a <bdf> --file-prefix=p -- [app-args]
 /// app-args(均可选,默认本会话 ens5/VPC-DNS 值):
 ///   --local-ip A.B.C.D     本机 IP(发包源)
@@ -20,8 +22,8 @@
 ///   --dst-mac aa:..:ff     反射器 MAC(子网内 = 目标自身 MAC;先用 kernel ARP 取)
 ///   --nb-rxq N             RX 队列数(默认 4)
 ///   --port-lo / --port-hi  候选 src_port 范围(默认 40001..40512)
-///   --per-queue M          每队列至多收集 M 个 src_port(finder,默认 1)
-///   --finder               机器可读 finder 模式(无诊断 verdict)
+///   --per-queue M          每队列至多收集 M 个 src_port(默认 1)
+///   --finder               accepted no-op(经验 finder 是唯一模式)
 
 #include <array>
 #include <cstdint>
@@ -41,8 +43,6 @@
 
 #include <spdlog/spdlog.h>
 
-#include "eph/net/dpdk/flow_steering.hpp"  // query_rss_state, toeplitz_hash_ipv4, RssState
-
 namespace {
 
 // ── 目标参数(默认 = 本会话 ens5 / VPC DNS 实测值;可被 argv 覆盖)──
@@ -56,7 +56,6 @@ uint16_t NB_RXQ   = 4;
 uint16_t PORT_LO  = 40001;
 uint16_t PORT_HI  = 40512;
 uint16_t PER_QUEUE = 1;
-bool     FINDER   = false;
 
 constexpr uint16_t NB_TXQ = 1;
 
@@ -81,7 +80,7 @@ void parse_app_args(int argc, char** argv) {
     for (int i = 0; i < argc; ++i) {
         std::string a = argv[i];
         const char* v = nullptr;
-        if (a == "--finder") { FINDER = true; }
+        if (a == "--finder") { /* accepted no-op: empirical finder is the only mode */ }
         else if (a == "--local-ip"  && (v = need(i))) parse_ipv4(v, LOCAL_IP);
         else if (a == "--dst-ip"    && (v = need(i))) parse_ipv4(v, DNS_IP);
         else if (a == "--dst-port"  && (v = need(i))) DNS_PORT = uint16_t(std::atoi(v));
@@ -161,7 +160,10 @@ bool craft(rte_mbuf* m, uint16_t src_port) {
     return true;
 }
 
-void log_info(const std::string& s) { if (!FINDER) spdlog::info("{}", s); }
+// Human-readable progress goes to stderr (spdlog); machine-readable
+// FINDERMAP/FINDERDONE go to stdout — keep them on separate streams so
+// callers can parse stdout cleanly.
+void log_info(const std::string& s) { spdlog::info("{}", s); }
 
 }  // namespace
 
@@ -200,15 +202,6 @@ int main(int argc, char** argv) {
         spdlog::error("tx_queue_setup failed"); return 2;
     }
     if (rte_eth_dev_start(port) < 0) { spdlog::error("dev_start failed"); return 2; }
-
-    auto st = eph::net::dpdk::query_rss_state(port);
-    if (!st) { spdlog::error("query_rss_state: {}", st.error()); return 2; }
-    auto key = st->key();
-    if (!FINDER) {
-        std::string keyhex;
-        for (auto b : key) { char t[3]; std::snprintf(t, 3, "%02x", b); keyhex += t; }
-        spdlog::info("probed key_len={} reta_size={} key={}", st->key_len, st->reta_size, keyhex);
-    }
 
     // ── 发候选 src_port 的 DNS 查询(范围扫描)──
     std::vector<uint16_t> ports;
@@ -255,8 +248,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (FINDER) {
-        // ── finder 模式:每队列至多 PER_QUEUE 个 src_port,机器可读输出 ──
+    {
+        // ── 经验探测:每队列至多 PER_QUEUE 个 src_port,机器可读输出 ──
+        // 直接看回包实际落的 RX 队列(obs[sp].qid),不做任何 Toeplitz 预测。
         std::vector<uint16_t> per_q_count(NB_RXQ, 0);
         for (uint16_t sp : ports) {
             if (!obs[sp].got) continue;
@@ -270,33 +264,6 @@ int main(int argc, char** argv) {
         for (uint16_t q = 0; q < NB_RXQ; ++q) if (per_q_count[q] >= PER_QUEUE) ++filled;
         std::printf("FINDERDONE filled=%d/%u per_queue=%u\n", filled, unsigned(NB_RXQ), unsigned(PER_QUEUE));
         std::fflush(stdout);
-    } else {
-        // ── 诊断模式:predict_rss_queue(probed key) vs 实际落核 ──
-        int got = 0, qmatch = 0, qmismatch = 0; bool hash_exposed = false;
-        spdlog::info("--- per src_port: 预测队列(probed key+RETA) vs 实际落的 RX 队列 ---");
-        int shown = 0;
-        for (uint16_t sp : ports) {
-            if (!obs[sp].got) continue;
-            ++got;
-            if (obs[sp].hash != 0) hash_exposed = true;
-            uint16_t pred_q = eph::net::dpdk::queue_for_tuple(*st, DNS_IP, DNS_PORT, LOCAL_IP, sp);
-            bool ok = (pred_q == obs[sp].qid);
-            if (ok) ++qmatch; else ++qmismatch;
-            if (shown++ < 24)
-                spdlog::info("src_port={} actual_q={} predicted_q={} {}",
-                             sp, obs[sp].qid, pred_q, ok ? "QMATCH" : "QMISMATCH");
-        }
-        spdlog::info("================ 判定 ================");
-        spdlog::info("回包 {}/{}，队列预测 match={} mismatch={}；NIC 暴露 hash 值={}",
-                     got, ports.size(), qmatch, qmismatch, hash_exposed);
-        if (got == 0)
-            spdlog::warn("没收到任何回包 —— DPDK 口到反射器路径没通,无法判定");
-        else if (qmismatch == 0)
-            spdlog::info("→ ✅ probed key 是真 key:predict 与实际落核全一致");
-        else if (qmatch == 0)
-            spdlog::info("→ ❌ probed key 是占位:predict 与实际落核全不符");
-        else
-            spdlog::warn("→ ⚠️ 部分一致 {}/{}", qmatch, got);
     }
 
     rte_eth_dev_stop(port);

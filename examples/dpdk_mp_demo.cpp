@@ -262,23 +262,22 @@ int main(int argc, char** argv) {
     }
 
     // ── DpdkUdpSocket via create_and_attach (turnkey factory) ───────────
-    // Hardcoded demo tuple. The library narrows src_port selection to
-    // each role's `port_lo / port_hi` window inside
-    // `find_src_port_for_queue` — primary and secondary draw from
-    // disjoint segments. In the post-2026-05-02 daemon-led model the
-    // operator is responsible for assigning these windows (typically via
-    // toml config consumed by `Platform::serve_nic` / `Platform::create`,
-    // see eph-net-dpdk/docs/dpdk-daemon-deployment.md); the eph library
-    // does not auto-coordinate across tenants. This skeleton does not
-    // actually drive traffic, so the tuple values here only need to pass
-    // validation.
+    // Hardcoded demo tuple. Each role draws src_port from a disjoint
+    // `port_lo / port_hi` window; the operator assigns these windows (and
+    // measures which src_port lands on which queue via dpdk_rsskey_probe
+    // --finder, since ENA RSS landing cannot be predicted). In the
+    // post-2026-05-02 daemon-led model that assignment is operator config
+    // (toml consumed by `Platform::serve_nic` / `Platform::create`, see
+    // eph-net-dpdk/docs/dpdk-daemon-deployment.md); the eph library does
+    // not auto-coordinate across tenants. This skeleton does not actually
+    // drive traffic, so the tuple values here only need to pass validation.
     using UdpSock = edpdk::DpdkUdpSocket<ec::RawDatagramCodec>;
 
     edpdk::UdpConfig ucfg{};
     ucfg.dpdk.wire.src_ip   = 0x0A000010;   // 10.0.0.16
     ucfg.dpdk.wire.dst_ip   = 0x0A000020;   // 10.0.0.32
     // Pick a src_port that lands in our owned queue range — production
-    // code should use `find_src_port_for_queue` for RSS-correctness;
+    // code measures this empirically with dpdk_rsskey_probe --finder;
     // here we just hardcode something inside the ephemeral range.
     ucfg.dpdk.wire.src_port = static_cast<uint16_t>(32768 + qr.first);
     ucfg.dpdk.wire.dst_port = 30000;

@@ -19,12 +19,11 @@
 ///     previous one-shot `Platform::launch(PlatformConfig, EalConfig)`
 ///     factory was removed in 2026-05-02 along with the rest of the
 ///     autojoin shape.
-///   * The three diagnostic getters that tell you what RSS path resolved:
-///         `dispatch_mode()` /
-///         `rss_using_probed_key()` / `effective_rx_queue_range()`.
-///     The probed-key path lights up on ENA where the PMD rejects
-///     `rte_eth_dev_rss_hash_update`; we read back the NIC's own key via
-///     `rte_eth_dev_rss_hash_conf_get` and use that for `predict_rss_queue`.
+///   * The diagnostic getters that tell you what RSS path resolved:
+///         `dispatch_mode()` / `effective_rx_queue_range()`.
+///     On ENA the RSS key is a placeholder (queue landing cannot be
+///     predicted); measure src_port→queue empirically with
+///     `dpdk_rsskey_probe --finder` and pin via cfg.dpdk.wire.tuple.src_port.
 ///   * **One `DpdkPoller` per RX queue, polled by a dedicated EAL lcore**
 ///     (`rte_eal_remote_launch` for workers; lcore 0 / main thread polls
 ///     queue 0). Each worker lcore was pinned to its cpu inside
@@ -316,18 +315,18 @@ int main(int argc, char** argv) {
     auto platform = std::move(*plat_r);
 
     // ── 3) RSS diagnostics — what path actually resolved? ────────────────
-    // `rss_using_probed_key()` lights up when `configure_rss` is rejected
-    // by the PMD (notably ENA on AWS) and we fell back to reading the
-    // NIC's own hash key for `predict_rss_queue`.
+    // RSS is enabled by configure_port when the NIC advertises IPv4 RSS hash
+    // offloads; dispatch_mode reflects whether multi-queue RssPartitioned is
+    // active. Queue landing is measured empirically (dpdk_rsskey_probe
+    // --finder), never predicted — the ENA RSS key is a placeholder.
     const auto qr = platform.effective_rx_queue_range();
     spdlog::info(
         "dpdk_rss_demo: Platform up — port={}, nb_rx_queues={}, "
         "dispatch_mode={}, dispatch_mode==RssPartitioned={}, "
-        "rss_using_probed_key={}, rx_queue_range=[{},{})",
+        "rx_queue_range=[{},{})",
         platform.port_id(), platform.nb_rx_queues(),
         edpdk::rx_dispatch_mode_name(platform.dispatch_mode()),
         platform.dispatch_mode() == edpdk::RxDispatchMode::RssPartitioned,
-        platform.rss_using_probed_key(),
         qr.first, qr.second);
 
     if (platform.dispatch_mode() != edpdk::RxDispatchMode::RssPartitioned) {
