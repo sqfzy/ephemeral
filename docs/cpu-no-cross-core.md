@@ -131,6 +131,20 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 > 旧的 predict-then-verify `rss_srcport_finder.py` 已退役(commit `885212e1`):
 > ENA 占位 key 下它 verify 戳穿后拒绝出文件,产不出 src_port。
 
+#### 本机 ENA RSS 实测结构(2026-06-02,可省扫描)
+实测本机 ENA 的 `src_port → 队列` **不是逐端口散列,而是规整块状**:
+- **低 4 位无关**:同一 16-对齐块(`src_port & ~0xF`)的 16 个端口落同一队列
+  (256 端口扫描:16-对齐块内队列不一致的块数 = 0)。
+- **周期 128**:`队列 = T[(src_port >> 4) & 7]`,T 是 8 项查找表(本次实测
+  queue_mapping `[4,2,1,3,3,1,2,4]`,回文);8 槽对 4 队列**恰好均分**(64/64/64/64)。
+- 只用了 src_port 第 4–6 位 → 有效哈希位极少(与 `RETA=128` 一致);读到的占位
+  Toeplitz key 算不出这张表(只能实测)。确定性:同 dst+同 boot 100% 复现。
+- **优化**:既然低 4 位无关,**挑一个落在 app-核队列的 16-对齐块,块内 16 个端口
+  直接够 N≤16 条 conn**——`rss_queue_probe` 只需扫一个块判定其落核,不必收集分散端口。
+- **边界**:T 的具体值是 per-(dst IP, 本次 boot key)(key 占位、per-attach 随机)——
+  换 dst / NIC reset / 重启须重测;块结构本身只在单 dst 上验过(大概率通用,因是
+  src_port 取位的性质)。
+
 ### 第 3 步 — 喂进连接 + 绑 app
 - kernel:`cfg.kernel.local_bind.port = <选中的 src_port>`;app 线程绑业务核。
 - DPDK:`cfg.dpdk.wire.tuple.src_port = <选中>` + `cfg.dpdk.pin_to_queue = <队列>`;
