@@ -70,75 +70,34 @@ Lower latency than JSON — fixed-offset binary encoding, zero-copy field access
 
 ### SBE Message Layout
 
-SBE (Simple Binary Encoding) uses a fixed header + field offsets, similar to ITCH. ephemeral's existing byte-reading primitives (`read_be16`, `read_be32`, etc. from `eph/itch/messages.hpp`) work directly.
+SBE decoding is provided by the **`eph-sbe`** module — you no longer hand-copy
+offsets. The module mirrors `eph-itch`'s zero-copy style but for SBE's
+little-endian wire and its repeating-group / variable-length encoding. Field
+offsets are derived from the **vendored authoritative schema**
+`eph-sbe/schemas/spot_3_2.xml` (Binance spot SBE schema id=3, version=2).
 
-A typical SBE bookTicker message layout (based on Binance SBE Schema 3:2):
+> **Note (corrects an earlier illustrative layout):** a real Binance
+> `BookTickerResponse` (template id 212) is **not** a flat fixed body. It is a
+> `tickers` **repeating group**; prices/quantities are
+> `mantissa64 × 10^exponent8` decimals (not a fixed `/1e8`), and `symbol` is a
+> **`varString8`** (1-byte length + UTF-8), not a fixed `char[16]`. The
+> `update_id`/`event_time` fields are not present in this message. Decode it
+> with `eph-sbe`, which encodes the correct layout once.
 
-```cpp
-// SBE message structure (illustrative — verify against Binance SBE XML schema)
-//
-// Header (8 bytes):
-//   block_length: uint16 LE  — message body size
-//   template_id:  uint16 LE  — message type (e.g., bookTicker = TBD)
-//   schema_id:    uint16 LE  — schema ID (3)
-//   version:      uint16 LE  — schema version (2)
-//
-// Body (bookTicker):
-//   update_id:    uint64 LE  — order book update sequence
-//   symbol:       char[16]   — right-padded symbol name
-//   bid_price:    int64 LE   — best bid (fixed-point, 8 decimal places)
-//   bid_qty:      int64 LE   — best bid quantity (fixed-point)
-//   ask_price:    int64 LE   — best ask (fixed-point)
-//   ask_qty:      int64 LE   — best ask quantity (fixed-point)
-//   event_time:   uint64 LE  — microsecond timestamp
+Authoritative `BookTickerResponse` layout (`spot_3_2.xml`, `<sbe:message id="212">`):
 
-namespace binance_sbe {
-
-// SBE header
-inline constexpr size_t kHeaderSize = 8;
-
-inline uint16_t block_length(const uint8_t* msg) noexcept {
-    uint16_t v; std::memcpy(&v, msg, 2); return v;  // LE on LE machine
-}
-inline uint16_t template_id(const uint8_t* msg) noexcept {
-    uint16_t v; std::memcpy(&v, msg + 2, 2); return v;
-}
-
-// bookTicker body (offsets from body start = msg + kHeaderSize)
-namespace book_ticker {
-    inline constexpr size_t kBodyOffset = kHeaderSize;
-
-    inline uint64_t update_id(const uint8_t* msg) noexcept {
-        uint64_t v; std::memcpy(&v, msg + kBodyOffset, 8); return v;
-    }
-    inline std::string_view symbol(const uint8_t* msg) noexcept {
-        return {reinterpret_cast<const char*>(msg + kBodyOffset + 8), 16};
-    }
-    inline double bid_price(const uint8_t* msg) noexcept {
-        int64_t v; std::memcpy(&v, msg + kBodyOffset + 24, 8);
-        return v / 1e8;  // 8 decimal places
-    }
-    inline double bid_qty(const uint8_t* msg) noexcept {
-        int64_t v; std::memcpy(&v, msg + kBodyOffset + 32, 8);
-        return v / 1e8;
-    }
-    inline double ask_price(const uint8_t* msg) noexcept {
-        int64_t v; std::memcpy(&v, msg + kBodyOffset + 40, 8);
-        return v / 1e8;
-    }
-    inline double ask_qty(const uint8_t* msg) noexcept {
-        int64_t v; std::memcpy(&v, msg + kBodyOffset + 48, 8);
-        return v / 1e8;
-    }
-    inline uint64_t event_time_us(const uint8_t* msg) noexcept {
-        uint64_t v; std::memcpy(&v, msg + kBodyOffset + 56, 8); return v;
-    }
-} // namespace book_ticker
-
-} // namespace binance_sbe
 ```
-
-**Important**: The layout above is illustrative. Obtain the actual SBE XML schema from Binance and adjust offsets accordingly. The pattern (constexpr offsets + memcpy + reinterpret) is identical to how `eph-itch` works.
+messageHeader (8B):  blockLength u16 | templateId u16 | schemaId u16 | version u16
+tickers group hdr (groupSize16Encoding, 4B):  blockLength u16(=34) | numInGroup u16
+  per entry — fixed block (34B) then a trailing varString8 symbol:
+    +0  priceExponent  int8                      value = mantissa × 10^exponent
+    +1  qtyExponent    int8
+    +2  bidPrice       int64  (optional, null=INT64_MIN)
+    +10 bidQty         int64
+    +18 askPrice       int64  (optional, null=INT64_MIN)
+    +26 askQty         int64
+    +34 symbol         varString8:  len u8 | UTF-8[len]
+```
 
 ### Usage with Transport
 
@@ -156,12 +115,16 @@ auto stream = eph::net::kernel::KernelTcpStream<
 }).value();
 
 stream->on_message = [](std::span<const uint8_t> app_frame) {
-    // Zero-copy SBE decode — ~50ns vs ~400ns-1µs for JSON
-    const uint8_t* data = app_frame.data();
-    auto bid = binance_sbe::book_ticker::bid_price(data);
-    auto ask = binance_sbe::book_ticker::ask_price(data);
-    auto ts  = binance_sbe::book_ticker::event_time_us(data);
-    // process...
+    // Zero-copy SBE decode via eph-sbe — ~55ns/ticker (parse + group walk).
+    auto view = eph::sbe::parse(app_frame.data(), app_frame.size());
+    if (!view) return;  // truncated / non-SBE frame — skip safely
+    namespace bt = eph::sbe::binance::book_ticker;
+    (void)eph::sbe::binance::for_each_ticker(*view, [](const uint8_t* t) {
+        std::optional<double> bid = bt::bid_price(t);  // nullopt if no bid
+        std::optional<double> ask = bt::ask_price(t);
+        std::string_view      sym = bt::symbol(t);     // zero-copy
+        // process...
+    });
 };
 ```
 
@@ -171,8 +134,8 @@ stream->on_message = [](std::span<const uint8_t> app_frame) {
 |----------|------------|---------------------|-------|
 | JSON (simdjson) | ~400ns | ~200 bytes | DOM traversal overhead |
 | JSON (rapidjson) | ~1-2µs | ~200 bytes | More allocations |
-| SBE (zero-copy) | ~50ns | ~72 bytes | Fixed-offset memcpy only |
-| SBE (real-logic codegen) | ~100-200ns | ~72 bytes | Accessor overhead |
+| SBE (`eph-sbe`, zero-copy) | ~55ns/ticker | ~50 bytes/ticker | parse + group walk + all fields + symbol (Graviton, `bench_sbe_book_ticker`) |
+| SBE (real-logic codegen) | ~100-200ns | — | Accessor overhead |
 
 For bookTicker at 10K updates/sec: JSON = 4-20ms/s CPU; SBE = 0.5ms/s CPU.
 The difference matters when processing L2 depth (20 levels × higher frequency).

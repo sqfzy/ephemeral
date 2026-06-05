@@ -160,6 +160,19 @@ The scope decisions for the current feature set are archived in
   `eph-net-dpdk/docs/dpdk-daemon-deployment.md` /
   `dpdk-multiprocess.md` / `dpdk-reconnect-pattern.md` for the
   ops / architecture / reconnect stories.
+- `eph-sbe` — header-only, decode-only Simple Binary Encoding parser
+  (sibling of `eph-itch`; depends only on `eph-core`). Schema-independent
+  core (`eph::sbe::parse` → zero-copy `MessageView`, little-endian
+  `read_le16/32/64` + signed reads, `read_var_string8`, `decode_decimal`
+  for `mantissa × 10^exponent`, `read_group_header` for
+  `groupSize16Encoding`, template-id `dispatch`) plus a Binance spot
+  schema 3:2 layer (`eph::sbe::binance::book_ticker` accessors +
+  `for_each_ticker` repeating-group walk; optional bid/ask →
+  `std::optional`, null sentinel `INT64_MIN`; `is_supported` schema
+  guard). Field offsets derive from the vendored authoritative
+  `eph-sbe/schemas/spot_3_2.xml`. Decode-only — no encode, no nested
+  groups, no other schemas. Corrects the previously illustrative (and
+  wrong) SBE layout in `docs/binance-protocols.md`.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
