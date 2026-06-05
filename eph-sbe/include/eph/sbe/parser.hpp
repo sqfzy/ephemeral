@@ -128,6 +128,7 @@ inline constexpr std::size_t kGroupHeaderSize = 4;
 /// for that message live in the schema's own header. `Unknown` is dispatched
 /// for any template id without a registered tag.
 namespace msg {
+struct BookTicker {}; ///< Binance spot BookTickerResponse (template id 212).
 struct Unknown {};
 } // namespace msg
 
@@ -145,7 +146,10 @@ struct Unknown {};
 template <typename Handler>
 decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
     switch (view.template_id) {
-    default: return handler(msg::Unknown{}, view);
+    // 212 == binance::tid::kBookTicker (kept as a literal to avoid a cyclic
+    // include of the schema layer, which depends on this header).
+    case 212: return handler(msg::BookTicker{}, view);
+    default:  return handler(msg::Unknown{}, view);
     }
 }
 

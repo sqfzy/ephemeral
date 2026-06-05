@@ -12,3 +12,7 @@
 #include "eph/sbe/errors.hpp"
 #include "eph/sbe/message_header.hpp"
 #include "eph/sbe/parser.hpp"
+
+// Binance spot SBE schema 3:2 accessors.
+#include "eph/sbe/binance/book_ticker.hpp"
+#include "eph/sbe/binance/schema.hpp"
