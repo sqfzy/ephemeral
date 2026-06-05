@@ -1,6 +1,11 @@
-/// @file examples/dpdk_rsskey_probe.cpp
+/// @file tools/dpdk_rss_queue_probe.cpp
 ///
 /// DPDK 侧 src_port→RX队列 **经验探测器**(finder)。
+///
+/// kernel 侧对应工具是 `tools/kernel_rss_queue_probe.py`(eBPF 读 skb->queue_mapping)。
+/// 两者不可互换:NIC 绑 vfio-pci 时内核看不到包、eBPF 挂不上;且两套驱动各自编程进
+/// 硬件的 RSS(key/reta)不同,kernel 测出的表不保证迁移到 DPDK——故 DPDK 必须在 EAL
+/// 内用真实 rx_burst 自探。
 ///
 /// 向 VPC DNS 反射器发不同 src_port 的 DNS 查询,收回包后按 dst_port 认出
 /// src_port,记录它**实际落的 RX 队列**(rx_burst 的队列号),机器可读输出
@@ -13,7 +18,7 @@
 /// 用 VPC DNS 当反射器,绕开同实例 ENI 不通的限制(DNS 解析器不在本实例上)。
 ///
 /// 用法(NIC 已绑 vfio-pci、hugepages 已分配;本机 DPDK 只用 ens5):
-///   sudo dpdk_rsskey_probe -l 0-1 -n 4 -a <bdf> --file-prefix=p -- [app-args]
+///   sudo dpdk_rss_queue_probe -l 0-1 -n 4 -a <bdf> --file-prefix=p -- [app-args]
 /// app-args(均可选,默认本会话 ens5/VPC-DNS 值):
 ///   --local-ip A.B.C.D     本机 IP(发包源)
 ///   --dst-ip A.B.C.D       反射器 IP(VPC DNS,在子网内可达)

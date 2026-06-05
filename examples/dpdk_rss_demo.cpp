@@ -23,7 +23,7 @@
 ///         `dispatch_mode()` / `effective_rx_queue_range()`.
 ///     On ENA the RSS key is a placeholder (queue landing cannot be
 ///     predicted); measure src_port→queue empirically with
-///     `dpdk_rsskey_probe --finder` and pin via cfg.dpdk.wire.tuple.src_port.
+///     `dpdk_rss_queue_probe --finder` and pin via cfg.dpdk.wire.tuple.src_port.
 ///   * **One `DpdkPoller` per RX queue, polled by a dedicated EAL lcore**
 ///     (`rte_eal_remote_launch` for workers; lcore 0 / main thread polls
 ///     queue 0). Each worker lcore was pinned to its cpu inside
@@ -317,7 +317,7 @@ int main(int argc, char** argv) {
     // ── 3) RSS diagnostics — what path actually resolved? ────────────────
     // RSS is enabled by configure_port when the NIC advertises IPv4 RSS hash
     // offloads; dispatch_mode reflects whether multi-queue RssPartitioned is
-    // active. Queue landing is measured empirically (dpdk_rsskey_probe
+    // active. Queue landing is measured empirically (dpdk_rss_queue_probe
     // --finder), never predicted — the ENA RSS key is a placeholder.
     const auto qr = platform.effective_rx_queue_range();
     spdlog::info(

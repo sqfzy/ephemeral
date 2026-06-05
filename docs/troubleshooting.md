@@ -386,7 +386,7 @@ rather than silently collapse everything onto queue 0.
 - Confirm the NIC/PMD supports IPv4 RSS hashing.
 - Workaround: drop to `nb_rx_queues=1` (single-queue Software dispatch).
 - (RSS queue landing, when active, is measured empirically with
-  `examples/dpdk_rsskey_probe --finder` — see `docs/cpu-no-cross-core.md`.)
+  `tools/dpdk_rss_queue_probe --finder` — see `docs/cpu-no-cross-core.md`.)
 
 ### Path MTU shrinkage
 

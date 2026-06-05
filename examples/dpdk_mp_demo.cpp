@@ -264,7 +264,7 @@ int main(int argc, char** argv) {
     // ── DpdkUdpSocket via create_and_attach (turnkey factory) ───────────
     // Hardcoded demo tuple. Each role draws src_port from a disjoint
     // `port_lo / port_hi` window; the operator assigns these windows (and
-    // measures which src_port lands on which queue via dpdk_rsskey_probe
+    // measures which src_port lands on which queue via dpdk_rss_queue_probe
     // --finder, since ENA RSS landing cannot be predicted). In the
     // post-2026-05-02 daemon-led model that assignment is operator config
     // (toml consumed by `Platform::serve_nic` / `Platform::create`, see
@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
     ucfg.dpdk.wire.src_ip   = 0x0A000010;   // 10.0.0.16
     ucfg.dpdk.wire.dst_ip   = 0x0A000020;   // 10.0.0.32
     // Pick a src_port that lands in our owned queue range — production
-    // code measures this empirically with dpdk_rsskey_probe --finder;
+    // code measures this empirically with dpdk_rss_queue_probe --finder;
     // here we just hardcode something inside the ephemeral range.
     ucfg.dpdk.wire.src_port = static_cast<uint16_t>(32768 + qr.first);
     ucfg.dpdk.wire.dst_port = 30000;

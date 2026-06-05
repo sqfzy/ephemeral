@@ -147,7 +147,7 @@ The `create_and_attach` paths take the source port verbatim from the
 caller-supplied `cfg.dpdk.wire.tuple.src_port` (TCP) or
 `cfg.dpdk.wire.src_port` (UDP). In RssPartitioned mode the caller
 measures which src_port lands on the desired queue empirically
-(`examples/dpdk_rsskey_probe --finder`) and pins it.
+(`tools/dpdk_rss_queue_probe --finder`) and pins it.
 
 ### Library-enforced disjointness (post-2026-05-02 daemon-led model)
 
@@ -169,7 +169,7 @@ audit, found to already be implemented):
 3. A tenant's `Platform::create` resolves the topology via the
    daemon's registry handshake and exposes its window via
    `Platform::port_range()`. The operator measures src_ports within
-   this window (`dpdk_rsskey_probe --finder`) and supplies them
+   this window (`dpdk_rss_queue_probe --finder`) and supplies them
    explicitly, so the caller-pinned src_ports stay inside the
    tenant's allocated window.
 4. If the caller passes a `cfg.dpdk.wire.tuple.src_port`
@@ -315,6 +315,6 @@ NIC's primary role.
   EAL lcore × `eph::utils::pin_thread` interaction.
 - [`../../docs/cpu-no-cross-core.md`](../../docs/cpu-no-cross-core.md) —
   the unified kernel-vs-DPDK no-cross-core model; empirical RSS
-  src_port→queue measurement (`dpdk_rsskey_probe --finder`).
+  src_port→queue measurement (`dpdk_rss_queue_probe --finder`).
 - `eph-net-dpdk/CHANGELOG.md` — BREAKING entry for the daemon-led
   reshape with full before/after migration table.

@@ -653,7 +653,7 @@ public:
         // caller's explicit `cfg.dpdk.wire.tuple.src_port` as-is. On ENA the
         // RSS key is a placeholder (prediction at chance), so RSS queue
         // landing is determined empirically — the caller measures a src_port
-        // (dpdk_rsskey_probe --finder) and pins it. `StreamSnapshot::Endpoint::
+        // (dpdk_rss_queue_probe --finder) and pins it. `StreamSnapshot::Endpoint::
         // src_port_rewritten` is therefore always false (member default).
         uint16_t target_qid = 0;
 
@@ -674,12 +674,12 @@ public:
             // queue at CHANCE (see docs/cpu-no-cross-core.md +
             // .artifacts/experiment-20260601-142315.md). The caller MUST
             // pin_to_queue AND supply an explicit cfg.dpdk.wire.tuple.src_port
-            // measured (via examples/dpdk_rsskey_probe --finder) to land on it.
+            // measured (via tools/dpdk_rss_queue_probe --finder) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
                 SPDLOG_LOGGER_ERROR(log,
                     "DpdkTcpStream::create_and_attach: RssPartitioned requires "
                     "pin_to_queue + an explicit measured src_port "
-                    "(run dpdk_rsskey_probe --finder)");
+                    "(run dpdk_rss_queue_probe --finder)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
                     "create_and_attach: RssPartitioned needs pin_to_queue + "
@@ -699,7 +699,7 @@ public:
                     "DpdkTcpStream::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit "
                     "cfg.dpdk.wire.tuple.src_port measured to land on that "
-                    "queue (run dpdk_rsskey_probe --finder)",
+                    "queue (run dpdk_rss_queue_probe --finder)",
                     want);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,

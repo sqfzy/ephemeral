@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changed (2026-06-05) — rename + relocate the RSS queue probes (tooling, not API)
+
+The empirical src_port→RX-queue finders are renamed to a symmetric pair and the
+DPDK one moves out of `examples/` (it is an ops tool, not a demo):
+
+| Old | New |
+|-----|-----|
+| `examples/dpdk_rsskey_probe.cpp` (xmake target `dpdk_rsskey_probe`, group `examples`) | `tools/dpdk_rss_queue_probe.cpp` (target `dpdk_rss_queue_probe`, group `tools`) |
+| `tools/rss_queue_probe.py` | `tools/kernel_rss_queue_probe.py` |
+
+No public API change. Build the DPDK probe with `xmake build dpdk_rss_queue_probe`
+(`xmake build -g examples` no longer includes it). The two probes stay separate
+on purpose — see the header of `tools/dpdk_rss_queue_probe.cpp` for why a
+kernel eBPF measurement cannot substitute for the DPDK in-EAL one.
+
 ### Removed — BREAKING (2026-06-02) — delete the trusted-key RSS prediction line (ENA-first)
 
 The 2026-06-01 unification retired runtime prediction but kept the Toeplitz
@@ -17,7 +32,7 @@ Removed (public API — BREAKING):
 | Removed symbol | Replacement |
 |----------------|-------------|
 | `Platform::rss_using_probed_key()` / `Platform::rss_key_trusted()` | none — RSS landing is always empirical; no "trusted key" concept |
-| `eph::net::dpdk::predict_rss_queue` / `queue_for_tuple` / `find_src_port_for_queue[_with_state]` | measure src_port→queue with `examples/dpdk_rsskey_probe --finder`; pass via `cfg.dpdk.pin_to_queue` + `cfg.dpdk.wire[.tuple].src_port` |
+| `eph::net::dpdk::predict_rss_queue` / `queue_for_tuple` / `find_src_port_for_queue[_with_state]` | measure src_port→queue with `tools/dpdk_rss_queue_probe --finder`; pass via `cfg.dpdk.pin_to_queue` + `cfg.dpdk.wire[.tuple].src_port` |
 | `eph::net::dpdk::query_rss_state` / `RssState` / `kRssDefaultKey` | none |
 | `eph::net::dpdk::toeplitz_hash` / `toeplitz_hash_ipv4` / `queue_for_hash` | none |
 | `eph::net::dpdk::configure_rss` | none — RSS is enabled by `configure_port` (internal); no key is installed |
@@ -29,7 +44,7 @@ than "both `rss_hash_update` and `rss_hash_conf_get` rejected". On ENA the
 normal multi-queue path no longer hard-fails (RSS enables via `mq_mode`).
 
 Migration: drop any branch on `rss_key_trusted()`/`rss_using_probed_key()`;
-for RssPartitioned, run `examples/dpdk_rsskey_probe --finder` and set
+for RssPartitioned, run `tools/dpdk_rss_queue_probe --finder` and set
 `cfg.dpdk.pin_to_queue` + `cfg.dpdk.wire.tuple.src_port`. See
 `docs/cpu-no-cross-core.md` for the unified kernel-vs-DPDK model.
 
@@ -38,7 +53,7 @@ for RssPartitioned, run `examples/dpdk_rsskey_probe --finder` and set
 Empirically, on AWS ENA the guest-readable RSS hash key is a **placeholder**
 that does NOT match hardware steering — `toeplitz_hash_ipv4` over it predicts
 the landing queue at chance (~1/4). See
-`.artifacts/experiment-20260601-142315.md` and `examples/dpdk_rsskey_probe.cpp`.
+`.artifacts/experiment-20260601-142315.md` and `tools/dpdk_rss_queue_probe.cpp`.
 eph's runtime `find_src_port_for_queue` engineering therefore silently
 mis-steered traffic on ENA. The library no longer predicts queues at runtime;
 src_port selection moves to an explicit, empirically-measured value supplied

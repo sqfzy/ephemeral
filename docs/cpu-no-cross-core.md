@@ -18,7 +18,7 @@
 的是占位**,离线 Toeplitz 预测 `src_port→queue` **不可靠**(命中率≈随机)。所以
 src_port 选择必须**经验实测**,不能算。工具链与库已据此重构(见 §5/§6)。
 
-完整工具链:`nic_lowlat_setup.sh`(地基) → `rss_queue_probe.py`(kernel)/`dpdk_rsskey_probe --finder`(DPDK)选 src_port
+完整工具链:`nic_lowlat_setup.sh`(地基) → `kernel_rss_queue_probe.py`(kernel)/`dpdk_rss_queue_probe --finder`(DPDK)选 src_port
 → app 绑核 → `run_bpf_checks.sh` / `cross_core_check.bt`(验证)。
 
 ---
@@ -115,17 +115,17 @@ operator 提供(见 §5 的 `--queue-cpu-map`)。
 
 ### 第 2 步 — 选 src_port(纯经验,不算 Toeplitz)
 RSS key 在 ENA 是占位 → 预测不可信,只能实测。两后端各有专用经验探测:
-- **kernel:`tools/rss_queue_probe.py`** —— 无状态 raw SYN 勾包 + eBPF 在
+- **kernel:`tools/kernel_rss_queue_probe.py`** —— 无状态 raw SYN 勾包 + eBPF 在
   `tcp_v4_rcv` 读**真实 `skb->queue_mapping`**(= RX 队列;实测与 softirq 落核
   100% 自洽、跨次确定)。不建连接、不需 key、限速抗批处理。输出 `by_queue`/
   `by_cpu` 的 src_port,挑落"业务队列(IRQ 已钉 app 核)"的端口。
-- **DPDK:`examples/dpdk_rsskey_probe --finder`** —— DPDK 自己发探针实测
+- **DPDK:`tools/dpdk_rss_queue_probe --finder`** —— DPDK 自己发探针实测
   `src_port→queue`(`FINDERMAP <src_port> <queue>`),按 operator 的 lcore→queue
   绑定挑端口。同样纯经验、对占位 key 免疫。
 
 ```
 # kernel(与 app 用同一 dst IP)
-$ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --count 16
+$ sudo tools/kernel_rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --count 16
   → JSON: by_cpu:{ "1":[33072,33073,…], … } / by_queue:{ "1":[…] }
 ```
 > 旧的 predict-then-verify `rss_srcport_finder.py` 已退役(commit `885212e1`):
@@ -140,7 +140,7 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 - 只用了 src_port 第 4–6 位 → 有效哈希位极少(与 `RETA=128` 一致);读到的占位
   Toeplitz key 算不出这张表(只能实测)。确定性:同 dst+同 boot 100% 复现。
 - **优化**:既然低 4 位无关,**挑一个落在 app-核队列的 16-对齐块,块内 16 个端口
-  直接够 N≤16 条 conn**——`rss_queue_probe` 只需扫一个块判定其落核,不必收集分散端口。
+  直接够 N≤16 条 conn**——`kernel_rss_queue_probe` 只需扫一个块判定其落核,不必收集分散端口。
 - **边界**:T 的具体值是 per-(dst IP, 本次 boot key)(key 占位、per-attach 随机)——
   换 dst / NIC reset / 重启须重测;块结构本身只在单 dst 上验过(大概率通用,因是
   src_port 取位的性质)。
@@ -164,7 +164,7 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 - **开 RSS**:`Platform::create` 在 `configure_port` 里设 `mq_mode=RTE_ETH_MQ_RX_RSS`
   + `rss_hf`(与 NIC 能力取交集)。`nb_rx_queues>1` 且 `rss_hf!=0` → `rss_active`;
   `rss_hf==0` → 硬失败(不静默塌缩到队列 0)。eph **不装也不读 RSS key**。
-- **probe**:用 `examples/dpdk_rsskey_probe --finder` 实测 `src_port→queue`。
+- **probe**:用 `tools/dpdk_rss_queue_probe --finder` 实测 `src_port→queue`。
 - **pin**:`DpdkTcpStream/UdpSocket::create_and_attach` 的 `RssPartitioned` 模式
   要求 `pin_to_queue` + 显式 `cfg.dpdk.wire[.tuple].src_port`(finder 实测得来),
   缺失 → 明确 error;**从不预测/改写 src_port**。
@@ -181,9 +181,9 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 | 工具 | 路径 | 作用 | commit |
 |---|---|---|---|
 | NIC 地基 setup | `tools/nic_lowlat_setup.sh` | IRQ 绑核 + 关 RPS/RFS/aRFS/irqbalance/coalescing + XPS | `d2de749f` |
-| src_port 探测(kernel) | `tools/rss_queue_probe.py` | raw SYN + eBPF 读 queue_mapping,纯经验选 src_port(取代退役的 rss_srcport_finder) | `885212e1` |
+| src_port 探测(kernel) | `tools/kernel_rss_queue_probe.py` | raw SYN + eBPF 读 queue_mapping,纯经验选 src_port(取代退役的 rss_srcport_finder) | `885212e1` |
 | 不跨核验证套件 | `tools/run_bpf_checks.sh` + `tools/bpftrace/*.bt` | cross_core / clean_nic / nic_check / sched_switch | `6c4d949c`/`c61b8460` |
-| DPDK RSS-key 真伪 / finder 后端 | `examples/dpdk_rsskey_probe.cpp` | 实测 `src_port→queue`(VPC-DNS 反射器绕同实例阻断) | `e6784167`/`6d97ac4a` |
+| DPDK RSS-key 真伪 / finder 后端 | `tools/dpdk_rss_queue_probe.cpp` | 实测 `src_port→queue`(VPC-DNS 反射器绕同实例阻断) | `e6784167`/`6d97ac4a` |
 | ENA key 实证报告 | `.artifacts/experiment-20260601-142315.md` | key 占位的完整证据链 | `23305023` |
 
 ---
@@ -212,7 +212,7 @@ $ sudo tools/rss_queue_probe.py --nic ens6 --dst <venue ip> --dst-port 443 --cou
 > 不跨核 = 让"我这条流被 RSS 分到的队列" ↔ "我的业务核" 对齐。三步:① 队列绑到核;
 > ② 经验实测挑一个 src_port 让流落到那个队列;③ 把 src_port 显式喂给 eph。
 
-eph 旋钮也是**镜像**的:探测 `rss_queue_probe` ↔ `dpdk_rsskey_probe`;喂 src_port
+eph 旋钮也是**镜像**的:探测 `kernel_rss_queue_probe` ↔ `dpdk_rss_queue_probe`;喂 src_port
 `cfg.kernel.local_bind.port` ↔ `cfg.dpdk.wire.tuple.src_port`(都必须显式、都退役了自动预测)。
 
 **但有 4 处 intrinsic 漏点,拿 kernel 直觉套 DPDK 会踩坑:**
@@ -224,8 +224,8 @@ eph 旋钮也是**镜像**的:探测 `rss_queue_probe` ↔ `dpdk_rsskey_probe`;�
    直觉套 DPDK 会丢数据还查不出原因。
 3. **"队列→核"这端不对称**:kernel 是 IRQ 亲和,**可探测**(`/proc/irq`);DPDK 是你的
    lcore 绑定 = app 配置,**探不出来**,要你用 `--queue-cpu-map` 告诉探测工具。
-4. **探测工具天然两套**:kernel 内核看得到包 → eBPF 探(`rss_queue_probe`);DPDK 内核
-   bypass、看不到包 → 只能 DPDK 内部自探(`dpdk_rsskey_probe`)。
+4. **探测工具天然两套**:kernel 内核看得到包 → eBPF 探(`kernel_rss_queue_probe`);DPDK 内核
+   bypass、看不到包 → 只能 DPDK 内部自探(`dpdk_rss_queue_probe`)。
 
 **记法**:心智模型与 eph 旋钮已统一;但**"DPDK 单核免做"**和**"DPDK 错=丢包而非变慢"**
 是 intrinsic 差异,统一不掉,必须分清。

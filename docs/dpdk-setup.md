@@ -256,7 +256,7 @@ eph does **not** install (`rte_eth_dev_rss_hash_update`) or read
 (`rte_eth_dev_rss_hash_conf_get`) an RSS key: on ENA the readable key is
 a placeholder that predicts the landing queue at chance. RSS queue
 landing is therefore **measured empirically** — run
-`examples/dpdk_rsskey_probe --finder` to learn which `src_port` lands on
+`tools/dpdk_rss_queue_probe --finder` to learn which `src_port` lands on
 which queue, then pin via `cfg.dpdk.pin_to_queue` +
 `cfg.dpdk.wire.tuple.src_port`. There is no silent fallback to
 single-queue: operators make an explicit choice when the NIC can't host

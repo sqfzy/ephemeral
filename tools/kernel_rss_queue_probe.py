@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# rss_queue_probe.py — empirically map src_port -> RX queue / CPU via eBPF.
+# kernel_rss_queue_probe.py — empirically map src_port -> RX queue / CPU via eBPF.
 #
 # WHY: on AWS ENA the readable RSS key is a placeholder, so Toeplitz prediction
 # of src_port->queue is unreliable (rss_srcport_finder's predict-then-verify
@@ -22,7 +22,7 @@
 # the full 4-tuple).
 #
 # Usage:
-#   sudo ./tools/rss_queue_probe.py --nic ens6 --dst stream.bybit.com [--dst-port 443]
+#   sudo ./tools/kernel_rss_queue_probe.py --nic ens6 --dst stream.bybit.com [--dst-port 443]
 #        [--src-ip <auto>] [--port-lo 33000] [--count 16] [--pace 0.04] [--json out.json]
 #
 # Exit: 0 ok / 1 usage / 2 runtime (not root / missing tool / nic / dns)
@@ -30,7 +30,7 @@
 import argparse, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, time, random
 
 
-def log(m): print(f"[rss_queue_probe] {m}", file=sys.stderr)
+def log(m): print(f"[kernel_rss_queue_probe] {m}", file=sys.stderr)
 def die(m, code=2): log("ERROR: " + m); sys.exit(code)
 
 

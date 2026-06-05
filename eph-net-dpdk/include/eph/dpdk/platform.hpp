@@ -337,7 +337,7 @@ struct BringupConfig {
     // supplied `cfg.dpdk.wire.tuple.src_port` (TCP) /
     // `cfg.dpdk.wire.src_port` (UDP) in every mode; it never predicts or
     // rebinds it. In RssPartitioned mode the caller measures which src_port
-    // lands on the desired queue (`dpdk_rsskey_probe --finder`) and pins it.
+    // lands on the desired queue (`dpdk_rss_queue_probe --finder`) and pins it.
     // In a multi-process setup it is therefore the *caller*'s job to ensure
     // that the primary and each secondary draw their source ports from
     // disjoint sub-ranges — the library has no global view to enforce this.
@@ -938,7 +938,7 @@ public:
     /// the multi-process topology has been resolved (daemon-led
     /// `serve_nic`/`create` or the internal `mp_topology` path);
     /// `std::nullopt` otherwise. The operator measures src_ports within
-    /// this window (via `dpdk_rsskey_probe --finder`) and supplies them
+    /// this window (via `dpdk_rss_queue_probe --finder`) and supplies them
     /// explicitly via `cfg.dpdk.wire[.tuple].src_port`, so per-process
     /// src_port ranges stay disjoint.
     /// Cold getter; safe on moved-from instances (returns nullopt).
@@ -1777,7 +1777,7 @@ struct Platform::Impl {
         // advertised IPv4 TCP/UDP hash offloads). This — NOT key installation —
         // is what makes the NIC spread packets across queues. On ENA the key is
         // a placeholder, so we never install/read it; queue landing is measured
-        // empirically (dpdk_rsskey_probe --finder). See docs/cpu-no-cross-core.md.
+        // empirically (dpdk_rss_queue_probe --finder). See docs/cpu-no-cross-core.md.
         rss_active = (eth_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS);
         SPDLOG_LOGGER_DEBUG(log, "port={} configured (rss_active={})",
                             config.port_id, rss_active);
@@ -2140,7 +2140,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     // IPv4 TCP/UDP hash offloads and is genuinely spreading packets across
     // queues. We do NOT install or read an RSS key: on ENA the key is a
     // placeholder (predicts the landing queue at chance), so RSS queue landing
-    // is measured empirically (dpdk_rsskey_probe --finder), never computed.
+    // is measured empirically (dpdk_rss_queue_probe --finder), never computed.
     // See docs/cpu-no-cross-core.md.
 
     if (auto r = impl->start_port();             !r) return std::unexpected(r.error());

@@ -219,7 +219,7 @@ void run_in_subprocess(std::function<void()> body) {
 // hard-fails rather than silently collapsing all traffic onto queue 0.
 // Either is a valid outcome; the test asserts the result lands in exactly
 // one of those two buckets. There is no "probed key" concept any more —
-// RSS queue landing is measured empirically (dpdk_rsskey_probe --finder).
+// RSS queue landing is measured empirically (dpdk_rss_queue_probe --finder).
 // ─────────────────────────────────────────────────────────────────────────────
 
 TEST(RssBringup, MultiQueue_OnEna_EnablesRssOrFails) {

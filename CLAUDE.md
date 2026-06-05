@@ -81,7 +81,7 @@ The scope decisions for the current feature set are archived in
   RSS is active and packets spread across queues. eph does **not** install
   or read an RSS key: on ENA the readable key is a placeholder that predicts
   the landing queue at chance, so RSS queue landing is **measured
-  empirically** (`examples/dpdk_rsskey_probe --finder`), never computed.
+  empirically** (`tools/dpdk_rss_queue_probe --finder`), never computed.
   `Platform::create` hard-fails (recovery hint) when `nb_rx_queues>1` but the
   NIC advertises no IPv4 RSS hash offloads (`rss_hf==0`); the previous
   silent-collapse-to-queue-0 path remains removed. The Toeplitz prediction
@@ -113,7 +113,7 @@ The scope decisions for the current feature set are archived in
   that predicts the landing queue at chance (see `eph-net-dpdk/CHANGELOG.md`
   BREAKING + `.artifacts/experiment-20260601-142315.md`). The caller must set
   `cfg.dpdk.pin_to_queue` + an explicit `cfg.dpdk.wire.tuple.src_port`
-  measured via `examples/dpdk_rsskey_probe --finder`; missing → actionable error. The
+  measured via `tools/dpdk_rss_queue_probe --finder`; missing → actionable error. The
   older `create(cfg, poller)` overload was removed — its narrow subset is
   covered by `create_and_attach`. RSS queue landing is always empirical on
   ENA-first hardware; there is no "trusted key" concept and no Toeplitz

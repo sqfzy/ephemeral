@@ -173,11 +173,15 @@ target("dpdk_rss_demo")
     add_deps("eph-net-dpdk", "eph-codec")
     apply_dpdk_pmd_linkgroups()
 
-target("dpdk_rsskey_probe")
+-- Ops tool, not a demo: empirical DPDK src_port->RX-queue finder (sibling of the
+-- kernel-side tools/kernel_rss_queue_probe.py). Lives under tools/ and in its own
+-- "tools" group so `xmake build -g examples` does not pull it in; build explicitly
+-- with `xmake build dpdk_rss_queue_probe` or `xmake build -g tools`.
+target("dpdk_rss_queue_probe")
     set_kind("binary")
-    set_group("examples")
+    set_group("tools")
     set_default(false)
-    add_files("examples/dpdk_rsskey_probe.cpp")
+    add_files("tools/dpdk_rss_queue_probe.cpp")
     add_deps("eph-net-dpdk", "eph-codec")
     apply_dpdk_pmd_linkgroups()
 

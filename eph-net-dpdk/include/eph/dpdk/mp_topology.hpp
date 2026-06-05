@@ -110,7 +110,7 @@ static_assert(std::is_trivially_copyable_v<ProcSpec>,
 ///
 /// The library uses `procs[self_index]` to derive `rx_queue_range` and
 /// the `[port_lo, port_hi)` window the operator measures src_ports within
-/// (via `dpdk_rsskey_probe --finder`). Other slots
+/// (via `dpdk_rss_queue_probe --finder`). Other slots
 /// in `procs` are not consumed at runtime by this process — they exist
 /// to (a) record the full topology in the cross-process registry so
 /// secondaries can cross-validate against the primary, and (b) let
