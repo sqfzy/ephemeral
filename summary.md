@@ -105,11 +105,12 @@ signature changes anywhere.
 | **eph-net-dpdk** | `DpdkTcpStream<C,Tls>`, `DpdkUdpSocket<C>`, `DpdkPoller<>`, `Eal`, internal DPDK primitives (arp, dns, flow_steering, packet templates). `MbufView` `PacketView` with in-place TLS decrypt. | eph-net, dpdk, aws-lc |
 | **eph-fix** | FIX 4.4 parser/builder/session, orders, execution reports, position, risk checks, order manager | eph-core |
 | **eph-itch** | ITCH 5.0 messages/parser, SoupBinTCP, MoldUDP64, OUCH | eph-core |
+| **eph-sbe** | Simple Binary Encoding (SBE) zero-copy decode: 8-byte header, LE primitives, repeating-group iteration, Binance spot schema 3:2 bookTicker accessors | eph-core |
 | **eph-json** | Zero-copy JSON parser/framer, Binance / OKX / Bybit adapters (REST + WS) | eph-core |
 | **eph-book** | ArrayBook / MapBook (L2/L3), market signals, Binance / ITCH adapters | eph-core, eph-json, eph-itch |
 
 `eph-net-kernel` and `eph-net-dpdk` are **sibling backends** that never depend on each
-other. `eph-fix`, `eph-itch`, `eph-json`, `eph-book` never depend on any networking
+other. `eph-fix`, `eph-itch`, `eph-sbe`, `eph-json`, `eph-book` never depend on any networking
 module — they provide codecs that satisfy `eph::core::Codec` and are composed by the
 application at link time.
 
@@ -192,7 +193,7 @@ function pointers (`poll_once_fn(void*)`), not virtual dispatch — there is no 
                +------------+------------------+
                v            v                  v
             eph-core    (consumed by)     parsers:
-          (Codec         eph-net        eph-fix, eph-itch,
+          (Codec         eph-net        eph-fix, eph-itch, eph-sbe,
            concept,                     eph-json, eph-book
            ErrorInfo)                   (use Codec concept)
                |
@@ -381,8 +382,9 @@ runtime owns the loop; user code calls `send()`/`recv()` from within a task).
   `detail` string so it never dangles.
 - All fallible APIs return `std::expected<T, ErrorInfo>`. No exceptions cross module
   boundaries (`SPDLOG_NO_EXCEPTIONS` is also set in tests).
-- Parser modules (`eph-fix`, `eph-itch`, `eph-json`) keep their domain-specific enums
-  (`FrameError`, `FixError`, etc.) because the error unification did not touch them.
+- Parser modules (`eph-fix`, `eph-itch`, `eph-sbe`, `eph-json`) keep their domain-specific
+  enums (`FrameError`, `FixError`, SBE `ParseError`, etc.) because the error unification did
+  not touch them.
 
 ---
 

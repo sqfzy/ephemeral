@@ -39,6 +39,7 @@ directly or transitively.
                          ▼
        eph-containers ───► eph-utils ───► eph-core ◄─── eph-fix
                                                    ◄─── eph-itch
+                                                   ◄─── eph-sbe
                                                    ◄─── eph-json
                                                    ◄─── eph-book
 ```
@@ -48,7 +49,7 @@ on each other; an application links whichever (or both) it needs.
 `eph-codec` is **not** a dependency of `eph-net`: codecs are
 template parameters, so each consumer separately picks the codec
 modules it needs and links them alongside the chosen backend. The
-parser modules (`eph-fix`, `eph-itch`, `eph-json`, `eph-book`) only
+parser modules (`eph-fix`, `eph-itch`, `eph-sbe`, `eph-json`, `eph-book`) only
 depend on `eph-core` (no networking, no `eph-utils`); they provide
 the `Codec` types an application composes against the chosen
 backend at link time.
