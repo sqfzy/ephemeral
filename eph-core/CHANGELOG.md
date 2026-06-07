@@ -10,8 +10,8 @@
   a caller programming error. Appended at the end of the enum to keep
   existing integer values stable.
 - `eph/core/packet_view.hpp` — formal `concept PacketView` formalises the
-  previously-informal six-member contract (`writable_data` / `data` /
-  `length` / `trim_front` / `trim_back` / `arrival_tsc`). Downstream
+  previously-informal five-member contract (`writable_data` / `data` /
+  `length` / `trim_front` / `trim_back`). Downstream
   backends can now `static_assert(eph::core::PacketView<T>)` to get a
   compile-time conformance guarantee.
 - `eph/core/metrics_concept.hpp` — `MetricTag` struct, `MetricsSink`
@@ -52,6 +52,20 @@
   exhaustive `switch` on `Error` must remove the corresponding cases;
   no production site ever returned these values, so runtime behavior
   is preserved everywhere except in source-level pattern matching.
+- `arrival_tsc()` removed from the `PacketView` contract (`eph/core/
+  packet_view.hpp`) and from all five implementations (`SpanView`,
+  `MbufView`, `SpanPacketView`, `FakeStream`/`FakeDatagram` PacketView).
+  It was dead scaffolding: zero production consumers (only test
+  self-assertions), 3/4 backends hardcoded 0, and it never reached a
+  user frame handler. The load-bearing keepalive timestamp line
+  (`last_rx_burst_tsc_` / DPDK TCP `process_burst_` `rx_tsc` / poller
+  `cycle_tsc`) is a *separate* path and is untouched. Any custom
+  `PacketView` that exposed `arrival_tsc()` still compiles (the concept
+  only shrank); no in-tree caller read it. If per-frame latency
+  measurement is needed later it will be rebuilt as a frame-carried
+  `RxMeta` delivered to the message handler, **not** as a method on
+  `PacketView` (the drain loop already holds the recv/burst TSC, so the
+  value never has to round-trip through the view).
 
 ## Phase 9 Recovery (2026-04-10)
 

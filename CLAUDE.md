@@ -422,7 +422,7 @@ DPDK environment setup is via `eph-net-dpdk/tools/dpdk-setup.sh` and
   the hot path.
 - **`PacketView` is the zero-copy contract.** Every `Stream` / `Datagram` implementation
   exposes a `using PacketView = …;` associated type that provides
-  `writable_data() / data() / length() / trim_front(n) / trim_back(n) / arrival_tsc()`.
+  `writable_data() / data() / length() / trim_front(n) / trim_back(n)`.
   Codecs are templated on `PacketView` so the same `WsCodec` works against both the
   contiguous `SpanView` (kernel) and the mbuf-backed `MbufView` (DPDK) with no runtime
   branching.

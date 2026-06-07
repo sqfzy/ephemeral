@@ -339,7 +339,6 @@ const uint8_t* data() const noexcept;
 size_t         length() const noexcept;
 void           trim_front(size_t n) noexcept;   // skb_pull equivalent
 void           trim_back(size_t n) noexcept;    // skb_trim equivalent
-uint64_t       arrival_tsc() const noexcept;
 ```
 
 `KernelTcpStream::PacketView` is `SpanView`, a contiguous `span<uint8_t>` view over

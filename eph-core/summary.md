@@ -89,10 +89,9 @@ const uint8_t* data()          const noexcept;
 size_t         length()        const noexcept;
 void           trim_front(size_t n) noexcept;
 void           trim_back (size_t n) noexcept;
-uint64_t       arrival_tsc()   const noexcept;
 
 template <class T>
-concept PacketView = /* the six members above, duck-typed noexcept */;
+concept PacketView = /* the five members above, duck-typed noexcept */;
 ```
 
 Implementations in the repo: `eph::codec::SpanPacketView` (tests),

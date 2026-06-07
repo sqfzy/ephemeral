@@ -14,7 +14,7 @@ No networking dependencies — `eph-core` is the leaf of the dependency graph.
 |---|---|
 | `error.hpp` | `enum class Error` + `struct ErrorInfo { Error code; const char* detail; }`. The unified error type, plus `error_name()`, `operator<<`, `format_as()`, and `std::formatter` specialisations for both `Error` and `ErrorInfo`. |
 | `codec.hpp` | `concept StreamCodec` / `concept DatagramCodec` / `concept Codec`, plus the `OutputBuffer` class for codec auto-responses (span-based `append`, zero-copy `writable_tail` + `commit`). |
-| `packet_view.hpp` | The formal `concept PacketView` — `writable_data()` / `data()` / `length()` / `trim_front()` / `trim_back()` / `arrival_tsc()`. Downstream backends `static_assert(PacketView<T>)` to verify conformance at compile time. |
+| `packet_view.hpp` | The formal `concept PacketView` — `writable_data()` / `data()` / `length()` / `trim_front()` / `trim_back()`. Downstream backends `static_assert(PacketView<T>)` to verify conformance at compile time. |
 | `tcp_state.hpp` | `enum class TcpState` (RFC 793) + `tcp_state_name()`. Shared by kernel and DPDK backends (single definition, no ODR conflict). |
 | `error_traits.hpp` | `ErrorEnum<E>` concept + `ErrorEnumFormatter<E>` one-liner `std::formatter` base. Also exports `eph::net::ErrorEnum` / `eph::net::ErrorEnumFormatter` as backward-compat aliases. |
 | `metrics_concept.hpp` | `MetricTag`, `concept MetricsSink`, and `NullSink` (zero-cost, all methods no-op). |
