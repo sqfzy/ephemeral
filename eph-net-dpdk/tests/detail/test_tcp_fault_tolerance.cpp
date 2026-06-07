@@ -385,7 +385,7 @@ TEST(MbufViewFaultTolerance, TrimBackOnDefaultConstructedView) {
 TEST(MbufViewFaultTolerance, TrimFrontOnValidViewWorks) {
     // Verify trim_front still works correctly on valid views.
     uint8_t buf[32] = {};
-    eph::net::dpdk::detail::MbufView view(buf, 32, 1000);
+    eph::net::dpdk::detail::MbufView view(buf, 32);
     EXPECT_EQ(view.data(), buf);
     EXPECT_EQ(view.length(), 32u);
 

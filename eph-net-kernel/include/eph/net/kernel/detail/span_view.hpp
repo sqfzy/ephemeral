@@ -13,7 +13,6 @@
 ///   - `size_t         length() const noexcept;`
 ///   - `void           trim_front(size_t n) noexcept;`  // skb_pull equivalent
 ///   - `void           trim_back(size_t n) noexcept;`   // skb_trim equivalent
-///   - `uint64_t       arrival_tsc() const noexcept;`
 ///
 /// The view does NOT own its storage. Lifetime is managed by the Stream /
 /// Datagram object that constructed it — typically the reassembly buffer of
@@ -39,10 +38,8 @@ struct SpanView {
     /// @param payload      pointer to the first application-layer byte
     ///                     (may be nullptr iff len == 0)
     /// @param len          length of the window
-    /// @param arrival_tsc  optional arrival timestamp (TSC ticks); 0 if unknown
-    constexpr SpanView(uint8_t* payload, std::size_t len,
-                       uint64_t arrival_tsc = 0) noexcept
-        : base_(payload), head_(0), tail_(len), tsc_(arrival_tsc) {}
+    constexpr SpanView(uint8_t* payload, std::size_t len) noexcept
+        : base_(payload), head_(0), tail_(len) {}
 
     [[nodiscard]] uint8_t*       writable_data() noexcept { return base_ + head_; }
     [[nodiscard]] const uint8_t* data() const noexcept    { return base_ + head_; }
@@ -67,13 +64,10 @@ struct SpanView {
         tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
     }
 
-    [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
-
 private:
     uint8_t*    base_;
     std::size_t head_;
     std::size_t tail_;
-    uint64_t    tsc_;
 };
 
 // Formal concept verification.

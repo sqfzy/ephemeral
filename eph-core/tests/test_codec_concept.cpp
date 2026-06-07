@@ -27,7 +27,7 @@ using eph::core::StreamCodec;
 // ============================================================================
 
 /// Minimal PacketView stub — satisfies the requirements documented in
-/// codec.hpp (writable_data, data, length, trim_front/back, arrival_tsc).
+/// codec.hpp (writable_data, data, length, trim_front/back).
 ///
 /// We store a moving window into an external buffer so trim_front/trim_back
 /// semantics are realistic without any allocation.
@@ -35,17 +35,15 @@ struct FakePacketView {
     uint8_t*  buf;
     size_t    head;
     size_t    tail;    // one past last byte
-    uint64_t  tsc;
 
-    FakePacketView(uint8_t* b, size_t len, uint64_t t = 0)
-        : buf(b), head(0), tail(len), tsc(t) {}
+    FakePacketView(uint8_t* b, size_t len)
+        : buf(b), head(0), tail(len) {}
 
     [[nodiscard]] uint8_t*       writable_data()         noexcept { return buf + head; }
     [[nodiscard]] const uint8_t* data()           const  noexcept { return buf + head; }
     [[nodiscard]] size_t         length()         const  noexcept { return tail - head; }
     void trim_front(size_t n) noexcept { head += n; }
     void trim_back(size_t n)  noexcept { tail -= n; }
-    [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc; }
 };
 
 // ============================================================================

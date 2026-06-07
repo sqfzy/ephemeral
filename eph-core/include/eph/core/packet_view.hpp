@@ -26,7 +26,6 @@
 ///   size_t         length() const noexcept;   // bytes remaining in window
 ///   void           trim_front(size_t n) noexcept;  // skb_pull equivalent
 ///   void           trim_back(size_t n)  noexcept;  // skb_trim equivalent
-///   uint64_t       arrival_tsc() const noexcept;   // NIC-arrival TSC (0 if n/a)
 /// ```
 ///
 /// ## Implementations
@@ -69,9 +68,6 @@ concept PacketView = requires(T& v, const T& cv, std::size_t n) {
     // with a simple statement-expression.
     v.trim_front(n);
     v.trim_back(n);
-
-    // NIC-arrival TSC (0 if untracked).
-    { cv.arrival_tsc() }   -> std::convertible_to<std::uint64_t>;
 };
 
 } // namespace eph::core

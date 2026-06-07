@@ -7,7 +7,7 @@
 /// byte buffer — but lacked dedicated tests; the only coverage was an
 /// indirect static_assert in test_kernel_tls_state.cpp.
 ///
-/// These tests pin the trim-clamp invariants and arrival_tsc propagation
+/// These tests pin the trim-clamp invariants
 /// against the documented PacketView contract so a future drift surfaces
 /// here rather than inside whichever codec test happened to use a too-
 /// large trim argument.
@@ -131,37 +131,8 @@ TEST(SpanView, TrimBackThenTrimFrontSharesShrunkWindow) {
 }
 
 // ---------------------------------------------------------------------------
-// arrival_tsc — propagates from ctor and stays stable across trims
-// ---------------------------------------------------------------------------
-
-TEST(SpanView, ArrivalTscDefaultsToZero) {
-    uint8_t buf[] = {0x00};
-    SpanView v(buf, sizeof(buf));
-    EXPECT_EQ(v.arrival_tsc(), 0u);
-}
-
-TEST(SpanView, ArrivalTscPropagatesFromCtor) {
-    uint8_t buf[] = {0x42};
-    SpanView v(buf, sizeof(buf), /*tsc=*/0xFEEDFACEDEADBEEFull);
-    EXPECT_EQ(v.arrival_tsc(), 0xFEEDFACEDEADBEEFull);
-}
-
-TEST(SpanView, ArrivalTscStableAcrossTrims) {
-    // The timestamp pinpoints arrival, not the post-decode window — trim
-    // ops must not perturb it.
-    uint8_t buf[] = {1, 2, 3, 4};
-    SpanView v(buf, sizeof(buf), 0x123456789ULL);
-    v.trim_front(1);
-    EXPECT_EQ(v.arrival_tsc(), 0x123456789ULL);
-    v.trim_back(1);
-    EXPECT_EQ(v.arrival_tsc(), 0x123456789ULL);
-    v.trim_front(99);  // even on collapse
-    EXPECT_EQ(v.arrival_tsc(), 0x123456789ULL);
-}
-
-// ---------------------------------------------------------------------------
 // Move semantics — SpanView is a tiny aggregate-like struct over
-// (uint8_t*, size_t, size_t, uint64_t); pin the standard shape so a
+// (uint8_t*, size_t, size_t); pin the standard shape so a
 // future refactor that inadvertently introduces a non-trivial dtor
 // or copy-blocking surfaces here.
 // ---------------------------------------------------------------------------

@@ -2107,7 +2107,7 @@ private:
                         feed_len = tls_codec_pending_.size();
                     }
 
-                    detail::MbufView view(feed_ptr, feed_len, /*arrival_tsc*/ 0);
+                    detail::MbufView view(feed_ptr, feed_len);
                     while (view.length() > 0) {
                         const std::size_t before = view.length();
                         // Per-iteration sink; flushed via this->send()
@@ -2219,7 +2219,7 @@ private:
             while (reasm_.readable() > 0) {
                 const std::size_t before = reasm_.readable();
                 detail::MbufView view(const_cast<uint8_t*>(reasm_.read_ptr()),
-                                       before, /*arrival_tsc*/ 0);
+                                       before);
 
                 // Per-iteration sink; flushed before branching on `dr`
                 // so close-acks written alongside WsCloseReceived reach

@@ -3,12 +3,12 @@
 ///
 /// SpanPacketView is the canonical PacketView used inside eph-codec test
 /// fixtures so codecs can be exercised independently of any backend
-/// (kernel SpanView, DPDK MbufView). Until now its trim/arrival_tsc
+/// (kernel SpanView, DPDK MbufView). Until now its trim
 /// methods were exercised only indirectly through codec tests — a
 /// regression in the clamp logic would surface as a confusing oversize
 /// span inside one of those codec tests rather than a focused failure.
 ///
-/// These tests pin the same trim-clamp / arrival_tsc-stability invariants
+/// These tests pin the same trim-clamp invariants
 /// that test_span_view.cpp covers for the kernel sibling, so either
 /// implementation drifting from the shared PacketView contract is caught.
 
@@ -108,33 +108,6 @@ TEST(SpanPacketView, SequentialTrimSharesShrinkingWindow) {
     v.trim_front(2);   // length 3
     v.trim_back(99);   // clamp on residual 3
     EXPECT_EQ(v.length(), 0u);
-}
-
-// ---------------------------------------------------------------------------
-// arrival_tsc
-// ---------------------------------------------------------------------------
-
-TEST(SpanPacketView, ArrivalTscDefaultsToZero) {
-    uint8_t buf[] = {0x00};
-    SpanPacketView v(buf, sizeof(buf));
-    EXPECT_EQ(v.arrival_tsc(), 0u);
-}
-
-TEST(SpanPacketView, ArrivalTscPropagatesFromCtor) {
-    uint8_t buf[] = {0x42};
-    SpanPacketView v(buf, sizeof(buf), /*tsc=*/0xCAFEBABE12345678ull);
-    EXPECT_EQ(v.arrival_tsc(), 0xCAFEBABE12345678ull);
-}
-
-TEST(SpanPacketView, ArrivalTscStableAcrossTrims) {
-    uint8_t buf[] = {1, 2, 3};
-    SpanPacketView v(buf, sizeof(buf), 0xDEADBEEF);
-    v.trim_front(1);
-    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEF);
-    v.trim_back(1);
-    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEF);
-    v.trim_front(99);
-    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEF);
 }
 
 // ---------------------------------------------------------------------------

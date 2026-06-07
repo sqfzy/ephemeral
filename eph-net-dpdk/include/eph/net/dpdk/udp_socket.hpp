@@ -711,8 +711,11 @@ public:
     /// @brief Hot-path burst dispatch from DpdkPoller. Parses each mbuf
     ///        as a UDP packet, wraps the payload in an MbufView, and
     ///        drives the codec. Must stay noexcept and allocation-free.
+    ///
+    /// The `rx_tsc` cycle stamp is part of the Poller's uniform burst
+    /// signature (TCP uses it for keepalive); UDP has no use for it.
     void process_burst_(rte_mbuf** mbufs, uint16_t n,
-                         uint64_t rx_tsc) noexcept {
+                         uint64_t /*rx_tsc*/) noexcept {
         if (!on_datagram) {
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
             return;
@@ -815,7 +818,7 @@ public:
             // the mbuf, which stays alive for the entire on_datagram
             // callback scope.
             detail::MbufView view(const_cast<uint8_t*>(parsed.payload),
-                                   parsed.payload_len, rx_tsc);
+                                   parsed.payload_len);
             inc_<::eph::net::StreamMetric::kBytesRecv>(parsed.payload_len);
 
             uint8_t            scratch[detail::kDatagramAutoResponseBytes];

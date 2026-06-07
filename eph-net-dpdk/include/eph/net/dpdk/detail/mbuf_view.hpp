@@ -13,7 +13,6 @@
 ///     size_t         length() const noexcept;
 ///     void           trim_front(size_t n) noexcept;
 ///     void           trim_back(size_t n) noexcept;
-///     uint64_t       arrival_tsc() const noexcept;
 
 #include <cstddef>
 #include <cstdint>
@@ -32,14 +31,12 @@ class MbufView {
 public:
     constexpr MbufView() noexcept = default;
 
-    /// @brief Construct from a payload pointer + length + arrival TSC.
+    /// @brief Construct from a payload pointer + length.
     /// @param payload     Pointer to the first payload byte (writable; TLS
     ///                    decrypt mutates in place).
     /// @param len         Payload length in bytes.
-    /// @param arrival_tsc TSC reading captured at `rte_eth_rx_burst` return.
-    constexpr MbufView(uint8_t* payload, std::size_t len,
-                       uint64_t arrival_tsc = 0) noexcept
-        : data_(payload), length_(len), arrival_tsc_(arrival_tsc) {}
+    constexpr MbufView(uint8_t* payload, std::size_t len) noexcept
+        : data_(payload), length_(len) {}
 
     /// @name PacketView concept API
     /// @{
@@ -72,14 +69,11 @@ public:
         }
     }
 
-    [[nodiscard]] uint64_t arrival_tsc() const noexcept { return arrival_tsc_; }
-
     /// @}
 
 private:
-    uint8_t*    data_        = nullptr;
-    std::size_t length_      = 0;
-    uint64_t    arrival_tsc_ = 0;
+    uint8_t*    data_   = nullptr;
+    std::size_t length_ = 0;
 };
 
 // Formal concept verification.

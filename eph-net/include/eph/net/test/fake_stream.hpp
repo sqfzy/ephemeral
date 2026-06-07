@@ -54,17 +54,16 @@ public:
     /// Previously this was a 2-field `{data, length}` stub, which drifted
     /// from the real backends (`SpanView`, `MbufView`) that satisfy the full
     /// `eph::core::PacketView` contract (writable_data / trim_front /
-    /// trim_back / arrival_tsc). The drift meant tests that composed a real
+    /// trim_back). The drift meant tests that composed a real
     /// `StreamCodec` over `FakeStream` would fail to compile inside the
     /// codec because `decode(view)` invokes `trim_front` / `writable_data`.
     ///
-    /// This version carries `base_ + head_/tail_ + tsc_` — the same layout as
+    /// This version carries `base_ + head_/tail_` — the same layout as
     /// the kernel `SpanView`, so the mock exercises the same codec code
     /// paths the real backends do.
     struct PacketView {
-        constexpr PacketView(uint8_t* base, std::size_t len,
-                             uint64_t tsc = 0) noexcept
-            : base_(base), head_(0), tail_(len), tsc_(tsc) {}
+        constexpr PacketView(uint8_t* base, std::size_t len) noexcept
+            : base_(base), head_(0), tail_(len) {}
 
         [[nodiscard]] uint8_t* writable_data() noexcept {
             return base_ + head_;
@@ -91,13 +90,10 @@ public:
             tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
         }
 
-        [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
-
     private:
         uint8_t*    base_{nullptr};
         std::size_t head_{0};
         std::size_t tail_{0};
-        uint64_t    tsc_{0};
     };
 
     /// @brief No codec is attached — tests compose FakeStream + a codec

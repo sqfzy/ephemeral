@@ -22,7 +22,6 @@
 ///   - size_t         length() const noexcept;
 ///   - void           trim_front(size_t n) noexcept;   // skb_pull equivalent
 ///   - void           trim_back(size_t n)  noexcept;   // skb_trim equivalent
-///   - uint64_t       arrival_tsc() const noexcept;
 
 #include <cstddef>
 #include <cstdint>
@@ -39,12 +38,11 @@ namespace eph::codec {
 ///
 /// This is header-only, trivially copyable, and all operations are noexcept.
 struct SpanPacketView {
-    /// @brief Construct a view over `[base, base + len)` with an optional TSC tag.
+    /// @brief Construct a view over `[base, base + len)`.
     /// @param base         pointer to the first byte (may be nullptr iff len == 0)
     /// @param len          initial length of the window in bytes
-    /// @param arrival_tsc  optional TSC timestamp for latency tracking (default 0)
-    constexpr SpanPacketView(uint8_t* base, std::size_t len, uint64_t arrival_tsc = 0) noexcept
-        : base_(base), head_(0), tail_(len), tsc_(arrival_tsc) {}
+    constexpr SpanPacketView(uint8_t* base, std::size_t len) noexcept
+        : base_(base), head_(0), tail_(len) {}
 
     /// @brief Writable pointer to the current head of the window.
     ///
@@ -79,14 +77,10 @@ struct SpanPacketView {
         tail_ -= (n > tail_ - head_) ? (tail_ - head_) : n;
     }
 
-    /// @brief TSC timestamp captured at NIC arrival (0 if untracked).
-    [[nodiscard]] uint64_t arrival_tsc() const noexcept { return tsc_; }
-
 private:
     uint8_t*    base_;  ///< caller-owned backing storage
     std::size_t head_;  ///< current read head (offset from base_)
     std::size_t tail_;  ///< one past the last valid byte (offset from base_)
-    uint64_t    tsc_;   ///< NIC arrival timestamp for latency tracking
 };
 
 // Formal concept verification.

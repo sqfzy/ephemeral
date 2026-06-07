@@ -234,7 +234,7 @@ TEST(FakeStream, InjectSendErrorRichOverloadCarriesDetail) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PacketView trim_front / trim_back / arrival_tsc — production-parity
+// PacketView trim_front / trim_back — production-parity
 // surface that the FakeStream PacketView exposes so tests can compose a
 // real codec over the mock. Until now no unit test pinned the clamp
 // behaviour — a regression in `trim_front(n > length)` would silently
@@ -270,22 +270,6 @@ TEST(FakeStreamPacketView, TrimFrontThenTrimBackDoesNotUnderflow) {
     EXPECT_EQ(v.length(), 2u);
     v.trim_back(7);    // request more than 2 — must clamp
     EXPECT_EQ(v.length(), 0u);
-}
-
-TEST(FakeStreamPacketView, ArrivalTscPropagatesFromCtor) {
-    uint8_t buf[] = {0x42};
-    ent::FakeStream::PacketView v(buf, sizeof(buf), /*tsc=*/0xDEADBEEFCAFEBABEull);
-    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEFCAFEBABEull);
-    // trim ops do NOT touch the timestamp — it pinpoints arrival, not
-    // the post-decode window.
-    v.trim_front(1);
-    EXPECT_EQ(v.arrival_tsc(), 0xDEADBEEFCAFEBABEull);
-}
-
-TEST(FakeStreamPacketView, ArrivalTscDefaultsToZero) {
-    uint8_t buf[] = {0x00};
-    ent::FakeStream::PacketView v(buf, sizeof(buf));
-    EXPECT_EQ(v.arrival_tsc(), 0u);
 }
 
 TEST(FakeStreamPacketView, WritableDataMatchesData) {
