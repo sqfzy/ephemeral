@@ -313,6 +313,80 @@ public:
         return {};
     }
 
+    // ── Dynamic interest (Pollable-internal) ──────────────────────────────
+
+    /// @brief Re-arm the epoll interest mask for an already-registered
+    ///        Pollable. Intended for Pollables that need EPOLLOUT only
+    ///        transiently — most notably a `KernelTcpStream` driving a
+    ///        non-blocking connect / TLS / WS handshake, which wants
+    ///        `EPOLLIN | EPOLLOUT` while a handshake step is awaiting
+    ///        writability and reverts to `EPOLLIN`-only once Established so
+    ///        the steady-state hot path pays no spurious writable wakeups.
+    ///
+    /// Trailing-underscore (like `notify_attached_`) marks this as the
+    /// reverse of the attach hooks: the Pollable calls it on the Poller it
+    /// is attached to (via its stored `attached_to_` pointer), rather than
+    /// the Poller calling the Pollable. We look the entry up by `obj`
+    /// identity and re-arm *that entry's* fd, so a caller cannot poke an
+    /// arbitrary fd's interest — only its own registration.
+    ///
+    /// @param obj     The registered Pollable (pass `this` from the stream).
+    /// @param events  New epoll interest mask (e.g. `EPOLLIN | EPOLLOUT`).
+    /// @return Empty on success; `NotFound` if `obj` is not registered;
+    ///         `InvalidConfig` on a `epoll_ctl(MOD)` failure other than the
+    ///         fd having already vanished (ENOENT/EBADF, treated as
+    ///         `NotFound` since the registration is effectively gone).
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    modify_interest_(void* obj, uint32_t events) noexcept {
+        auto* log = detail::poller_logger();
+        if (obj == nullptr) {
+            SPDLOG_LOGGER_ERROR(log, "KernelPoller::modify_interest_: nullptr obj");
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelPoller::modify_interest_: nullptr"});
+        }
+        auto it = std::find_if(entries_.begin(), entries_.end(),
+            [obj](const PollableEntry& e) { return e.obj == obj; });
+        if (it == entries_.end()) {
+            SPDLOG_LOGGER_WARN(log,
+                "KernelPoller::modify_interest_: obj={} not registered "
+                "(entries={})", obj, entries_.size());
+            return std::unexpected(core::ErrorInfo{
+                core::Error::NotFound,
+                "KernelPoller::modify_interest_: not registered"});
+        }
+        struct epoll_event ev{};
+        ev.events   = events;
+        ev.data.ptr = obj;  // keep dispatch resolvable after re-arm
+        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, it->fd, &ev) != 0) {
+            const int err = errno;
+            // ENOENT/EBADF: the fd was reaped (peer RST during handshake).
+            // The registration is effectively gone — surface as NotFound so
+            // the caller treats the connect as failed rather than retrying a
+            // doomed MOD.
+            if (err == ENOENT || err == EBADF) {
+                SPDLOG_LOGGER_WARN(log,
+                    "KernelPoller::modify_interest_: fd={} vanished "
+                    "(errno={} {}) — registration gone",
+                    it->fd, err, std::strerror(err));
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::NotFound,
+                    "KernelPoller::modify_interest_: fd vanished"});
+            }
+            SPDLOG_LOGGER_ERROR(log,
+                "KernelPoller::modify_interest_: epoll_ctl(MOD) fd={} "
+                "events={:#x} failed: errno={} ({})",
+                it->fd, events, err, std::strerror(err));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "KernelPoller::modify_interest_: epoll_ctl(MOD) failed"});
+        }
+        SPDLOG_LOGGER_DEBUG(log,
+            "KernelPoller::modify_interest_: fd={} events={:#x}",
+            it->fd, events);
+        return {};
+    }
+
     // ── Poll ─────────────────────────────────────────────────────────────
 
     /// @brief Non-blocking poll. Drains all ready events and returns the

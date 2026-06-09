@@ -136,91 +136,28 @@ public:
                 "ByteSocket::connect: already open"});
         }
 
-        // SOCK_NONBLOCK | SOCK_CLOEXEC so fork()/exec() in another thread does
-        // not leak this fd, and we never block on connect().
-        const int s = ::socket(AF_INET,
-                               SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
-                               IPPROTO_TCP);
-        if (s < 0) {
-            SPDLOG_LOGGER_ERROR(log, "ByteSocket::connect: socket() failed: {}",
-                                std::strerror(errno));
-            return std::unexpected(core::ErrorInfo{
-                core::Error::ConnectFailed,
-                "ByteSocket::connect: socket() failed"});
-        }
-
-        // TCP_NODELAY by default — HFT bias, matches legacy SocketTransport.
-        // Previously the return value was silently discarded, which is a
-        // latency footgun: if setsockopt fails (EOPNOTSUPP on an unusual
-        // socket family, seccomp block, etc.) Nagle stays on and every
-        // small send pays the coalescing penalty. Continue on failure so
-        // an unusual environment doesn't become unusable, but WARN-log
-        // the errno so operators can notice.
-        int one = 1;
-        if (::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            SPDLOG_LOGGER_WARN(log,
-                "ByteSocket::connect: setsockopt(TCP_NODELAY) failed: "
-                "errno={} ({}) — Nagle may remain enabled",
-                errno, std::strerror(errno));
-        }
-
-        // Optional explicit local bind. The default-constructed SocketAddr
-        // has port=0 and ip=0.0.0.0, which is the no-op case (kernel picks
-        // both, same as if bind() were never called). Any non-zero field
-        // means the caller wants to pin part of the 5-tuple — typically the
-        // source port, so a paris-traceroute companion probe can hash into
-        // the same ECMP bucket. We do NOT set SO_REUSEADDR: this is a
-        // client-only socket, and a stale TIME_WAIT on the same 4-tuple is
-        // a real conflict the caller should learn about, not paper over.
-        if (local.port != 0 || local.ip.to_be32() != 0) {
-            struct sockaddr_in lsa{};
-            lsa.sin_family      = AF_INET;
-            lsa.sin_port        = ::htons(local.port);
-            lsa.sin_addr.s_addr = ::htonl(local.ip.to_be32());
-            if (::bind(s, reinterpret_cast<struct sockaddr*>(&lsa),
-                       sizeof(lsa)) != 0) {
-                const int err = errno;
-                ::close(s);
-                SPDLOG_LOGGER_WARN(log,
-                    "ByteSocket::connect: bind({}) failed: errno={} ({})",
-                    local.to_string(), err, std::strerror(err));
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::ConnectFailed,
-                    "ByteSocket::connect: bind() failed"});
-            }
-        }
-
-        struct sockaddr_in sa{};
-        sa.sin_family      = AF_INET;
-        sa.sin_port        = ::htons(addr.port);
-        sa.sin_addr.s_addr = ::htonl(addr.ip.to_be32());
-
         const auto start    = std::chrono::steady_clock::now();
         const auto deadline = start + timeout;
 
-        int rc = ::connect(s, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa));
-        if (rc == 0) {
+        // Issue the non-blocking connect. `begin_connect` opens the fd,
+        // applies TCP_NODELAY + optional local bind, and fires `connect(2)`.
+        auto begun = begin_connect(addr, local);
+        if (!begun) return std::unexpected(begun.error());
+        if (*begun) {
             // Loopback frequently completes synchronously.
-            fd_ = s;
             SPDLOG_LOGGER_DEBUG(log,
                 "ByteSocket::connect: immediate success fd={}", fd_);
             return {};
         }
-        if (errno != EINPROGRESS) {
-            const int err = errno;
-            ::close(s);
-            SPDLOG_LOGGER_ERROR(log,
-                "ByteSocket::connect: ::connect() failed: {}", std::strerror(err));
-            return std::unexpected(core::ErrorInfo{
-                core::Error::ConnectFailed,
-                "ByteSocket::connect: ::connect() failed"});
-        }
 
-        // Wait until writable or deadline, retrying on EINTR.
+        // Wait until writable or deadline, retrying on EINTR. The timed
+        // `poll(POLLOUT)` here is what makes this overload *blocking*; the
+        // completion decision itself is delegated to `poll_connect()` so the
+        // SO_ERROR logic has exactly one home shared with the async path.
         for (;;) {
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
-                ::close(s);
+                close();
                 SPDLOG_LOGGER_WARN(log,
                     "ByteSocket::connect: deadline expired ({}ms)",
                     timeout.count());
@@ -233,47 +170,202 @@ public:
                     deadline - now).count();
 
             struct pollfd pfd{};
-            pfd.fd     = s;
+            pfd.fd     = fd_;
             pfd.events = POLLOUT;
             const int pr = ::poll(&pfd, 1, static_cast<int>(remain_ms));
             if (pr < 0 && errno == EINTR) continue;
             if (pr <= 0) {
-                ::close(s);
+                close();
                 SPDLOG_LOGGER_WARN(log,
                     "ByteSocket::connect: poll timeout/error pr={}", pr);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Timeout,
                     "ByteSocket::connect: poll timed out"});
             }
-            break;
+
+            auto done = poll_connect();
+            if (!done) {
+                // Async connect failed (SO_ERROR) — close and surface.
+                close();
+                return std::unexpected(done.error());
+            }
+            if (*done) {
+                SPDLOG_LOGGER_DEBUG(log,
+                    "ByteSocket::connect: success fd={} addr={}",
+                    fd_, addr.to_string());
+                return {};
+            }
+            // Spurious POLLOUT without completion — loop and re-wait.
+        }
+    }
+
+    /// @brief Open a non-blocking socket and *initiate* a connect to `addr`
+    ///        without waiting for it to finish.
+    ///
+    /// This is the non-blocking primitive underneath the blocking `connect`
+    /// overload above and the higher-level `KernelTcpStream` connect state
+    /// machine. It opens the fd, sets TCP_NODELAY, applies the optional local
+    /// bind, and issues `connect(2)`. On success the fd is owned by this
+    /// `ByteSocket` (visible via `fd()`) whether or not the connect has
+    /// completed yet.
+    ///
+    /// @param addr   Remote endpoint.
+    /// @param local  Optional local bind (port/ip == 0 means "let the kernel
+    ///               choose", i.e. no bind).
+    /// @return `true`  — connect completed synchronously (typically loopback);
+    ///         `false` — connect is in progress (`EINPROGRESS`); the caller
+    ///                   should wait for writability (EPOLLOUT) and then call
+    ///                   `poll_connect()` to harvest the result.
+    ///         On any error the socket is closed again and `fd()` stays -1.
+    [[nodiscard]] std::expected<bool, core::ErrorInfo>
+    begin_connect(const SocketAddr& addr,
+                  const SocketAddr& local = SocketAddr{}) noexcept {
+        auto* log = byte_socket_logger();
+        if (fd_ >= 0) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::begin_connect: already open"});
         }
 
-        // Check SO_ERROR to distinguish success from async failure.
-        int so_err = 0;
-        socklen_t so_len = sizeof(so_err);
-        if (::getsockopt(s, SOL_SOCKET, SO_ERROR, &so_err, &so_len) != 0) {
+        // SOCK_NONBLOCK | SOCK_CLOEXEC so fork()/exec() in another thread does
+        // not leak this fd, and we never block on connect().
+        const int s = ::socket(AF_INET,
+                               SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
+                               IPPROTO_TCP);
+        if (s < 0) {
+            SPDLOG_LOGGER_ERROR(log, "ByteSocket::begin_connect: socket() failed: {}",
+                                std::strerror(errno));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::ConnectFailed,
+                "ByteSocket::begin_connect: socket() failed"});
+        }
+
+        // TCP_NODELAY by default — HFT bias, matches legacy SocketTransport.
+        // Continue on failure (unusual env) but WARN so operators notice the
+        // Nagle-coalescing latency footgun.
+        int one = 1;
+        if (::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+            SPDLOG_LOGGER_WARN(log,
+                "ByteSocket::begin_connect: setsockopt(TCP_NODELAY) failed: "
+                "errno={} ({}) — Nagle may remain enabled",
+                errno, std::strerror(errno));
+        }
+
+        // Optional explicit local bind. The default-constructed SocketAddr
+        // has port=0 and ip=0.0.0.0, the no-op case (kernel picks both). Any
+        // non-zero field means the caller wants to pin part of the 5-tuple —
+        // typically the source port. We do NOT set SO_REUSEADDR: this is a
+        // client-only socket and a stale TIME_WAIT on the same 4-tuple is a
+        // real conflict the caller should learn about, not paper over.
+        if (local.port != 0 || local.ip.to_be32() != 0) {
+            struct sockaddr_in lsa{};
+            lsa.sin_family      = AF_INET;
+            lsa.sin_port        = ::htons(local.port);
+            lsa.sin_addr.s_addr = ::htonl(local.ip.to_be32());
+            if (::bind(s, reinterpret_cast<struct sockaddr*>(&lsa),
+                       sizeof(lsa)) != 0) {
+                const int err = errno;
+                ::close(s);
+                SPDLOG_LOGGER_WARN(log,
+                    "ByteSocket::begin_connect: bind({}) failed: errno={} ({})",
+                    local.to_string(), err, std::strerror(err));
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::ConnectFailed,
+                    "ByteSocket::begin_connect: bind() failed"});
+            }
+        }
+
+        struct sockaddr_in sa{};
+        sa.sin_family      = AF_INET;
+        sa.sin_port        = ::htons(addr.port);
+        sa.sin_addr.s_addr = ::htonl(addr.ip.to_be32());
+
+        const int rc = ::connect(s, reinterpret_cast<struct sockaddr*>(&sa),
+                                 sizeof(sa));
+        if (rc == 0) {
+            fd_ = s;
+            SPDLOG_LOGGER_DEBUG(log,
+                "ByteSocket::begin_connect: immediate success fd={}", fd_);
+            return true;
+        }
+        if (errno != EINPROGRESS) {
+            const int err = errno;
             ::close(s);
             SPDLOG_LOGGER_ERROR(log,
-                "ByteSocket::connect: getsockopt(SO_ERROR) failed: {}",
+                "ByteSocket::begin_connect: ::connect() failed: {}",
+                std::strerror(err));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::ConnectFailed,
+                "ByteSocket::begin_connect: ::connect() failed"});
+        }
+
+        // In progress. We OWN the fd from here so `poll_connect()` can harvest
+        // the result and the dtor / `close()` reclaims it on any failure path.
+        fd_ = s;
+        SPDLOG_LOGGER_DEBUG(log,
+            "ByteSocket::begin_connect: in progress fd={} addr={}",
+            fd_, addr.to_string());
+        return false;
+    }
+
+    /// @brief Non-blocking probe for whether an in-progress `begin_connect`
+    ///        has completed.
+    ///
+    /// Does its own zero-timeout `poll(POLLOUT)` so it is self-contained
+    /// (correct whether or not the caller is epoll-driven). When the socket
+    /// is writable it reads `SO_ERROR` to distinguish success from async
+    /// failure — the canonical non-blocking-connect completion check.
+    ///
+    /// @return `true`  — connected (`SO_ERROR == 0`);
+    ///         `false` — still in progress (not yet writable / EINTR);
+    ///         `unexpected` — the async connect failed (`SO_ERROR != 0`) or
+    ///                        the socket is not in a connecting state.
+    /// On failure the fd is left open; the caller owns teardown (the blocking
+    /// `connect` wrapper closes it; the Stream layer transitions to Failed).
+    [[nodiscard]] std::expected<bool, core::ErrorInfo>
+    poll_connect() noexcept {
+        auto* log = byte_socket_logger();
+        if (fd_ < 0) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "ByteSocket::poll_connect: not connecting (fd closed)"});
+        }
+        struct pollfd pfd{};
+        pfd.fd     = fd_;
+        pfd.events = POLLOUT;
+        const int pr = ::poll(&pfd, 1, 0);
+        if (pr < 0) {
+            if (errno == EINTR) return false;  // transient — retry next cycle
+            SPDLOG_LOGGER_WARN(log,
+                "ByteSocket::poll_connect: poll() failed: errno={} ({})",
+                errno, std::strerror(errno));
+            return std::unexpected(core::ErrorInfo{
+                core::Error::ConnectFailed,
+                "ByteSocket::poll_connect: poll() failed"});
+        }
+        if (pr == 0) return false;  // not writable yet — connect still pending
+
+        int so_err = 0;
+        socklen_t so_len = sizeof(so_err);
+        if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_err, &so_len) != 0) {
+            SPDLOG_LOGGER_ERROR(log,
+                "ByteSocket::poll_connect: getsockopt(SO_ERROR) failed: {}",
                 std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
                 core::Error::ConnectFailed,
-                "ByteSocket::connect: getsockopt(SO_ERROR) failed"});
+                "ByteSocket::poll_connect: getsockopt(SO_ERROR) failed"});
         }
         if (so_err != 0) {
-            ::close(s);
             SPDLOG_LOGGER_WARN(log,
-                "ByteSocket::connect: async connect failed: {}",
+                "ByteSocket::poll_connect: async connect failed: {}",
                 std::strerror(so_err));
             return std::unexpected(core::ErrorInfo{
                 core::Error::ConnectFailed,
-                "ByteSocket::connect: SO_ERROR reported failure"});
+                "ByteSocket::poll_connect: SO_ERROR reported failure"});
         }
-
-        fd_ = s;
         SPDLOG_LOGGER_DEBUG(log,
-            "ByteSocket::connect: success fd={} addr={}", fd_, addr.to_string());
-        return {};
+            "ByteSocket::poll_connect: connected fd={}", fd_);
+        return true;
     }
 
     /// @brief Close the fd if open. Idempotent.
