@@ -146,9 +146,10 @@ TEST(ReconnectOrchKernelIntegration, ReconnectsAfterPeerClose) {
         factory, /*on_disc=*/{}, /*on_recon=*/{}, attach, detach,
     };
 
-    // First connect — server immediately drops the client.
+    // First connect — server immediately drops the client. With a non-blocking
+    // factory, start() leaves the orchestrator in Connecting; the poll loop
+    // below drives the handshake to Established (and the subsequent reconnect).
     ASSERT_TRUE(orch.start(eph::utils::TSC::now()).has_value());
-    ASSERT_EQ(orch.state(), en::ReconnectState::Connected);
 
     // Drive the loop until the orchestrator reaches Connected for the
     // SECOND time (count >= 2 means initial connect + 1 reconnect).

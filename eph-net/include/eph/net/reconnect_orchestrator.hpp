@@ -292,6 +292,17 @@ struct ReconnectConfig {
     ///        triggers the transition. UDP-style streams that have no
     ///        meaningful "closed" state should set this to `false`.
     bool auto_detect_via_state = true;
+
+    /// @brief Maximum time to wait, in the `Connecting` state, for a freshly
+    ///        produced stream to drive its (non-blocking) handshake to
+    ///        `Established` before the attempt is abandoned and the
+    ///        orchestrator falls back to `Backoff`. Guards against a stream
+    ///        that connects at the TCP level but stalls in TLS/WS, or a
+    ///        factory that returns a connecting stream the caller never
+    ///        drives to completion. A factory that returns an already-
+    ///        Established stream (blocking `create` / `connect_blocking`) is
+    ///        promoted immediately and never waits on this budget.
+    std::chrono::milliseconds connect_timeout{5000};
 };
 
 // ---------------------------------------------------------------------------
@@ -535,6 +546,7 @@ private:
     ReconnectState     state_;
     uint64_t           next_attempt_tsc_{0};  ///< Earliest TSC at which to attempt next factory call.
     uint64_t           disconnect_tsc_{0};    ///< TSC of the latest disconnect (for duration_ns).
+    uint64_t           connect_start_tsc_{0}; ///< TSC when the in-flight Connecting attempt's stream was produced (for connect_timeout).
     bool               stopped_{false};       ///< Set by `stop()`; gates `tick()`.
 
     // Cache-line-isolated atomics so a sink reader thread can scan without
@@ -546,6 +558,14 @@ private:
 
     void try_attempt_(uint64_t now_tsc) noexcept;
     void enter_backoff_(uint64_t now_tsc) noexcept;
+
+    /// @brief Promote the in-flight Connecting stream to Connected: record
+    ///        the cycle duration metrics, fire `on_reconnect`, emit the
+    ///        `Connected` event, and reset the backoff. Called from
+    ///        `try_attempt_` (when the factory returned an already-Established
+    ///        stream) or from `tick()` (when a connecting stream reaches
+    ///        Established).
+    void promote_to_connected_(uint64_t now_tsc) noexcept;
 
     /// @brief Emit a `ReconnectEvent` to the user-supplied hook (if any).
     ///        No-op when `on_event_` is empty. Centralised so call sites
@@ -656,10 +676,57 @@ inline void ReconnectOrchestrator<S>::tick(uint64_t now_tsc) noexcept {
         case ReconnectState::Idle:
         case ReconnectState::Failed:
             return;  // No-op
-        case ReconnectState::Connecting:
-            // Should not normally remain in Connecting across ticks — try_attempt_
-            // is synchronous. Defensive no-op for callers that subclass/override.
+        case ReconnectState::Connecting: {
+            // A non-blocking factory returns a stream that is still driving its
+            // handshake (TCP -> TLS -> WS). The caller's poll loop advances it;
+            // we watch its state() each tick and promote once it reaches
+            // Established, fall back to Backoff on failure or connect_timeout.
+            if (!stream_) return;  // defensive
+            const auto s = stream_->state();
+            if (s == TcpState::Established) {
+                promote_to_connected_(now_tsc);
+                return;
+            }
+            // Closed/Reset = handshake failed; SynSent/SynReceived = still in
+            // flight. Distinguish a genuine failure (Closed) and a timeout
+            // (still handshaking past connect_timeout) from normal progress.
+            const uint64_t elapsed_cycles =
+                (now_tsc >= connect_start_tsc_) ? (now_tsc - connect_start_tsc_) : 0;
+            const auto elapsed_ns_opt = eph::utils::TSC::to_ns(elapsed_cycles);
+            const bool timed_out =
+                elapsed_ns_opt &&
+                static_cast<uint64_t>(*elapsed_ns_opt) >
+                    static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            cfg_.connect_timeout).count());
+            const bool failed = (s == TcpState::Closed);
+            if (failed || timed_out) {
+                SPDLOG_LOGGER_WARN(detail::reconnect_logger(),
+                    "ReconnectOrchestrator: connect attempt {} (reason={}, "
+                    "state={})",
+                    failed ? "failed" : "timed out",
+                    failed ? "stream closed" : "connect_timeout",
+                    tcp_state_name(s));
+                if (detach_ && stream_) detach_(stream_.get());
+                const eph::core::ErrorInfo why{
+                    failed ? eph::core::Error::ConnectFailed
+                           : eph::core::Error::Timeout,
+                    failed ? "ReconnectOrchestrator: handshake failed"
+                           : "ReconnectOrchestrator: connect_timeout exceeded"};
+                if (on_disconnect_) on_disconnect_(why);
+                stream_.reset();
+                metrics_[static_cast<std::size_t>(
+                             ReconnectMetric::kReconnectFailures)]
+                    .fetch_add(1, std::memory_order_relaxed);
+                emit_event_(ReconnectEventKind::AttemptFailed, now_tsc,
+                            /*duration_ns=*/0, why);
+                // Measure the next cycle's duration from this failure point.
+                disconnect_tsc_ = now_tsc;
+                enter_backoff_(now_tsc);
+            }
+            // else: still handshaking — keep waiting.
             return;
+        }
         case ReconnectState::Connected: {
             if (!cfg_.auto_detect_via_state || !stream_) return;
             const auto s = stream_->state();
@@ -793,8 +860,27 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
         }
     }
 
-    // Success — promote to Connected, record metrics, fire user callback.
+    // Stream produced + attached. With a non-blocking factory the stream is
+    // still driving its handshake; remain in Connecting and let tick() promote
+    // it once it reaches Established. A blocking factory (classic create /
+    // connect_blocking) returns an already-Established stream, which we promote
+    // immediately so those callers observe Connected without an extra tick.
     stream_ = std::move(fresh);
+    connect_start_tsc_ = now_tsc;
+    state_ = ReconnectState::Connecting;
+    if (stream_->state() == TcpState::Established) {
+        promote_to_connected_(now_tsc);
+    } else {
+        SPDLOG_LOGGER_DEBUG(log,
+            "ReconnectOrchestrator: stream produced, awaiting handshake "
+            "(state={})", tcp_state_name(stream_->state()));
+    }
+}
+
+template <Stream S>
+inline void
+ReconnectOrchestrator<S>::promote_to_connected_(uint64_t now_tsc) noexcept {
+    auto* log = detail::reconnect_logger();
     state_ = ReconnectState::Connected;
 
     const uint64_t cycles = (now_tsc >= disconnect_tsc_)
@@ -820,11 +906,9 @@ inline void ReconnectOrchestrator<S>::try_attempt_(uint64_t now_tsc) noexcept {
 
     // Emit Connected with the full duration_ns payload (matches the
     // legacy on_reconnect_ second arg and the `last_reconnect_duration_ns`
-    // metric — see EventDurationMatchesMetric test). The event's `attempt`
-    // field is filled by emit_event_ from `policy_.attempts() + 1` and
-    // snapshots the value BEFORE policy_.reset() runs below — so a
-    // first-success Connected reports `attempt=1`, matching the legacy
-    // `attempt` variable on line above.
+    // metric). The event's `attempt` field is filled by emit_event_ from
+    // `policy_.attempts() + 1` and snapshots the value BEFORE policy_.reset()
+    // runs below — so a first-success Connected reports `attempt=1`.
     emit_event_(ReconnectEventKind::Connected, now_tsc, dur_ns);
 
     policy_.reset();

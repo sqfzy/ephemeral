@@ -142,7 +142,10 @@ TEST(BybitAdapterIntegration, PublicChannelHappyPathConnectAndReconnect) {
         GTEST_SKIP() << "Bybit-fixture initial connect failed: "
                      << sr.error().detail;
     }
-    if (orch.state() != en::ReconnectState::Connected) {
+    // Non-blocking connect: drive the poll loop until the handshake completes.
+    if (!drive_until(*poller, orch, [&]() {
+            return orch.state() == en::ReconnectState::Connected;
+        }, 5s)) {
         GTEST_SKIP() << "Bybit-fixture: orchestrator did not reach Connected "
                         "(state=" << en::to_string(orch.state()) << ")";
     }
