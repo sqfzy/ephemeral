@@ -160,6 +160,19 @@ The scope decisions for the current feature set are archived in
   `eph-net-dpdk/docs/dpdk-daemon-deployment.md` /
   `dpdk-multiprocess.md` / `dpdk-reconnect-pattern.md` for the
   ops / architecture / reconnect stories.
+- `eph-sbe` — header-only, decode-only Simple Binary Encoding parser
+  (sibling of `eph-itch`; depends only on `eph-core`). Schema-independent
+  core (`eph::sbe::parse` → zero-copy `MessageView`, little-endian
+  `read_le16/32/64` + signed reads, `read_var_string8`, `decode_decimal`
+  for `mantissa × 10^exponent`, `read_group_header` for
+  `groupSize16Encoding`, template-id `dispatch`) plus a Binance spot
+  schema 3:2 layer (`eph::sbe::binance::book_ticker` accessors +
+  `for_each_ticker` repeating-group walk; optional bid/ask →
+  `std::optional`, null sentinel `INT64_MIN`; `is_supported` schema
+  guard). Field offsets derive from the vendored authoritative
+  `eph-sbe/schemas/spot_3_2.xml`. Decode-only — no encode, no nested
+  groups, no other schemas. Corrects the previously illustrative (and
+  wrong) SBE layout in `docs/binance-protocols.md`.
 
 Deliberately **not** included: `Gateway`, `CircuitBreaker`,
 chunked HTTP, SOCKS5 proxy. See `.artifacts/phase-9-scope-decision.md` for rationale
@@ -287,12 +300,16 @@ sudo ./benchmarks/latency/lat udp --dpdk    # raw UDP RTT, DPDK client
 sudo ./benchmarks/latency/lat ex_market     # exchange bookTicker push
 ```
 
-Configuration is a single INI-style `benchmarks/latency/bench.conf`: lowercase global
-keys (NIC/IP/CPU layout, `warmup_samples`) before the first section header, then one
-`[lat_<scenario>]` section per binary (`port`, `payload_size`, `duration_seconds`,
-push-scenario `mockex_params` / `mockex_payload` / `mockex_seed`, optional
-`endpoint = wss://...` for real-server mode). Both the C++ client and mockex read the
-same file via `bench::ScenarioConfig`.
+Configuration is a single TOML file `benchmarks/latency/config.toml` (replaces the
+pre-v3 `bench.conf`; the C++ reader is still named `bench::load_bench_conf` for
+historical continuity). Machine-level tables come first — `[networking]`
+(`nic_a`/`nic_b`/`server_ip`/`client_ip`/`gateway_ip`/`netmask`), `[cpu]`,
+`[measurement]` (`warmup_samples`), `[dpdk.rss]`, `[tls]` — then one
+`[scenarios.lat_<scenario>]` table per binary (`port`, `payload_size`,
+`duration_seconds`, push-scenario `mockex_params` / `mockex_payload` / `mockex_seed`,
+optional `endpoint = "wss://..."` for real-server mode). Both the C++ client and mockex
+read the same file via `bench::ScenarioConfig`; pass an alternate path with `--config`
+or `$BENCH_CONFIG`.
 
 Exception to the canonical TSC rule: bench client and mockex both read
 `clock_gettime(CLOCK_MONOTONIC_RAW)` via `bench::monotonic_raw_ns()` so they share a
@@ -314,14 +331,14 @@ eph-utils  ←  eph-containers
              ┌─────┴──────┬─────────────────┐
              ↓            ↓                 ↓
         eph-codec     eph-net          eph-fix / eph-itch /
-     (WsCodec,      (Stream /          eph-json / eph-book
-      RawStream-    Datagram /         (all parser modules
-      Codec,        Pollable /         keep the legacy
-      Mold64-       Poller concepts,   framer API; they still
-      Codec, …)     SocketAddr,        satisfy the Codec
-                    Reconnect-         concept so they plug into
-                    Orchestrator,      eph-net-kernel / -dpdk)
-                    test mocks, TLS
+     (WsCodec,      (Stream /          eph-sbe / eph-json /
+      RawStream-    Datagram /         eph-book
+      Codec,        Pollable /         (all parser modules
+      Mold64-       Poller concepts,   keep the legacy
+      Codec, …)     SocketAddr,        framer API; they still
+                    Reconnect-         satisfy the Codec
+                    Orchestrator,      concept so they plug into
+                    test mocks, TLS    eph-net-kernel / -dpdk)
                     session detail)
                          ↑
                 ┌────────┴────────┐
@@ -339,8 +356,8 @@ Key rules:
   other. Pick one (or both) in your application target.
 - `eph-net` does NOT depend on `eph-codec`: codecs are template parameters. A consumer
   links `eph-net-kernel` (or `-dpdk`) plus whichever codec modules it needs.
-- `eph-fix`, `eph-itch`, `eph-json`, `eph-book` still depend only on `eph-core` and
-  `eph-utils`. They never transitively pull in networking.
+- `eph-fix`, `eph-itch`, `eph-sbe`, `eph-json`, `eph-book` still depend only on `eph-core`
+  and `eph-utils`. They never transitively pull in networking.
 - All DPDK build weight (vfio-pci, hugepages, `apply_dpdk_pmd_linkgroups()`) is
   confined to `eph-net-dpdk`. Kernel-only users are fully immune.
 

@@ -227,6 +227,7 @@ check_symbol_refs() {
             "$REPO_ROOT/eph-net-dpdk/" \
             "$REPO_ROOT/eph-fix/" \
             "$REPO_ROOT/eph-itch/" \
+            "$REPO_ROOT/eph-sbe/" \
             "$REPO_ROOT/eph-json/" \
             "$REPO_ROOT/eph-book/" \
             "$REPO_ROOT/eph-containers/" \
