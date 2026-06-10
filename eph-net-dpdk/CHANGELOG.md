@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### BREAKING (2026-06-10) — `DpdkTcpStream::create()` is now non-blocking
+
+`create()` validates config, issues a non-blocking `TcpSession::begin_connect()`
+and returns a stream in `handshake_phase() == TcpConnecting`. The
+TCP → TLS → WS handshake is driven across poll cycles by `poll_once_()`
+(single-stream / `connect_blocking`) or `process_burst_()` (multi-stream
+`DpdkPoller` — the Poller routes the SYN-ACK / TLS / WS packets to the stream by
+5-tuple, so a reconnect never blocks the lcore burst loop). `state()` masks the
+TLS/WS legs to `SynSent` (the TCP session reports Established after just the
+3-way) so callers see Established only once the whole chain is up.
+
+Migration: call `s->connect_blocking(timeout)` after `create()` for the old
+ready-on-return behaviour, or attach to a `DpdkPoller` and drive `poll()` until
+`s->handshake_phase() == HandshakePhase::Established`. `create_and_attach`
+attaches the connecting stream; the handshake completes via the Poller. See
+`eph-net/CHANGELOG.md` for the cross-module details.
+
+New on `TcpSession`: `begin_connect()` / `connect_step()` (non-blocking connect
+primitives; blocking `connect()` is now a thin wrapper) and `feed_rx()` /
+`set_feed_only()` (lets the Poller hand routed payload to the handshake legs so
+the session does not self-burst a queue the Poller owns). On `TlsState`:
+`begin_handshake()` / `handshake_step()`.
+
 ### Changed (2026-06-05) — rename + relocate the RSS queue probes (tooling, not API)
 
 The empirical src_port→RX-queue finders are renamed to a symmetric pair and the
