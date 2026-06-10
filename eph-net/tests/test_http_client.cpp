@@ -268,6 +268,8 @@ struct ClientFixture : public ::testing::Test {
         auto sr = PlainStream::create(cfg);
         ASSERT_TRUE(sr.has_value()) << sr.error().detail;
         auto stream = std::move(*sr);
+        // create() is non-blocking; HttpClient requires an Established stream.
+        ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
 
         ASSERT_TRUE(poller->add(stream.get()).has_value());
         client = std::make_unique<Client>(std::move(stream));
@@ -545,6 +547,8 @@ TEST_F(ClientFixture, TooLargeBodyRejected) {
         auto sr = PlainStream::create(cfg);
         ASSERT_TRUE(sr.has_value()) << sr.error().detail;
         auto stream = std::move(*sr);
+        // create() is non-blocking; HttpClient requires an Established stream.
+        ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
         ASSERT_TRUE(poller->add(stream.get()).has_value());
 
         en::HttpClientConfig hcfg{};
