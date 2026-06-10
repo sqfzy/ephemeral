@@ -549,8 +549,11 @@ TEST(StreamConfigValidation, Ws_NonEmptyPathCausesCreateToDriveHandshake) {
     auto cfg = make_valid_config(echo);
     cfg.ws.path = "/ws/feed";
     cfg.ws.timeout = std::chrono::milliseconds{500};
+    // create() is non-blocking; the WS handshake (and its failure against the
+    // close-on-accept server) is driven by connect_blocking().
     auto r = PlainStream::create(cfg);
-    EXPECT_FALSE(r.has_value());
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    EXPECT_FALSE((*r)->connect_blocking(std::chrono::seconds{2}).has_value());
 }
 
 TEST(StreamConfigValidation, Ws_PathAndHostTogether) {
@@ -560,8 +563,9 @@ TEST(StreamConfigValidation, Ws_PathAndHostTogether) {
     cfg.ws.host = "example.com";
     cfg.ws.timeout = std::chrono::milliseconds{500};
     auto r = PlainStream::create(cfg);
-    // Server closes immediately → failure, but field is consumed.
-    EXPECT_FALSE(r.has_value());
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    // Server closes immediately → handshake failure via connect_blocking().
+    EXPECT_FALSE((*r)->connect_blocking(std::chrono::seconds{2}).has_value());
 }
 
 TEST(StreamConfigValidation, Ws_ExtraHeadersStored) {
@@ -602,9 +606,18 @@ TEST(StreamConfigValidation, Proxy_Ipv4LiteralHostReachesTcpConnect) {
     p.timeout = std::chrono::milliseconds{200};
     cfg.proxy = p;
     cfg.connect_timeout = std::chrono::milliseconds{200};
+    // The unreachable proxy surfaces either synchronously or via
+    // connect_blocking() — both as ProxyConnectFailed.
     auto r = PlainStream::create(cfg);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, eph::core::Error::ProxyConnectFailed);
+    eph::core::Error code{};
+    if (!r) {
+        code = r.error().code;
+    } else {
+        auto cr = (*r)->connect_blocking(std::chrono::seconds{1});
+        ASSERT_FALSE(cr.has_value());
+        code = cr.error().code;
+    }
+    EXPECT_EQ(code, eph::core::Error::ProxyConnectFailed);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -96,6 +96,7 @@ TEST(KernelIntegration, FullEchoCycleViaPoller) {
     cfg.remote         = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     cfg.reasm_capacity = 16 * 1024;
     auto stream = PlainStream::create(cfg).value();
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
 
     std::vector<uint8_t> captured;
     stream->on_message = [&](std::span<const uint8_t> app_frame) {
@@ -183,6 +184,7 @@ TEST(KernelIntegration, TcpAndUdpOnSinglePoller) {
     ek::StreamConfig scfg{};
     scfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, tcp_port};
     auto tcp_stream = PlainStream::create(scfg).value();
+    ASSERT_TRUE(tcp_stream->connect_blocking(std::chrono::seconds{2}).has_value());
     std::vector<uint8_t> tcp_captured;
     tcp_stream->on_message = [&](std::span<const uint8_t> app_frame) {
         tcp_captured.insert(tcp_captured.end(), app_frame.begin(), app_frame.end());
