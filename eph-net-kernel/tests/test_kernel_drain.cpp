@@ -169,6 +169,7 @@ TEST(KernelTcpStreamDrain, SuccessFlushesPendingTxAndStateGoesClosed) {
     std::thread server_th(&CountingEchoServer::run, &server);
 
     auto s = PlainRawStream::create(make_cfg(listener.port)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
 
     // Send a tail payload that would otherwise risk being lost on close
@@ -207,6 +208,7 @@ TEST(KernelTcpStreamDrain, NotEstablishedReturnsInvalidConfig) {
     std::thread server_th(&CountingEchoServer::run, &server);
 
     auto s = PlainRawStream::create(make_cfg(listener.port)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
     // First drain succeeds; state -> Closed.
     ASSERT_TRUE(s->drain(std::chrono::milliseconds{1000}).has_value());
@@ -229,6 +231,7 @@ TEST(KernelTcpStreamDrain, ZeroOrNegativeTimeoutReturnsInvalidConfig) {
     std::thread server_th(&CountingEchoServer::run, &server);
 
     auto s = PlainRawStream::create(make_cfg(listener.port)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
 
     auto dr = s->drain(std::chrono::milliseconds{0});
@@ -252,6 +255,7 @@ TEST(KernelTcpStreamDrain, TimeoutBumpsRxSessionResetsAndStateClosed) {
     std::thread server_th(&StalledServer::run, &server);
 
     auto s = PlainRawStream::create(make_cfg(listener.port)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
     ASSERT_EQ(s->metric(en::StreamMetric::kRxSessionResets), 0u);
 

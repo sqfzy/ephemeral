@@ -454,14 +454,14 @@ public:
                 interval_secs, stream->cfg_.keepalive.probes);
         }
 
-        // Overall deadline for the whole connect+handshake chain. Each enabled
-        // leg's configured timeout contributes; poll_once_ fails the stream if
-        // the chain has not reached Established by then.
-        auto budget = stream->cfg_.connect_timeout;
-        if constexpr (EnableTls) budget += stream->cfg_.tls.handshake_timeout;
-        if (!stream->cfg_.ws.path.empty()) budget += stream->cfg_.ws.timeout;
+        // Per-leg deadline: the TCP leg gets connect_timeout; each subsequent
+        // leg resets connect_deadline_ to its own configured budget (TLS in
+        // advance_after_tcp_, WS in enter_ws_) so a stall in any leg is bound
+        // by THAT leg's timeout — matching the historical blocking behaviour
+        // (e.g. ws.timeout enforced tightly on a server that accepts but never
+        // sends the 101).
         stream->connect_deadline_ =
-            std::chrono::steady_clock::now() + budget;
+            std::chrono::steady_clock::now() + stream->cfg_.connect_timeout;
 
         stream->state_ = TcpState::SynSent;
         if (*br) {
@@ -1049,13 +1049,19 @@ public:
             }
             (void)poll_once_();  // advance one handshake step
             if (hs_phase_ == HandshakePhase::Established) break;
-            // Wait for readability / writability before the next step.
+            // Wait for readability / writability before the next step. Bound
+            // the wait by the SOONER of our own deadline and the stream's
+            // per-leg connect_deadline_ — otherwise a stalled leg (e.g. an
+            // unreachable peer that never makes the socket writable) would
+            // block here past the leg's timeout instead of letting
+            // drive_handshake_ fire it.
             struct pollfd pfd{};
             pfd.fd     = sock_.fd();
             pfd.events = POLLIN | POLLOUT;
+            const auto wait_until = std::min(deadline, connect_deadline_);
             const auto remain =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
-                    deadline - std::chrono::steady_clock::now()).count();
+                    wait_until - std::chrono::steady_clock::now()).count();
             ::poll(&pfd, 1, static_cast<int>(remain < 0 ? 0 : remain));
         }
         return {};
@@ -1371,7 +1377,16 @@ private:
         switch (hs_phase_) {
             case HandshakePhase::TcpConnecting: {
                 auto r = sock_.poll_connect();
-                if (!r) { fail_handshake_(r.error()); return; }
+                if (!r) {
+                    // The TCP target is the proxy when one is configured —
+                    // surface its failure as ProxyConnectFailed to match the
+                    // blocking path's diagnostic.
+                    fail_handshake_(cfg_.proxy.has_value()
+                        ? core::ErrorInfo{core::Error::ProxyConnectFailed,
+                              "KernelTcpStream: TCP connect to proxy failed"}
+                        : r.error());
+                    return;
+                }
                 if (!*r) return;  // still connecting
                 hs_phase_ = HandshakePhase::TcpConnected;
                 advance_after_tcp_();
@@ -1409,6 +1424,9 @@ private:
             if (!run_proxy_connect_()) return;  // sets Failed on error
         }
         if constexpr (EnableTls) {
+            // TLS leg gets its own deadline (handshake_timeout).
+            connect_deadline_ = std::chrono::steady_clock::now()
+                              + cfg_.tls.handshake_timeout;
             auto b = tls_.begin_handshake(sock_, cfg_.tls);
             if (!b) { fail_handshake_(b.error()); return; }
             hs_phase_ = HandshakePhase::TlsHandshaking;
@@ -1427,6 +1445,8 @@ private:
 
     /// @brief Build the WS handshake driver + sink and enter WsHandshaking.
     void enter_ws_() noexcept {
+        // WS leg gets its own deadline (ws.timeout).
+        connect_deadline_ = std::chrono::steady_clock::now() + cfg_.ws.timeout;
         // Host header: explicit ws.host, else TLS SNI, else numeric remote.
         ws_host_storage_.clear();
         if (!cfg_.ws.host.empty()) {

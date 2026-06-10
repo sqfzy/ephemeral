@@ -219,6 +219,7 @@ TEST(KernelTcpStreamBehavioral, Connect_SuccessfulToLocalEcho) {
     ASSERT_NE(srv, nullptr);
     auto r = PlainRawStream::create(cfg_for(*srv));
     ASSERT_TRUE(r.has_value()) << r.error().detail;
+    ASSERT_TRUE((*r)->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ((*r)->state(), en::TcpState::Established);
 }
 
@@ -238,6 +239,7 @@ TEST(KernelTcpStreamBehavioral, Connect_FdIsValidAfterCreate) {
 TEST(KernelTcpStreamBehavioral, Connect_NotAttachedUntilPollerAdds) {
     auto srv = make_running_echo();
     auto s = PlainRawStream::create(cfg_for(*srv)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_FALSE(s->is_attached());
     EXPECT_EQ(s->state(), en::TcpState::Established);
 }
@@ -249,11 +251,18 @@ TEST(KernelTcpStreamBehavioral, Connect_ToUnreachablePortFails) {
     cfg.connect_timeout = std::chrono::milliseconds{300};
     cfg.reasm_capacity  = 4096;
     auto r = PlainRawStream::create(cfg);
-    EXPECT_FALSE(r.has_value());
+    // Non-blocking create(): the refusal surfaces either synchronously (create
+    // fails) or via connect_blocking(). Either way the code is ConnectFailed
+    // (or Disconnected on some glibcs depending on ByteSocket's mapping).
+    eph::core::Error code{};
     if (!r) {
-        // Kernel returns ECONNREFUSED — surfaced as ConnectFailed (or
-        // Disconnected on some glibcs depending on how ByteSocket maps it).
-        const auto code = r.error().code;
+        code = r.error().code;
+    } else {
+        auto cr = (*r)->connect_blocking(std::chrono::seconds{1});
+        ASSERT_FALSE(cr.has_value());
+        code = cr.error().code;
+    }
+    {
         EXPECT_TRUE(code == eph::core::Error::ConnectFailed
                  || code == eph::core::Error::Disconnected);
     }
@@ -281,6 +290,7 @@ TEST(KernelTcpStreamBehavioral, Connect_StateStartsClosedBeforeCreate) {
 TEST(KernelTcpStreamBehavioral, Connect_EstablishedAfterSuccessfulTcp) {
     auto srv = make_running_echo();
     auto s = PlainRawStream::create(cfg_for(*srv)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ(s->state(), en::TcpState::Established);
 }
 
@@ -288,6 +298,7 @@ TEST(KernelTcpStreamBehavioral, Connect_DestructorClosesCleanly) {
     auto srv = make_running_echo();
     {
         auto s = PlainRawStream::create(cfg_for(*srv)).value();
+        ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
         EXPECT_GE(s->fd(), 0);
         // scope exit -> destructor runs, fd closes.
     }
@@ -323,6 +334,8 @@ TEST(KernelTcpStreamBehavioral, Connect_MultipleSequentialStreamsIndependent) {
     auto srv2 = make_running_echo();
     auto s1 = PlainRawStream::create(cfg_for(*srv1)).value();
     auto s2 = PlainRawStream::create(cfg_for(*srv2)).value();
+    ASSERT_TRUE(s1->connect_blocking(std::chrono::seconds{2}).has_value());
+    ASSERT_TRUE(s2->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_NE(s1->fd(), s2->fd());
     EXPECT_EQ(s1->state(), en::TcpState::Established);
     EXPECT_EQ(s2->state(), en::TcpState::Established);
@@ -335,10 +348,14 @@ TEST(KernelTcpStreamBehavioral, Connect_TimeoutIsRespectedForUnreachable) {
     cfg.remote = en::SocketAddr{en::Ipv4Addr{192, 0, 2, 1}, 65000};
     cfg.connect_timeout = std::chrono::milliseconds{100};
     cfg.reasm_capacity  = 4096;
-    const auto t0 = std::chrono::steady_clock::now();
+    // create() is non-blocking; the connect_timeout is enforced during the
+    // drive (connect_blocking here). create() returns a connecting stream.
     auto r = PlainRawStream::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto cr = (*r)->connect_blocking(std::chrono::seconds{3});
     const auto elapsed = std::chrono::steady_clock::now() - t0;
-    EXPECT_FALSE(r.has_value());
+    EXPECT_FALSE(cr.has_value());
     // Should not have hung — 3 s absolute upper bound is forgiving.
     EXPECT_LT(elapsed, std::chrono::seconds{3});
 }
@@ -368,6 +385,9 @@ struct SendRecvHarness {
         auto cfg = cfg_for(*server);
         cfg.reasm_capacity = reasm;
         stream = PlainRawStream::create(cfg).value();
+        // create() is non-blocking: drive the TCP handshake to Established
+        // before the data-plane tests start sending.
+        (void)stream->connect_blocking(std::chrono::seconds{2});
         stream->on_message = [this](std::span<const uint8_t> app_frame) {
             received.insert(received.end(), app_frame.begin(), app_frame.end());
         };
@@ -407,6 +427,7 @@ TEST(KernelTcpStreamBehavioral, Send_ReturnsBytesSent) {
 TEST(KernelTcpStreamBehavioral, Send_BeforeAttachReturnsNotAttached) {
     auto srv = make_running_echo();
     auto s = PlainRawStream::create(cfg_for(*srv)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     const uint8_t p[] = {1, 2, 3};
     auto r = s->send(p);
     ASSERT_FALSE(r.has_value());
@@ -668,6 +689,7 @@ TEST(KernelTcpStreamBehavioral, Close_PollerSizeZeroAfterLastRemove) {
 TEST(KernelTcpStreamBehavioral, Close_CloseWhileSendInFlightReturnsDisconnected) {
     auto srv = make_running_echo();
     auto s = PlainRawStream::create(cfg_for(*srv)).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     auto poller = ek::KernelPoller::create().value();
     ASSERT_TRUE(poller->add(s.get()).has_value());
     const uint8_t p[] = {'a'};
@@ -741,10 +763,19 @@ TEST(KernelTcpStreamBehavioral, Err_UnreachableConnectDetailIsNonEmpty) {
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 1};
     cfg.connect_timeout = std::chrono::milliseconds{200};
     cfg.reasm_capacity  = 4096;
+    // Non-blocking create(): the connect error surfaces either synchronously
+    // or via connect_blocking(). Capture whichever carries the detail string.
     auto r = PlainRawStream::create(cfg);
-    ASSERT_FALSE(r.has_value());
-    ASSERT_NE(r.error().detail, nullptr);
-    EXPECT_NE(*r.error().detail, '\0');
+    eph::core::ErrorInfo err{eph::core::Error::Ok, ""};
+    if (!r) {
+        err = r.error();
+    } else {
+        auto cr = (*r)->connect_blocking(std::chrono::seconds{1});
+        ASSERT_FALSE(cr.has_value());
+        err = cr.error();
+    }
+    ASSERT_NE(err.detail, nullptr);
+    EXPECT_NE(*err.detail, '\0');
 }
 
 TEST(KernelTcpStreamBehavioral, Err_PeerResetFlipsStateToClosed) {
@@ -780,13 +811,15 @@ TEST(KernelTcpStreamBehavioral, Err_PollerAddNullptrIsInvalidConfig) {
     EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
 }
 
-TEST(KernelTcpStreamBehavioral, Err_PollerRemoveUnregisteredIsInvalidConfig) {
+TEST(KernelTcpStreamBehavioral, Err_PollerRemoveUnregisteredIsNotFound) {
     auto srv = make_running_echo();
     auto s = PlainRawStream::create(cfg_for(*srv)).value();
     auto poller = ek::KernelPoller::create().value();
     auto r = poller->remove(s.get());
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, eph::core::Error::InvalidConfig);
+    // Removing a never-registered pollable is a recoverable state mismatch
+    // (NotFound), symmetric with DpdkPoller::remove — see poller.hpp.
+    EXPECT_EQ(r.error().code, eph::core::Error::NotFound);
 }
 
 TEST(KernelTcpStreamBehavioral, Err_PollerAddDuplicateIsInvalidConfig) {

@@ -317,6 +317,8 @@ TEST(KernelProxyIntegration, HappyPathStreamEstablished) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // create() is non-blocking: drive the proxy CONNECT + tunnel to Established.
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{3}).has_value());
     EXPECT_EQ(stream->state(), en::TcpState::Established);
     stream.reset();
 
@@ -341,9 +343,12 @@ TEST(KernelProxyIntegration, ProxyRejectsWithAuthRequired) {
     pcfg.timeout = std::chrono::seconds{1};
     cfg.proxy = pcfg;
 
+    // create() is non-blocking; the 407 surfaces via connect_blocking().
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::ProxyAuthRequired);
+    ASSERT_TRUE(stream_r.has_value()) << stream_r.error().detail;
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{2});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::ProxyAuthRequired);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -358,9 +363,18 @@ TEST(KernelProxyIntegration, ProxyUnreachableIsProxyConnectFailed) {
     cfg.proxy = pcfg;
     cfg.connect_timeout = std::chrono::milliseconds{400};
 
+    // Non-blocking create(): the unreachable proxy surfaces either
+    // synchronously or via connect_blocking() — both as ProxyConnectFailed.
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::ProxyConnectFailed);
+    eph::core::Error code{};
+    if (!stream_r) {
+        code = stream_r.error().code;
+    } else {
+        auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{2});
+        ASSERT_FALSE(cr.has_value());
+        code = cr.error().code;
+    }
+    EXPECT_EQ(code, eph::core::Error::ProxyConnectFailed);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -380,6 +394,7 @@ TEST(KernelProxyIntegration, WithoutProxyBackwardsCompatible) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ(stream->state(), en::TcpState::Established);
     stream.reset();
     up_thread.join();
@@ -414,6 +429,8 @@ TEST(KernelProxyIntegration, PostTunnelEchoRoundTrip) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // Drive the proxy CONNECT + tunnel up before the data-plane round-trip.
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{3}).has_value());
 
     auto poller_r = ek::KernelPoller::create();
     ASSERT_TRUE(poller_r.has_value());
@@ -463,9 +480,12 @@ TEST(KernelProxyIntegration, ProxyBadGatewayIsHandshakeFailed) {
     pcfg.timeout = std::chrono::seconds{1};
     cfg.proxy = pcfg;
 
+    // create() is non-blocking; the 502 surfaces via connect_blocking().
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::ProxyHandshakeFailed);
+    ASSERT_TRUE(stream_r.has_value()) << stream_r.error().detail;
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{2});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::ProxyHandshakeFailed);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

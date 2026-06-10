@@ -193,6 +193,8 @@ TEST(KernelWsUpgrade, PlainHandshakeSucceedsAndStreamEstablished) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // create() is non-blocking: drive TCP + WS handshake to completion.
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ(stream->state(), en::TcpState::Established);
 
     stream.reset();  // triggers close and lets the server thread exit.
@@ -213,9 +215,16 @@ TEST(KernelWsUpgrade, ConnectFailureBubblesUp) {
     cfg.ws.host = "localhost";
     cfg.connect_timeout = std::chrono::milliseconds{300};
 
+    // create() is non-blocking. A closed loopback port may surface the
+    // refusal either synchronously (create fails) or via connect_blocking().
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::ConnectFailed);
+    if (!stream_r) {
+        EXPECT_EQ(stream_r.error().code, eph::core::Error::ConnectFailed);
+        return;
+    }
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{1});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::ConnectFailed);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -232,9 +241,13 @@ TEST(KernelWsUpgrade, WrongServerResponseFailsHandshake) {
     cfg.ws.path = "/ws";
     cfg.ws.host = "localhost";
 
+    // create() succeeds (connecting); the WS-handshake failure now surfaces
+    // via connect_blocking() once the server's bad response is parsed.
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::WsHandshakeFailed);
+    ASSERT_TRUE(stream_r.has_value()) << stream_r.error().detail;
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{2});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::WsHandshakeFailed);
 
     server.join();
     ::close(lfd);
@@ -270,6 +283,7 @@ TEST(KernelWsUpgrade, EmptyWsPathSkipsHandshake) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ(stream->state(), en::TcpState::Established);
     stream.reset();
     server.join();
@@ -294,6 +308,7 @@ TEST(KernelWsUpgrade, PostHandshakeEchoRoundTrips) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
 
     auto poller = ek::KernelPoller::create().value();
 
@@ -335,9 +350,13 @@ TEST(KernelWsUpgrade, MissingUpgradeHeaderFailsHandshake) {
     cfg.ws.path = "/ws";
     cfg.ws.host = "localhost";
 
+    // create() succeeds (connecting); the WS-handshake failure now surfaces
+    // via connect_blocking() once the server's bad response is parsed.
     auto stream_r = PlainStream::create(cfg);
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::WsHandshakeFailed);
+    ASSERT_TRUE(stream_r.has_value()) << stream_r.error().detail;
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{2});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::WsHandshakeFailed);
 
     server.join();
     ::close(lfd);
@@ -379,12 +398,17 @@ TEST(KernelWsUpgrade, WsTimeoutIsEnforcedWhenServerStalls) {
     cfg.ws.host    = "localhost";
     cfg.ws.timeout = std::chrono::milliseconds{150};
 
-    const auto start = std::chrono::steady_clock::now();
+    // create() is non-blocking; the WS leg's ws.timeout is now enforced
+    // during connect_blocking() (per-leg deadline reset when entering the WS
+    // leg). Measure the time connect_blocking() takes to surface the timeout.
     auto stream_r = PlainStream::create(cfg);
+    ASSERT_TRUE(stream_r.has_value()) << stream_r.error().detail;
+    const auto start = std::chrono::steady_clock::now();
+    auto cr = (*stream_r)->connect_blocking(std::chrono::seconds{5});
     const auto elapsed = std::chrono::steady_clock::now() - start;
 
-    ASSERT_FALSE(stream_r.has_value());
-    EXPECT_EQ(stream_r.error().code, eph::core::Error::Timeout);
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::Timeout);
 
     // Tolerate ±1 second of scheduling slack on WSL / loaded CI — the
     // assertion is "did the timeout fire at all within a reasonable
@@ -594,6 +618,9 @@ TEST(KernelWsAutoResponse, ServerPingTriggersAutoPongOnNextPoll) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // Non-blocking create(): complete the WS handshake before the control-
+    // frame verify loop (which guards on state()==Established).
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();
@@ -629,6 +656,9 @@ TEST(KernelWsAutoResponse, MultiplePingsInOnePollAllAckd) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // Non-blocking create(): complete the WS handshake before the control-
+    // frame verify loop (which guards on state()==Established).
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();
@@ -664,6 +694,9 @@ TEST(KernelWsAutoResponse, ServerCloseFrameFlushesCloseAckBeforeStateClosed) {
     ASSERT_TRUE(stream_r.has_value())
         << (stream_r ? "" : stream_r.error().detail);
     auto stream = std::move(*stream_r);
+    // Non-blocking create(): complete the WS handshake before the control-
+    // frame verify loop (which guards on state()==Established).
+    ASSERT_TRUE(stream->connect_blocking(std::chrono::seconds{2}).has_value());
     stream->on_message = [](std::span<const uint8_t>) {};
 
     auto poller = ek::KernelPoller::create().value();

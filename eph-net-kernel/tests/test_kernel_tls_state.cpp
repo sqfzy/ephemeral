@@ -63,17 +63,26 @@ TEST(KernelTlsStream, ConnectToBlackholeFailsTypedError) {
     cfg.tls.hostname    = "example.invalid";
     cfg.tls.verify_peer = false;
 
+    // create() is non-blocking: it returns a connecting stream; the
+    // unreachable peer surfaces either synchronously or via connect_blocking().
     auto r = TlsWsStream::create(cfg);
-    ASSERT_FALSE(r.has_value())
-        << "create() against TEST-NET-1 must not succeed";
+    eph::core::ErrorInfo err{eph::core::Error::Ok, ""};
+    if (!r) {
+        err = r.error();
+    } else {
+        auto cr = (*r)->connect_blocking(std::chrono::seconds{1});
+        ASSERT_FALSE(cr.has_value())
+            << "connect against TEST-NET-1 must not succeed";
+        err = cr.error();
+    }
     // We may fail in either ConnectFailed (TCP) or Timeout (poll deadline).
     // The point of the test is that the typed error path works without
     // a crash and that the TLS code at least compiles correctly when
     // EnableTls=true.
-    const auto code = r.error().code;
+    const auto code = err.code;
     EXPECT_TRUE(code == eph::core::Error::ConnectFailed ||
                 code == eph::core::Error::Timeout ||
                 code == eph::core::Error::TlsHandshakeFailed)
         << "unexpected error code: " << static_cast<int>(code)
-        << " detail=" << r.error().detail;
+        << " detail=" << err.detail;
 }
