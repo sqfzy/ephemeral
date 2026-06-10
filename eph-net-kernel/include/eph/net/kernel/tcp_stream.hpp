@@ -39,6 +39,7 @@
 #include <arpa/inet.h>     // ntohs for getsockname() result in snapshot()
 #include <netinet/in.h>    // sockaddr_in for getsockname() in snapshot()
 #include <poll.h>
+#include <sys/epoll.h>  // EPOLLIN / EPOLLOUT for dynamic interest re-arm
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -53,6 +54,7 @@
 #include "eph/net/detail/http_connect.hpp"   // HTTP CONNECT proxy
 #include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
+#include "eph/net/handshake_phase.hpp"        // HandshakePhase (connect FSM)
 #include "eph/net/kernel/config.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/kernel/detail/reassembly_buffer.hpp"
@@ -421,32 +423,29 @@ public:
         // proxy. So we always pass `cfg_.kernel.local_bind`, regardless of
         // whether the immediate connect_target is the proxy or the upstream
         // itself.
-        auto cr = stream->sock_.connect(connect_target,
-                                        stream->cfg_.connect_timeout,
-                                        stream->cfg_.kernel.local_bind);
-        if (!cr) {
+        // ── Issue a NON-BLOCKING connect. The remaining handshake legs
+        //    (HTTP CONNECT proxy / TLS / WebSocket) are driven later, across
+        //    poll cycles, by poll_once_() — create() never blocks on I/O. The
+        //    local-bind side is always our local end (even via a proxy). ──
+        auto br = stream->sock_.begin_connect(connect_target,
+                                              stream->cfg_.kernel.local_bind);
+        if (!br) {
             SPDLOG_LOGGER_WARN(log,
-                "KernelTcpStream::create: connect failed: {}", cr.error().detail);
+                "KernelTcpStream::create: begin_connect failed: {}",
+                br.error().detail);
             // Distinguish proxy-TCP-connect failure from direct connect
-            // failure so callers can handle it separately (the plan's
-            // Error triad: ProxyConnectFailed vs ConnectFailed).
+            // failure so callers can handle them separately.
             if (stream->cfg_.proxy.has_value()) {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::ProxyConnectFailed,
                     "KernelTcpStream::create: TCP connect to proxy failed"});
             }
-            return std::unexpected(cr.error());
+            return std::unexpected(br.error());
         }
 
-        if (stream->cfg_.kernel.tcp_nodelay) {
-            (void)stream->sock_.set_no_delay(true);
-        }
-
-        // Optional TCP keepalive — wired post-connect so the open fd is
-        // valid. Non-zero interval drives SO_KEEPALIVE + TCP_KEEPIDLE +
-        // TCP_KEEPINTVL + TCP_KEEPCNT. Failure here is logged but not
-        // fatal: keepalive is a defense in depth, not a connect
-        // precondition.
+        // Optional TCP keepalive — fd is valid now (open even while the
+        // non-blocking connect is still in flight). Best-effort: keepalive is
+        // defense in depth, not a connect precondition.
         if (!stream->cfg_.keepalive.empty()) {
             const int interval_secs = static_cast<int>(
                 std::chrono::ceil<std::chrono::seconds>(
@@ -455,218 +454,29 @@ public:
                 interval_secs, stream->cfg_.keepalive.probes);
         }
 
-        // HTTP CONNECT handshake (before TLS). At this point we are
-        // TCP-connected to the proxy. Drive the
-        // CONNECT handshake over a plain ByteSocket sink; the proxy
-        // either returns 200 (tunnel established) or an error status.
-        if (stream->cfg_.proxy.has_value()) {
-            detail::PlainWsSink plain_sink{&stream->sock_};
-            std::vector<uint8_t> connect_leftover;
-            auto connect_r = ::eph::net::detail::perform_http_connect(
-                plain_sink,
-                *stream->cfg_.proxy,
-                stream->cfg_.remote.ip.to_string(),
-                stream->cfg_.remote.port,
-                &connect_leftover);
-            if (!connect_r) {
-                SPDLOG_LOGGER_WARN(log,
-                    "KernelTcpStream::create: CONNECT handshake failed: {}",
-                    connect_r.error().detail);
-                return std::unexpected(connect_r.error());
-            }
-            // Rare: proxy sent extra bytes after the 200. For a plaintext
-            // post-proxy stream (no TLS, no WS) we seed them into the
-            // reasm buffer. For TLS / WS they'd have to survive through
-            // aws-lc's BIO, which our TlsState::handshake doesn't expose —
-            // so we refuse the stream with a diagnostic rather than
-            // silently desync.
-            if (!connect_leftover.empty()) {
-                if constexpr (EnableTls) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "KernelTcpStream::create: {}B over-read from proxy "
-                        "cannot be threaded through TLS handshake input; "
-                        "refusing the stream",
-                        connect_leftover.size());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::ProxyHandshakeFailed,
-                        "KernelTcpStream::create: proxy over-read before TLS "
-                        "is not supported"});
-                } else if (!stream->cfg_.ws.path.empty()) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "KernelTcpStream::create: {}B over-read from proxy "
-                        "cannot be threaded through WS handshake input; "
-                        "refusing the stream",
-                        connect_leftover.size());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::ProxyHandshakeFailed,
-                        "KernelTcpStream::create: proxy over-read before WS "
-                        "is not supported"});
-                } else {
-                    // Pure plaintext TCP post-CONNECT: seed into rx_bytes_.
-                    if (stream->rx_bytes_.writable_capacity() <
-                        connect_leftover.size()) {
-                        return std::unexpected(core::ErrorInfo{
-                            core::Error::BufferFull,
-                            "KernelTcpStream::create: proxy leftover exceeds "
-                            "reasm capacity"});
-                    }
-                    std::memcpy(stream->rx_bytes_.writable_ptr(),
-                                connect_leftover.data(),
-                                connect_leftover.size());
-                    stream->rx_bytes_.commit_write(connect_leftover.size());
-                    SPDLOG_LOGGER_DEBUG(log,
-                        "KernelTcpStream::create: seeded {}B post-CONNECT "
-                        "bytes into rx_bytes_ buffer",
-                        connect_leftover.size());
-                }
-            }
-            SPDLOG_LOGGER_INFO(log,
-                "KernelTcpStream::create: HTTP CONNECT tunnel established "
-                "via {}:{} -> {}",
-                stream->cfg_.proxy->host, stream->cfg_.proxy->port,
-                stream->cfg_.remote.to_string());
+        // Overall deadline for the whole connect+handshake chain. Each enabled
+        // leg's configured timeout contributes; poll_once_ fails the stream if
+        // the chain has not reached Established by then.
+        auto budget = stream->cfg_.connect_timeout;
+        if constexpr (EnableTls) budget += stream->cfg_.tls.handshake_timeout;
+        if (!stream->cfg_.ws.path.empty()) budget += stream->cfg_.ws.timeout;
+        stream->connect_deadline_ =
+            std::chrono::steady_clock::now() + budget;
+
+        stream->state_ = TcpState::SynSent;
+        if (*br) {
+            // Loopback frequently completes the TCP handshake synchronously;
+            // advance straight into the next leg so a poller that only arms
+            // EPOLLIN still makes progress on the very first poll.
+            stream->hs_phase_ = HandshakePhase::TcpConnected;
+            stream->advance_after_tcp_();
+        } else {
+            stream->hs_phase_ = HandshakePhase::TcpConnecting;
         }
-
-        if constexpr (EnableTls) {
-            // TLS 1.3 handshake via aws-lc, driven through a
-            // ByteSocketTcpAdapter. After handshake the AEAD context is
-            // owned by stream->tls_ and the bare ByteSocket resumes ownership
-            // of the fd for the data plane.
-            auto h = stream->tls_.handshake(stream->sock_, stream->cfg_.tls);
-            if (!h) {
-                SPDLOG_LOGGER_WARN(log,
-                    "KernelTcpStream::create: TLS handshake failed: {}",
-                    h.error().detail);
-                return std::unexpected(h.error());
-            }
-            // Classify the handshake as resume vs full so dashboards can
-            // confirm `tls_resumption_ticket` round-trips actually save
-            // the +1 RTT cert exchange. Counters are monotonically
-            // increasing per stream — `publish_metrics` snapshots them
-            // alongside the rest of the StreamMetric set.
-            if (stream->tls_.was_resumed()) {
-                stream->template inc_<::eph::net::StreamMetric::kTlsResumeCount>();
-            } else {
-                stream->template inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
-            }
-            SPDLOG_LOGGER_INFO(log,
-                "KernelTcpStream::create: TLS up fd={} remote={} resumed={}",
-                stream->sock_.fd(), stream->cfg_.remote.to_string(),
-                stream->tls_.was_resumed());
-        }
-
-        // Optional WebSocket HTTP Upgrade. When cfg.ws.path is non-empty,
-        // drive the RFC 6455 handshake
-        // through either a plaintext (PlainWsSink) or TLS-wrapped
-        // (TlsWsSink) byte sink. Any post-handshake bytes that arrived in
-        // the same recv(2) as the 101 response are seeded into the
-        // reassembly buffer so the codec sees them on the first poll.
-        if (!stream->cfg_.ws.path.empty()) {
-            // Pick the Host header: prefer an explicit ws_host, fall back
-            // to the TLS SNI hostname (for wss://), then to the numeric
-            // remote address (for ws://).
-            std::string host_storage;
-            std::string_view host_sv;
-            if (!stream->cfg_.ws.host.empty()) {
-                host_sv = stream->cfg_.ws.host;
-            } else if constexpr (EnableTls) {
-                if (!stream->cfg_.tls.hostname.empty()) {
-                    host_sv = stream->cfg_.tls.hostname;
-                }
-            }
-            if (host_sv.empty()) {
-                host_storage = stream->cfg_.remote.to_string();
-                host_sv      = host_storage;
-            }
-
-            std::vector<uint8_t> leftover;
-            // Per-handshake permessage-deflate state. `request` is
-            // taken from cfg, `negotiated` / `server_no_context_takeover`
-            // come back populated if the server accepted.
-            ::eph::net::detail::WsHandshakeDeflate deflate_state{
-                .request                      = stream->cfg_.ws.permessage_deflate,
-                .negotiated                   = false,
-                .server_no_context_takeover   = false,
-            };
-            std::expected<void, core::ErrorInfo> hs_result;
-            if constexpr (EnableTls) {
-                detail::TlsWsSink sink{&stream->sock_, &stream->tls_};
-                hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws.path,
-                    std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws.extra_headers),
-                    stream->cfg_.ws.timeout,
-                    &leftover, &deflate_state);
-            } else {
-                detail::PlainWsSink sink{&stream->sock_};
-                hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws.path,
-                    std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws.extra_headers),
-                    stream->cfg_.ws.timeout,
-                    &leftover, &deflate_state);
-            }
-            if (!hs_result) {
-                SPDLOG_LOGGER_WARN(log,
-                    "KernelTcpStream::create: WS handshake failed: {}",
-                    hs_result.error().detail);
-                return std::unexpected(hs_result.error());
-            }
-            // Hook the codec into the negotiated state, but only for
-            // codecs that actually opted into the contract (e.g.
-            // `WsCodec`). Other StreamCodec implementations
-            // (`RawStreamCodec`, `LengthPrefixCodec`) do not provide
-            // the method and the `requires` clause keeps the call out
-            // of their template instantiation entirely.
-            if (deflate_state.negotiated) {
-                // Snapshot bookkeeping: server accepted the offer regardless
-                // of whether the configured codec can actually inflate.
-                stream->ws_deflate_active_ = true;
-                if constexpr (requires (C& c) {
-                    c.enable_permessage_deflate(false);
-                }) {
-                    stream->codec_.enable_permessage_deflate(
-                        deflate_state.server_no_context_takeover);
-                } else {
-                    SPDLOG_LOGGER_WARN(log,
-                        "KernelTcpStream::create: server accepted "
-                        "permessage-deflate but the configured codec "
-                        "does not implement enable_permessage_deflate "
-                        "— inflate will be unavailable");
-                }
-            }
-
-            // Seed any post-handshake over-read into rx_bytes_ so the
-            // codec sees it on the first poll_once_() call.
-            if (!leftover.empty()) {
-                if (stream->rx_bytes_.writable_capacity() < leftover.size()) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "KernelTcpStream::create: rx_bytes_ cannot hold {}B "
-                        "of post-handshake over-read",
-                        leftover.size());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::BufferFull,
-                        "KernelTcpStream::create: ws leftover exceeds reasm capacity"});
-                }
-                std::memcpy(stream->rx_bytes_.writable_ptr(),
-                            leftover.data(), leftover.size());
-                stream->rx_bytes_.commit_write(leftover.size());
-                SPDLOG_LOGGER_DEBUG(log,
-                    "KernelTcpStream::create: seeded {}B of post-handshake "
-                    "bytes into rx_bytes_ buffer", leftover.size());
-            }
-
-            SPDLOG_LOGGER_INFO(log,
-                "KernelTcpStream::create: WS upgrade OK path='{}' fd={}",
-                stream->cfg_.ws.path, stream->sock_.fd());
-        }
-
-        stream->state_ = TcpState::Established;
-        if constexpr (!EnableTls) {
-            SPDLOG_LOGGER_INFO(log,
-                "KernelTcpStream::create: connected fd={} remote={}",
-                stream->sock_.fd(), stream->cfg_.remote.to_string());
-        }
+        SPDLOG_LOGGER_DEBUG(log,
+            "KernelTcpStream::create: non-blocking connect initiated fd={} "
+            "phase={}", stream->sock_.fd(),
+            handshake_phase_name(stream->hs_phase_));
         return stream;
     }
 
@@ -1204,6 +1014,50 @@ public:
 
     [[nodiscard]] int fd() const noexcept { return sock_.fd(); }
 
+    /// @brief Fine-grained connect/handshake phase (diagnostic). `state()`
+    ///        stays `SynSent` for the whole pre-Established window; this tells
+    ///        which leg (TCP / TLS / WS) is currently in flight.
+    [[nodiscard]] HandshakePhase handshake_phase() const noexcept {
+        return hs_phase_;
+    }
+
+    /// @brief Block until the connect+handshake chain reaches Established, or
+    ///        it fails / `timeout` elapses. A thin convenience wrapper over the
+    ///        non-blocking core for simple / test / benchmark call sites that
+    ///        want the historical "create() returns a ready stream" ergonomics.
+    ///
+    /// Drives `poll_once_()` directly (no Poller needed), waiting on the socket
+    /// between steps. Call it BEFORE attaching to a Poller; calling it while
+    /// the stream is Poller-driven would race `poll_once_()`.
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    connect_blocking(std::chrono::milliseconds timeout) noexcept {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (hs_phase_ != HandshakePhase::Established) {
+            if (hs_phase_ == HandshakePhase::Failed ||
+                state_ == TcpState::Closed) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::ConnectFailed,
+                    "KernelTcpStream::connect_blocking: handshake failed"});
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Timeout,
+                    "KernelTcpStream::connect_blocking: deadline exceeded"});
+            }
+            (void)poll_once_();  // advance one handshake step
+            if (hs_phase_ == HandshakePhase::Established) break;
+            // Wait for readability / writability before the next step.
+            struct pollfd pfd{};
+            pfd.fd     = sock_.fd();
+            pfd.events = POLLIN | POLLOUT;
+            const auto remain =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now()).count();
+            ::poll(&pfd, 1, static_cast<int>(remain < 0 ? 0 : remain));
+        }
+        return {};
+    }
+
     // ── Pollable concept API ─────────────────────────────────────────────
     //
     // These methods are conceptually private to the Poller. They are public
@@ -1222,6 +1076,12 @@ public:
     /// `on_message` once per decoded frame. Returns the number of frames
     /// delivered.
     std::size_t poll_once_() noexcept {
+        // Connect/handshake phase: drive the non-blocking state machine one
+        // step. No application frames flow until the whole chain is up.
+        if (hs_phase_ != HandshakePhase::Established) [[unlikely]] {
+            drive_handshake_();
+            return 0;
+        }
         if (state_ != TcpState::Established) [[unlikely]] return 0;
         // Fail-fast on a previously latched TLS desync: send() has
         // already burned a TLS write seq we couldn't fully drain to the
@@ -1326,6 +1186,15 @@ public:
     /// @brief Invoked by `KernelPoller::add` to record our attachment.
     void notify_attached_(KernelPoller* p) noexcept {
         attached_to_ = p;
+        // If attached mid-handshake, also request EPOLLOUT so the poll loop
+        // wakes us when the non-blocking connect completes / the socket is
+        // writable (add() arms EPOLLIN only). become_established_() reverts
+        // to EPOLLIN-only so the steady-state hot path pays no writable spin.
+        if (hs_phase_ != HandshakePhase::Established &&
+            hs_phase_ != HandshakePhase::Failed) {
+            (void)p->modify_interest_(static_cast<void*>(this),
+                                      EPOLLIN | EPOLLOUT);
+        }
     }
 
     /// @brief Invoked by `KernelPoller::remove` and by the Poller destructor.
@@ -1482,6 +1351,200 @@ private:
     explicit KernelTcpStream(StreamConfig cfg)
         : cfg_(std::move(cfg)),
           rx_bytes_(cfg_.reasm_capacity) {}
+
+    // ── Non-blocking connect/handshake state machine ─────────────────────
+    //
+    // create() issues a non-blocking connect and returns immediately in
+    // hs_phase_ == TcpConnecting (or TcpConnected for a synchronous loopback
+    // connect). poll_once_() then calls drive_handshake_() each cycle to walk
+    // TCP → (proxy) → TLS → WS → Established without ever blocking the loop.
+
+    /// @brief Advance the connect/handshake machine by at most one step.
+    void drive_handshake_() noexcept {
+        if (std::chrono::steady_clock::now() >= connect_deadline_) [[unlikely]] {
+            fail_handshake_("connect/handshake deadline exceeded");
+            return;
+        }
+        switch (hs_phase_) {
+            case HandshakePhase::TcpConnecting: {
+                auto r = sock_.poll_connect();
+                if (!r) { fail_handshake_(r.error().detail); return; }
+                if (!*r) return;  // still connecting
+                hs_phase_ = HandshakePhase::TcpConnected;
+                advance_after_tcp_();
+                return;
+            }
+            case HandshakePhase::TlsHandshaking: {
+                if constexpr (EnableTls) {
+                    auto r = tls_.handshake_step();
+                    if (!r) { fail_handshake_(r.error().detail); return; }
+                    if (!*r) return;  // still handshaking
+                    if (tls_.was_resumed())
+                        inc_<::eph::net::StreamMetric::kTlsResumeCount>();
+                    else
+                        inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
+                    hs_phase_ = HandshakePhase::TlsConnected;
+                    advance_after_tls_();
+                }
+                return;
+            }
+            case HandshakePhase::WsHandshaking:
+                drive_ws_step_();
+                return;
+            default:
+                return;  // Init / *Connected transitional, Established, Failed
+        }
+    }
+
+    /// @brief TCP up → optional proxy CONNECT → begin TLS, else WS, else done.
+    void advance_after_tcp_() noexcept {
+        // Optional HTTP CONNECT proxy. NOTE: the proxy CONNECT exchange is
+        // still driven synchronously (a brief block for the proxy RTT) —
+        // proxy is a rare, kernel-only feature so step-ifying it is deferred.
+        // The common (no-proxy) path never enters this branch.
+        if (cfg_.proxy.has_value()) {
+            if (!run_proxy_connect_()) return;  // sets Failed on error
+        }
+        if constexpr (EnableTls) {
+            auto b = tls_.begin_handshake(sock_, cfg_.tls);
+            if (!b) { fail_handshake_(b.error().detail); return; }
+            hs_phase_ = HandshakePhase::TlsHandshaking;
+            arm_handshake_interest_();
+            return;
+        } else {
+            advance_after_tls_();  // no TLS — proceed to WS / Established
+        }
+    }
+
+    /// @brief TLS up (or skipped) → enter the WS leg, else become Established.
+    void advance_after_tls_() noexcept {
+        if (!cfg_.ws.path.empty()) enter_ws_();
+        else                       become_established_();
+    }
+
+    /// @brief Build the WS handshake driver + sink and enter WsHandshaking.
+    void enter_ws_() noexcept {
+        // Host header: explicit ws.host, else TLS SNI, else numeric remote.
+        ws_host_storage_.clear();
+        if (!cfg_.ws.host.empty()) {
+            ws_host_storage_ = cfg_.ws.host;
+        } else if constexpr (EnableTls) {
+            if (!cfg_.tls.hostname.empty()) ws_host_storage_ = cfg_.tls.hostname;
+        }
+        if (ws_host_storage_.empty()) ws_host_storage_ = cfg_.remote.to_string();
+
+        ws_deflate_ = ::eph::net::detail::WsHandshakeDeflate{
+            .request                    = cfg_.ws.permessage_deflate,
+            .negotiated                 = false,
+            .server_no_context_takeover = false,
+        };
+        auto d = ::eph::net::detail::WsHandshakeDriver::create(
+            ws_host_storage_, cfg_.ws.path,
+            std::span<const ::eph::net::HttpHeader>(cfg_.ws.extra_headers),
+            &ws_deflate_);
+        if (!d) { fail_handshake_(d.error().detail); return; }
+        ws_driver_ = std::make_unique<::eph::net::detail::WsHandshakeDriver>(std::move(*d));
+        // Wire up the persistent sink (TlsWsSink carries decrypt state across
+        // poll cycles; PlainWsSink is a thin socket reference).
+        ws_sink_.sock = &sock_;
+        if constexpr (EnableTls) ws_sink_.tls = &tls_;
+        hs_phase_ = HandshakePhase::WsHandshaking;
+        arm_handshake_interest_();
+    }
+
+    /// @brief One WS handshake step; on completion negotiate deflate, seed
+    ///        over-read into rx_bytes_, and become Established.
+    void drive_ws_step_() noexcept {
+        auto r = ws_driver_->step(ws_sink_);
+        if (!r) { fail_handshake_(r.error().detail); return; }
+        if (!*r) return;  // pending
+        if (ws_deflate_.negotiated) {
+            ws_deflate_active_ = true;
+            if constexpr (requires(C& c) { c.enable_permessage_deflate(false); }) {
+                codec_.enable_permessage_deflate(
+                    ws_deflate_.server_no_context_takeover);
+            } else {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "KernelTcpStream: server accepted permessage-deflate but "
+                    "the configured codec does not implement "
+                    "enable_permessage_deflate — inflate unavailable");
+            }
+        }
+        // Seed post-handshake over-read so the codec sees it on the first
+        // data-plane poll (mirrors the historical create() behaviour).
+        auto lo = ws_driver_->leftover();
+        if (!lo.empty()) {
+            if (rx_bytes_.writable_capacity() < lo.size()) {
+                fail_handshake_("ws leftover exceeds reasm capacity");
+                return;
+            }
+            std::memcpy(rx_bytes_.writable_ptr(), lo.data(), lo.size());
+            rx_bytes_.commit_write(lo.size());
+        }
+        ws_driver_.reset();
+        become_established_();
+    }
+
+    /// @brief HTTP CONNECT proxy handshake (synchronous — see advance_after_tcp_).
+    ///        Returns true on success; on failure sets Failed and returns false.
+    bool run_proxy_connect_() noexcept {
+        detail::PlainWsSink plain_sink{&sock_};
+        std::vector<uint8_t> connect_leftover;
+        auto connect_r = ::eph::net::detail::perform_http_connect(
+            plain_sink, *cfg_.proxy,
+            cfg_.remote.ip.to_string(), cfg_.remote.port, &connect_leftover);
+        if (!connect_r) { fail_handshake_(connect_r.error().detail); return false; }
+        if (!connect_leftover.empty()) {
+            if constexpr (EnableTls) {
+                fail_handshake_("proxy over-read before TLS is not supported");
+                return false;
+            } else if (!cfg_.ws.path.empty()) {
+                fail_handshake_("proxy over-read before WS is not supported");
+                return false;
+            } else {
+                if (rx_bytes_.writable_capacity() < connect_leftover.size()) {
+                    fail_handshake_("proxy leftover exceeds reasm capacity");
+                    return false;
+                }
+                std::memcpy(rx_bytes_.writable_ptr(),
+                            connect_leftover.data(), connect_leftover.size());
+                rx_bytes_.commit_write(connect_leftover.size());
+            }
+        }
+        return true;
+    }
+
+    /// @brief Promote to Established: flip state + revert poller interest to
+    ///        EPOLLIN-only so the steady-state hot path pays no writable spin.
+    void become_established_() noexcept {
+        hs_phase_ = HandshakePhase::Established;
+        state_    = TcpState::Established;
+        if (attached_to_ != nullptr) {
+            (void)attached_to_->modify_interest_(static_cast<void*>(this),
+                                                 EPOLLIN);
+        }
+        SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
+            "KernelTcpStream: connection established fd={}", sock_.fd());
+    }
+
+    /// @brief Re-arm EPOLLIN|EPOLLOUT while a handshake leg may need to write.
+    void arm_handshake_interest_() noexcept {
+        if (attached_to_ != nullptr) {
+            (void)attached_to_->modify_interest_(static_cast<void*>(this),
+                                                 EPOLLIN | EPOLLOUT);
+        }
+    }
+
+    /// @brief Terminal handshake failure: latch Failed + Closed so the caller
+    ///        (or ReconnectOrchestrator) observes the dead stream via state().
+    void fail_handshake_(std::string_view why) noexcept {
+        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            "KernelTcpStream: handshake failed at phase={} fd={}: {}",
+            handshake_phase_name(hs_phase_), sock_.fd(), why);
+        hs_phase_ = HandshakePhase::Failed;
+        state_    = TcpState::Closed;
+        ws_driver_.reset();
+    }
 
     // ── Hot-path metric counters ─────────────────────────────────────────
 
@@ -1755,6 +1818,23 @@ private:
     std::vector<uint8_t>        tx_ciphertext_{};
     KernelPoller*               attached_to_{nullptr};
     TcpState                    state_{TcpState::Closed};
+
+    // ── Non-blocking connect/handshake state (live only until Established) ──
+    /// @brief Which leg of the TCP→TLS→WS connect chain is in flight. Drives
+    ///        poll_once_()'s dispatch; `state()` stays SynSent until Established.
+    HandshakePhase              hs_phase_{HandshakePhase::Init};
+    /// @brief Wall-clock deadline for the whole connect+handshake chain.
+    std::chrono::steady_clock::time_point connect_deadline_{};
+    /// @brief Resumable WS Upgrade driver — non-null only during WsHandshaking.
+    std::unique_ptr<::eph::net::detail::WsHandshakeDriver> ws_driver_{};
+    /// @brief Persistent WS byte sink (TlsWsSink carries decrypt state across
+    ///        poll cycles). Pointers wired in enter_ws_().
+    std::conditional_t<EnableTls, detail::TlsWsSink, detail::PlainWsSink>
+                                ws_sink_{};
+    /// @brief permessage-deflate negotiation state for the WS handshake.
+    ::eph::net::detail::WsHandshakeDeflate  ws_deflate_{};
+    /// @brief Backing storage for the WS `Host:` header (outlives the driver).
+    std::string                 ws_host_storage_{};
     /// Warn-once latch for the no-on_message drain path (MEDIUM-2). Set on
     /// the first poll that finds `on_message` unset so operators see the
     /// misconfiguration surface once per stream instead of never.

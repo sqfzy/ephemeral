@@ -183,6 +183,8 @@ TEST(KernelTcpStream, CreatePlaintextConnectsToLocalEcho) {
     ASSERT_TRUE(r.has_value()) << r.error().detail;
     auto s = std::move(*r);
     ASSERT_NE(s.get(), nullptr);
+    // create() is non-blocking: drive the TCP connect to completion.
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     EXPECT_EQ(s->state(), en::TcpState::Established);
     EXPECT_FALSE(s->is_attached());
     EXPECT_GE(s->fd(), 0);
@@ -192,10 +194,10 @@ TEST(KernelTcpStream, CreatePlaintextConnectsToLocalEcho) {
     ::close(lfd);
 }
 
-TEST(KernelTcpStream, CreateWithTlsReturnsStubError) {
+TEST(KernelTcpStream, TlsHandshakeAgainstNonTlsServerFails) {
     auto [lfd, port] = bind_ephemeral_listener();
     ASSERT_GE(lfd, 0);
-    // Server: accept, do nothing — we only need the TCP handshake to succeed.
+    // Server: accept then immediately close — no TLS, so our handshake aborts.
     std::thread server([lfd] {
         struct sockaddr_in cli{};
         socklen_t clen = sizeof(cli);
@@ -206,9 +208,15 @@ TEST(KernelTcpStream, CreateWithTlsReturnsStubError) {
 
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
+    // create() is non-blocking: it succeeds (returns a connecting stream);
+    // the TLS-against-non-TLS failure now surfaces via connect_blocking().
     auto r = TlsRawStream::create(cfg);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code, eph::core::Error::TlsHandshakeFailed);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    auto s = std::move(*r);
+    auto cr = s->connect_blocking(std::chrono::seconds{2});
+    ASSERT_FALSE(cr.has_value());
+    EXPECT_EQ(cr.error().code, eph::core::Error::ConnectFailed);
+    EXPECT_EQ(s->handshake_phase(), eph::net::HandshakePhase::Failed);
     server.join();
     ::close(lfd);
 }
@@ -221,6 +229,7 @@ TEST(KernelTcpStream, SendBeforeAttachReturnsNotAttached) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     auto s = PlainRawStream::create(cfg).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
 
     const uint8_t payload[] = {'p', 'i', 'n', 'g'};
     auto sr = s->send(payload);
@@ -240,6 +249,7 @@ TEST(KernelTcpStream, PollDeliversEchoedPayload) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     auto s = PlainRawStream::create(cfg).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
 
     std::vector<uint8_t> captured;
     s->on_message = [&](std::span<const uint8_t> app_frame) {
@@ -280,6 +290,7 @@ TEST(KernelTcpStream, CloseGracefullyFlipsStateToFinWait1) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     auto s = PlainRawStream::create(cfg).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
     ASSERT_TRUE(s->close_gracefully().has_value());
     EXPECT_EQ(s->state(), en::TcpState::FinWait1);
@@ -328,6 +339,7 @@ TEST(KernelTcpStream, CloseGracefullySendsWsCloseFrameBeforeFin) {
     auto r = PlainWsStream::create(cfg);
     ASSERT_TRUE(r.has_value()) << r.error().detail;
     auto s = std::move(*r);
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
     ASSERT_TRUE(poller->add(s.get()).has_value());
 
@@ -364,6 +376,7 @@ TEST(KernelTcpStream, CloseGracefullyOnRawCodecOmitsWsClose) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
     auto s = PlainRawStream::create(cfg).value();
+    ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
     ASSERT_EQ(s->state(), en::TcpState::Established);
     ASSERT_TRUE(poller->add(s.get()).has_value());
     ASSERT_TRUE(s->close_gracefully().has_value());
@@ -388,6 +401,7 @@ TEST(KernelTcpStream, DestructorAutoDetachesFromPoller) {
         ek::StreamConfig cfg{};
         cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, port};
         auto s = PlainRawStream::create(cfg).value();
+        ASSERT_TRUE(s->connect_blocking(std::chrono::seconds{2}).has_value());
         ASSERT_TRUE(poller->add(s.get()).has_value());
         EXPECT_EQ(poller->size(), 1u);
         // s drops out of scope — ~KernelTcpStream must detach itself.
