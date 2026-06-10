@@ -1035,9 +1035,12 @@ public:
         while (hs_phase_ != HandshakePhase::Established) {
             if (hs_phase_ == HandshakePhase::Failed ||
                 state_ == TcpState::Closed) {
-                return std::unexpected(core::ErrorInfo{
-                    core::Error::ConnectFailed,
-                    "KernelTcpStream::connect_blocking: handshake failed"});
+                // Return the specific leg error (ConnectFailed /
+                // TlsHandshakeFailed / WsHandshakeFailed / Timeout).
+                return std::unexpected(hs_error_.code != core::Error::Ok
+                    ? hs_error_
+                    : core::ErrorInfo{core::Error::ConnectFailed,
+                          "KernelTcpStream::connect_blocking: handshake failed"});
             }
             if (std::chrono::steady_clock::now() >= deadline) {
                 return std::unexpected(core::ErrorInfo{
@@ -1362,13 +1365,13 @@ private:
     /// @brief Advance the connect/handshake machine by at most one step.
     void drive_handshake_() noexcept {
         if (std::chrono::steady_clock::now() >= connect_deadline_) [[unlikely]] {
-            fail_handshake_("connect/handshake deadline exceeded");
+            fail_handshake_(core::Error::Timeout, "connect/handshake deadline exceeded");
             return;
         }
         switch (hs_phase_) {
             case HandshakePhase::TcpConnecting: {
                 auto r = sock_.poll_connect();
-                if (!r) { fail_handshake_(r.error().detail); return; }
+                if (!r) { fail_handshake_(r.error()); return; }
                 if (!*r) return;  // still connecting
                 hs_phase_ = HandshakePhase::TcpConnected;
                 advance_after_tcp_();
@@ -1377,7 +1380,7 @@ private:
             case HandshakePhase::TlsHandshaking: {
                 if constexpr (EnableTls) {
                     auto r = tls_.handshake_step();
-                    if (!r) { fail_handshake_(r.error().detail); return; }
+                    if (!r) { fail_handshake_(r.error()); return; }
                     if (!*r) return;  // still handshaking
                     if (tls_.was_resumed())
                         inc_<::eph::net::StreamMetric::kTlsResumeCount>();
@@ -1407,7 +1410,7 @@ private:
         }
         if constexpr (EnableTls) {
             auto b = tls_.begin_handshake(sock_, cfg_.tls);
-            if (!b) { fail_handshake_(b.error().detail); return; }
+            if (!b) { fail_handshake_(b.error()); return; }
             hs_phase_ = HandshakePhase::TlsHandshaking;
             arm_handshake_interest_();
             return;
@@ -1442,7 +1445,7 @@ private:
             ws_host_storage_, cfg_.ws.path,
             std::span<const ::eph::net::HttpHeader>(cfg_.ws.extra_headers),
             &ws_deflate_);
-        if (!d) { fail_handshake_(d.error().detail); return; }
+        if (!d) { fail_handshake_(d.error()); return; }
         ws_driver_ = std::make_unique<::eph::net::detail::WsHandshakeDriver>(std::move(*d));
         // Wire up the persistent sink (TlsWsSink carries decrypt state across
         // poll cycles; PlainWsSink is a thin socket reference).
@@ -1456,7 +1459,7 @@ private:
     ///        over-read into rx_bytes_, and become Established.
     void drive_ws_step_() noexcept {
         auto r = ws_driver_->step(ws_sink_);
-        if (!r) { fail_handshake_(r.error().detail); return; }
+        if (!r) { fail_handshake_(r.error()); return; }
         if (!*r) return;  // pending
         if (ws_deflate_.negotiated) {
             ws_deflate_active_ = true;
@@ -1475,7 +1478,7 @@ private:
         auto lo = ws_driver_->leftover();
         if (!lo.empty()) {
             if (rx_bytes_.writable_capacity() < lo.size()) {
-                fail_handshake_("ws leftover exceeds reasm capacity");
+                fail_handshake_(core::Error::BufferFull, "ws leftover exceeds reasm capacity");
                 return;
             }
             std::memcpy(rx_bytes_.writable_ptr(), lo.data(), lo.size());
@@ -1493,17 +1496,17 @@ private:
         auto connect_r = ::eph::net::detail::perform_http_connect(
             plain_sink, *cfg_.proxy,
             cfg_.remote.ip.to_string(), cfg_.remote.port, &connect_leftover);
-        if (!connect_r) { fail_handshake_(connect_r.error().detail); return false; }
+        if (!connect_r) { fail_handshake_(connect_r.error()); return false; }
         if (!connect_leftover.empty()) {
             if constexpr (EnableTls) {
-                fail_handshake_("proxy over-read before TLS is not supported");
+                fail_handshake_(core::Error::ProxyHandshakeFailed, "proxy over-read before TLS is not supported");
                 return false;
             } else if (!cfg_.ws.path.empty()) {
-                fail_handshake_("proxy over-read before WS is not supported");
+                fail_handshake_(core::Error::ProxyHandshakeFailed, "proxy over-read before WS is not supported");
                 return false;
             } else {
                 if (rx_bytes_.writable_capacity() < connect_leftover.size()) {
-                    fail_handshake_("proxy leftover exceeds reasm capacity");
+                    fail_handshake_(core::Error::BufferFull, "proxy leftover exceeds reasm capacity");
                     return false;
                 }
                 std::memcpy(rx_bytes_.writable_ptr(),
@@ -1537,13 +1540,18 @@ private:
 
     /// @brief Terminal handshake failure: latch Failed + Closed so the caller
     ///        (or ReconnectOrchestrator) observes the dead stream via state().
-    void fail_handshake_(std::string_view why) noexcept {
+    void fail_handshake_(core::ErrorInfo err) noexcept {
         SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
             "KernelTcpStream: handshake failed at phase={} fd={}: {}",
-            handshake_phase_name(hs_phase_), sock_.fd(), why);
+            handshake_phase_name(hs_phase_), sock_.fd(), err.detail);
+        hs_error_ = err;
         hs_phase_ = HandshakePhase::Failed;
         state_    = TcpState::Closed;
         ws_driver_.reset();
+    }
+    /// @brief Overload for sites that only carry a static detail string.
+    void fail_handshake_(core::Error code, const char* detail) noexcept {
+        fail_handshake_(core::ErrorInfo{code, detail});
     }
 
     // ── Hot-path metric counters ─────────────────────────────────────────
@@ -1823,6 +1831,10 @@ private:
     /// @brief Which leg of the TCP→TLS→WS connect chain is in flight. Drives
     ///        poll_once_()'s dispatch; `state()` stays SynSent until Established.
     HandshakePhase              hs_phase_{HandshakePhase::Init};
+    /// @brief Specific error of the failed handshake leg (ConnectFailed /
+    ///        TlsHandshakeFailed / WsHandshakeFailed / Timeout), stashed by
+    ///        fail_handshake_ so connect_blocking() returns the real cause.
+    core::ErrorInfo             hs_error_{core::Error::Ok, ""};
     /// @brief Wall-clock deadline for the whole connect+handshake chain.
     std::chrono::steady_clock::time_point connect_deadline_{};
     /// @brief Resumable WS Upgrade driver — non-null only during WsHandshaking.

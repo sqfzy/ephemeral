@@ -215,7 +215,11 @@ TEST(KernelTcpStream, TlsHandshakeAgainstNonTlsServerFails) {
     auto s = std::move(*r);
     auto cr = s->connect_blocking(std::chrono::seconds{2});
     ASSERT_FALSE(cr.has_value());
-    EXPECT_EQ(cr.error().code, eph::core::Error::ConnectFailed);
+    // The server speaks no TLS: depending on close timing the failure is
+    // either the TLS handshake aborting or the TCP read disconnecting.
+    EXPECT_TRUE(cr.error().code == eph::core::Error::TlsHandshakeFailed ||
+                cr.error().code == eph::core::Error::ConnectFailed)
+        << "unexpected error code: " << cr.error().detail;
     EXPECT_EQ(s->handshake_phase(), eph::net::HandshakePhase::Failed);
     server.join();
     ::close(lfd);
