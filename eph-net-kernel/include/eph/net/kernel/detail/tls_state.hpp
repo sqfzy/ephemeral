@@ -225,59 +225,75 @@ public:
                 "TlsState::handshake: TLS handshake failed"});
         }
 
-        // Snapshot resumption state BEFORE we extract_hot_state (which sets
-        // suppress_close_notify_ — that's harmless but the explicit
-        // ordering keeps `was_resumed_` reflecting the just-completed
-        // handshake's reused/full classification).
-        was_resumed_ = session.was_resumed();
-        // Capture any ticket the server already delivered during the
-        // initial flight (TLS 1.3 typically delivers tickets right
-        // after the Finished — the BIO will have surfaced them through
-        // SSL_do_handshake's record processing). For tickets that
-        // arrive later (asynchronously, after the application starts
-        // exchanging records), see `take_post_handshake_ticket()`.
-        captured_ticket_ = session.take_resumption_ticket();
-        SPDLOG_LOGGER_DEBUG(log,
-            "TlsState::handshake: resumed={} captured_ticket={}B fd={}",
-            was_resumed_, captured_ticket_.size(), sock.fd());
+        return finalize_from_session_(session, cfg, sock.fd());
+    }
 
-        // Pull traffic keys + sequence numbers from the SSL session.
-        auto state_r = session.extract_hot_state();
-        if (!state_r) {
+    /// @brief Begin a NON-blocking TLS handshake.
+    ///
+    /// The poll-loop counterpart of `handshake()`. Unlike the blocking path
+    /// (which keeps the SSL session in a local and runs it to completion), this
+    /// stashes the adapter + SSL session as members so they survive across
+    /// `poll_once_()` cycles. Drive it with repeated `handshake_step()` until
+    /// it returns `true`. Precondition: `sock` is TCP-connected.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    begin_handshake(ByteSocket& sock, const ::eph::net::TlsConfig& cfg) noexcept {
+        [[maybe_unused]] auto* log = tls_state_logger();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::begin_handshake: entry fd={} hostname='{}'",
+            sock.fd(), cfg.hostname);
+        // The adapter must outlive the session (the SSL BIO holds a pointer
+        // to it), and both must be stable across poll cycles — hence heap.
+        hs_adapter_ = std::make_unique<ByteSocketTcpAdapter>(&sock);
+        auto sess_r = ::eph::net::TlsSession<ByteSocketTcpAdapter>::create(
+            *hs_adapter_, cfg);
+        if (!sess_r) {
+            hs_adapter_.reset();
             SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: extract_hot_state failed fd={} "
+                "TlsState::begin_handshake: TlsSession::create failed fd={} "
                 "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
-                "TlsState::handshake: extract_hot_state failed"});
+                "TlsState::begin_handshake: TlsSession::create failed"});
         }
-
-        const std::size_t key_len = session.cipher_key_len();
-        if (key_len != 16 && key_len != 32) {
-            SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: unsupported AEAD key length {} "
-                "(expected 16 or 32) fd={} hostname='{}'",
-                key_len, sock.fd(), cfg.hostname);
-            return std::unexpected(::eph::core::ErrorInfo{
-                ::eph::core::Error::TlsCipherFailed,
-                "TlsState::handshake: unsupported AEAD key length"});
-        }
-        auto crypto_r = ::eph::net::TlsRecordCrypto::create(*state_r, key_len);
-        if (!crypto_r) {
-            SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: TlsRecordCrypto::create failed fd={} "
-                "hostname='{}' key_len={}",
-                sock.fd(), cfg.hostname, key_len);
-            return std::unexpected(::eph::core::ErrorInfo{
-                ::eph::core::Error::TlsCipherFailed,
-                "TlsState::handshake: TlsRecordCrypto::create failed"});
-        }
-        crypto_      = std::make_unique<::eph::net::TlsRecordCrypto>(std::move(*crypto_r));
-        established_ = true;
-        SPDLOG_LOGGER_DEBUG(log,
-            "TlsState::handshake: success fd={} hostname='{}' key_len={}",
-            sock.fd(), cfg.hostname, key_len);
+        hs_session_ = std::make_unique<
+            ::eph::net::TlsSession<ByteSocketTcpAdapter>>(std::move(*sess_r));
+        hs_cfg_ = cfg;
+        hs_fd_  = sock.fd();
         return {};
+    }
+
+    /// @brief Advance the non-blocking TLS handshake by one step.
+    /// @return `true`  — complete (keys extracted, `is_established()` now true);
+    ///         `false` — pending (call again on the next readable/writable poll);
+    ///         `unexpected` — fatal handshake error.
+    [[nodiscard]] std::expected<bool, ::eph::core::ErrorInfo>
+    handshake_step() noexcept {
+        [[maybe_unused]] auto* log = tls_state_logger();
+        if (!hs_session_) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::handshake_step: begin_handshake() not called"});
+        }
+        auto step = hs_session_->handshake_step();
+        if (!step) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake_step: handshake failed fd={}: {}",
+                hs_fd_, step.error());
+            hs_session_.reset();
+            hs_adapter_.reset();
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::handshake_step: TLS handshake failed"});
+        }
+        if (!*step) return false;  // still handshaking
+
+        // Done: extract keys, then drop the live SSL session — the data plane
+        // runs on crypto_ from here, exactly like the blocking path.
+        auto fin = finalize_from_session_(*hs_session_, hs_cfg_, hs_fd_);
+        hs_session_.reset();
+        hs_adapter_.reset();
+        if (!fin) return std::unexpected(fin.error());
+        return true;
     }
 
     [[nodiscard]] bool is_established() const noexcept { return established_; }
@@ -435,12 +451,74 @@ public:
     }
 
 private:
+    /// @brief Shared completion: pull resumption state + traffic keys out of a
+    ///        just-finished `TlsSession` and stand up the hot-path AEAD context.
+    ///        Used by both the blocking `handshake()` and the non-blocking
+    ///        `handshake_step()`. On success `is_established()` becomes true.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    finalize_from_session_(
+        ::eph::net::TlsSession<ByteSocketTcpAdapter>& session,
+        [[maybe_unused]] const ::eph::net::TlsConfig& cfg, int fd) noexcept {
+        [[maybe_unused]] auto* log = tls_state_logger();
+        // Snapshot resumption state BEFORE extract_hot_state (which sets the
+        // session's suppress_close_notify_) so was_resumed_ reflects the
+        // just-completed full/abbreviated classification.
+        was_resumed_     = session.was_resumed();
+        captured_ticket_ = session.take_resumption_ticket();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::finalize: resumed={} captured_ticket={}B fd={} host='{}'",
+            was_resumed_, captured_ticket_.size(), fd, cfg.hostname);
+
+        auto state_r = session.extract_hot_state();
+        if (!state_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: extract_hot_state failed fd={}", fd);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::finalize: extract_hot_state failed"});
+        }
+        const std::size_t key_len = session.cipher_key_len();
+        if (key_len != 16 && key_len != 32) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: unsupported AEAD key length {} fd={}",
+                key_len, fd);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsCipherFailed,
+                "TlsState::finalize: unsupported AEAD key length"});
+        }
+        auto crypto_r = ::eph::net::TlsRecordCrypto::create(*state_r, key_len);
+        if (!crypto_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: TlsRecordCrypto::create failed fd={} "
+                "key_len={}", fd, key_len);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsCipherFailed,
+                "TlsState::finalize: TlsRecordCrypto::create failed"});
+        }
+        crypto_      = std::make_unique<::eph::net::TlsRecordCrypto>(
+            std::move(*crypto_r));
+        established_ = true;
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::finalize: success fd={} key_len={}", fd, key_len);
+        return {};
+    }
+
     // Heap-allocated so the move constructor stays trivial — TlsRecordCrypto
     // contains an EVP_AEAD_CTX which is bitwise-copyable for AES-GCM but the
     // unique_ptr indirection makes the surrounding KernelTcpStream layout
     // simpler (no inline 200-byte AEAD struct).
     std::unique_ptr<::eph::net::TlsRecordCrypto> crypto_;
     bool                                          established_ = false;
+
+    // ── Non-blocking handshake state (only live between begin_handshake and
+    //    the handshake_step() that completes it; reset to empty otherwise) ──
+    // Declared so hs_session_ destructs BEFORE hs_adapter_ (reverse member
+    // order): the session's SSL/BIO must release its pointer into the adapter
+    // before the adapter itself is freed.
+    std::unique_ptr<ByteSocketTcpAdapter>                          hs_adapter_;
+    std::unique_ptr<::eph::net::TlsSession<ByteSocketTcpAdapter>>  hs_session_;
+    ::eph::net::TlsConfig                                          hs_cfg_{};
+    int                                                            hs_fd_ = -1;
     /// Set to true by `handshake()` when `SSL_session_reused` reports
     /// the TLS 1.3 abbreviated handshake completed instead of a full
     /// cert exchange. Read-only after handshake.
