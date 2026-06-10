@@ -676,6 +676,8 @@ public:
             ack_pending_since_tsc_ = other.ack_pending_since_tsc_;
             time_wait_deadline_ = other.time_wait_deadline_;
             syn_retransmit_at_ = other.syn_retransmit_at_;
+            rx_feed_ = std::move(other.rx_feed_);
+            feed_only_ = other.feed_only_;
             last_rx_tsc_ = other.last_rx_tsc_;
             last_keepalive_tsc_ = other.last_keepalive_tsc_;
             keepalive_misses_ = other.keepalive_misses_;
@@ -816,14 +818,41 @@ public:
     ///         `false` — still waiting for SYN-ACK (call again next cycle);
     ///         `unexpected` — RST / fatal.
     [[nodiscard]] std::expected<bool, core::ErrorInfo> connect_step() {
-        [[maybe_unused]] auto log = detail::tcp_logger();
         if (state_ == TcpState::Established) return true;
         if (state_ != TcpState::SynSent) {
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "TcpSession::connect_step: session not in SynSent (call begin_connect)"});
         }
+        maybe_retransmit_syn_();
+        // Self-burst the queue (single-stream / Poller-less / connect_blocking).
+        rte_mbuf* pkts[kRxBurstSize];
+        uint16_t nb_rx = rte_eth_rx_burst(
+            config_.port_id, config_.rx_queue_id, pkts, kRxBurstSize);
+        return handle_handshake_burst_(pkts, nb_rx);
+    }
 
+    /// @brief connect_step variant that consumes externally-supplied mbufs
+    ///        (the DpdkPoller routed them to us by 5-tuple) instead of
+    ///        self-bursting. Used by `DpdkTcpStream::process_burst_` while a
+    ///        non-blocking connect is in flight under a multi-stream Poller,
+    ///        where the Poller owns the RX queue. Frees the mbufs.
+    [[nodiscard]] std::expected<bool, core::ErrorInfo>
+    connect_step(rte_mbuf** mbufs, uint16_t n) {
+        if (state_ == TcpState::Established) return true;
+        if (state_ != TcpState::SynSent) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "TcpSession::connect_step: session not in SynSent (call begin_connect)"});
+        }
+        maybe_retransmit_syn_();
+        return handle_handshake_burst_(mbufs, n);
+    }
+
+private:
+    /// @brief Retransmit the SYN if the (data-center-tuned 200ms) timer is due.
+    void maybe_retransmit_syn_() {
+        [[maybe_unused]] auto log = detail::tcp_logger();
         constexpr auto kSynRetransmitInterval = std::chrono::milliseconds(200);
         const auto now = std::chrono::steady_clock::now();
         if (now >= syn_retransmit_at_) {
@@ -841,11 +870,14 @@ public:
             }
             syn_retransmit_at_ = now + kSynRetransmitInterval;
         }
+    }
 
-        rte_mbuf* pkts[kRxBurstSize];
-        uint16_t nb_rx = rte_eth_rx_burst(
-            config_.port_id, config_.rx_queue_id, pkts, kRxBurstSize);
-
+    /// @brief Scan a burst of mbufs for the SYN-ACK (or RST) completing the
+    ///        handshake; frees every mbuf. Shared by both connect_step forms.
+    /// @return true=Established (final ACK sent), false=pending, unexpected=RST.
+    [[nodiscard]] std::expected<bool, core::ErrorInfo>
+    handle_handshake_burst_(rte_mbuf** pkts, uint16_t nb_rx) {
+        [[maybe_unused]] auto log = detail::tcp_logger();
         for (uint16_t i = 0; i < nb_rx; ++i) {
             auto parsed = net::parse_packet(pkts[i]);
             if (!parsed.tcp || !parsed.matches(config_.tuple)) {
@@ -929,6 +961,7 @@ public:
         return false;  // still waiting for SYN-ACK
     }
 
+public:
     // ─────────────────────────────────────────────────────────────────────────
     // Data transfer
     // ─────────────────────────────────────────────────────────────────────────
@@ -1757,9 +1790,45 @@ public:
     /// @return On success: count of data packets processed (may be 0 if no
     ///         data packets in this burst, e.g. pure ACKs). On error: returns
     ///         unexpected with error message; all received packets are freed.
+    /// @brief Hand TCP payload bytes to the session for the next poll_rx() to
+    ///        deliver, instead of self-bursting. Used by the non-blocking
+    ///        handshake under a multi-stream Poller (which owns the RX queue):
+    ///        process_rx extracts payload from the Poller-routed mbufs and
+    ///        feeds it here, the TLS BIO / WS sink then read it via poll_rx.
+    void feed_rx(const uint8_t* data, uint16_t len) {
+        rx_feed_.insert(rx_feed_.end(), data, data + len);
+    }
+
+    /// @brief When true, poll_rx() never self-bursts the NIC — it only drains
+    ///        fed payload (see feed_rx). Set while a Poller owns the queue so a
+    ///        starved handshake read does not steal another stream's packets.
+    void set_feed_only(bool v) noexcept { feed_only_ = v; }
+
     template <typename F>
         requires std::invocable<F, const uint8_t*, uint16_t>
     [[nodiscard]] std::expected<uint16_t, core::ErrorInfo> poll_rx(F&& data_callback) {
+        // Fed-payload fast path: when a Poller owns the RX queue it routes our
+        // mbufs in via process_rx/feed_rx; the handshake legs (TLS BIO / WS
+        // sink) still call poll_rx, so deliver any buffered fed payload first
+        // and — in feed-only mode — skip self-bursting entirely so we never
+        // steal (and free) another stream's packets off the shared queue.
+        if (!rx_feed_.empty()) {
+            uint16_t delivered = 0;
+            std::size_t off = 0;
+            while (off < rx_feed_.size()) {
+                const uint16_t chunk = static_cast<uint16_t>(
+                    std::min<std::size_t>(rx_feed_.size() - off, 0xFFFFu));
+                data_callback(rx_feed_.data() + off, chunk);
+                off += chunk;
+                ++delivered;
+            }
+            rx_feed_.clear();
+            return delivered;
+        }
+        if (feed_only_) {
+            flush_pending_ack();
+            return uint16_t{0};
+        }
         rte_mbuf* pkts[kRxBurstSize];
 
         // Limit burst size to prevent upstream reassembly buffer overflow.
@@ -2168,6 +2237,13 @@ private:
     // arms it; connect_step re-arms it after each retransmit). Only meaningful
     // while state_ == SynSent.
     std::chrono::steady_clock::time_point syn_retransmit_at_{};
+
+    // Fed-payload buffer + feed-only flag for the Poller-driven non-blocking
+    // handshake (see feed_rx / set_feed_only / poll_rx). Empty + false in the
+    // self-burst (single-stream / connect_blocking) path, so zero hot-path
+    // cost once Established (poll_rx checks `rx_feed_.empty()` — one load).
+    std::vector<uint8_t>                  rx_feed_{};
+    bool                                  feed_only_ = false;
 
     // ── Keepalive state ──
     // Driven by tick_keepalive(now_tsc). last_rx_tsc_ tracks the TSC of the

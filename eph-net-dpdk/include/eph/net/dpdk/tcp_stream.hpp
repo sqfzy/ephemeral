@@ -48,6 +48,7 @@
 #include "eph/net/concepts.hpp"
 #include "eph/net/detail/websocket.hpp"      // ws::close_code (close_gracefully)
 #include "eph/net/detail/ws_handshake.hpp"   // WS HTTP handshake
+#include "eph/net/handshake_phase.hpp"        // HandshakePhase (connect FSM)
 #include "eph/net/dpdk/config.hpp"
 #include "eph/net/dpdk/detail/daemon_disconnected_hook.hpp"  // T1.1+T1.2 in-flight semantics
 #include "eph/net/dpdk/detail/mbuf_view.hpp"
@@ -471,147 +472,26 @@ public:
         auto stream = std::unique_ptr<DpdkTcpStream>(
             new DpdkTcpStream(std::move(cfg)));
 
-        // Run the TCP 3-way handshake synchronously. TcpSession::connect
-        // polls the NIC itself, which is safe because we are not yet
-        // attached to any Poller — we own the queue exclusively for the
-        // duration of the handshake.
-        auto cr = stream->sess_.connect(stream->cfg_.connect_timeout);
-        if (!cr) {
+        // ── Issue a NON-BLOCKING connect. The remaining handshake legs
+        //    (TLS / WebSocket) are driven later, across poll cycles, by
+        //    poll_once_() (single-stream / connect_blocking) or
+        //    process_burst_() (multi-stream Poller) via drive_handshake_().
+        //    create() never blocks on I/O. ──
+        if (auto b = stream->sess_.begin_connect(); !b) {
             SPDLOG_LOGGER_WARN(log,
-                "DpdkTcpStream::create: {}", cr.error().detail);
-            return std::unexpected(cr.error());
+                "DpdkTcpStream::create: begin_connect failed: {}",
+                b.error().detail);
+            return std::unexpected(b.error());
         }
-
-        if constexpr (EnableTls) {
-            // TLS 1.3 handshake via aws-lc, driven through TcpSession<>
-            // (which satisfies the TcpTransport concept via its
-            // `send`/`poll_rx`/`state` triple). The hot-path AEAD state is
-            // extracted into the TlsState object held as a
-            // [[no_unique_address]] member of this stream; data frames
-            // decrypt in place over the reasm buffer on the RX burst.
-            auto h = stream->tls_.handshake(stream->sess_, stream->cfg_.tls);
-            if (!h) {
-                SPDLOG_LOGGER_WARN(log,
-                    "DpdkTcpStream::create: TLS handshake failed: {}",
-                    h.error().detail);
-                return std::unexpected(h.error());
-            }
-            // Mirror KernelTcpStream: classify as resume vs full so
-            // `kTlsResumeCount` / `kTlsHandshakeCount` reflect ticket
-            // round-trip success rate.
-            if (stream->tls_.was_resumed()) {
-                stream->template inc_<::eph::net::StreamMetric::kTlsResumeCount>();
-            } else {
-                stream->template inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
-            }
-            SPDLOG_LOGGER_INFO(log,
-                "DpdkTcpStream::create: TLS 1.3 handshake complete (resumed={})",
-                stream->tls_.was_resumed());
-        }
-
-        // Optional WebSocket HTTP Upgrade. Same contract as
-        // KernelTcpStream: empty ws_path skips entirely.
-        if (!stream->cfg_.ws.path.empty()) {
-            std::string host_storage;
-            std::string_view host_sv;
-            if (!stream->cfg_.ws.host.empty()) {
-                host_sv = stream->cfg_.ws.host;
-            } else if constexpr (EnableTls) {
-                if (!stream->cfg_.tls.hostname.empty()) {
-                    host_sv = stream->cfg_.tls.hostname;
-                }
-            }
-            if (host_sv.empty()) {
-                // Fall back to a synthesized IP:port from the 4-tuple.
-                // ConnectionTuple::dst_ip is HOST byte order (see
-                // packet_core.hpp) — the prior code labelled the local
-                // as `ip_be` and extracted bytes in reverse, producing
-                // a mirrored address string (e.g. "1.0.0.10" instead of
-                // "10.0.0.1") in WS Host: headers when neither ws_host
-                // nor tls.hostname was supplied. The fix reuses
-                // `format_ipv4` which already handles host-order.
-                const auto& t = stream->cfg_.dpdk.wire.tuple;
-                auto ip_buf = ::eph::dpdk::net::format_ipv4(t.dst_ip);
-                host_storage = std::string(ip_buf.data()) + ":" +
-                               std::to_string(t.dst_port);
-                host_sv = host_storage;
-            }
-
-            std::vector<uint8_t> leftover;
-            ::eph::net::detail::WsHandshakeDeflate deflate_state{
-                .request                      = stream->cfg_.ws.permessage_deflate,
-                .negotiated                   = false,
-                .server_no_context_takeover   = false,
-            };
-            std::expected<void, core::ErrorInfo> hs_result;
-            if constexpr (EnableTls) {
-                detail::TlsDpdkWsSink sink(&stream->sess_, &stream->tls_);
-                hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws.path,
-                    std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws.extra_headers),
-                    stream->cfg_.ws.timeout,
-                    &leftover, &deflate_state);
-            } else {
-                detail::PlainDpdkWsSink sink(&stream->sess_);
-                hs_result = ::eph::net::detail::perform_ws_handshake(
-                    sink, host_sv, stream->cfg_.ws.path,
-                    std::span<const ::eph::net::HttpHeader>(
-                        stream->cfg_.ws.extra_headers),
-                    stream->cfg_.ws.timeout,
-                    &leftover, &deflate_state);
-            }
-            if (!hs_result) {
-                SPDLOG_LOGGER_WARN(log,
-                    "DpdkTcpStream::create: WS handshake failed: {}",
-                    hs_result.error().detail);
-                return std::unexpected(hs_result.error());
-            }
-            // Mirror KernelTcpStream's deflate hookup. Only codecs
-            // that opted in (e.g. `WsCodec`) expose the method; the
-            // `requires` clause prevents instantiating it for other
-            // StreamCodecs.
-            if (deflate_state.negotiated) {
-                // Snapshot bookkeeping: server accepted the offer regardless
-                // of whether the configured codec can actually inflate.
-                // This reflects the wire-level negotiation outcome, which is
-                // the truth most diagnostic consumers want.
-                stream->ws_deflate_active_ = true;
-                if constexpr (requires (C& c) {
-                    c.enable_permessage_deflate(false);
-                }) {
-                    stream->codec_.enable_permessage_deflate(
-                        deflate_state.server_no_context_takeover);
-                } else {
-                    SPDLOG_LOGGER_WARN(log,
-                        "DpdkTcpStream::create: server accepted "
-                        "permessage-deflate but the configured codec "
-                        "does not implement enable_permessage_deflate "
-                        "— inflate will be unavailable");
-                }
-            }
-            if (!leftover.empty()) {
-                if (!stream->reasm_.append(leftover.data(), leftover.size())) {
-                    SPDLOG_LOGGER_WARN(log,
-                        "DpdkTcpStream::create: reasm append {}B leftover failed",
-                        leftover.size());
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::BufferFull,
-                        "DpdkTcpStream::create: ws leftover exceeds reasm capacity"});
-                }
-                SPDLOG_LOGGER_DEBUG(log,
-                    "DpdkTcpStream::create: seeded {}B post-handshake bytes "
-                    "into reasm buffer", leftover.size());
-            }
-            SPDLOG_LOGGER_INFO(log,
-                "DpdkTcpStream::create: WS upgrade OK path='{}'",
-                stream->cfg_.ws.path);
-        }
-
-        SPDLOG_LOGGER_INFO(log,
-            "DpdkTcpStream::create: connected src=0x{:08x}:{} -> dst=0x{:08x}:{}",
+        stream->hs_phase_ = ::eph::net::HandshakePhase::TcpConnecting;
+        stream->connect_deadline_ =
+            std::chrono::steady_clock::now() + stream->cfg_.connect_timeout;
+        SPDLOG_LOGGER_DEBUG(log,
+            "DpdkTcpStream::create: non-blocking connect initiated "
+            "src=0x{:08x}:{} -> dst=0x{:08x}:{} phase={}",
             stream->cfg_.dpdk.wire.tuple.src_ip, stream->cfg_.dpdk.wire.tuple.src_port,
-            stream->cfg_.dpdk.wire.tuple.dst_ip, stream->cfg_.dpdk.wire.tuple.dst_port);
+            stream->cfg_.dpdk.wire.tuple.dst_ip, stream->cfg_.dpdk.wire.tuple.dst_port,
+            ::eph::net::handshake_phase_name(stream->hs_phase_));
         return stream;
     }
 
@@ -1512,7 +1392,53 @@ public:
     }
 
     [[nodiscard]] ::eph::net::TcpState state() const noexcept {
+        // The TCP session reports Established as soon as the 3-way handshake
+        // completes — but with TLS/WS configured the connection is not yet
+        // usable. Mask those legs to SynSent so callers (and the
+        // ReconnectOrchestrator) only see Established once the WHOLE chain is
+        // up, matching the kernel backend's coarse `state()` contract. The
+        // TcpConnecting leg already reads SynSent from sess_; data-plane test
+        // streams (hs_phase_ == Init) pass through unchanged.
+        if (hs_phase_ == ::eph::net::HandshakePhase::TlsHandshaking ||
+            hs_phase_ == ::eph::net::HandshakePhase::TlsConnected  ||
+            hs_phase_ == ::eph::net::HandshakePhase::WsHandshaking) {
+            return ::eph::net::TcpState::SynSent;
+        }
         return sess_.state();
+    }
+
+    /// @brief Fine-grained connect/handshake phase (diagnostic). `state()`
+    ///        stays SynSent for the whole pre-Established window.
+    [[nodiscard]] ::eph::net::HandshakePhase handshake_phase() const noexcept {
+        return hs_phase_;
+    }
+
+    /// @brief Block until the connect+handshake chain reaches Established, or
+    ///        it fails / `timeout` elapses. Thin convenience over the
+    ///        non-blocking core (drives poll_once_, which self-bursts the RX
+    ///        queue) for simple / single-stream / test callers. Call it BEFORE
+    ///        attaching to a Poller — once Poller-driven, the handshake is
+    ///        advanced by process_burst_ instead and calling this would race.
+    [[nodiscard]] std::expected<void, core::ErrorInfo>
+    connect_blocking(std::chrono::milliseconds timeout) noexcept {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (hs_phase_ != ::eph::net::HandshakePhase::Established) {
+            if (hs_phase_ == ::eph::net::HandshakePhase::Failed) {
+                return std::unexpected(
+                    hs_error_.code != core::Error::Ok
+                        ? hs_error_
+                        : core::ErrorInfo{core::Error::ConnectFailed,
+                              "DpdkTcpStream::connect_blocking: handshake failed"});
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::Timeout,
+                    "DpdkTcpStream::connect_blocking: deadline exceeded"});
+            }
+            sess_.set_feed_only(false);
+            drive_handshake_(nullptr, 0);  // self-burst step
+        }
+        return {};
     }
 
     // ── Pollable concept API ─────────────────────────────────────────────
@@ -1527,7 +1453,225 @@ public:
     ///        `poll_once_` member returning `size_t`. We forward to
     ///        `sess_.poll_rx` which runs one burst against the
     ///        session-local NIC driver loop.
+    // ── Non-blocking connect/handshake state machine ────────────────────
+    //
+    // create() issues a non-blocking begin_connect() and returns in
+    // hs_phase_ == TcpConnecting. poll_once_() (self-burst) or process_burst_()
+    // (Poller-routed mbufs) call drive_handshake_() each cycle to walk
+    // TCP → TLS → WS → Established without ever blocking the loop. DPDK has no
+    // EPOLLOUT interest — every registered pollable is driven every cycle, so
+    // (unlike kernel) there is no interest plumbing.
+
+    /// @brief True while an active connect/handshake leg is in flight. Note
+    ///        `Init` is NOT handshaking: data-plane test streams
+    ///        (make_default_for_test_ + inject_state_for_testing) stay at Init
+    ///        and must take the normal RX path, not the handshake driver.
+    [[nodiscard]] bool handshaking_() const noexcept {
+        switch (hs_phase_) {
+            case ::eph::net::HandshakePhase::TcpConnecting:
+            case ::eph::net::HandshakePhase::TcpConnected:
+            case ::eph::net::HandshakePhase::TlsHandshaking:
+            case ::eph::net::HandshakePhase::TlsConnected:
+            case ::eph::net::HandshakePhase::WsHandshaking:
+                return true;
+            default:  // Init / Established / Failed
+                return false;
+        }
+    }
+
+    /// @brief Free a (possibly null) burst of mbufs — used on terminal/ignored
+    ///        handshake paths that did not hand the mbufs to the session.
+    void free_mbufs_(rte_mbuf** mbufs, uint16_t n) noexcept {
+        if (mbufs) for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
+    }
+
+    /// @brief Extract in-order TCP payload from Poller-routed mbufs and stage
+    ///        it in the session's feed buffer so the TLS BIO / WS sink read it
+    ///        via poll_rx (rather than self-bursting the Poller-owned queue).
+    [[nodiscard]] std::expected<std::uint16_t, core::ErrorInfo>
+    feed_payload_(rte_mbuf** mbufs, uint16_t n) noexcept {
+        return sess_.process_rx(mbufs, n,
+            [this](const uint8_t* p, uint16_t len) { sess_.feed_rx(p, len); });
+    }
+
+    /// @brief Advance the connect/handshake machine by one step. `mbufs`==null
+    ///        means self-burst (poll_once_/connect_blocking); non-null means
+    ///        consume the Poller-routed mbufs (process_burst_).
+    void drive_handshake_(rte_mbuf** mbufs, uint16_t n) noexcept {
+        if (std::chrono::steady_clock::now() >= connect_deadline_) [[unlikely]] {
+            fail_handshake_({core::Error::Timeout,
+                "DpdkTcpStream: connect/handshake deadline exceeded"});
+            free_mbufs_(mbufs, n);
+            return;
+        }
+        switch (hs_phase_) {
+            case ::eph::net::HandshakePhase::TcpConnecting: {
+                auto r = mbufs ? sess_.connect_step(mbufs, n)
+                               : sess_.connect_step();  // frees mbufs either way
+                if (!r) { fail_handshake_(r.error()); return; }
+                if (!*r) return;  // still waiting for SYN-ACK
+                hs_phase_ = ::eph::net::HandshakePhase::TcpConnected;
+                advance_after_tcp_();
+                return;
+            }
+            case ::eph::net::HandshakePhase::TlsHandshaking: {
+                if constexpr (EnableTls) {
+                    if (mbufs) {
+                        sess_.set_feed_only(true);
+                        if (auto f = feed_payload_(mbufs, n); !f) {
+                            fail_handshake_(f.error());
+                            return;
+                        }
+                    } else {
+                        sess_.set_feed_only(false);
+                    }
+                    auto r = tls_.handshake_step();
+                    if (!r) { fail_handshake_(r.error()); return; }
+                    if (!*r) return;  // still handshaking
+                    if (tls_.was_resumed())
+                        inc_<::eph::net::StreamMetric::kTlsResumeCount>();
+                    else
+                        inc_<::eph::net::StreamMetric::kTlsHandshakeCount>();
+                    hs_phase_ = ::eph::net::HandshakePhase::TlsConnected;
+                    advance_after_tls_();
+                } else {
+                    free_mbufs_(mbufs, n);
+                }
+                return;
+            }
+            case ::eph::net::HandshakePhase::WsHandshaking: {
+                if (mbufs) {
+                    sess_.set_feed_only(true);
+                    if (auto f = feed_payload_(mbufs, n); !f) {
+                        fail_handshake_(f.error());
+                        return;
+                    }
+                } else {
+                    sess_.set_feed_only(false);
+                }
+                auto r = ws_driver_->step(*ws_sink_);
+                if (!r) { fail_handshake_(r.error()); return; }
+                if (!*r) return;  // pending
+                finalize_ws_();
+                become_established_();
+                return;
+            }
+            default:
+                free_mbufs_(mbufs, n);
+                return;
+        }
+    }
+
+    /// @brief TCP up → begin TLS, else enter WS, else become Established.
+    void advance_after_tcp_() noexcept {
+        if constexpr (EnableTls) {
+            connect_deadline_ = std::chrono::steady_clock::now()
+                              + cfg_.tls.handshake_timeout;
+            auto b = tls_.begin_handshake(sess_, cfg_.tls);
+            if (!b) { fail_handshake_(b.error()); return; }
+            hs_phase_ = ::eph::net::HandshakePhase::TlsHandshaking;
+        } else {
+            advance_after_tls_();
+        }
+    }
+
+    /// @brief TLS up (or skipped) → enter the WS leg, else become Established.
+    void advance_after_tls_() noexcept {
+        if (!cfg_.ws.path.empty()) enter_ws_();
+        else                       become_established_();
+    }
+
+    /// @brief Build the WS Upgrade driver + sink and enter WsHandshaking.
+    void enter_ws_() noexcept {
+        connect_deadline_ = std::chrono::steady_clock::now() + cfg_.ws.timeout;
+        // Host header: explicit ws.host, else TLS SNI, else dst IP:port.
+        ws_host_storage_.clear();
+        if (!cfg_.ws.host.empty()) {
+            ws_host_storage_ = cfg_.ws.host;
+        } else if constexpr (EnableTls) {
+            if (!cfg_.tls.hostname.empty()) ws_host_storage_ = cfg_.tls.hostname;
+        }
+        if (ws_host_storage_.empty()) {
+            const auto& t = cfg_.dpdk.wire.tuple;
+            auto ip_buf = ::eph::dpdk::net::format_ipv4(t.dst_ip);
+            ws_host_storage_ = std::string(ip_buf.data()) + ":" +
+                               std::to_string(t.dst_port);
+        }
+        ws_deflate_ = ::eph::net::detail::WsHandshakeDeflate{
+            .request                    = cfg_.ws.permessage_deflate,
+            .negotiated                 = false,
+            .server_no_context_takeover = false,
+        };
+        auto d = ::eph::net::detail::WsHandshakeDriver::create(
+            ws_host_storage_, cfg_.ws.path,
+            std::span<const ::eph::net::HttpHeader>(cfg_.ws.extra_headers),
+            &ws_deflate_);
+        if (!d) { fail_handshake_(d.error()); return; }
+        ws_driver_ = std::make_unique<::eph::net::detail::WsHandshakeDriver>(
+            std::move(*d));
+        if constexpr (EnableTls) ws_sink_.emplace(&sess_, &tls_);
+        else                     ws_sink_.emplace(&sess_);
+        hs_phase_ = ::eph::net::HandshakePhase::WsHandshaking;
+    }
+
+    /// @brief WS handshake complete: apply deflate negotiation + seed over-read.
+    void finalize_ws_() noexcept {
+        if (ws_deflate_.negotiated) {
+            ws_deflate_active_ = true;
+            if constexpr (requires(C& c) { c.enable_permessage_deflate(false); }) {
+                codec_.enable_permessage_deflate(
+                    ws_deflate_.server_no_context_takeover);
+            } else {
+                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    "DpdkTcpStream: server accepted permessage-deflate but the "
+                    "configured codec does not implement enable_permessage_deflate");
+            }
+        }
+        auto lo = ws_driver_->leftover();
+        if (!lo.empty()) {
+            if (!reasm_.append(lo.data(), lo.size())) {
+                fail_handshake_({core::Error::BufferFull,
+                    "DpdkTcpStream: ws leftover exceeds reasm capacity"});
+                return;
+            }
+        }
+        ws_driver_.reset();
+        ws_sink_.reset();
+    }
+
+    /// @brief Promote to Established (state() now passes sess_.state() through).
+    void become_established_() noexcept {
+        hs_phase_ = ::eph::net::HandshakePhase::Established;
+        sess_.set_feed_only(false);
+        SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
+            "DpdkTcpStream: connection established "
+            "src=0x{:08x}:{} -> dst=0x{:08x}:{}",
+            cfg_.dpdk.wire.tuple.src_ip, cfg_.dpdk.wire.tuple.src_port,
+            cfg_.dpdk.wire.tuple.dst_ip, cfg_.dpdk.wire.tuple.dst_port);
+    }
+
+    /// @brief Terminal handshake failure: stash the specific error, latch
+    ///        Failed, and RST the session so state() reports Closed and the
+    ///        reconnect loop takes over.
+    void fail_handshake_(core::ErrorInfo err) noexcept {
+        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            "DpdkTcpStream: handshake failed at phase={}: {}",
+            ::eph::net::handshake_phase_name(hs_phase_), err.detail);
+        hs_error_ = err;
+        hs_phase_ = ::eph::net::HandshakePhase::Failed;
+        sess_.reset();
+        ws_driver_.reset();
+        ws_sink_.reset();
+    }
+
     std::size_t poll_once_() noexcept {
+        // Connect/handshake phase: drive the non-blocking state machine one
+        // self-burst step. No application frames flow until the chain is up.
+        if (handshaking_()) [[unlikely]] {
+            sess_.set_feed_only(false);
+            drive_handshake_(nullptr, 0);
+            return 0;
+        }
         // Keepalive tick lives on the Poller's per-cycle sweep (see
         // DpdkPoller::poll), driven through on_poll_tick_. Users who
         // drive poll_once_ directly (single-stream, Poller-less)
@@ -1897,6 +2041,14 @@ public:
                 for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
                 return;
             }
+        }
+        // Connect/handshake phase: drive the state machine from the
+        // Poller-routed mbufs (the Poller owns the RX queue, so the session
+        // cannot self-burst). drive_handshake_ consumes/frees the mbufs.
+        if (handshaking_()) [[unlikely]] {
+            sess_.set_last_rx_burst_tsc(rx_tsc);
+            drive_handshake_(mbufs, n);
+            return;
         }
         if (!sess_.is_established() || reasm_overflowed_) {
             for (uint16_t i = 0; i < n; ++i) rte_pktmbuf_free(mbufs[i]);
@@ -2321,6 +2473,28 @@ private:
     ///        tripped, the stream short-circuits all further RX dispatch;
     ///        caller-side recovery code is expected to tear it down.
     bool                                    reasm_overflowed_{false};
+
+    // ── Non-blocking connect/handshake state (live only until Established) ──
+    /// @brief Which leg of the TCP→TLS→WS connect chain is in flight. Drives
+    ///        poll_once_() / process_burst_() dispatch; state() reports the
+    ///        coarse TcpState (SynSent until Established).
+    ::eph::net::HandshakePhase              hs_phase_{::eph::net::HandshakePhase::Init};
+    /// @brief Per-leg wall-clock deadline (TCP=connect_timeout, then reset to
+    ///        tls.handshake_timeout / ws.timeout as each leg begins).
+    std::chrono::steady_clock::time_point   connect_deadline_{};
+    /// @brief Specific error of the failed leg, returned by connect_blocking().
+    ::eph::core::ErrorInfo                  hs_error_{::eph::core::Error::Ok, ""};
+    /// @brief Resumable WS Upgrade driver — non-null only during WsHandshaking.
+    std::unique_ptr<::eph::net::detail::WsHandshakeDriver> ws_driver_{};
+    /// @brief Persistent WS byte sink across poll cycles (carries TLS decrypt
+    ///        staging). Constructed in enter_ws_() pointing at sess_ / tls_.
+    std::conditional_t<EnableTls,
+                       std::optional<detail::TlsDpdkWsSink<>>,
+                       std::optional<detail::PlainDpdkWsSink<>>> ws_sink_{};
+    /// @brief permessage-deflate negotiation state for the WS handshake.
+    ::eph::net::detail::WsHandshakeDeflate  ws_deflate_{};
+    /// @brief Backing storage for the WS `Host:` header (outlives the driver).
+    std::string                             ws_host_storage_{};
     /// @brief TD-2 strict RX checksum mode. Off by default.
     /// `create_and_attach` sets it from `Platform::strict_rx_checksum()`;
     /// plain `create()` leaves it at the safe best-effort default.
