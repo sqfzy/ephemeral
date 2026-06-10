@@ -675,6 +675,7 @@ public:
             stats_ = other.stats_;
             ack_pending_since_tsc_ = other.ack_pending_since_tsc_;
             time_wait_deadline_ = other.time_wait_deadline_;
+            syn_retransmit_at_ = other.syn_retransmit_at_;
             last_rx_tsc_ = other.last_rx_tsc_;
             last_keepalive_tsc_ = other.last_keepalive_tsc_;
             keepalive_misses_ = other.keepalive_misses_;
@@ -698,6 +699,28 @@ public:
     ///         for mbuf exhaustion, BufferFull for NIC backpressure.
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     connect(std::chrono::milliseconds timeout = std::chrono::milliseconds(3000)) {
+        // Blocking wrapper over the non-blocking begin_connect/connect_step
+        // primitives — busy-spins on the SYN-ACK exactly as before so existing
+        // single-shot callers (and tests) see unchanged behaviour.
+        if (auto b = begin_connect(); !b) return std::unexpected(b.error());
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto r = connect_step();
+            if (!r) return std::unexpected(r.error());
+            if (*r) return {};
+        }
+        state_ = TcpState::Closed;
+        SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            "TcpSession::connect: handshake timeout after {}ms", timeout.count());
+        return std::unexpected(core::ErrorInfo{
+            core::Error::Timeout,
+            "TcpSession::connect: handshake timeout"});
+    }
+
+    /// @brief Begin a NON-blocking TCP connect: validate state, pick a fresh
+    ///        ISN, transmit the SYN and move to `SynSent`. Drive it with
+    ///        repeated `connect_step()` until that returns `true`.
+    [[nodiscard]] std::expected<void, core::ErrorInfo> begin_connect() {
         [[maybe_unused]] auto log = detail::tcp_logger();
 
         if (state_ == TcpState::TimeWait) {
@@ -709,40 +732,34 @@ public:
             } else {
                 return std::unexpected(core::ErrorInfo{
                     core::Error::InvalidConfig,
-                    "TcpSession::connect: session in TIME_WAIT (2MSL not yet expired)"});
+                    "TcpSession::begin_connect: session in TIME_WAIT (2MSL not yet expired)"});
             }
         }
 
         if (state_ != TcpState::Closed) {
             SPDLOG_LOGGER_WARN(log,
-                "TcpSession::connect: session in state {}", tcp_state_name(state_));
+                "TcpSession::begin_connect: session in state {}", tcp_state_name(state_));
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
-                "TcpSession::connect: session not in Closed state"});
+                "TcpSession::begin_connect: session not in Closed state"});
         }
 
-        // Always regenerate ISN on each connect attempt.
-        // This ensures stale snd_nxt_/snd_una_ from a timed-out handshake
-        // (where state_ was reset to Closed but sequence numbers were already
-        // incremented) do not bleed into the new connection.
+        // Always regenerate ISN on each connect attempt so stale
+        // snd_nxt_/snd_una_ from a timed-out handshake do not bleed in.
         auto isn_result = generate_isn();
         if (!isn_result) {
             SPDLOG_LOGGER_ERROR(log,
-                "TcpSession::connect: ISN generation failed — CSPRNG unavailable: {}",
+                "TcpSession::begin_connect: ISN generation failed — CSPRNG unavailable: {}",
                 isn_result.error());
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
-                "TcpSession::connect: ISN generation failed (CSPRNG unavailable)"});
+                "TcpSession::begin_connect: ISN generation failed (CSPRNG unavailable)"});
         }
         snd_nxt_ = *isn_result;
         snd_una_ = *isn_result;
         rcv_nxt_ = 0;
         reorder_count_ = 0;
         ack_pending_since_tsc_ = 0;
-        // Reset any MSS / keepalive state carried over from a prior
-        // connection attempt on this session. effective_mss_ restarts at
-        // the configured local MSS; a fresh SYN-ACK negotiation below may
-        // clamp it further.
         effective_mss_       = config_.mss;
         peer_mss_            = 0;
         peer_mss_negotiated_ = false;
@@ -755,28 +772,22 @@ public:
         auto* syn = pkt_template_.build_packet(
             pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
         if (!syn) {
-            // Pool exhaustion at connect time — surface peer + port + queue
-            // so the operator can pinpoint the offending session vs the
-            // generic "mbuf alloc failed" they'd otherwise see.
             SPDLOG_LOGGER_ERROR(log,
-                "TcpSession::connect: mbuf allocation failed for SYN "
+                "TcpSession::begin_connect: mbuf allocation failed for SYN "
                 "peer={}:{} port={} queue={}",
                 net::format_ipv4(config_.tuple.dst_ip).data(),
                 config_.tuple.dst_port,
                 config_.port_id, config_.tx_queue_id);
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
-                "TcpSession::connect: mbuf allocation failed for SYN"});
+                "TcpSession::begin_connect: mbuf allocation failed for SYN"});
         }
 
         uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &syn, 1);
         if (sent != 1) {
             rte_pktmbuf_free(syn);
-            // sent=0 means the TX ring was full — show the actual count
-            // and the peer so the operator can correlate with TX-queue
-            // back-pressure on a specific session.
             SPDLOG_LOGGER_ERROR(log,
-                "TcpSession::connect: tx_burst returned sent={}/1 for SYN "
+                "TcpSession::begin_connect: tx_burst returned sent={}/1 for SYN "
                 "peer={}:{} port={} queue={}",
                 sent,
                 net::format_ipv4(config_.tuple.dst_ip).data(),
@@ -784,154 +795,138 @@ public:
                 config_.port_id, config_.tx_queue_id);
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
-                "TcpSession::connect: tx_burst failed for SYN"});
+                "TcpSession::begin_connect: tx_burst failed for SYN"});
         }
         stats_.tx_packets++;
 
         state_ = TcpState::SynSent;
         snd_nxt_++; // SYN consumes one sequence number
 
-        // Wait for SYN-ACK, retransmitting SYN every 200ms if no response.
-        // Unlike full TCP RTO (RFC 6298, initial 1s), we use a shorter interval
-        // because we target data center environments with <1ms RTT.
+        // Arm the first SYN retransmit. We use a shorter interval than full
+        // TCP RTO because we target data-center RTTs (<1ms).
         constexpr auto kSynRetransmitInterval = std::chrono::milliseconds(200);
-        auto deadline = std::chrono::steady_clock::now() + timeout;
-        auto next_syn_retransmit = std::chrono::steady_clock::now() + kSynRetransmitInterval;
+        syn_retransmit_at_ =
+            std::chrono::steady_clock::now() + kSynRetransmitInterval;
+        return {};
+    }
 
-        while (std::chrono::steady_clock::now() < deadline) {
-            // Retransmit SYN if interval elapsed without SYN-ACK
-            auto now = std::chrono::steady_clock::now();
-            if (now >= next_syn_retransmit) {
-                auto* resyn = pkt_template_.build_packet(
-                    pool_, snd_nxt_ - 1, 0, net::kTcpSyn, rcv_wnd_);
-                if (resyn) {
-                    uint16_t resent = rte_eth_tx_burst(
-                        config_.port_id, config_.tx_queue_id, &resyn, 1);
-                    if (resent == 1) {
-                        stats_.tx_packets++;
-                        SPDLOG_LOGGER_DEBUG(log, "SYN retransmit (seq={})",
-                                            snd_nxt_ - 1);
-                    } else {
-                        rte_pktmbuf_free(resyn);
-                    }
+    /// @brief Advance a non-blocking connect by one step: retransmit the SYN if
+    ///        the timer is due, drain one RX burst, and look for the SYN-ACK.
+    /// @return `true`  — connection Established (final ACK sent);
+    ///         `false` — still waiting for SYN-ACK (call again next cycle);
+    ///         `unexpected` — RST / fatal.
+    [[nodiscard]] std::expected<bool, core::ErrorInfo> connect_step() {
+        [[maybe_unused]] auto log = detail::tcp_logger();
+        if (state_ == TcpState::Established) return true;
+        if (state_ != TcpState::SynSent) {
+            return std::unexpected(core::ErrorInfo{
+                core::Error::InvalidConfig,
+                "TcpSession::connect_step: session not in SynSent (call begin_connect)"});
+        }
+
+        constexpr auto kSynRetransmitInterval = std::chrono::milliseconds(200);
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= syn_retransmit_at_) {
+            auto* resyn = pkt_template_.build_packet(
+                pool_, snd_nxt_ - 1, 0, net::kTcpSyn, rcv_wnd_);
+            if (resyn) {
+                uint16_t resent = rte_eth_tx_burst(
+                    config_.port_id, config_.tx_queue_id, &resyn, 1);
+                if (resent == 1) {
+                    stats_.tx_packets++;
+                    SPDLOG_LOGGER_DEBUG(log, "SYN retransmit (seq={})", snd_nxt_ - 1);
+                } else {
+                    rte_pktmbuf_free(resyn);
                 }
-                next_syn_retransmit = now + kSynRetransmitInterval;
+            }
+            syn_retransmit_at_ = now + kSynRetransmitInterval;
+        }
+
+        rte_mbuf* pkts[kRxBurstSize];
+        uint16_t nb_rx = rte_eth_rx_burst(
+            config_.port_id, config_.rx_queue_id, pkts, kRxBurstSize);
+
+        for (uint16_t i = 0; i < nb_rx; ++i) {
+            auto parsed = net::parse_packet(pkts[i]);
+            if (!parsed.tcp || !parsed.matches(config_.tuple)) {
+                rte_pktmbuf_free(pkts[i]);
+                continue;
             }
 
-            rte_mbuf* pkts[kRxBurstSize];
-            uint16_t nb_rx = rte_eth_rx_burst(
-                config_.port_id, config_.rx_queue_id, pkts, kRxBurstSize);
+            stats_.rx_packets++;
 
-            for (uint16_t i = 0; i < nb_rx; ++i) {
-                auto parsed = net::parse_packet(pkts[i]);
-                if (!parsed.tcp || !parsed.matches(config_.tuple)) {
+            if (parsed.has_flag(net::kTcpRst)) {
+                SPDLOG_LOGGER_ERROR(log,
+                    "TcpSession::connect_step: received RST during handshake "
+                    "peer={}:{} our_isn={} rcvd_seq={} rcvd_ack={}",
+                    net::format_ipv4(config_.tuple.dst_ip).data(),
+                    config_.tuple.dst_port,
+                    snd_nxt_ - 1, parsed.seq(), parsed.ack());
+                state_ = TcpState::Closed;
+                stats_.resets_received++;
+                rte_pktmbuf_free(pkts[i]);
+                free_remaining(pkts, i + 1, nb_rx);
+                return std::unexpected(core::ErrorInfo{
+                    core::Error::ConnectFailed,
+                    "TcpSession::connect_step: connection refused (RST)"});
+            }
+
+            // Expecting SYN+ACK
+            if (parsed.has_flag(net::kTcpSyn) && parsed.has_flag(net::kTcpAck)) {
+                if (parsed.ack() != snd_nxt_) {
+                    SPDLOG_LOGGER_WARN(log,
+                        "SYN-ACK with wrong ack: expected={}, got={}",
+                        snd_nxt_, parsed.ack());
                     rte_pktmbuf_free(pkts[i]);
                     continue;
                 }
 
-                stats_.rx_packets++;
+                rcv_nxt_ = parsed.seq() + 1; // SYN-ACK consumes one seq
+                snd_una_ = parsed.ack();
+                snd_wnd_ = parsed.window();
 
-                if (parsed.has_flag(net::kTcpRst)) {
-                    // Peer-driven connection refusal during 3-way handshake.
-                    // Surface peer + our SYN seq so the operator can match
-                    // this against a wireshark capture or peer-side log.
-                    SPDLOG_LOGGER_ERROR(log,
-                        "TcpSession::connect: received RST during handshake "
-                        "peer={}:{} our_isn={} rcvd_seq={} rcvd_ack={}",
-                        net::format_ipv4(config_.tuple.dst_ip).data(),
-                        config_.tuple.dst_port,
-                        snd_nxt_ - 1,  // SYN consumed one seq, recover ISN
-                        parsed.seq(), parsed.ack());
-                    state_ = TcpState::Closed;
-                    stats_.resets_received++;
-                    // Free current mbuf BEFORE the tail — `free_remaining`
-                    // starts at `i + 1` per its contract, so without this
-                    // the RST mbuf leaks back to the mempool only on
-                    // ~TcpSession (mempool cleanup), or never if the
-                    // session is moved/leaked. Match the SYN-ACK success
-                    // path's pattern at line 871-872.
-                    rte_pktmbuf_free(pkts[i]);
-                    free_remaining(pkts, i + 1, nb_rx);
-                    return std::unexpected(core::ErrorInfo{
-                        core::Error::ConnectFailed,
-                        "TcpSession::connect: connection refused (RST)"});
+                // Negotiate effective MSS from the peer's SYN-ACK options.
+                auto peer_opts = net::parse_tcp_options(parsed);
+                if (peer_opts.has_mss && peer_opts.mss > 0) {
+                    const uint16_t before = effective_mss_;
+                    peer_mss_ = peer_opts.mss;
+                    effective_mss_ = std::min(effective_mss_, peer_opts.mss);
+                    peer_mss_negotiated_ = true;
+                    if (effective_mss_ < before) {
+                        stats_.mss_negotiations_applied++;
+                        SPDLOG_LOGGER_DEBUG(log,
+                            "MSS negotiated down: local={} peer={} effective={}",
+                            before, peer_opts.mss, effective_mss_);
+                    } else {
+                        SPDLOG_LOGGER_DEBUG(log,
+                            "MSS negotiated (no change): local={} peer={}",
+                            before, peer_opts.mss);
+                    }
                 }
 
-                // Expecting SYN+ACK
-                if (parsed.has_flag(net::kTcpSyn) && parsed.has_flag(net::kTcpAck)) {
-                    if (parsed.ack() != snd_nxt_) {
-                        SPDLOG_LOGGER_WARN(log,
-                            "SYN-ACK with wrong ack: expected={}, got={}",
-                            snd_nxt_, parsed.ack());
-                        rte_pktmbuf_free(pkts[i]);
-                        continue;
-                    }
-
-                    rcv_nxt_ = parsed.seq() + 1; // SYN-ACK consumes one seq
-                    snd_una_ = parsed.ack();
-                    snd_wnd_ = parsed.window();
-
-                    // Negotiate effective MSS from the peer's SYN-ACK options.
-                    // We advertise config_.mss in our SYN; the peer may
-                    // advertise something smaller (or no MSS option at all,
-                    // in which case we keep the local value). Picking the
-                    // minimum protects against silent black-holing on paths
-                    // where a switch / vSwitch between us and the peer has
-                    // a smaller MTU than either endpoint assumes.
-                    auto peer_opts = net::parse_tcp_options(parsed);
-                    if (peer_opts.has_mss && peer_opts.mss > 0) {
-                        const uint16_t before = effective_mss_;
-                        // Record peer's *raw* advertisement before any
-                        // local clamping — survives later ICMP shrinks
-                        // so snapshot.tcp.peer_mss reports the truth.
-                        peer_mss_ = peer_opts.mss;
-                        effective_mss_ =
-                            std::min(effective_mss_, peer_opts.mss);
-                        peer_mss_negotiated_ = true;
-                        if (effective_mss_ < before) {
-                            stats_.mss_negotiations_applied++;
-                            SPDLOG_LOGGER_DEBUG(log,
-                                "MSS negotiated down: local={} peer={} effective={}",
-                                before, peer_opts.mss, effective_mss_);
-                        } else {
-                            SPDLOG_LOGGER_DEBUG(log,
-                                "MSS negotiated (no change): local={} peer={}",
-                                before, peer_opts.mss);
-                        }
-                    }
-
-                    SPDLOG_LOGGER_DEBUG(log,
-                        "Received SYN-ACK: peer_isn={}, window={}, effective_mss={}",
-                        parsed.seq(), snd_wnd_, effective_mss_);
-
-                    // Send ACK to complete handshake
-                    rte_pktmbuf_free(pkts[i]);
-                    free_remaining(pkts, i + 1, nb_rx);
-
-                    auto ack_result = send_ack();
-                    if (!ack_result) return ack_result;
-
-                    state_ = TcpState::Established;
-                    SPDLOG_LOGGER_INFO(log,
-                        "TCP connection established: {}:{} -> {}:{}",
-                        net::format_ipv4(config_.tuple.src_ip).data(),
-                        config_.tuple.src_port,
-                        net::format_ipv4(config_.tuple.dst_ip).data(),
-                        config_.tuple.dst_port);
-                    return {};
-                }
+                SPDLOG_LOGGER_DEBUG(log,
+                    "Received SYN-ACK: peer_isn={}, window={}, effective_mss={}",
+                    parsed.seq(), snd_wnd_, effective_mss_);
 
                 rte_pktmbuf_free(pkts[i]);
-            }
-        }
+                free_remaining(pkts, i + 1, nb_rx);
 
-        state_ = TcpState::Closed;
-        SPDLOG_LOGGER_ERROR(log,
-            "TcpSession::connect: handshake timeout after {}ms",
-            timeout.count());
-        return std::unexpected(core::ErrorInfo{
-            core::Error::Timeout,
-            "TcpSession::connect: handshake timeout"});
+                auto ack_result = send_ack();
+                if (!ack_result) return std::unexpected(ack_result.error());
+
+                state_ = TcpState::Established;
+                SPDLOG_LOGGER_INFO(log,
+                    "TCP connection established: {}:{} -> {}:{}",
+                    net::format_ipv4(config_.tuple.src_ip).data(),
+                    config_.tuple.src_port,
+                    net::format_ipv4(config_.tuple.dst_ip).data(),
+                    config_.tuple.dst_port);
+                return true;
+            }
+
+            rte_pktmbuf_free(pkts[i]);
+        }
+        return false;  // still waiting for SYN-ACK
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2168,6 +2163,11 @@ private:
     // MSL = 60s (common implementation default). Deadline is set when entering
     // TIME_WAIT; connect() checks it to allow re-use after expiry.
     std::chrono::steady_clock::time_point time_wait_deadline_{};
+
+    // Next SYN-retransmit deadline during a non-blocking connect (begin_connect
+    // arms it; connect_step re-arms it after each retransmit). Only meaningful
+    // while state_ == SynSent.
+    std::chrono::steady_clock::time_point syn_retransmit_at_{};
 
     // ── Keepalive state ──
     // Driven by tick_keepalive(now_tsc). last_rx_tsc_ tracks the TSC of the
