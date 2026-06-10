@@ -68,17 +68,19 @@ TEST(TransportTlsWsE2EV3, TlsHandshakeCompletes) {
 
     auto poller = ek::KernelPoller::create({}).value();
 
+    // create() is non-blocking; drive the TLS handshake via connect_blocking.
     auto sr = TlsRawStream::create(make_config(server.port()));
-    if (!sr) {
+    ASSERT_TRUE(sr.has_value()) << "create() failed: " << sr.error().detail;
+    auto stream = std::move(*sr);
+    if (auto cr = stream->connect_blocking(std::chrono::seconds{3}); !cr) {
         // May fail to verify the ephemeral self-signed cert depending
         // on the trust store policy. We GTEST_SKIP rather than fail the
         // build so the test is informative on either codepath.
         GTEST_SKIP() << "TLS handshake against the in-proc server failed: "
-                     << sr.error().detail
+                     << cr.error().detail
                      << " (expected if TlsConfig requires explicit "
                         "verify_peer=false plumbing)";
     }
-    auto stream = std::move(*sr);
 
     EXPECT_EQ(stream->state(), en::TcpState::Established);
     EXPECT_TRUE(poller->add(stream.get()).has_value());

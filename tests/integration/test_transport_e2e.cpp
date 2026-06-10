@@ -92,6 +92,7 @@ TEST(TransportE2EV3, HappyPath) {
     auto sr = PlainStream::create(cfg);
     ASSERT_TRUE(sr.has_value()) << "create failed: " << sr.error().detail;
     auto stream = std::move(*sr);
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     std::vector<uint8_t> captured;
     stream->on_message = [&](std::span<const uint8_t> app_frame) {
@@ -141,6 +142,7 @@ TEST(TransportE2EV3, SendBeforeAttachFails) {
     auto sr = PlainStream::create(cfg);
     ASSERT_TRUE(sr.has_value());
     auto stream = std::move(*sr);
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     const uint8_t payload[] = {'X'};
     auto tx = stream->send(payload);
@@ -171,6 +173,7 @@ TEST(TransportE2EV3, MultipleEchoes) {
     cfg.reasm_capacity  = 16 * 1024;
     cfg.connect_timeout = 1s;
     auto stream = PlainStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     std::size_t bytes_in = 0;
     stream->on_message = [&](std::span<const uint8_t> app_frame) {

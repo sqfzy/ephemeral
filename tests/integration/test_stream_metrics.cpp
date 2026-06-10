@@ -158,6 +158,7 @@ TEST(StreamMetrics, PublishMetricsEmitsOneCounterPerEntry) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     RecordingSink sink;
     en::publish_metrics(*stream, sink);
@@ -188,6 +189,7 @@ TEST(StreamMetrics, KernelTcpStreamRecordsBytesSentAndRecv) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     std::vector<uint8_t> captured;
     stream->on_message = [&](std::span<const uint8_t> app_frame) {
@@ -288,6 +290,7 @@ TEST(StreamMetrics, MetricCountersAreMonotonic) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     bool got = false;
     stream->on_message = [&](std::span<const uint8_t>) { got = true; };
@@ -350,6 +353,7 @@ TEST(StreamMetrics, KernelTcpReturnsZeroForNewTcpIcmpMetrics) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     for (auto m : {
             en::StreamMetric::kTcpResetsReceived,
@@ -391,6 +395,7 @@ TEST(StreamMetrics, MetricAcceptsEveryValidStreamMetricWithoutCrash) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
     // Every enumerator in [0, kCount) must be readable. If the backend's
     // metric() falls off the end of its counter array, ASan would catch
     // it here; without ASan the test just passes silently, which is
@@ -418,6 +423,7 @@ TEST(StreamMetrics, MetricOutOfRangeReturnsZeroOnTcp) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     // Probe a handful of clearly-out-of-range values. Cover the immediate
     // boundary (kCount itself), two well past, and a max-uint8_t value.
@@ -570,6 +576,7 @@ TEST(StreamMetrics, MetricReturnsZeroForOutOfRangeEnumValue) {
     ek::StreamConfig cfg{};
     cfg.remote = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, srv.port};
     auto stream = PlainTcpStream::create(cfg).value();
+    (void)stream->connect_blocking(std::chrono::seconds{2});
 
     auto udp = PlainUdp::create(
         ek::UdpConfig{.bind = en::SocketAddr{en::Ipv4Addr{127, 0, 0, 1}, 0}})

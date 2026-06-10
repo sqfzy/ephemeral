@@ -120,8 +120,11 @@ TEST(TlsResumption, EmptyConfigDefaultIsNoResumption) {
     ek::StreamConfig cfg{};
     cfg.remote          = en::SocketAddr{en::Ipv4Addr{192, 0, 2, 1}, 443};
     cfg.connect_timeout = 50ms;
+    // create() is non-blocking; the blackhole surfaces via connect_blocking.
     auto r = PlainRawStream::create(cfg);
-    ASSERT_FALSE(r.has_value()) << "TEST-NET-1 connect must fail";
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    ASSERT_FALSE((*r)->connect_blocking(std::chrono::seconds{1}).has_value())
+        << "TEST-NET-1 connect must fail";
     // We can't directly call the getters on a stream we don't own, but
     // the `if constexpr` branches in the template guarantee the right
     // values are returned for `EnableTls=false` — covered by the
@@ -144,25 +147,25 @@ TEST(TlsResumption, CorruptTicketFallback) {
     }
 
     auto cfg = make_tls_config(server.port(), std::move(garbage));
+    // create() is non-blocking; drive the handshake via connect_blocking.
     auto r = TlsRawStream::create(cfg);
+    ASSERT_TRUE(r.has_value()) << r.error().detail;
+    auto stream = std::move(*r);
 
-    if (!r) {
+    if (auto cr = stream->connect_blocking(std::chrono::seconds{3}); !cr) {
         // Acceptable: handshake didn't complete (likely cert verify
         // edge or timing). The point of the test is "no crash with
-        // garbage bytes" — that already passed if we got here. Log
-        // the error so a future failure mode (e.g. assert in d2i)
-        // is visible.
+        // garbage bytes" — that already passed if we got here.
         GTEST_SKIP() << "TLS handshake did not complete with garbage "
                         "ticket — failure path: code="
-                     << static_cast<int>(r.error().code)
-                     << " detail=" << r.error().detail
+                     << static_cast<int>(cr.error().code)
+                     << " detail=" << cr.error().detail
                      << " (test still passes — no crash)";
     }
 
     // If we got here, the corrupt ticket caused a graceful fallback to
     // a full handshake. The handshake counter must be 1 (full handshake)
     // and the resume counter must be 0.
-    auto stream = std::move(*r);
     EXPECT_EQ(stream->state(), en::TcpState::Established);
     EXPECT_EQ(stream->metric(en::StreamMetric::kTlsResumeCount), 0u)
         << "garbage ticket must not be classified as a resume";
