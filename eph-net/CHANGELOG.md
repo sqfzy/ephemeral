@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### BREAKING (2026-06-10) — Non-blocking connect: `TcpStream::create()` no longer blocks
+
+`KernelTcpStream::create()` (and the DPDK sibling, once landed) now return a
+*connecting* stream instead of a fully-established one. TCP, TLS and the
+WebSocket Upgrade are driven across poll cycles inside `poll_once_()`, so one
+connection's (re)connect never blocks the poll loop or starves the other
+connections sharing a Poller.
+
+Migration:
+
+| Before                                          | After                                                                    |
+|-------------------------------------------------|--------------------------------------------------------------------------|
+| `auto s = TcpStream::create(cfg).value();` (ready) | `auto s = …create(cfg).value(); s->connect_blocking(timeout);` for the old blocking ergonomics |
+| (stream ready after `create`)                   | OR attach to a Poller and `poll()` until `s->handshake_phase() == HandshakePhase::Established` |
+| handshake error returned by `create()`          | returned by `connect_blocking()` (same `ErrorInfo` codes), or observed via `state() == Closed` |
+
+New public surface:
+- `eph::net::HandshakePhase` (`handshake_phase.hpp`) + `TcpStream::handshake_phase()` (diagnostic; `state()` stays `SynSent` until the whole chain is up).
+- `TcpStream::connect_blocking(timeout)` — thin blocking convenience over the non-blocking core.
+- `ReconnectConfig::connect_timeout` — the orchestrator lingers in `Connecting`
+  and watches `state()`, promoting to `Connected` only once `Established`.
+
+`ReconnectOrchestrator` transparently drives a non-blocking factory: a factory
+returning a connecting stream is held in `Connecting` until its handshake
+completes (advanced by the caller's poll loop); a factory returning an
+already-`Established` stream (blocking `create` / `connect_blocking`) is
+promoted immediately, so blocking factories see no behaviour change.
+
+Internal (shared) additions: `TlsSession::handshake_step()` (non-blocking BIO),
+`detail::WsHandshakeDriver` (resumable WS Upgrade). The blocking `handshake()` /
+`perform_ws_handshake()` are unchanged thin wrappers over them.
+
 ### BREAKING (2026-06-01) — `ReconnectPolicy` moved to `eph::utils::ExponentialBackoff`
 
 `eph::net::ReconnectPolicy` and `eph::net::ReconnectPolicyConfig` are removed.

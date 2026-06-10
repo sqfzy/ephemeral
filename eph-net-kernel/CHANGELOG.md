@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### BREAKING (2026-06-10) — `KernelTcpStream::create()` is now non-blocking
+
+`create()` validates config, issues a non-blocking `connect()` and returns a
+stream in `handshake_phase() == TcpConnecting` (`state() == SynSent`). The
+TCP → (proxy) → TLS → WS handshake is driven by `poll_once_()` across poll
+cycles, so a reconnect never blocks the epoll loop or starves the other
+streams on the same `KernelPoller`. EPOLLOUT is armed via the new
+`KernelPoller::modify_interest_` while a handshake leg may need to write, and
+reverted to EPOLLIN-only once Established (steady-state hot path unchanged).
+
+Migration: call `s->connect_blocking(timeout)` after `create()` for the old
+ready-on-return behaviour, or drive a Poller until
+`s->handshake_phase() == HandshakePhase::Established`. Handshake errors that
+`create()` used to return now surface from `connect_blocking()` (same
+`ErrorInfo` codes — `ConnectFailed` / `TlsHandshakeFailed` /
+`WsHandshakeFailed` / `ProxyConnectFailed` / `Timeout`). See
+`eph-net/CHANGELOG.md` for the cross-module details.
+
+New: `ByteSocket::begin_connect()` / `poll_connect()` (non-blocking connect
+primitives; the blocking `connect()` is now a thin wrapper over them).
+
+Note: the HTTP CONNECT proxy leg is still driven synchronously inside the
+first applicable poll step (rare, kernel-only); its step-ification is deferred.
+
 ### Added (2026-05-08) — TLS 1.2 GCM/CHACHA20 transparent support
 
 The kernel `TlsState::encrypt_for_send` now sizes its per-record
