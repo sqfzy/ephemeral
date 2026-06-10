@@ -123,71 +123,63 @@ public:
                 ::eph::core::Error::TlsHandshakeFailed,
                 "TlsState::handshake: handshake() failed"});
         }
-        // Snapshot resumption state before extract_hot_state — the
-        // session is dropped at scope exit and the captured ticket /
-        // resumed flag must survive into the stream's metric path.
-        was_resumed_ = sess_r->was_resumed();
-        captured_ticket_ = sess_r->take_resumption_ticket();
-        SPDLOG_LOGGER_DEBUG(log,
-            "TlsState::handshake: resumed={} captured_ticket={}B",
-            was_resumed_, captured_ticket_.size());
+        return finalize_from_session_(*sess_r, cfg);
+    }
 
-        auto state_r = sess_r->extract_hot_state();
-        if (!state_r) {
+    /// @brief Begin a NON-blocking TLS handshake.
+    ///
+    /// The poll-loop counterpart of `handshake()`. Keeps the aws-lc session
+    /// alive as a member (`hs_session_`) across poll cycles — its BIO holds a
+    /// pointer to `sess`, which the owning `DpdkTcpStream` keeps stable. Drive
+    /// it with repeated `handshake_step()` until it returns `true`.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    begin_handshake(::eph::dpdk::TcpSession<>& sess,
+                    const ::eph::net::TlsConfig& cfg) noexcept {
+        auto* log = tls_state_logger();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::begin_handshake: hostname='{}'", cfg.hostname);
+        auto sess_r =
+            ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>::create(sess, cfg);
+        if (!sess_r) {
             SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: extract_hot_state failed "
+                "TlsState::begin_handshake: TlsSession::create failed "
                 "hostname='{}'", cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
-                "TlsState::handshake: extract_hot_state failed"});
+                "TlsState::begin_handshake: TlsSession::create failed"});
         }
-        const std::size_t key_len = sess_r->cipher_key_len();
-        if (key_len != 16 && key_len != 32) {
-            SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: unsupported AEAD key_len={} "
-                "(expected 16 or 32) hostname='{}'",
-                key_len, cfg.hostname);
-            return std::unexpected(::eph::core::ErrorInfo{
-                ::eph::core::Error::TlsCipherFailed,
-                "TlsState::handshake: unsupported AEAD key length"});
-        }
-
-        // Build the in-place decryptor (read direction, hot path).
-        // Pass through the negotiated record format so the in-place open
-        // picks the correct AAD / nonce / wire layout for TLS 1.2 GCM,
-        // TLS 1.2 CHACHA20, or TLS 1.3.
-        auto dec_r = ::eph::net::detail::TlsInPlaceDecryptor::create(
-            state_r->read.ki.key, key_len,
-            state_r->read.ki.iv,  ::eph::net::tls_const::kTls13NonceLen,
-            state_r->read.seq,
-            state_r->record_format);
-        if (!dec_r) {
-            SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: TlsInPlaceDecryptor::create failed "
-                "hostname='{}' key_len={} detail='{}'",
-                cfg.hostname, key_len, dec_r.error().detail);
-            return std::unexpected(dec_r.error());
-        }
-        dec_ = std::make_unique<::eph::net::detail::TlsInPlaceDecryptor>(
-            std::move(*dec_r));
-
-        // Build the encryptor (write direction). The legacy TlsEncryptor
-        // is fine here — TX is not on the hot decrypt path and the
-        // existing implementation handles the TLS record framing.
-        auto enc_r = ::eph::net::TlsEncryptor::create(*state_r, key_len);
-        if (!enc_r) {
-            SPDLOG_LOGGER_ERROR(log,
-                "TlsState::handshake: TlsEncryptor::create failed "
-                "hostname='{}' key_len={}",
-                cfg.hostname, key_len);
-            return std::unexpected(::eph::core::ErrorInfo{
-                ::eph::core::Error::TlsCipherFailed,
-                "TlsState::handshake: TlsEncryptor::create failed"});
-        }
-        enc_ = std::make_unique<::eph::net::TlsEncryptor>(std::move(*enc_r));
-
-        established_ = true;
+        hs_session_ = std::make_unique<
+            ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>>(std::move(*sess_r));
+        hs_cfg_ = cfg;
         return {};
+    }
+
+    /// @brief Advance the non-blocking TLS handshake by one step.
+    /// @return `true`  — complete (keys extracted, `is_established()` true);
+    ///         `false` — pending (call again next poll cycle);
+    ///         `unexpected` — fatal handshake error.
+    [[nodiscard]] std::expected<bool, ::eph::core::ErrorInfo>
+    handshake_step() noexcept {
+        auto* log = tls_state_logger();
+        if (!hs_session_) {
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::handshake_step: begin_handshake() not called"});
+        }
+        auto step = hs_session_->handshake_step();
+        if (!step) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::handshake_step: handshake failed: {}", step.error());
+            hs_session_.reset();
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::handshake_step: TLS handshake failed"});
+        }
+        if (!*step) return false;  // still handshaking
+        auto fin = finalize_from_session_(*hs_session_, hs_cfg_);
+        hs_session_.reset();
+        if (!fin) return std::unexpected(fin.error());
+        return true;
     }
 
     [[nodiscard]] bool is_established() const noexcept { return established_; }
@@ -316,9 +308,83 @@ public:
     }
 
 private:
+    /// @brief Shared completion: pull resumption state + traffic keys out of a
+    ///        finished `TlsSession` and stand up the hot-path AEAD contexts.
+    ///        Used by both the blocking `handshake()` and the non-blocking
+    ///        `handshake_step()`. On success `is_established()` becomes true.
+    [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
+    finalize_from_session_(
+        ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>& session,
+        const ::eph::net::TlsConfig& cfg) noexcept {
+        auto* log = tls_state_logger();
+        // Snapshot resumption state before extract_hot_state — the session is
+        // dropped after this and the captured ticket / resumed flag must
+        // survive into the stream's metric path.
+        was_resumed_     = session.was_resumed();
+        captured_ticket_ = session.take_resumption_ticket();
+        SPDLOG_LOGGER_DEBUG(log,
+            "TlsState::finalize: resumed={} captured_ticket={}B hostname='{}'",
+            was_resumed_, captured_ticket_.size(), cfg.hostname);
+
+        auto state_r = session.extract_hot_state();
+        if (!state_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: extract_hot_state failed hostname='{}'",
+                cfg.hostname);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsHandshakeFailed,
+                "TlsState::finalize: extract_hot_state failed"});
+        }
+        const std::size_t key_len = session.cipher_key_len();
+        if (key_len != 16 && key_len != 32) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: unsupported AEAD key_len={} hostname='{}'",
+                key_len, cfg.hostname);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsCipherFailed,
+                "TlsState::finalize: unsupported AEAD key length"});
+        }
+
+        // In-place decryptor (read direction, hot path) — format-aware.
+        auto dec_r = ::eph::net::detail::TlsInPlaceDecryptor::create(
+            state_r->read.ki.key, key_len,
+            state_r->read.ki.iv,  ::eph::net::tls_const::kTls13NonceLen,
+            state_r->read.seq,
+            state_r->record_format);
+        if (!dec_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: TlsInPlaceDecryptor::create failed "
+                "hostname='{}' key_len={} detail='{}'",
+                cfg.hostname, key_len, dec_r.error().detail);
+            return std::unexpected(dec_r.error());
+        }
+        dec_ = std::make_unique<::eph::net::detail::TlsInPlaceDecryptor>(
+            std::move(*dec_r));
+
+        // Encryptor (write direction) — TX is not on the hot decrypt path.
+        auto enc_r = ::eph::net::TlsEncryptor::create(*state_r, key_len);
+        if (!enc_r) {
+            SPDLOG_LOGGER_ERROR(log,
+                "TlsState::finalize: TlsEncryptor::create failed "
+                "hostname='{}' key_len={}", cfg.hostname, key_len);
+            return std::unexpected(::eph::core::ErrorInfo{
+                ::eph::core::Error::TlsCipherFailed,
+                "TlsState::finalize: TlsEncryptor::create failed"});
+        }
+        enc_ = std::make_unique<::eph::net::TlsEncryptor>(std::move(*enc_r));
+
+        established_ = true;
+        return {};
+    }
+
     std::unique_ptr<::eph::net::detail::TlsInPlaceDecryptor> dec_;
     std::unique_ptr<::eph::net::TlsEncryptor>                 enc_;
     bool                                                       established_ = false;
+
+    // ── Non-blocking handshake state (live only between begin_handshake and
+    //    the handshake_step() that completes it) ──
+    std::unique_ptr<::eph::net::TlsSession<::eph::dpdk::TcpSession<>>> hs_session_;
+    ::eph::net::TlsConfig                                     hs_cfg_{};
     /// TLS 1.3 abbreviated-handshake flag (set inside `handshake()` from
     /// `SSL_session_reused`). Read-only after handshake.
     bool                                                       was_resumed_ = false;
