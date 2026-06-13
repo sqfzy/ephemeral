@@ -85,10 +85,15 @@ TEST(SbeBestBidAsk, truncated_symbol_returns_empty) {
 }
 
 TEST(SbeBestBidAsk, wrong_schema_not_supported) {
-    auto buf = build_bba(1, 2, 0, 0, 9, 9, 9, 9, "X", /*schema*/1, /*ver*/9);
+    auto buf = build_bba(1, 2, 0, 0, 9, 9, 9, 9, "X", /*schema*/9, /*ver*/0);  // wrong schema_id
     auto v = parse(buf.data(), buf.size());
     ASSERT_TRUE(v.has_value());
     EXPECT_FALSE(binance::stream::is_supported(*v));
+    // A newer version of the SAME schema is accepted (append-only forward-compat).
+    auto buf2 = build_bba(1, 2, 0, 0, 9, 9, 9, 9, "X", /*schema*/1, /*ver*/3);
+    auto v2 = parse(buf2.data(), buf2.size());
+    ASSERT_TRUE(v2.has_value());
+    EXPECT_TRUE(binance::stream::is_supported(*v2));
 }
 
 TEST(SbeBestBidAsk, dispatch_routes_to_best_bid_ask_tag) {

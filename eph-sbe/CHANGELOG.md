@@ -1,5 +1,16 @@
 # Changelog — eph-sbe
 
+## 2026-06-13 — Forward-compatible schema acceptance
+
+### Changed
+- `binance::is_supported()` and `binance::stream::is_supported()` now accept the
+  pinned version OR any newer one (`version >= kSchemaVersion`) instead of an
+  exact match. Binance evolves a schema id append-only and the accessors are
+  forward-compatible (fixed offsets for early fields + on-wire block_length for
+  var-data), so a 3:2-pinned decoder correctly reads the live WS API's 3:4
+  responses ("highest compatible version" is served regardless of the requested
+  version). A different schema_id, or an OLDER version, is still refused.
+
 ## 2026-06-13 — Binance WS-API + market-stream messages
 
 ### Added

@@ -224,16 +224,34 @@ TEST(SbeBookTicker, missing_group_header_returns_truncated) {
 // ===========================================================================
 
 TEST(SbeBookTicker, unsupported_schema_is_rejected) {
+    // Wrong schema_id → refused (a different SBE schema entirely).
     auto buf = build_book_ticker({{.price_exp = -2, .qty_exp = -2, .bid_price = 1,
                                     .bid_qty = 1, .ask_price = 1, .ask_qty = 1,
                                     .symbol = "BTCUSDT"}},
-                                 /*schema_id=*/3, /*version=*/99);
+                                 /*schema_id=*/99, /*version=*/2);
     auto v = parse(buf.data(), buf.size());
     ASSERT_TRUE(v.has_value());
     EXPECT_FALSE(binance::is_supported(*v));
     auto n = binance::for_each_ticker(*v, [](const uint8_t*) {});
     ASSERT_FALSE(n.has_value());
     EXPECT_EQ(n.error(), ParseError::kMalformedGroup);
+}
+
+TEST(SbeBookTicker, older_version_rejected_newer_accepted) {
+    // is_supported floors at the pinned version (append-only forward-compat).
+    auto older = build_book_ticker({{.price_exp = 0, .qty_exp = 0, .bid_price = 1,
+                                     .bid_qty = 1, .ask_price = 1, .ask_qty = 1, .symbol = "X"}},
+                                   /*schema_id=*/3, /*version=*/1);
+    auto vo = parse(older.data(), older.size());
+    ASSERT_TRUE(vo.has_value());
+    EXPECT_FALSE(binance::is_supported(*vo));        // 3:1 < pinned 3:2 → refused
+
+    auto newer = build_book_ticker({{.price_exp = 0, .qty_exp = 0, .bid_price = 1,
+                                     .bid_qty = 1, .ask_price = 1, .ask_qty = 1, .symbol = "X"}},
+                                   /*schema_id=*/3, /*version=*/4);
+    auto vn = parse(newer.data(), newer.size());
+    ASSERT_TRUE(vn.has_value());
+    EXPECT_TRUE(binance::is_supported(*vn));          // 3:4 ≥ 3:2 → accepted (live serves 3:4)
 }
 
 // ===========================================================================

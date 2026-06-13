@@ -49,11 +49,15 @@ inline constexpr int64_t kNullMantissa = std::numeric_limits<int64_t>::min();
 /// @brief Whether a parsed message matches the Binance spot schema this module
 ///        was built against (id=3, version=2).
 ///
-/// Accessor byte offsets are only guaranteed for this exact schema/version; a
-/// mismatch means Binance has revised the layout and the bundled
-/// schemas/spot_3_2.xml (and offsets) must be refreshed.
+/// Accepts the pinned version OR ANY NEWER one (`version >= kSchemaVersion`):
+/// Binance evolves a schema id append-only (new fields/messages only, existing
+/// field offsets and the older fields' block_length unchanged), and the
+/// accessors read fixed offsets for early fields + locate trailing var-data via
+/// the on-wire block_length — so they stay correct as the schema grows (the live
+/// WS API already serves 3:4 to a 3:2 request: "highest compatible version").
+/// A different schema_id, or an older version, is refused.
 [[nodiscard]] inline bool is_supported(const MessageView& view) noexcept {
-    return view.schema_id == kSchemaId && view.version == kSchemaVersion;
+    return view.schema_id == kSchemaId && view.version >= kSchemaVersion;
 }
 
 /// @brief Binance spot `orderStatus` enum values (spot_3_2.xml `<enum

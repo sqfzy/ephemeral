@@ -29,10 +29,13 @@ inline constexpr uint16_t kBestBidAsk = 10001;
 } // namespace tid
 
 /// @brief Whether a parsed message matches the spot_stream schema this module
-///        was built against (id=1, version=0). Accessor offsets are only
-///        guaranteed for this exact schema/version.
+///        was built against. Accepts the pinned version OR any newer one
+///        (`version >= kSchemaVersion`): the schema evolves append-only and the
+///        accessors are forward-compatible (fixed offsets for early fields +
+///        on-wire block_length for var-data). A different schema_id, or an older
+///        version, is refused.
 [[nodiscard]] inline bool is_supported(const MessageView& view) noexcept {
-    return view.schema_id == kSchemaId && view.version == kSchemaVersion;
+    return view.schema_id == kSchemaId && view.version >= kSchemaVersion;
 }
 
 } // namespace eph::sbe::binance::stream
