@@ -118,6 +118,57 @@ inline constexpr std::size_t kGroupHeaderSize = 4;
     };
 }
 
+/// @brief Total wire size of a `groupSize16Encoding` repeating group.
+///
+/// = the 4-byte dimension header + numInGroup × per-entry blockLength. Useful to
+/// *skip* a group whose entries the caller does not consume (e.g. the WS API
+/// envelope's `rateLimits` group, which precedes the fields the caller wants).
+/// @param p Pointer to the group dimension header.
+/// @return Bytes the whole group occupies (header + all entries).
+[[nodiscard]] inline std::size_t group_total_size(const uint8_t* p) noexcept {
+    const GroupHeader gh = read_group_header(p);
+    return kGroupHeaderSize +
+           static_cast<std::size_t>(gh.num_in_group) * gh.block_length;
+}
+
+// ---------------------------------------------------------------------------
+// Nested message (messageData / optionalMessageData composite)
+// ---------------------------------------------------------------------------
+
+/// @brief A decoded nested SBE message plus the bytes its composite occupied.
+struct NestedMessage {
+    MessageView view;    ///< Zero-copy view over the embedded message.
+    std::size_t advance; ///< Total bytes consumed (4-byte length + embedded message).
+};
+
+/// @brief Decode an SBE `messageData` composite — a uint32 length prefix followed
+///        by a fully self-describing embedded SBE message (its own 8-byte header).
+///
+/// Binance's WS API wraps every method result in a `WebSocketResponse(50)`
+/// envelope whose `result` field is exactly this composite; the embedded
+/// message's own `templateId` (e.g. NewOrderAckResponse 300, ErrorResponse 100)
+/// tells the caller what it is. Bounds-checked against `remaining` before any
+/// deref. For `optionalMessageData`, a declared length of 0 means null — callers
+/// should treat `length == 0` as "absent" rather than calling this.
+///
+/// @param p         Pointer to the 4-byte length prefix.
+/// @param remaining Readable bytes available at @p p.
+/// @return {embedded MessageView, bytes consumed}, or ParseError::kTruncated if
+///         the prefix/payload overruns (or kIncomplete if the inner header is
+///         shorter than 8 bytes).
+[[nodiscard]] inline std::expected<NestedMessage, ParseError>
+read_message_data(const uint8_t* p, std::size_t remaining) noexcept {
+    if (remaining < 4) [[unlikely]]
+        return std::unexpected(ParseError::kTruncated);
+    const std::size_t len = read_le32(p);
+    if (remaining < 4 + len) [[unlikely]]
+        return std::unexpected(ParseError::kTruncated);
+    auto sub = parse(p + 4, len);   // embedded message carries its own header
+    if (!sub) [[unlikely]]
+        return std::unexpected(sub.error());
+    return NestedMessage{ .view = *sub, .advance = 4 + len };
+}
+
 // ---------------------------------------------------------------------------
 // Tag types + dispatch() — type-safe visitor over template ids
 // ---------------------------------------------------------------------------
@@ -128,7 +179,14 @@ inline constexpr std::size_t kGroupHeaderSize = 4;
 /// for that message live in the schema's own header. `Unknown` is dispatched
 /// for any template id without a registered tag.
 namespace msg {
-struct BookTicker {}; ///< Binance spot BookTickerResponse (template id 212).
+struct BookTicker {};        ///< Binance spot BookTickerResponse (template id 212).
+struct WebSocketResponse {}; ///< WS API result envelope (template id 50).
+struct SessionLogon {};      ///< WebSocketSessionLogonResponse (template id 51).
+struct ErrorResponse {};     ///< WS API ErrorResponse (template id 100).
+struct NewOrderAck {};       ///< NewOrderAckResponse (template id 300).
+struct CancelOrder {};       ///< CancelOrderResponse (template id 305).
+struct ExecutionReport {};   ///< ExecutionReportEvent — user-data fill/status (template id 603).
+struct BestBidAsk {};        ///< spot_stream BestBidAskStreamEvent (template id 10001).
 struct Unknown {};
 } // namespace msg
 
@@ -146,10 +204,18 @@ struct Unknown {};
 template <typename Handler>
 decltype(auto) dispatch(const MessageView& view, Handler&& handler) {
     switch (view.template_id) {
-    // 212 == binance::tid::kBookTicker (kept as a literal to avoid a cyclic
-    // include of the schema layer, which depends on this header).
-    case 212: return handler(msg::BookTicker{}, view);
-    default:  return handler(msg::Unknown{}, view);
+    // Template ids kept as literals to avoid a cyclic include of the schema
+    // layers (binance/schema.hpp, binance/stream/schema.hpp), which depend on
+    // this header. They mirror those headers' tid:: constants.
+    case 50:    return handler(msg::WebSocketResponse{}, view);
+    case 51:    return handler(msg::SessionLogon{}, view);
+    case 100:   return handler(msg::ErrorResponse{}, view);
+    case 212:   return handler(msg::BookTicker{}, view);
+    case 300:   return handler(msg::NewOrderAck{}, view);
+    case 305:   return handler(msg::CancelOrder{}, view);
+    case 603:   return handler(msg::ExecutionReport{}, view);
+    case 10001: return handler(msg::BestBidAsk{}, view);
+    default:    return handler(msg::Unknown{}, view);
     }
 }
 

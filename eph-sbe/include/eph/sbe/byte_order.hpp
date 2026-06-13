@@ -119,6 +119,31 @@ read_var_string8(const uint8_t* p, std::size_t remaining) noexcept {
     };
 }
 
+/// @brief Read an SBE `varString` (uint16 length prefix + UTF-8 data).
+///
+/// The uint16-prefixed sibling of `read_var_string8` — Binance uses this wider
+/// composite for fields that can exceed 255 bytes (e.g. `ErrorResponse.msg`,
+/// `WebSocketSessionLogonResponse.loggedOnApiKey`). Same bounds-checked,
+/// zero-copy contract: the 2-byte little-endian length and the declared data are
+/// validated against `remaining` before any deref.
+///
+/// @param p         Pointer to the length prefix.
+/// @param remaining Readable bytes available at @p p.
+/// @return {string_view into the buffer, bytes consumed}, or
+///         ParseError::kTruncated if the prefix or the declared data overruns.
+[[nodiscard]] inline std::expected<VarString, ParseError>
+read_var_string16(const uint8_t* p, std::size_t remaining) noexcept {
+    if (remaining < 2) [[unlikely]]
+        return std::unexpected(ParseError::kTruncated);
+    const std::size_t len = read_le16(p);
+    if (remaining < 2 + len) [[unlikely]]
+        return std::unexpected(ParseError::kTruncated);
+    return VarString{
+        .value   = std::string_view{reinterpret_cast<const char*>(p + 2), len},
+        .advance = 2 + len,
+    };
+}
+
 /// @brief Reconstitute an SBE decimal: value = mantissa × 10^exponent.
 ///
 /// Binance encodes prices/quantities as a (mantissa64, exponent8) pair so the
