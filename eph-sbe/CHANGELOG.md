@@ -1,5 +1,22 @@
 # Changelog — eph-sbe
 
+## 2026-06-13 — Binance WS-API + market-stream messages
+
+### Added
+- **Nested message decode** — `read_message_data()` decodes the SBE
+  `messageData` composite (uint32 length + embedded self-describing message)
+  into a sub-`MessageView`; `group_total_size()` skips a repeating group.
+  `read_var_string16()` (uint16-prefixed varString).
+- **Spot 3:2 accessors** — `WebSocketResponse(50)` envelope (status + echoed
+  request id + nested result), `WebSocketSessionLogonResponse(51)`,
+  `ErrorResponse(100)`, `NewOrderAckResponse(300)`, `CancelOrderResponse(305)`,
+  `ExecutionReportEvent(603)`; `tid::` constants + `OrderStatus` enum.
+- **spot_stream 1:0** — vendored `schemas/stream_1_0.xml`; `stream/schema.hpp`
+  + `stream/best_bid_ask.hpp` (`BestBidAskStreamEvent`, id 10001).
+- `dispatch()` routes 50/51/100/300/305/603/10001.
+- Tests: `test_sbe_best_bid_ask`, `test_sbe_order`, `test_sbe_exec_report`
+  (nested envelope, truncation, schema guard, dispatch).
+
 ## 2026-06-05 — Initial module
 
 New header-only, decode-only Simple Binary Encoding module (sibling of

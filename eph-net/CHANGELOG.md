@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added (2026-06-13) — Ed25519 request signing (`ed25519_signer.hpp`)
+
+`eph::net::Ed25519PrivateKey` — RAII (move-only) Ed25519 key loaded from a PEM
+file/string via aws-lc `EVP_DigestSign`, with `sign()` (raw 64-byte) and
+`sign_base64()` (standard base64, Binance transmission form). Sibling of
+`hmac.hpp` (symmetric) and `jwt_signed_request.hpp` (ES256) for venues that use
+Ed25519 API keys — Binance Spot WebSocket API `session.logon`.
+
+## [Unreleased]
+
 ### BREAKING (2026-06-10) — Non-blocking connect: `TcpStream::create()` no longer blocks
 
 `KernelTcpStream::create()` (and the DPDK sibling, once landed) now return a
