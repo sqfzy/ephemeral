@@ -91,6 +91,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `eph::utils::TokenBucket` — thread-safe weighted rate limiter.
 - `eph::net::HmacSha256` with typed `Key` (RAII-clearing) and `Tag` wrappers.
 
+### Changed (BREAKING)
+
+- **Logging is now SILENT by default and compile-time gated on `EPH_ENABLE_LOG`.**
+  The whole library logs through `eph/core/log.hpp` (`EPH_LOG_*` macros +
+  `eph::log::get`). With `EPH_ENABLE_LOG` undefined (the default) every log site
+  compiles to a no-op — the library no longer writes to the host's stdout or its
+  spdlog default logger, and pays zero hot-path cost. Previously release builds
+  defaulted to `SPDLOG_LEVEL_INFO` and emitted to stdout/the default logger.
+  Migration: build with `-DEPH_ENABLE_LOG` (or `xmake f --eph_log=y`) to restore
+  output; tune with `-DSPDLOG_ACTIVE_LEVEL=…`. Logger names are unified under
+  `eph.<module>.<component>` (the dpdk `dpdk.X` / `net.dpdk.X` double-prefix is
+  fixed to `net.dpdk.X`). The per-module `net_log_level` / `SPDLOG_ACTIVE_LEVEL`
+  build defines, `eph::core::detail::make_logger`, and the dpdk
+  `get_logger<LoggerName>` NTTP helper are removed. See `docs/logging-guide.md`.
+
 ### Removed (BREAKING)
 
 - `eph::net::Transport` / `SocketTransport` / `DirectTransport` /

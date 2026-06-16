@@ -405,14 +405,25 @@ eph-<name>/
 When adding a new test or benchmark, just drop the `.cpp` into the module's `tests/` or
 `benchmarks/` directory — the glob loop in the module xmake.lua picks it up automatically.
 
-### Logging is compile-time filtered
+### Logging is compile-time gated and SILENT by default
 
-All modules use spdlog with `SPDLOG_ACTIVE_LEVEL` set per build mode
-(`SPDLOG_LEVEL_TRACE` in debug, `SPDLOG_LEVEL_INFO` in release, controlled by the
-`net_log_level` global in the root xmake.lua). Use the
-`SPDLOG_TRACE / DEBUG / INFO / WARN / ERROR` macros (not the runtime spdlog::trace APIs)
-so suppressed levels compile out entirely. Tests inherit the SPDLOG_NO_EXCEPTIONS define
-from the `eph-test` rule.
+All library logging flows through `eph/core/log.hpp`: the `EPH_LOG_TRACE / DEBUG /
+INFO / WARN / ERROR / CRITICAL(logger, …)` macro family plus the `eph::log::get
+(name)` factory. The single gate is the macro `EPH_ENABLE_LOG`:
+
+- **Undefined (default):** every `EPH_LOG_*` is a no-op (args unevaluated, no logger
+  created, no sink opened) — the library never touches the host's stdout or default
+  logger, and there is zero hot-path cost. This holds regardless of include order and
+  does not mutate the consumer's own `SPDLOG_ACTIVE_LEVEL`.
+- **Defined** (`xmake f --eph_log=y`, or `-DEPH_ENABLE_LOG`): logs go to per-subsystem
+  named loggers (`eph.<module>.<component>`, e.g. `eph.net.dpdk.tcp`) on stdout;
+  narrow verbosity with `-DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_…`.
+
+Rules for contributors: include `eph/core/log.hpp` (never `<spdlog/spdlog.h>`);
+use `EPH_LOG_*` with an explicit `eph::log::get("…")` logger — never bare `SPDLOG_*`
+(those hit the host default logger) and never `spdlog::info(...)` free calls (ungated
+default-logger writes). See `docs/logging-guide.md`. Tests inherit the
+SPDLOG_NO_EXCEPTIONS define from the `eph-test` rule.
 
 ### DPDK pieces have special link requirements
 
