@@ -37,13 +37,17 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
-#include <spdlog/spdlog.h>
-
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 
 namespace eph::net {
 
 namespace detail {
+
+inline spdlog::logger* ed25519_signer_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.ed25519_signer");
+    return l;
+}
 
 /// @brief Standard base64 encode (RFC 4648 alphabet, '=' padded). aws-lc does
 ///        not always export EVP_EncodeBlock, and the encode is trivial, so it is
@@ -82,7 +86,7 @@ public:
     [[nodiscard]] static std::expected<Ed25519PrivateKey, ::eph::core::ErrorInfo>
     from_pem(std::string_view pem) noexcept {
         if (pem.empty()) {
-            SPDLOG_ERROR("Ed25519PrivateKey::from_pem: empty PEM");
+            EPH_LOG_ERROR(detail::ed25519_signer_logger(), "Ed25519PrivateKey::from_pem: empty PEM");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig, "empty PEM"});
         }
@@ -94,20 +98,20 @@ public:
         EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
         BIO_free(bio);
         if (pkey == nullptr) {
-            SPDLOG_ERROR("Ed25519PrivateKey::from_pem: PEM parse failed "
+            EPH_LOG_ERROR(detail::ed25519_signer_logger(), "Ed25519PrivateKey::from_pem: PEM parse failed "
                          "(malformed / encrypted / unrecognized key type)");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig, "PEM parse failed"});
         }
         const int id = EVP_PKEY_id(pkey);
         if (id != EVP_PKEY_ED25519) {
-            SPDLOG_ERROR("Ed25519PrivateKey::from_pem: key is not Ed25519 "
+            EPH_LOG_ERROR(detail::ed25519_signer_logger(), "Ed25519PrivateKey::from_pem: key is not Ed25519 "
                          "(EVP_PKEY_id={})", id);
             EVP_PKEY_free(pkey);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig, "key is not Ed25519"});
         }
-        SPDLOG_DEBUG("Ed25519PrivateKey::from_pem: loaded Ed25519 key OK");
+        EPH_LOG_DEBUG(detail::ed25519_signer_logger(), "Ed25519PrivateKey::from_pem: loaded Ed25519 key OK");
         Ed25519PrivateKey out;
         out.key_ = pkey;
         return out;
@@ -118,7 +122,7 @@ public:
     from_pem_file(const std::string& path) noexcept {
         std::ifstream f(path, std::ios::binary);
         if (!f) {
-            SPDLOG_ERROR("Ed25519PrivateKey::from_pem_file: cannot open '{}'", path);
+            EPH_LOG_ERROR(detail::ed25519_signer_logger(), "Ed25519PrivateKey::from_pem_file: cannot open '{}'", path);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig, "cannot open PEM file"});
         }
@@ -149,7 +153,7 @@ public:
             siglen == kSignatureSize;
         EVP_MD_CTX_free(ctx);
         if (!ok) {
-            SPDLOG_ERROR("Ed25519PrivateKey::sign: EVP_DigestSign failed");
+            EPH_LOG_ERROR(detail::ed25519_signer_logger(), "Ed25519PrivateKey::sign: EVP_DigestSign failed");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsCipherFailed, "ed25519 sign failed"});
         }
