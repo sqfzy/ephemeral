@@ -32,7 +32,6 @@ target("eph-codec")
     -- avoids introducing a new opt-in dep just to inflate a few KB/s of
     -- bookticker JSON. See ws_codec_inflate.hpp for the rationale.
     add_syslinks("z", { public = true })
-    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 

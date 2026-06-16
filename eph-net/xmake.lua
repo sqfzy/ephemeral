@@ -24,7 +24,6 @@ target("eph-net")
     add_headerfiles("include/(eph/net/**.hpp)")
     add_deps("eph-core", "eph-utils", { public = true })
     add_packages("spdlog", "aws-lc", { public = true })
-    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 

@@ -63,8 +63,23 @@ option("native_arch")
     set_showmenu(true)
     set_description("Enable -march=native for performance-critical targets")
 
--- Global constants (inherited by module xmake.lua via includes() scope sharing)
-net_log_level = is_mode("debug") and "SPDLOG_LEVEL_TRACE" or "SPDLOG_LEVEL_INFO"
+-- Library logging is compile-time gated and SILENT by default (see
+-- eph-core/include/eph/core/log.hpp). Enabling this option defines
+-- EPH_ENABLE_LOG library-wide, routing eph logs to per-subsystem `eph.*`
+-- loggers on stdout. Verbosity is then tuned via SPDLOG_ACTIVE_LEVEL
+-- (defaults to the most verbose level when enabled and otherwise unset).
+option("eph_log")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Enable eph library logging (defines EPH_ENABLE_LOG)")
+option_end()
+
+-- Propagate the gate to every target (libraries are header-only, so the define
+-- only matters in the consuming TUs: tests / benches / examples). External
+-- consumers define EPH_ENABLE_LOG in their own build.
+if has_config("eph_log") then
+    add_defines("EPH_ENABLE_LOG")
+end
 
 -- DPDK PMD linking strategy.
 --

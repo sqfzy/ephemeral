@@ -4,7 +4,6 @@ target("eph-core")
     add_headerfiles("include/(eph/core/**.hpp)")
     add_headerfiles("include/(eph/version.hpp)")
     add_packages("spdlog", { public = true })
-    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 

@@ -44,7 +44,6 @@ target("eph-net-dpdk")
     if not is_arch("arm64", "arm64-v8a", "aarch64") then
         add_cxflags("-mssse3", { public = true, force = true })
     end
-    add_defines("SPDLOG_ACTIVE_LEVEL=" .. net_log_level, { public = true })
     add_rules("utils.install.cmake_importfiles")
     add_rules("utils.install.pkgconfig_importfiles")
 

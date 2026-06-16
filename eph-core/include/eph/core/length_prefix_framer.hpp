@@ -11,23 +11,17 @@
 #include <cstdint>
 #include <cstring>
 
-#include <spdlog/spdlog.h>
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 
 #include "eph/core/framer_concept.hpp"
 
 namespace eph::net {
 
 namespace detail {
-/// @brief Lazily-initialized logger for the LengthPrefixFramer.
-///
-/// Creates a colored stdout logger named "core.framer" on first call.
-/// If the logger already exists (e.g., registered by a previous shared library
-/// load), returns the existing instance.
-///
+/// @brief Lazily-initialized logger for the LengthPrefixFramer ("eph.core.framer").
 /// @return Pointer to the spdlog logger instance. Never null after initialization.
 inline spdlog::logger* framer_logger() {
-    static auto* l = ::eph::core::detail::make_logger("core.framer");
+    static auto* l = ::eph::log::get("core.framer");
     return l;
 }
 } // namespace detail
@@ -75,7 +69,7 @@ public:
         // frame would require reading past the payload. Protocols needing
         // heartbeats should use a 1-byte sentinel message instead.
         if (len > kMaxPayloadLen || len == 0 || !data || !out) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::framer_logger(),"LengthPrefixFramer::encode: invalid args len={} "
+            EPH_LOG_WARN(detail::framer_logger(),"LengthPrefixFramer::encode: invalid args len={} "
                         "data={} out={} (max={}, min=1) — caller bug",
                         len, fmt::ptr(data), fmt::ptr(out), kMaxPayloadLen);
             return 0;
@@ -100,7 +94,7 @@ public:
     [[nodiscard]] std::expected<DecodedFrame, FrameError>
     decode(const uint8_t* data, size_t len) noexcept {
         if (len < 2) {
-            SPDLOG_LOGGER_DEBUG(detail::framer_logger(),"LengthPrefixFramer::decode: incomplete header, "
+            EPH_LOG_DEBUG(detail::framer_logger(),"LengthPrefixFramer::decode: incomplete header, "
                          "need 2 bytes but have {}", len);
             return std::unexpected(FrameError::kIncomplete);
         }
@@ -111,12 +105,12 @@ public:
         // Zero-length payloads are rejected: msg_type is derived from payload[0],
         // so a zero-length frame has no valid msg_type. See encode() comment.
         if (msg_len == 0) {
-            SPDLOG_LOGGER_WARN(detail::framer_logger(),"LengthPrefixFramer::decode: zero-length payload "
+            EPH_LOG_WARN(detail::framer_logger(),"LengthPrefixFramer::decode: zero-length payload "
                         "(invalid format)");
             return std::unexpected(FrameError::kInvalidFormat);
         }
         if (len < 2u + msg_len) {
-            SPDLOG_LOGGER_DEBUG(detail::framer_logger(),"LengthPrefixFramer::decode: incomplete payload, "
+            EPH_LOG_DEBUG(detail::framer_logger(),"LengthPrefixFramer::decode: incomplete payload, "
                          "need {} bytes but have {}", 2u + msg_len, len);
             return std::unexpected(FrameError::kIncomplete);
         }
