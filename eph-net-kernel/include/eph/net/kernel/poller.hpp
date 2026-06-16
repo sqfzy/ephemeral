@@ -48,9 +48,8 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
 
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
 #include "eph/net/kernel/config.hpp"
@@ -61,7 +60,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel poller subsystem.
 inline spdlog::logger* poller_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.kernel.poller");
+    static spdlog::logger* l = ::eph::log::get("net.kernel.poller");
     return l;
 }
 
@@ -108,7 +107,7 @@ public:
 
         const int fd = ::epoll_create1(EPOLL_CLOEXEC);
         if (fd < 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::create: epoll_create1 failed: {}",
                 std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -121,7 +120,7 @@ public:
         // We use the public constructor for simplicity — the class invariants
         // are enforced by the factory alone.
         auto p = std::unique_ptr<KernelPoller>(new KernelPoller(fd, cfg));
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelPoller::create: epoll_fd={} max_events={}",
             fd, cfg.max_events_per_wait);
         return p;
@@ -163,14 +162,14 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
-            SPDLOG_LOGGER_ERROR(log, "KernelPoller::add: nullptr obj");
+            EPH_LOG_ERROR(log, "KernelPoller::add: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::add: nullptr"});
         }
         const int fd = obj->fd();
         if (fd < 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::add: obj={} has closed fd ({}); "
                 "pollable must be open before add()",
                 static_cast<void*>(obj), fd);
@@ -190,7 +189,7 @@ public:
         // entry that surfaces as the "orphan event" path in `poll_impl_`.
         // Surface the misuse loudly at the call site instead.
         if (obj->is_attached_()) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::add: obj={} (fd={}) already attached to "
                 "another KernelPoller; remove() it first",
                 static_cast<void*>(obj), fd);
@@ -203,7 +202,7 @@ public:
         // anyway but the message here is clearer.
         for (const auto& e : entries_) {
             if (e.obj == static_cast<void*>(obj)) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelPoller::add: obj={} (fd={}) already registered "
                     "(entries={})",
                     static_cast<void*>(obj), fd, entries_.size());
@@ -226,7 +225,7 @@ public:
         try {
             entries_.reserve(entries_.size() + 1);
         } catch (...) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::add: entries_.reserve({}) threw — OOM, "
                 "epoll_ctl(ADD) NOT issued, no partial state",
                 entries_.size() + 1);
@@ -240,7 +239,7 @@ public:
                                 // via its own send() poll fallback.
         ev.data.ptr = static_cast<void*>(obj);
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) != 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::add: epoll_ctl(ADD) failed fd={} errno={} ({})",
                 fd, errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -263,7 +262,7 @@ public:
         entries_.push_back(entry);
 
         obj->notify_attached_(this);
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelPoller::add: fd={} entries={}", fd, entries_.size());
         return {};
     }
@@ -280,7 +279,7 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
-            SPDLOG_LOGGER_ERROR(log, "KernelPoller::remove: nullptr obj");
+            EPH_LOG_ERROR(log, "KernelPoller::remove: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::remove: nullptr"});
@@ -290,7 +289,7 @@ public:
                 return e.obj == p;
             });
         if (it == entries_.end()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelPoller::remove: obj={} not registered (entries={})",
                 static_cast<void*>(obj), entries_.size());
             return std::unexpected(core::ErrorInfo{
@@ -302,13 +301,13 @@ public:
         // closed by a peer RST and reaped by the kernel already).
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr) != 0
             && errno != ENOENT && errno != EBADF) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelPoller::remove: epoll_ctl(DEL) errno={} ({})",
                 errno, std::strerror(errno));
         }
         entries_.erase(it);
         obj->notify_detached_();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelPoller::remove: fd={} entries={}", fd, entries_.size());
         return {};
     }
@@ -340,7 +339,7 @@ public:
     modify_interest_(void* obj, uint32_t events) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
-            SPDLOG_LOGGER_ERROR(log, "KernelPoller::modify_interest_: nullptr obj");
+            EPH_LOG_ERROR(log, "KernelPoller::modify_interest_: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "KernelPoller::modify_interest_: nullptr"});
@@ -348,7 +347,7 @@ public:
         auto it = std::find_if(entries_.begin(), entries_.end(),
             [obj](const PollableEntry& e) { return e.obj == obj; });
         if (it == entries_.end()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelPoller::modify_interest_: obj={} not registered "
                 "(entries={})", obj, entries_.size());
             return std::unexpected(core::ErrorInfo{
@@ -365,7 +364,7 @@ public:
             // the caller treats the connect as failed rather than retrying a
             // doomed MOD.
             if (err == ENOENT || err == EBADF) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelPoller::modify_interest_: fd={} vanished "
                     "(errno={} {}) — registration gone",
                     it->fd, err, std::strerror(err));
@@ -373,7 +372,7 @@ public:
                     core::Error::NotFound,
                     "KernelPoller::modify_interest_: fd vanished"});
             }
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelPoller::modify_interest_: epoll_ctl(MOD) fd={} "
                 "events={:#x} failed: errno={} ({})",
                 it->fd, events, err, std::strerror(err));
@@ -381,7 +380,7 @@ public:
                 core::Error::InvalidConfig,
                 "KernelPoller::modify_interest_: epoll_ctl(MOD) failed"});
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelPoller::modify_interest_: fd={} events={:#x}",
             it->fd, events);
         return {};
@@ -436,7 +435,7 @@ private:
         } catch (...) {
             // Best-effort breadcrumb; logger may not be initialized this
             // early in some test fixtures, hence the explicit access.
-            SPDLOG_LOGGER_WARN(detail::poller_logger(),
+            EPH_LOG_WARN(detail::poller_logger(),
                 "KernelPoller: entries_.reserve({}) threw; falling back "
                 "to default capacity (subsequent add() calls will reserve "
                 "lazily on demand)",
@@ -466,7 +465,7 @@ private:
                 if (timeout_ms == 0) return 0;
                 continue;
             }
-            SPDLOG_LOGGER_WARN(detail::poller_logger(),
+            EPH_LOG_WARN(detail::poller_logger(),
                 "KernelPoller::poll: epoll_wait errno={} ({})",
                 errno, std::strerror(errno));
             return 0;
@@ -498,7 +497,7 @@ private:
                 // at the now-removed pollable). Anything else (e.g.
                 // dangling obj after UAF) is a real bug — DEBUG-log so
                 // tests and operators can distinguish the two.
-                SPDLOG_LOGGER_DEBUG(detail::poller_logger(),
+                EPH_LOG_DEBUG(detail::poller_logger(),
                     "KernelPoller::poll: orphan event obj={} (self-remove "
                     "or stale) — skipping, remaining_entries={}",
                     obj, entries_.size());

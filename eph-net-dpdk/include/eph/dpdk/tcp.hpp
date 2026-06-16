@@ -20,7 +20,7 @@
 /// same type as the public Stream API. `ErrorInfo::detail` is a static
 /// string literal (never formatted / allocated); formatted diagnostic
 /// context (timeout values, sequence numbers, effective MSS, peer state)
-/// is emitted via `SPDLOG_LOGGER_*` at the error site before the return,
+/// is emitted via `EPH_LOG_*` at the error site before the return,
 /// so ops can still see the full picture in logs while programmatic
 /// callers get a uniformly-typed error for dispatch.
 
@@ -37,8 +37,7 @@
 #include <string>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <sys/random.h>   // getrandom(2) for ISN generation
 
@@ -252,7 +251,7 @@ struct TcpConfig {
 
 namespace detail {
 
-inline spdlog::logger* tcp_logger() { return get_logger<LoggerName{"dpdk.tcp"}>(); }
+inline spdlog::logger* tcp_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.tcp"); return l; }
 
 /// Pure delayed-ACK timer expiry check (RFC 1122 §4.2.3.2 style).
 ///
@@ -517,13 +516,13 @@ public:
         , effective_mss_(config.mss) {
 
         if (!pool_) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            EPH_LOG_ERROR(detail::tcp_logger(),
                 "TcpSession created with null mempool — "
                 "all packet allocations will fail");
         }
 
         if (config.tuple.src_ip == 0 || config.tuple.dst_ip == 0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "TcpSession created with zero IP address: src={}, dst={}",
                 net::format_ipv4(config.tuple.src_ip).data(),
                 net::format_ipv4(config.tuple.dst_ip).data());
@@ -533,7 +532,7 @@ public:
         // TX/RX queue, unusual MSS, etc.) — advisory, does not block
         // construction. Mirrors Platform::create / UdpSender::create.
         for (const auto& w : config.warnings()) {
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "TcpConfig advisory: {}", w);
         }
 
@@ -542,7 +541,7 @@ public:
         pkt_template_.tuple   = config.tuple;
         pkt_template_.mss     = config.mss;
 
-        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+        EPH_LOG_DEBUG(detail::tcp_logger(),
             "TcpSession created: {}:{} -> {}:{}, pool={}",
             net::format_ipv4(config.tuple.src_ip).data(),
             config.tuple.src_port,
@@ -566,12 +565,12 @@ public:
         // Both would turn `reset()`'s mbuf build into UB.
         if (!should_rst_on_destroy_(state_)) return;
         if (pool_ == nullptr) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "~TcpSession: state={} but pool is null; skipping RST",
                 tcp_state_name(state_));
             return;
         }
-        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+        EPH_LOG_DEBUG(detail::tcp_logger(),
             "~TcpSession: state={} -> best-effort RST",
             tcp_state_name(state_));
         reset();
@@ -651,7 +650,7 @@ public:
             // dtor's gating mirrors this exactly: same state policy,
             // same `pool_ != nullptr` precondition.
             if (should_rst_on_destroy_(state_) && pool_ != nullptr) {
-                SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+                EPH_LOG_DEBUG(detail::tcp_logger(),
                     "TcpSession::operator=(&&): state={} on target -> "
                     "best-effort RST before overwrite",
                     tcp_state_name(state_));
@@ -712,7 +711,7 @@ public:
             if (*r) return {};
         }
         state_ = TcpState::Closed;
-        SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+        EPH_LOG_ERROR(detail::tcp_logger(),
             "TcpSession::connect: handshake timeout after {}ms", timeout.count());
         return std::unexpected(core::ErrorInfo{
             core::Error::Timeout,
@@ -728,7 +727,7 @@ public:
         if (state_ == TcpState::TimeWait) {
             // Allow reconnection once the 2MSL timer has expired (RFC 793 §3.5).
             if (std::chrono::steady_clock::now() >= time_wait_deadline_) {
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "TIME_WAIT 2MSL expired — allowing reconnect");
                 state_ = TcpState::Closed;
             } else {
@@ -739,7 +738,7 @@ public:
         }
 
         if (state_ != TcpState::Closed) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TcpSession::begin_connect: session in state {}", tcp_state_name(state_));
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -750,7 +749,7 @@ public:
         // snd_nxt_/snd_una_ from a timed-out handshake do not bleed in.
         auto isn_result = generate_isn();
         if (!isn_result) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TcpSession::begin_connect: ISN generation failed — CSPRNG unavailable: {}",
                 isn_result.error());
             return std::unexpected(core::ErrorInfo{
@@ -770,11 +769,11 @@ public:
         keepalive_misses_    = 0;
 
         // Send SYN
-        SPDLOG_LOGGER_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
+        EPH_LOG_DEBUG(log, "Sending SYN, isn={}", snd_nxt_);
         auto* syn = pkt_template_.build_packet(
             pool_, snd_nxt_, 0, net::kTcpSyn, rcv_wnd_);
         if (!syn) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TcpSession::begin_connect: mbuf allocation failed for SYN "
                 "peer={}:{} port={} queue={}",
                 net::format_ipv4(config_.tuple.dst_ip).data(),
@@ -788,7 +787,7 @@ public:
         uint16_t sent = rte_eth_tx_burst(config_.port_id, config_.tx_queue_id, &syn, 1);
         if (sent != 1) {
             rte_pktmbuf_free(syn);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TcpSession::begin_connect: tx_burst returned sent={}/1 for SYN "
                 "peer={}:{} port={} queue={}",
                 sent,
@@ -863,7 +862,7 @@ private:
                     config_.port_id, config_.tx_queue_id, &resyn, 1);
                 if (resent == 1) {
                     stats_.tx_packets++;
-                    SPDLOG_LOGGER_DEBUG(log, "SYN retransmit (seq={})", snd_nxt_ - 1);
+                    EPH_LOG_DEBUG(log, "SYN retransmit (seq={})", snd_nxt_ - 1);
                 } else {
                     rte_pktmbuf_free(resyn);
                 }
@@ -888,7 +887,7 @@ private:
             stats_.rx_packets++;
 
             if (parsed.has_flag(net::kTcpRst)) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "TcpSession::connect_step: received RST during handshake "
                     "peer={}:{} our_isn={} rcvd_seq={} rcvd_ack={}",
                     net::format_ipv4(config_.tuple.dst_ip).data(),
@@ -906,7 +905,7 @@ private:
             // Expecting SYN+ACK
             if (parsed.has_flag(net::kTcpSyn) && parsed.has_flag(net::kTcpAck)) {
                 if (parsed.ack() != snd_nxt_) {
-                    SPDLOG_LOGGER_WARN(log,
+                    EPH_LOG_WARN(log,
                         "SYN-ACK with wrong ack: expected={}, got={}",
                         snd_nxt_, parsed.ack());
                     rte_pktmbuf_free(pkts[i]);
@@ -926,17 +925,17 @@ private:
                     peer_mss_negotiated_ = true;
                     if (effective_mss_ < before) {
                         stats_.mss_negotiations_applied++;
-                        SPDLOG_LOGGER_DEBUG(log,
+                        EPH_LOG_DEBUG(log,
                             "MSS negotiated down: local={} peer={} effective={}",
                             before, peer_opts.mss, effective_mss_);
                     } else {
-                        SPDLOG_LOGGER_DEBUG(log,
+                        EPH_LOG_DEBUG(log,
                             "MSS negotiated (no change): local={} peer={}",
                             before, peer_opts.mss);
                     }
                 }
 
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "Received SYN-ACK: peer_isn={}, window={}, effective_mss={}",
                     parsed.seq(), snd_wnd_, effective_mss_);
 
@@ -947,7 +946,7 @@ private:
                 if (!ack_result) return std::unexpected(ack_result.error());
 
                 state_ = TcpState::Established;
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "TCP connection established: {}:{} -> {}:{}",
                     net::format_ipv4(config_.tuple.src_ip).data(),
                     config_.tuple.src_port,
@@ -975,7 +974,7 @@ public:
     [[nodiscard]] std::expected<size_t, core::ErrorInfo>
     send(const void* data, size_t len) {
         if (state_ != TcpState::Established) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "TcpSession::send: state={} (expected Established)",
                 tcp_state_name(state_));
             return std::unexpected(core::ErrorInfo{
@@ -984,7 +983,7 @@ public:
         }
 
         if (len > effective_mss_) {
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "TcpSession::send: payload too large ({} > effective MSS {})",
                 len, effective_mss_);
             return std::unexpected(core::ErrorInfo{
@@ -997,7 +996,7 @@ public:
         // exceeding the peer's advertised window is logged at DEBUG level
         // so it surfaces in debug builds without polluting release perf.
         if (snd_wnd_ > 0 && len > snd_wnd_) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "send: payload {} exceeds peer window {} (snd_una={}, snd_nxt={})",
                 len, snd_wnd_, snd_una_, snd_nxt_);
         }
@@ -1015,7 +1014,7 @@ public:
             net::kTcpAck | net::kTcpPsh,
             rcv_wnd_, data, static_cast<uint16_t>(len));
         if (!mbuf) {
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            EPH_LOG_ERROR(detail::tcp_logger(),
                 "TcpSession::send: mbuf alloc failed (len={})", len);
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
@@ -1026,7 +1025,7 @@ public:
             config_.port_id, config_.tx_queue_id, &mbuf, 1);
         if (sent != 1) {
             rte_pktmbuf_free(mbuf);
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            EPH_LOG_ERROR(detail::tcp_logger(),
                 "TcpSession::send: tx_burst failed (len={}, snd_nxt={})",
                 len, snd_nxt_);
             return std::unexpected(core::ErrorInfo{
@@ -1078,14 +1077,14 @@ public:
         const uint16_t original_count = count;
 
         if (state_ != TcpState::Established) {
-            SPDLOG_LOGGER_WARN(log, "send_batch: not established (state={})",
+            EPH_LOG_WARN(log, "send_batch: not established (state={})",
                                tcp_state_name(state_));
             return {0, original_count};
         }
 
         static constexpr uint16_t kMaxBatchSize = 32;
         if (count > kMaxBatchSize) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "send_batch: count={} clamped to kMaxBatchSize={}; "
                 "{} trailing segments will be reported via "
                 "(requested - sent) — caller should chunk before calling",
@@ -1107,7 +1106,7 @@ public:
         // Step 1: allocate and fill all mbufs
         for (uint16_t i = 0; i < count; ++i) {
             if (segments[i].second > effective_mss_) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "send_batch: segment[{}] too large ({} > effective MSS {})",
                     i, segments[i].second, effective_mss_);
                 break;
@@ -1119,7 +1118,7 @@ public:
                 net::kTcpAck | net::kTcpPsh,
                 rcv_wnd_, segments[i].first, segments[i].second);
             if (!mbuf) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "send_batch: mbuf alloc failed at segment {}/{}", i, count);
                 break;
             }
@@ -1151,7 +1150,7 @@ public:
 
         // Free unsent mbufs
         if (sent < prepared) {
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "send_batch: partial tx_burst {}/{} (NIC backpressure)",
                 sent, prepared);
             for (uint16_t i = sent; i < prepared; ++i) {
@@ -1159,7 +1158,7 @@ public:
             }
         }
 
-        SPDLOG_LOGGER_TRACE(log,
+        EPH_LOG_TRACE(log,
             "send_batch: sent {}/{} segments, {} bytes",
             sent, original_count, sent_bytes);
 
@@ -1184,12 +1183,12 @@ public:
         arp_refresh_interval_ = interval;
         if (interval.count() > 0) {
             arp_next_refresh_ = std::chrono::steady_clock::now() + interval;
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "ARP refresh enabled: gateway={}, interval={}s",
                 net::format_ipv4(gateway_ip).data(), interval.count());
         } else {
             arp_next_refresh_ = std::chrono::steady_clock::time_point::max();
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(), "ARP refresh disabled");
+            EPH_LOG_DEBUG(detail::tcp_logger(), "ARP refresh disabled");
         }
     }
 
@@ -1212,7 +1211,7 @@ public:
             // port so the operator can correlate with which TX queue is
             // back-pressured. rte_errno is not reliably set by
             // rte_pktmbuf_alloc, so we omit it.
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "ARP refresh: mbuf alloc failed gateway={} port={} queue={}",
                 net::format_ipv4(arp_refresh_gateway_ip_).data(),
                 config_.port_id, config_.tx_queue_id);
@@ -1228,13 +1227,13 @@ public:
             // sent=0 is valid back-pressure (TX ring full); not strictly
             // an error but the refresh did not go out, so log enough
             // context to spot a stuck queue from the noise.
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "ARP refresh: tx_burst sent={}/1 gateway={} port={} queue={}",
                 sent,
                 net::format_ipv4(arp_refresh_gateway_ip_).data(),
                 config_.port_id, config_.tx_queue_id);
         } else {
-            SPDLOG_LOGGER_DEBUG(log, "ARP refresh sent for gateway {}",
+            EPH_LOG_DEBUG(log, "ARP refresh sent for gateway {}",
                 net::format_ipv4(arp_refresh_gateway_ip_).data());
         }
 
@@ -1367,13 +1366,13 @@ public:
                                  (seq_after(rst_seq, rcv_nxt_) &&
                                   !seq_after(rst_seq, static_cast<uint32_t>(rcv_nxt_ + rcv_wnd_)));
                 if (!in_window) {
-                    SPDLOG_LOGGER_DEBUG(log,
+                    EPH_LOG_DEBUG(log,
                         "RST seq {} outside receive window [{}, +{}), ignored (RFC 5961)",
                         rst_seq, rcv_nxt_, rcv_wnd_);
                     free_list[free_count++] = pkts[i];
                     continue;
                 }
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "Received RST, closing connection: {}:{} -> {}:{}",
                     net::format_ipv4(config_.tuple.src_ip).data(),
                     config_.tuple.src_port,
@@ -1401,13 +1400,13 @@ public:
                 // drives state transitions depending on current state.
                 if (snd_una_ == snd_nxt_) {
                     if (state_ == TcpState::FinWait1) {
-                        SPDLOG_LOGGER_DEBUG(log, "FIN_WAIT_1: received ACK of FIN -> FIN_WAIT_2");
+                        EPH_LOG_DEBUG(log, "FIN_WAIT_1: received ACK of FIN -> FIN_WAIT_2");
                         state_ = TcpState::FinWait2;
                     } else if (state_ == TcpState::Closing) {
-                        SPDLOG_LOGGER_DEBUG(log, "CLOSING: received ACK of FIN -> TIME_WAIT");
+                        EPH_LOG_DEBUG(log, "CLOSING: received ACK of FIN -> TIME_WAIT");
                         enter_time_wait();
                     } else if (state_ == TcpState::LastAck) {
-                        SPDLOG_LOGGER_DEBUG(log, "LAST_ACK: received ACK of FIN -> CLOSED");
+                        EPH_LOG_DEBUG(log, "LAST_ACK: received ACK of FIN -> CLOSED");
                         state_ = TcpState::Closed;
                     }
                 }
@@ -1441,7 +1440,7 @@ public:
                         // Segment exceeds ReorderEntry buffer capacity.
                         // Jumbo-frame out-of-order segments cannot be buffered —
                         // drop and let the caller handle reconnect via loss detection.
-                        SPDLOG_LOGGER_WARN(log,
+                        EPH_LOG_WARN(log,
                             "Reorder buffer: segment too large ({} > {}), "
                             "delivering in-order only",
                             parsed.payload_len, net::kDefaultMss);
@@ -1459,7 +1458,7 @@ public:
                         entry.seq = seg_seq;
                         entry.len = parsed.payload_len;
                         std::memcpy(entry.data, parsed.payload, parsed.payload_len);
-                        SPDLOG_LOGGER_DEBUG(log,
+                        EPH_LOG_DEBUG(log,
                             "Buffered out-of-order: expected={}, got={}, buffered={}",
                             rcv_nxt_, seg_seq, reorder_count_);
                     } else if (!seq_after(seg_seq, rcv_nxt_)) {
@@ -1468,12 +1467,12 @@ public:
                         // `out_of_order` (forward gap) and from the
                         // reorder-buffer-full genuine-loss branch below.
                         stats_.dup_segments++;
-                        SPDLOG_LOGGER_DEBUG(log,
+                        EPH_LOG_DEBUG(log,
                             "Dropping duplicate: expected={}, got={}", rcv_nxt_, seg_seq);
                     } else {
                         // Reorder buffer full — genuine loss
                         stats_.reorder_overflows++;
-                        SPDLOG_LOGGER_WARN(log,
+                        EPH_LOG_WARN(log,
                             "TcpSession::process_rx: reorder buffer full "
                             "({} slots): expected={}, got={}",
                             ReorderSlots, rcv_nxt_, seg_seq);
@@ -1528,7 +1527,7 @@ public:
                         case TcpState::Established:
                             rcv_nxt_++;
                             need_ack = true;
-                            SPDLOG_LOGGER_DEBUG(log, "Received FIN in ESTABLISHED");
+                            EPH_LOG_DEBUG(log, "Received FIN in ESTABLISHED");
                             state_ = TcpState::CloseWait;
                             break;
                         case TcpState::FinWait1:
@@ -1548,10 +1547,10 @@ public:
                             // simultaneous-close path → CLOSING. We move to TIME_WAIT later
                             // when the peer eventually ACKs our FIN while in CLOSING.
                             if (snd_una_ == snd_nxt_) {
-                                SPDLOG_LOGGER_DEBUG(log, "Received FIN+ACK-of-FIN in FIN_WAIT_1 -> TIME_WAIT");
+                                EPH_LOG_DEBUG(log, "Received FIN+ACK-of-FIN in FIN_WAIT_1 -> TIME_WAIT");
                                 enter_time_wait();
                             } else {
-                                SPDLOG_LOGGER_DEBUG(log,
+                                EPH_LOG_DEBUG(log,
                                     "Simultaneous close: FIN_WAIT_1 -> CLOSING (peer FIN does not ACK our FIN: snd_una={}, snd_nxt={})",
                                     snd_una_, snd_nxt_);
                                 state_ = TcpState::Closing;
@@ -1563,26 +1562,26 @@ public:
                             // ACK of our FIN arrives while in CLOSING — RFC 793: CLOSING → TIME_WAIT.
                             // (The ACK flag is checked via the snd_una_ update above; reaching here
                             //  means the FIN sequence was in-order, which completes the exchange.)
-                            SPDLOG_LOGGER_DEBUG(log, "Received ACK in CLOSING -> TIME_WAIT");
+                            EPH_LOG_DEBUG(log, "Received ACK in CLOSING -> TIME_WAIT");
                             enter_time_wait();
                             break;
                         case TcpState::FinWait2:
                             rcv_nxt_++;
                             need_ack = true;
-                            SPDLOG_LOGGER_DEBUG(log, "Received FIN in FIN_WAIT_2 -> TIME_WAIT");
+                            EPH_LOG_DEBUG(log, "Received FIN in FIN_WAIT_2 -> TIME_WAIT");
                             enter_time_wait();
                             break;
                         default:
                             // FIN in unexpected state (e.g. CloseWait, LastAck,
                             // TimeWait) — likely a retransmit of an already-consumed
                             // FIN. Do NOT advance rcv_nxt_; just log and drop.
-                            SPDLOG_LOGGER_WARN(log,
+                            EPH_LOG_WARN(log,
                                 "Ignoring FIN in unexpected state {}: seq={}",
                                 tcp_state_name(state_), parsed.seq());
                             break;
                     }
                 } else {
-                    SPDLOG_LOGGER_DEBUG(log,
+                    EPH_LOG_DEBUG(log,
                         "Out-of-order FIN dropped: fin_seq={}, "
                         "seg_seq={}, payload_len={}, rcv_nxt_={}",
                         fin_seq, parsed.seq(),
@@ -1629,7 +1628,7 @@ public:
         // MTU that can't accommodate even an empty TCP segment.
         constexpr uint16_t kMinHeaders = net::kIpv4HeaderLen + net::kTcpHeaderLen;
         if (next_hop_mtu <= kMinHeaders) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "ICMP Frag Needed: next_hop_mtu={} too small to derive MSS",
                 next_hop_mtu);
             return;
@@ -1639,11 +1638,11 @@ public:
         const uint16_t before = effective_mss_;
         effective_mss_ = std::min(effective_mss_, new_mss);
         if (effective_mss_ < before) {
-            SPDLOG_LOGGER_INFO(detail::tcp_logger(),
+            EPH_LOG_INFO(detail::tcp_logger(),
                 "ICMP Frag Needed: next_hop_mtu={} effective_mss {} -> {}",
                 next_hop_mtu, before, effective_mss_);
         } else {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+            EPH_LOG_DEBUG(detail::tcp_logger(),
                 "ICMP Frag Needed: next_hop_mtu={} (current effective_mss "
                 "{} already <= derived {}); no-op",
                 next_hop_mtu, effective_mss_, new_mss);
@@ -1692,7 +1691,7 @@ public:
             now_tsc - last_keepalive_tsc_ < interval_cycles) return;
 
         if (keepalive_misses_ >= config_.keepalive_probes) {
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "keepalive: {} consecutive probes unanswered — "
                 "declaring connection dead ({}:{} -> {}:{})",
                 keepalive_misses_,
@@ -1716,11 +1715,11 @@ public:
         ++keepalive_misses_;
         if (r) {
             ++stats_.keepalive_probes_sent;
-            SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+            EPH_LOG_TRACE(detail::tcp_logger(),
                 "keepalive probe #{} sent", keepalive_misses_);
         } else {
             ++stats_.keepalive_send_failures;
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "keepalive probe #{} send failed: {} ({}:{} -> {}:{}); "
                 "miss-slot consumed (probes={}/{})",
                 keepalive_misses_, r.error().detail,
@@ -1759,7 +1758,7 @@ public:
         // TRACE: useful for diagnosing RX-only flows where the timer
         // (rather than piggyback) is what's keeping the connection alive.
         // Compiled out at most levels via SPDLOG_ACTIVE_LEVEL.
-        SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+        EPH_LOG_TRACE(detail::tcp_logger(),
             "delayed ACK fired after {}ns (cycles={})",
             eph::utils::TSC::to_ns(elapsed).value_or(0.0), elapsed);
         auto r = send_ack();
@@ -1770,7 +1769,7 @@ public:
             // stalling RX-only flows behind the peer's nagle / delayed
             // ACK of our prior data. Aligns with send() / send_batch()
             // post-fix.
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "Failed to send delayed ACK: {} — keeping pending state "
                 "for retry on next poll", r.error().detail);
             return;
@@ -1896,7 +1895,7 @@ public:
 
         if (state_ != TcpState::Established &&
             state_ != TcpState::CloseWait) {
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "TcpSession::close: state={} (need Established or CloseWait)",
                 tcp_state_name(state_));
             return std::unexpected(core::ErrorInfo{
@@ -1904,12 +1903,12 @@ public:
                 "TcpSession::close: state not Established or CloseWait"});
         }
 
-        SPDLOG_LOGGER_DEBUG(log, "Sending FIN");
+        EPH_LOG_DEBUG(log, "Sending FIN");
         auto* fin = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_,
             net::kTcpFin | net::kTcpAck, rcv_wnd_);
         if (!fin) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TcpSession::close: mbuf allocation failed for FIN");
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
@@ -1920,7 +1919,7 @@ public:
             config_.port_id, config_.tx_queue_id, &fin, 1);
         if (sent != 1) {
             rte_pktmbuf_free(fin);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TcpSession::close: tx_burst failed for FIN");
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
@@ -1936,7 +1935,7 @@ public:
             state_ = TcpState::LastAck;
         }
 
-        SPDLOG_LOGGER_DEBUG(log, "FIN sent, state -> {}",
+        EPH_LOG_DEBUG(log, "FIN sent, state -> {}",
                             tcp_state_name(state_));
         return {};
     }
@@ -1944,7 +1943,7 @@ public:
     /// Force-close the connection (send RST).
     void reset() noexcept {
         [[maybe_unused]] auto log = detail::tcp_logger();
-        SPDLOG_LOGGER_DEBUG(log, "Sending RST");
+        EPH_LOG_DEBUG(log, "Sending RST");
 
         auto* rst = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpRst | net::kTcpAck, 0);
@@ -1992,7 +1991,7 @@ public:
         effective_mss_       = config_.mss;
         peer_mss_            = 0;
         peer_mss_negotiated_ = false;
-        SPDLOG_LOGGER_DEBUG(log, "RST sent, state -> Closed");
+        EPH_LOG_DEBUG(log, "RST sent, state -> Closed");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2275,7 +2274,7 @@ private:
         static constexpr auto kMsl = std::chrono::seconds(60);
         state_ = TcpState::TimeWait;
         time_wait_deadline_ = std::chrono::steady_clock::now() + 2 * kMsl;
-        SPDLOG_LOGGER_DEBUG(detail::tcp_logger(),
+        EPH_LOG_DEBUG(detail::tcp_logger(),
             "Entered TIME_WAIT, 2MSL deadline in 120s");
     }
 
@@ -2289,7 +2288,7 @@ private:
         // initialised. On any post-boot Linux ≥ 3.17 this returns immediately.
         ssize_t n = ::getrandom(&isn, sizeof(isn), GRND_NONBLOCK);
         if (n != static_cast<ssize_t>(sizeof(isn))) {
-            SPDLOG_LOGGER_CRITICAL(detail::tcp_logger(),
+            EPH_LOG_CRITICAL(detail::tcp_logger(),
                 "getrandom() failed for ISN generation (ret={}) — cannot "
                 "establish secure TCP connection", n);
             return std::unexpected(core::ErrorInfo{
@@ -2321,7 +2320,7 @@ private:
         auto* pkt = pkt_template_.build_packet(
             pool_, probe_seq, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!pkt) {
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "TcpSession::send_keepalive_probe_: mbuf alloc failed");
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
@@ -2331,7 +2330,7 @@ private:
             config_.port_id, config_.tx_queue_id, &pkt, 1);
         if (sent != 1) {
             rte_pktmbuf_free(pkt);
-            SPDLOG_LOGGER_WARN(detail::tcp_logger(),
+            EPH_LOG_WARN(detail::tcp_logger(),
                 "TcpSession::send_keepalive_probe_: tx_burst failed");
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
@@ -2383,7 +2382,7 @@ private:
     /// escape `process_burst_fn` (a noexcept function pointer) and call
     /// `std::terminate`. None of the callees actually throw in practice
     /// — `pkt_template_.build_packet`, `rte_eth_tx_burst`,
-    /// `rte_pktmbuf_free`, and the SPDLOG_LOGGER_* macros all reduce to
+    /// `rte_pktmbuf_free`, and the EPH_LOG_* macros all reduce to
     /// noexcept ops under SPDLOG_NO_EXCEPTIONS — but the contract is
     /// what the Poller's hot path actually relies on. Making the
     /// signature match the body forces the compiler to confirm.
@@ -2391,7 +2390,7 @@ private:
         auto* ack_pkt = pkt_template_.build_packet(
             pool_, snd_nxt_, rcv_nxt_, net::kTcpAck, rcv_wnd_);
         if (!ack_pkt) {
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            EPH_LOG_ERROR(detail::tcp_logger(),
                 "TcpSession::send_ack: mbuf allocation failed");
             return std::unexpected(core::ErrorInfo{
                 core::Error::OutOfMemory,
@@ -2402,7 +2401,7 @@ private:
             config_.port_id, config_.tx_queue_id, &ack_pkt, 1);
         if (sent != 1) {
             rte_pktmbuf_free(ack_pkt);
-            SPDLOG_LOGGER_ERROR(detail::tcp_logger(),
+            EPH_LOG_ERROR(detail::tcp_logger(),
                 "TcpSession::send_ack: tx_burst failed");
             return std::unexpected(core::ErrorInfo{
                 core::Error::BufferFull,
@@ -2411,7 +2410,7 @@ private:
 
         stats_.acks_sent++;
         stats_.tx_packets++;
-        SPDLOG_LOGGER_TRACE(detail::tcp_logger(),
+        EPH_LOG_TRACE(detail::tcp_logger(),
             "ACK sent: seq={}, ack={}", snd_nxt_, rcv_nxt_);
         return {};
     }

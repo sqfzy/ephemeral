@@ -15,9 +15,7 @@
 #include <expected>
 #include <memory>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
-
+#include "eph/core/log.hpp"
 #include "eph/sbe/byte_order.hpp"
 #include "eph/sbe/errors.hpp"
 #include "eph/sbe/message_header.hpp"
@@ -27,17 +25,9 @@ namespace eph::sbe {
 /// @brief Internal detail namespace for the SBE parser module logger.
 namespace detail {
 /// @brief Get or create the SBE parser module logger ("sbe.parser").
-/// @return Shared pointer reference to the spdlog logger instance.
-inline const std::shared_ptr<spdlog::logger>& sbe_parser_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("sbe.parser");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("sbe.parser"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("sbe.parser"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+/// @return Non-owning pointer to the spdlog logger instance.
+inline spdlog::logger* sbe_parser_logger() {
+    static spdlog::logger* l = ::eph::log::get("sbe.parser");
     return l;
 }
 } // namespace detail
@@ -81,7 +71,7 @@ struct MessageView {
 parse(const uint8_t* data, std::size_t len) noexcept {
     auto hdr = parse_header(data, len);
     if (!hdr) [[unlikely]] {
-        SPDLOG_LOGGER_TRACE(detail::sbe_parser_logger(),
+        EPH_LOG_TRACE(detail::sbe_parser_logger(),
             "sbe::parse: incomplete header, len={} (need {})", len, kHeaderSize);
         return std::unexpected(hdr.error());
     }

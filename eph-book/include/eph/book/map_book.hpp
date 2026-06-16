@@ -26,8 +26,7 @@
 #include <optional>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/book/array_book.hpp"  // PriceLevel
 
@@ -38,15 +37,8 @@ namespace detail {
 /// @brief Lazily-constructed spdlog logger for MapBook diagnostics.
 /// @return Pointer to the "book.map_book" logger instance.
 inline spdlog::logger* map_book_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("book.map_book");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("book.map_book");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("book.map_book");
+    return l;
 }
 } // namespace detail
 /// @endcond
@@ -82,7 +74,7 @@ public:
     /// @param price  Bid price.  NaN values are rejected with a warning.
     /// @param qty    Quantity at this price.  Zero or negative removes the level.
     void update_bid(double price, double qty) noexcept {
-        SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_bid price={} qty={}", price, qty);
+        EPH_LOG_TRACE(detail::map_book_logger(), "MapBook::update_bid price={} qty={}", price, qty);
         update_side(bids_, price, qty);
     }
 
@@ -93,7 +85,7 @@ public:
     /// @param price  Ask price.  NaN values are rejected with a warning.
     /// @param qty    Quantity at this price.  Zero or negative removes the level.
     void update_ask(double price, double qty) noexcept {
-        SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook::update_ask price={} qty={}", price, qty);
+        EPH_LOG_TRACE(detail::map_book_logger(), "MapBook::update_ask price={} qty={}", price, qty);
         update_side(asks_, price, qty);
     }
 
@@ -220,7 +212,7 @@ public:
     void clear() noexcept {
         bids_.clear();
         asks_.clear();
-        SPDLOG_LOGGER_DEBUG(detail::map_book_logger(), "MapBook cleared");
+        EPH_LOG_DEBUG(detail::map_book_logger(), "MapBook cleared");
     }
 
     // -- Top-N extraction (for display/logging) ------------------------------
@@ -305,7 +297,7 @@ private:
         // descending sorts and the level couldn't be replaced via tick-size
         // updates from the feed.
         if (!std::isfinite(price)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::map_book_logger(),
+            EPH_LOG_WARN(detail::map_book_logger(),
                 "MapBook::update_side ignoring non-finite price={}", price);
             return;
         }
@@ -316,7 +308,7 @@ private:
         // signal downstream. +Inf qty would similarly poison total_*_qty
         // and any vwap-style aggregation.
         if (!std::isfinite(qty)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::map_book_logger(),
+            EPH_LOG_WARN(detail::map_book_logger(),
                 "MapBook::update_side ignoring non-finite qty={} at price={}", qty, price);
             return;
         }
@@ -327,10 +319,10 @@ private:
         if (qty <= 0.0) {
             auto it = side.find(price);
             if (it != side.end()) {
-                SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook remove level price={}", price);
+                EPH_LOG_TRACE(detail::map_book_logger(), "MapBook remove level price={}", price);
                 side.erase(it);
             } else {
-                SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook remove non-existent price={} — no-op",
+                EPH_LOG_TRACE(detail::map_book_logger(), "MapBook remove non-existent price={} — no-op",
                              price);
             }
             return;
@@ -339,10 +331,10 @@ private:
         // After quantization, exact map::find is safe — no near-duplicates.
         auto [it, inserted] = side.insert_or_assign(price, qty);
         if (inserted) {
-            SPDLOG_LOGGER_DEBUG(detail::map_book_logger(), "MapBook inserted price={} qty={} (depth={})",
+            EPH_LOG_DEBUG(detail::map_book_logger(), "MapBook inserted price={} qty={} (depth={})",
                          price, qty, side.size());
         } else {
-            SPDLOG_LOGGER_TRACE(detail::map_book_logger(), "MapBook updated price={} qty={}", price, qty);
+            EPH_LOG_TRACE(detail::map_book_logger(), "MapBook updated price={} qty={}", price, qty);
         }
     }
 };

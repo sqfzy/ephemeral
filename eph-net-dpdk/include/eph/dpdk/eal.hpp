@@ -18,7 +18,7 @@
 #include <rte_eal.h>
 #include <rte_errno.h>
 
-#include "eph/dpdk/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/dpdk/lcore_pin.hpp"   // LcorePin / pin_lcore / pin_lcores / build_lcore_argv
 #include "eph/dpdk/proc_type.hpp"   // ProcType + to_eal_string (M3 fix)
 
@@ -26,7 +26,7 @@ namespace eph::dpdk {
 
 
 namespace detail {
-inline spdlog::logger* eal_logger() { return get_logger<LoggerName{"dpdk.eal"}>(); }
+inline spdlog::logger* eal_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.eal"); return l; }
 } // namespace detail
 
 /// Process-wide EAL initialization state. Guards against double-init
@@ -51,18 +51,18 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
     bool expected = false;
     if (!eal_initialized_flag().compare_exchange_strong(
             expected, true, std::memory_order_acq_rel)) {
-        SPDLOG_LOGGER_ERROR(log, "eal_init called twice — DPDK EAL is already initialized");
+        EPH_LOG_ERROR(log, "eal_init called twice — DPDK EAL is already initialized");
         return std::unexpected("EAL already initialized (double-init is DPDK UB)");
     }
 
-    SPDLOG_LOGGER_TRACE(log, "Calling rte_eal_init (argc={})", argc);
+    EPH_LOG_TRACE(log, "Calling rte_eal_init (argc={})", argc);
 
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
         // Roll back the flag so a subsequent attempt can retry after
         // the caller fixes the EAL arguments.
         eal_initialized_flag().store(false, std::memory_order_release);
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "rte_eal_init failed (argc={}, ret={}, rte_errno={}): {}",
             argc, ret, rte_errno, rte_strerror(rte_errno));
         return std::unexpected(std::format(
@@ -70,7 +70,7 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
             ret, rte_errno, rte_strerror(rte_errno)));
     }
 
-    SPDLOG_LOGGER_DEBUG(log, "EAL initialized, {} args consumed", ret);
+    EPH_LOG_DEBUG(log, "EAL initialized, {} args consumed", ret);
     return ret;
 }
 
@@ -80,10 +80,10 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
 /// @return true if cleanup succeeded, false on error (logged at ERROR level)
 [[nodiscard]] inline bool eal_cleanup() noexcept {
     [[maybe_unused]] auto log = detail::eal_logger();
-    SPDLOG_LOGGER_DEBUG(log, "Calling rte_eal_cleanup");
+    EPH_LOG_DEBUG(log, "Calling rte_eal_cleanup");
     int ret = rte_eal_cleanup();
     if (ret != 0) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(log, "rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
+        EPH_LOG_ERROR(log, "rte_eal_cleanup failed (ret={}, rte_errno={}): {}",
                      ret, rte_errno, rte_strerror(rte_errno));
         return false;
     }
@@ -114,7 +114,7 @@ inline std::atomic<bool>& eal_initialized_flag() noexcept {
 ///     fit; the typed path is the default-good.
 ///
 ///   auto eal = EalGuard::init(cfg, pins);
-///   if (!eal) { SPDLOG_ERROR("{}", eal.error()); return 1; }
+///   if (!eal) { EPH_LOG_ERROR(detail::eal_logger(), "{}", eal.error()); return 1; }
 ///   // ... use DPDK APIs ...
 ///   // eal_cleanup() called automatically when `eal` goes out of scope
 class EalGuard {
@@ -125,13 +125,13 @@ public:
     [[nodiscard]] static std::expected<EalGuard, std::string> init_raw(int argc, char** argv) {
         auto result = eal_init(argc, argv);
         if (!result) return std::unexpected(result.error());
-        SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard created ({} args consumed)", *result);
+        EPH_LOG_DEBUG(detail::eal_logger(), "EalGuard created ({} args consumed)", *result);
         return EalGuard{*result};
     }
 
     ~EalGuard() {
         if (initialized_) {
-            SPDLOG_LOGGER_DEBUG(detail::eal_logger(), "EalGuard destroying, calling eal_cleanup");
+            EPH_LOG_DEBUG(detail::eal_logger(), "EalGuard destroying, calling eal_cleanup");
             [[maybe_unused]] bool ok = eal_cleanup();
         }
     }
@@ -309,7 +309,7 @@ EalGuard::init(EalConfig                 cfg,
     [[maybe_unused]] auto* log = detail::eal_logger();
 
     if (!pins.empty() && !cfg.lcores.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "EalGuard::init: rejected — typed pins ({}) AND cfg.lcores "
             "({} entries) supplied simultaneously",
             pins.size(), cfg.lcores.size());
@@ -333,7 +333,7 @@ EalGuard::init(EalConfig                 cfg,
         for (const auto& a : cfg.extra_args) {
             if (a == "--lcores" ||
                 a.rfind("--lcores=", 0) == 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "EalGuard::init: rejected — typed pins supplied "
                     "({}) but cfg.extra_args already contains '{}'",
                     pins.size(), a);
@@ -351,7 +351,7 @@ EalGuard::init(EalConfig                 cfg,
     // resources have been touched yet.
     auto pin_guards = pin_lcores(pins, policy);
     if (!pin_guards) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "EalGuard::init: pin_lcores rejected ({} pins): {}",
             pins.size(), pin_guards.error());
         return std::unexpected(std::format(
@@ -371,7 +371,7 @@ EalGuard::init(EalConfig                 cfg,
     argv_ptrs.reserve(argv_strings.size());
     for (auto& s : argv_strings) argv_ptrs.push_back(s.data());
 
-    SPDLOG_LOGGER_DEBUG(log,
+    EPH_LOG_DEBUG(log,
         "EalGuard::init: calling rte_eal_init (argc={}, lcores={})",
         argv_ptrs.size(), pins.size());
 
@@ -380,7 +380,7 @@ EalGuard::init(EalConfig                 cfg,
     if (!eal_result) {
         // pin_guards destructor (here on stack) unregisters every cpu via
         // each PinGuard's dtor as we return. Caller sees a clean slate.
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "EalGuard::init: rte_eal_init failed (argc={}, lcores={}): {}",
             argv_ptrs.size(), pins.size(), eal_result.error());
         return std::unexpected(std::format(

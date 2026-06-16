@@ -14,8 +14,7 @@
 #include <string_view>
 #include <unordered_map>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/execution_report.hpp"
 #include "eph/fix/position.hpp"
@@ -123,16 +122,8 @@ namespace detail {
 /// @brief Get or create the spdlog logger for the order manager module.
 /// @return Raw pointer to the "fix.ordmgr" logger (never null after first call).
 inline spdlog::logger* fix_ordmgr_logger() noexcept {
-    static auto l = [] {
-        auto lg = spdlog::get("fix.ordmgr");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("fix.ordmgr"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.ordmgr"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("fix.ordmgr");
+    return l;
 }
 } // namespace detail
 
@@ -164,7 +155,7 @@ public:
                 char side, double qty, double price) noexcept
     {
         if (cl_ord_id.empty()) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "submit: rejected empty cl_ord_id");
             return false;
         }
@@ -176,7 +167,7 @@ public:
         // PositionTracker::on_fill / RiskChecker::check_order so the
         // three layers reject the same boundary inputs.
         if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "submit: rejected qty={} (must be finite and > 0) "
                 "for cl_ord_id={} symbol={}", qty, cl_ord_id, symbol);
             return false;
@@ -185,7 +176,7 @@ public:
         // negative or non-finite is never legal. Same NaN-slip
         // hazard as qty.
         if (!std::isfinite(price) || price < 0.0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "submit: rejected price={} (must be finite and >= 0; "
                 "use 0 for market orders) for cl_ord_id={} symbol={}",
                 price, cl_ord_id, symbol);
@@ -198,7 +189,7 @@ public:
         // PositionTracker::on_fill would later reject every fill,
         // leaving leaves_qty stuck. Surface up-front.
         if (side != '1' && side != '2') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "submit: rejected side='{}' (0x{:02x}) for cl_ord_id={} "
                 "symbol={} — must be FIX '1' (Buy) or '2' (Sell)",
                 side, static_cast<uint8_t>(side), cl_ord_id, symbol);
@@ -207,7 +198,7 @@ public:
 
         auto [it, inserted] = orders_.try_emplace(cl_ord_id);
         if (!inserted) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "submit: duplicate cl_ord_id={}", cl_ord_id);
             return false;
         }
@@ -221,7 +212,7 @@ public:
         order.leaves_qty = qty;
         order.state      = OrderState::PendingNew;
 
-        SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+        EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
             "submit: cl_ord_id={} symbol={} side={} qty={} price={}",
             order.cl_ord_id, order.symbol, order.side, order.orig_qty, order.price);
 
@@ -242,14 +233,14 @@ public:
         // Extract cl_ord_id -- required to locate the order.
         auto cl_id = report.cl_ord_id();
         if (!cl_id) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: missing cl_ord_id, ignoring");
             return false;
         }
 
         auto it = orders_.find(*cl_id);
         if (it == orders_.end()) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: unknown cl_ord_id={}", *cl_id);
             return false;
         }
@@ -258,7 +249,7 @@ public:
 
         // Don't update terminal orders -- they're done.
         if (is_terminal(order.state)) [[unlikely]] {
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: cl_ord_id={} already terminal (state={}), ignoring",
                 order.cl_ord_id, static_cast<int>(order.state));
             return true;
@@ -266,7 +257,7 @@ public:
 
         auto exec_type = report.exec_type();
         if (!exec_type) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_execution_report: cl_ord_id={} missing ExecType", *cl_id);
             return false;
         }
@@ -292,13 +283,13 @@ public:
                 // negative, push leaves_qty above orig_qty, or NaN-poison
                 // avg_fill_price.
                 if (*last_qty < 0) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
                         *last_qty, order.cl_ord_id);
                     return false;
                 }
                 if (*last_px < 0.0 || !std::isfinite(*last_px)) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
                         *last_px, order.cl_ord_id);
                     return false;
@@ -308,7 +299,7 @@ public:
                 double fill_price = *last_px;
 
                 if (*last_qty > (1LL << 53)) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "fill quantity {} exceeds double precision limit (2^53), "
                         "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
                     return false;
@@ -325,7 +316,7 @@ public:
                 // `filled_qty <= orig_qty` and `leaves_qty >= 0`.
                 if (order.filled_qty + fill_qty >
                         order.orig_qty + 1e-9) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "over-fill rejected for cl_ord_id={}: "
                         "existing_filled={} + last_qty={} > orig_qty={} "
                         "(would drive leaves_qty negative)",
@@ -342,7 +333,7 @@ public:
                         (old_total + fill_price * fill_qty) / order.filled_qty;
                 }
                 if (!std::isfinite(order.avg_fill_price)) {
-                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                    EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                         "avg_fill_price became non-finite for cl_ord_id={}, "
                         "resetting to last fill_price={}", order.cl_ord_id, fill_price);
                     order.avg_fill_price = fill_price;
@@ -355,7 +346,7 @@ public:
                                        fill_qty, fill_price);
                 }
 
-                SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+                EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                     "on_execution_report: partial fill cl_ord_id={} fill_qty={} "
                     "fill_price={} filled_qty={} leaves_qty={}",
                     order.cl_ord_id, fill_qty, fill_price,
@@ -378,13 +369,13 @@ public:
                 // mutation so a corrupted full-Fill report cannot transition
                 // the order to OrderState::Filled with garbage filled_qty.
                 if (*last_qty < 0) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "negative LastQty={} rejected for cl_ord_id={} (FIX Qty must be >= 0)",
                         *last_qty, order.cl_ord_id);
                     return false;
                 }
                 if (*last_px < 0.0 || !std::isfinite(*last_px)) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "invalid LastPx={} rejected for cl_ord_id={} (FIX Px must be finite >= 0)",
                         *last_px, order.cl_ord_id);
                     return false;
@@ -394,7 +385,7 @@ public:
                 double fill_price = *last_px;
 
                 if (*last_qty > (1LL << 53)) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "fill quantity {} exceeds double precision limit (2^53), "
                         "rejecting fill for cl_ord_id={}", *last_qty, order.cl_ord_id);
                     return false;
@@ -409,7 +400,7 @@ public:
                 // tracker gets the over-attributed quantity.
                 if (order.filled_qty + fill_qty >
                         order.orig_qty + 1e-9) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_ordmgr_logger(),
+                    EPH_LOG_ERROR(detail::fix_ordmgr_logger(),
                         "over-fill rejected on terminal Fill for "
                         "cl_ord_id={}: existing_filled={} + last_qty={} "
                         "> orig_qty={} (illegal terminal ExecReport)",
@@ -425,7 +416,7 @@ public:
                         (old_total + fill_price * fill_qty) / order.filled_qty;
                 }
                 if (!std::isfinite(order.avg_fill_price)) {
-                    SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+                    EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                         "avg_fill_price became non-finite for cl_ord_id={}, "
                         "resetting to last fill_price={}", order.cl_ord_id, fill_price);
                     order.avg_fill_price = fill_price;
@@ -437,7 +428,7 @@ public:
                                        fill_qty, fill_price);
                 }
 
-                SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+                EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                     "on_execution_report: full fill cl_ord_id={} fill_qty={} "
                     "fill_price={} total_filled={}",
                     order.cl_ord_id, fill_qty, fill_price, order.filled_qty);
@@ -450,27 +441,27 @@ public:
         case ExecType::Canceled:
             order.state     = OrderState::Canceled;
             order.leaves_qty = 0.0;
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: canceled cl_ord_id={}", order.cl_ord_id);
             break;
 
         case ExecType::PendingCancel:
             order.state = OrderState::PendingCancel;
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: pending cancel cl_ord_id={}", order.cl_ord_id);
             break;
 
         case ExecType::Rejected:
             order.state     = OrderState::Rejected;
             order.leaves_qty = 0.0;
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: rejected cl_ord_id={}", order.cl_ord_id);
             break;
 
         default:
             // Unhandled exec types (Replaced, Stopped, Suspended, etc.)
             // Log but don't change state -- caller can handle if needed.
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_execution_report: unhandled ExecType={} for cl_ord_id={}",
                 static_cast<char>(*exec_type), order.cl_ord_id);
             break;
@@ -493,14 +484,14 @@ public:
                           int cxl_rej_reason = -1) noexcept
     {
         if (cl_ord_id.empty()) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_cancel_reject: missing cl_ord_id, ignoring");
             return false;
         }
 
         auto it = orders_.find(cl_ord_id);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_cancel_reject: unknown cl_ord_id={}", cl_ord_id);
             return false;
         }
@@ -514,12 +505,12 @@ public:
             order.state = (order.filled_qty > 0.0)
                 ? OrderState::PartiallyFilled
                 : OrderState::New;
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "on_cancel_reject: cl_ord_id={} cancel rejected (reason={}), "
                 "reverting from PendingCancel to {}",
                 cl_ord_id, cxl_rej_reason, static_cast<int>(order.state));
         } else {
-            SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+            EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
                 "on_cancel_reject: cl_ord_id={} cancel rejected (reason={}) "
                 "but order not in PendingCancel state (state={}), no state change",
                 cl_ord_id, cxl_rej_reason, static_cast<int>(order.state));
@@ -565,7 +556,7 @@ public:
                 ++it;
             }
         }
-        SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+        EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
             "purge_terminal: removed {} terminal orders, {} remaining",
             removed, orders_.size());
     }
@@ -577,21 +568,21 @@ public:
     {
         auto it = orders_.find(cl_ord_id);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "mark_pending_cancel: unknown cl_ord_id={}", cl_ord_id);
             return false;
         }
 
         auto& order = it->second;
         if (is_terminal(order.state)) {
-            SPDLOG_LOGGER_WARN(detail::fix_ordmgr_logger(),
+            EPH_LOG_WARN(detail::fix_ordmgr_logger(),
                 "mark_pending_cancel: cl_ord_id={} already terminal (state={})",
                 cl_ord_id, static_cast<int>(order.state));
             return false;
         }
 
         order.state = OrderState::PendingCancel;
-        SPDLOG_LOGGER_DEBUG(detail::fix_ordmgr_logger(),
+        EPH_LOG_DEBUG(detail::fix_ordmgr_logger(),
             "mark_pending_cancel: cl_ord_id={}", cl_ord_id);
         return true;
     }

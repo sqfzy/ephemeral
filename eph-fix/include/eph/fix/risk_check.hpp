@@ -14,8 +14,7 @@
 #include <string_view>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/position.hpp"
 
@@ -26,18 +25,8 @@ namespace detail {
 /// @brief Get or create the spdlog logger for risk checking.
 /// @return Raw pointer to the "fix.risk_check" logger (never null after first call).
 inline spdlog::logger* risk_check_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("fix.risk_check");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("fix.risk_check");
-            // Last-ditch fallback: if both create AND recovery returned
-            // null (concurrent drop racing the create), default_logger
-            // is always non-null and keeps SPDLOG_LOGGER_* deref-safe.
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("fix.risk_check");
+    return l;
 }
 } // namespace detail
 
@@ -210,7 +199,7 @@ public:
     explicit RiskChecker(RiskLimits limits) noexcept
         : limits_(limits)
     {
-        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "RiskChecker created: max_order_qty={} max_order_notional={} "
+        EPH_LOG_DEBUG(detail::risk_check_logger(), "RiskChecker created: max_order_qty={} max_order_notional={} "
                      "max_position_qty={} max_position_notional={} "
                      "max_total_exposure={} max_orders_per_second={}",
                      limits_.max_order_qty, limits_.max_order_notional,
@@ -233,13 +222,13 @@ public:
         double price,
         const PositionTracker& positions) const noexcept
     {
-        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "check_order: symbol={} side={} qty={} price={}",
+        EPH_LOG_DEBUG(detail::risk_check_logger(), "check_order: symbol={} side={} qty={} price={}",
                      symbol, side, qty, price);
 
         // Reject non-finite inputs — NaN/Inf would bypass all comparisons.
         if (!std::isfinite(qty) || !std::isfinite(price) ||
             qty <= 0.0 || price <= 0.0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: invalid qty={} or price={} for symbol={}",
+            EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: invalid qty={} or price={} for symbol={}",
                         qty, price, symbol);
             return RiskRejectReason::kInvalidInput;
         }
@@ -253,7 +242,7 @@ public:
         // here so the projected position used by check_order does not drift
         // away from the on_fill state machine.
         if (side != '1' && side != '2') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+            EPH_LOG_WARN(detail::risk_check_logger(),
                 "risk reject: invalid side='{}' (0x{:02x}) for symbol={} — "
                 "must be FIX '1' (Buy) or '2' (Sell)",
                 side, static_cast<uint8_t>(side), symbol);
@@ -264,14 +253,14 @@ public:
 
         // 1. Single order quantity check.
         if (limits_.max_order_qty > 0.0 && qty > limits_.max_order_qty) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order qty {} exceeds limit {} for symbol={}",
+            EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: order qty {} exceeds limit {} for symbol={}",
                         qty, limits_.max_order_qty, symbol);
             return RiskRejectReason::kOrderQtyExceeded;
         }
 
         // 2. Single order notional check.
         if (limits_.max_order_notional > 0.0 && notional > limits_.max_order_notional) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: order notional {} exceeds limit {} for symbol={}",
+            EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: order notional {} exceeds limit {} for symbol={}",
                         notional, limits_.max_order_notional, symbol);
             return RiskRejectReason::kOrderNotionalExceeded;
         }
@@ -290,14 +279,14 @@ public:
             // gate. Treat any non-finite projection as a hard reject so a fail-safe
             // gate stays fail-safe even when an upstream invariant is bypassed.
             if (!std::isfinite(projected_qty)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                EPH_LOG_WARN(detail::risk_check_logger(),
                     "risk reject: projected position qty non-finite ({}) for symbol={} "
                     "(pos.qty={} signed_qty={}) — treating as position-qty breach",
                     projected_qty, symbol, pos.qty, signed_qty);
                 return RiskRejectReason::kPositionQtyExceeded;
             }
             if (projected_qty > limits_.max_position_qty) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position qty {} exceeds limit {} "
+                EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: projected position qty {} exceeds limit {} "
                             "for symbol={}", projected_qty, limits_.max_position_qty, symbol);
                 return RiskRejectReason::kPositionQtyExceeded;
             }
@@ -316,7 +305,7 @@ public:
             // multiply by `price` then keeps the inf, and `inf > limit` would correctly
             // reject — but a NaN slip (per path 3 rationale) would silently pass.
             if (!std::isfinite(projected_notional)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                EPH_LOG_WARN(detail::risk_check_logger(),
                     "risk reject: projected position notional non-finite ({}) for "
                     "symbol={} (pos.qty={} signed_qty={} price={}) — treating as "
                     "position-notional breach",
@@ -324,7 +313,7 @@ public:
                 return RiskRejectReason::kPositionNotionalExceeded;
             }
             if (projected_notional > limits_.max_position_notional) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected position notional {} exceeds limit {} "
+                EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: projected position notional {} exceeds limit {} "
                             "for symbol={}", projected_notional, limits_.max_position_notional,
                             symbol);
                 return RiskRejectReason::kPositionNotionalExceeded;
@@ -362,7 +351,7 @@ public:
             // surface the data-quality issue at the trade gate than
             // let the rocket fly).
             if (!std::isfinite(projected_exposure)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(),
+                EPH_LOG_WARN(detail::risk_check_logger(),
                     "risk reject: projected total exposure non-finite ({}) "
                     "for symbol={} (current={} current_notional={} "
                     "projected_symbol_notional={}) — overflow in "
@@ -377,7 +366,7 @@ public:
                 // copy can lag the live qty/avg_price when the snapshot is
                 // taken between fills. Reporting the stale value here would
                 // make the rejection arithmetic look inconsistent in the log.
-                SPDLOG_LOGGER_WARN(detail::risk_check_logger(), "risk reject: projected total exposure {} "
+                EPH_LOG_WARN(detail::risk_check_logger(), "risk reject: projected total exposure {} "
                             "(current={}, symbol {} notional {} -> {}) exceeds limit {}",
                             projected_exposure, current_exposure, symbol,
                             current_notional, projected_symbol_notional,
@@ -391,7 +380,7 @@ public:
         //    validates the threshold field is available for external use.
         //    (A stateful rate limiter would require clock injection for testability.)
 
-        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "check_order: symbol={} passed all risk checks", symbol);
+        EPH_LOG_DEBUG(detail::risk_check_logger(), "check_order: symbol={} passed all risk checks", symbol);
         return RiskRejectReason::kOk;
     }
 
@@ -400,7 +389,7 @@ public:
     void set_limits(RiskLimits limits) noexcept
     {
         limits_ = limits;
-        SPDLOG_LOGGER_DEBUG(detail::risk_check_logger(), "RiskChecker::set_limits updated");
+        EPH_LOG_DEBUG(detail::risk_check_logger(), "RiskChecker::set_limits updated");
     }
 
     /// @brief Access current risk limits (read-only).

@@ -18,9 +18,7 @@
 #include <string_view>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
+#include "eph/core/log.hpp"
 #include "eph/core/parse_number.hpp"
 #include "eph/json/adapters/binance_depth_types.hpp"
 #include "eph/json/parser.hpp"
@@ -38,16 +36,8 @@ namespace detail {
 ///
 /// Thread-safe: uses Meyers-singleton initialization.
 inline spdlog::logger* binance_rest_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("json.binance_rest");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("json.binance_rest"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("json.binance_rest"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("json.binance_rest");
+    return l;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +75,7 @@ parse_depth_levels(std::string_view raw) noexcept {
     // Expect outer '['
     while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) ++p;
     if (p >= end || *p != '[') {
-        SPDLOG_LOGGER_WARN(log, "parse_depth_levels: expected '[', got '{}'",
+        EPH_LOG_WARN(log, "parse_depth_levels: expected '[', got '{}'",
                            p < end ? std::string(1, *p) : "EOF");
         return std::unexpected(std::string("Expected '[' at start of depth levels"));
     }
@@ -101,7 +91,7 @@ parse_depth_levels(std::string_view raw) noexcept {
 
         // Expect inner '['
         if (*p != '[') {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "parse_depth_levels: expected inner '[', got '{}' at offset {}",
                 *p, static_cast<size_t>(p - raw.data()));
             return std::unexpected(std::format(
@@ -148,7 +138,7 @@ parse_depth_levels(std::string_view raw) noexcept {
         // than mixing phantom levels into the book.
         while (p < end && *p != ']') ++p;
         if (p >= end) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "parse_depth_levels: truncated input — inner array missing "
                 "closing ']' (raw_size={}, parsed_levels_so_far={})",
                 raw.size(), levels.size());
@@ -161,7 +151,7 @@ parse_depth_levels(std::string_view raw) noexcept {
         auto price = parse_double(price_sv);
         auto qty = parse_double(qty_sv);
         if (!price || !qty) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "parse_depth_levels: invalid number in level: price='{}', qty='{}'",
                 price_sv, qty_sv);
             return std::unexpected(std::format(
@@ -180,7 +170,7 @@ parse_depth_levels(std::string_view raw) noexcept {
     // whitespace before ']' is missing" only because the caller passes
     // us a string_view that the JSON parser already trimmed.
     if (p >= end) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_depth_levels: truncated input — outer array missing "
             "closing ']' (raw_size={}, parsed_levels={})",
             raw.size(), levels.size());
@@ -188,7 +178,7 @@ parse_depth_levels(std::string_view raw) noexcept {
             "Truncated depth response: outer array missing closing ']'"));
     }
 
-    SPDLOG_LOGGER_TRACE(log, "parse_depth_levels: parsed {} levels", levels.size());
+    EPH_LOG_TRACE(log, "parse_depth_levels: parsed {} levels", levels.size());
     return levels;
 }
 
@@ -209,12 +199,12 @@ parse_depth_levels(std::string_view raw) noexcept {
 parse_depth_response(std::string_view body) noexcept {
     auto* log = detail::binance_rest_logger();
 
-    SPDLOG_LOGGER_DEBUG(log, "parse_depth_response: parsing {} bytes", body.size());
+    EPH_LOG_DEBUG(log, "parse_depth_response: parsing {} bytes", body.size());
 
     auto result = parse(
         reinterpret_cast<const uint8_t*>(body.data()), body.size());
     if (!result) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_depth_response: JSON parse failed: {}", parse_error_name(result.error()));
         return std::unexpected(std::format(
             "JSON parse failed: {}", parse_error_name(result.error())));
@@ -225,7 +215,7 @@ parse_depth_response(std::string_view body) noexcept {
     // Extract lastUpdateId
     auto update_id = json.get_int("lastUpdateId");
     if (!update_id) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_depth_response: missing or invalid 'lastUpdateId'");
         return std::unexpected(std::string("Missing or invalid 'lastUpdateId' field"));
     }
@@ -233,13 +223,13 @@ parse_depth_response(std::string_view body) noexcept {
     // Extract bids array (opaque string from parser)
     auto bids_raw = json.get("bids");
     if (bids_raw.empty()) {
-        SPDLOG_LOGGER_WARN(log, "parse_depth_response: missing 'bids' field");
+        EPH_LOG_WARN(log, "parse_depth_response: missing 'bids' field");
         return std::unexpected(std::string("Missing 'bids' field"));
     }
 
     auto bids = detail::parse_depth_levels(bids_raw);
     if (!bids) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_depth_response: failed to parse bids: {}", bids.error());
         return std::unexpected(std::format("Failed to parse bids: {}", bids.error()));
     }
@@ -247,13 +237,13 @@ parse_depth_response(std::string_view body) noexcept {
     // Extract asks array (opaque string from parser)
     auto asks_raw = json.get("asks");
     if (asks_raw.empty()) {
-        SPDLOG_LOGGER_WARN(log, "parse_depth_response: missing 'asks' field");
+        EPH_LOG_WARN(log, "parse_depth_response: missing 'asks' field");
         return std::unexpected(std::string("Missing 'asks' field"));
     }
 
     auto asks = detail::parse_depth_levels(asks_raw);
     if (!asks) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_depth_response: failed to parse asks: {}", asks.error());
         return std::unexpected(std::format("Failed to parse asks: {}", asks.error()));
     }
@@ -263,7 +253,7 @@ parse_depth_response(std::string_view body) noexcept {
     snap.bids = std::move(*bids);
     snap.asks = std::move(*asks);
 
-    SPDLOG_LOGGER_DEBUG(log,
+    EPH_LOG_DEBUG(log,
         "parse_depth_response: lastUpdateId={}, bids={}, asks={}",
         snap.last_update_id, snap.bids.size(), snap.asks.size());
 
@@ -280,12 +270,12 @@ parse_depth_response(std::string_view body) noexcept {
 parse_server_time_response(std::string_view body) noexcept {
     auto* log = detail::binance_rest_logger();
 
-    SPDLOG_LOGGER_DEBUG(log, "parse_server_time_response: parsing {} bytes", body.size());
+    EPH_LOG_DEBUG(log, "parse_server_time_response: parsing {} bytes", body.size());
 
     auto result = parse(
         reinterpret_cast<const uint8_t*>(body.data()), body.size());
     if (!result) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_server_time_response: JSON parse failed: {}",
             parse_error_name(result.error()));
         return std::unexpected(std::format(
@@ -295,12 +285,12 @@ parse_server_time_response(std::string_view body) noexcept {
     auto& json = *result;
     auto server_time = json.get_int("serverTime");
     if (!server_time) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "parse_server_time_response: missing or invalid 'serverTime'");
         return std::unexpected(std::string("Missing or invalid 'serverTime' field"));
     }
 
-    SPDLOG_LOGGER_DEBUG(log, "parse_server_time_response: serverTime={}ms", *server_time);
+    EPH_LOG_DEBUG(log, "parse_server_time_response: serverTime={}ms", *server_time);
 
     return ServerTime{*server_time};
 }

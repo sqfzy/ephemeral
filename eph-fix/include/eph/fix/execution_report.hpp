@@ -12,8 +12,7 @@
 #include <optional>
 #include <string_view>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/parser.hpp"
 #include "eph/fix/tags.hpp"
@@ -111,16 +110,8 @@ namespace detail {
 /// @brief Get or create the spdlog logger for execution report processing.
 /// @return Raw pointer to the "fix.execrpt" logger (never null after first call).
 inline spdlog::logger* fix_execrpt_logger() noexcept {
-    static auto l = [] {
-        auto lg = spdlog::get("fix.execrpt");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("fix.execrpt"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.execrpt"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("fix.execrpt");
+    return l;
 }
 
 /// @brief Validate that a char is a known ExecType value.
@@ -133,7 +124,7 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
     case 'A': case 'B': case 'C': case 'E': case 'F':
         return static_cast<ExecType>(c);
     default:
-        SPDLOG_LOGGER_WARN(fix_execrpt_logger(),
+        EPH_LOG_WARN(fix_execrpt_logger(),
             "unknown ExecType char='{}' (0x{:02x})", c,
             static_cast<unsigned char>(c));
         return std::nullopt;
@@ -150,7 +141,7 @@ inline spdlog::logger* fix_execrpt_logger() noexcept {
     case 'A': case 'B': case 'C': case 'E':
         return static_cast<OrdStatus>(c);
     default:
-        SPDLOG_LOGGER_DEBUG(fix_execrpt_logger(),
+        EPH_LOG_DEBUG(fix_execrpt_logger(),
             "unknown OrdStatus char='{}'", c);
         return std::nullopt;
     }
@@ -175,7 +166,7 @@ public:
     /// @warning The caller is responsible for verifying MsgType='8' before construction.
     explicit ExecutionReportView(const BasicMessageView<MaxFields>& msg) noexcept
         : msg_(msg) {
-        SPDLOG_LOGGER_TRACE(detail::fix_execrpt_logger(),
+        EPH_LOG_TRACE(detail::fix_execrpt_logger(),
             "ExecutionReportView constructed, field_count={}", msg_.field_count());
     }
 
@@ -358,7 +349,7 @@ template <size_t MaxFields = 256>
 try_parse_execution_report(const uint8_t* data, size_t len) noexcept {
     auto result = parse<MaxFields>(data, len);
     if (!result.has_value()) {
-        SPDLOG_LOGGER_DEBUG(detail::fix_execrpt_logger(),
+        EPH_LOG_DEBUG(detail::fix_execrpt_logger(),
             "try_parse_execution_report: parse failed, len={}", len);
         return std::nullopt;
     }
@@ -366,7 +357,7 @@ try_parse_execution_report(const uint8_t* data, size_t len) noexcept {
     // Check MsgType (tag 35) == '8' (ExecutionReport)
     auto msg_type = result->get(tag::MsgType);
     if (!msg_type || *msg_type != "8") {
-        SPDLOG_LOGGER_DEBUG(detail::fix_execrpt_logger(),
+        EPH_LOG_DEBUG(detail::fix_execrpt_logger(),
             "try_parse_execution_report: MsgType is '{}', expected '8'",
             msg_type.value_or("(absent)"));
         return std::nullopt;

@@ -52,7 +52,7 @@
 #include <string>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_eal.h>
 #include <rte_errno.h>
@@ -61,6 +61,8 @@
 #include "eph/core/error.hpp"
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* queue_allocator_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.queue_allocator"); return l; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -303,7 +305,7 @@ public:
     create_primary(std::string_view file_prefix,
                    uint16_t         total_queues) noexcept {
         if (total_queues == 0 || total_queues > kMaxAllocatorQueues) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator::create_primary: total_queues={} out of "
                 "range (must be 1..{})", total_queues, kMaxAllocatorQueues);
             return std::unexpected(std::string{
@@ -320,7 +322,7 @@ public:
         // run's daemon may have left an old segment if it died without
         // cleanup. Always reset on primary create.
         if (auto* old = rte_memzone_lookup(name.c_str())) {
-            SPDLOG_INFO(
+            EPH_LOG_INFO(queue_allocator_logger(),
                 "QueueAllocator: primary found stale memzone '{}' from a "
                 "previous run; freeing before re-reserving", name);
             (void)rte_memzone_free(old);
@@ -333,7 +335,7 @@ public:
             /*flags=*/0,
             /*align=*/64);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator: rte_memzone_reserve_aligned('{}', size={}) "
                 "failed (rte_errno={}: {})",
                 name, sizeof(queue_allocator_impl::Header),
@@ -345,14 +347,14 @@ public:
         auto* hdr = static_cast<queue_allocator_impl::Header*>(mz->addr);
         if (auto r = queue_allocator_impl::init_header(hdr, total_queues);
             !r) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator::create_primary: init_header failed: {}",
                 r.error().detail);
             (void)rte_memzone_free(mz);
             return std::unexpected(std::string{r.error().detail});
         }
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(queue_allocator_logger(),
             "QueueAllocator: primary reserved memzone '{}' "
             "(magic=0x{:08x} ver={} total_queues={})",
             name, queue_allocator_impl::Header::kMagic,
@@ -379,7 +381,7 @@ public:
         }
         const auto* mz = rte_memzone_lookup(name_r->c_str());
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator::attach_secondary: memzone '{}' not found "
                 "(rte_errno={}) — daemon not running on this NIC?",
                 *name_r, rte_errno);
@@ -388,7 +390,7 @@ public:
         }
         auto* hdr = static_cast<queue_allocator_impl::Header*>(mz->addr);
         if (hdr->magic != queue_allocator_impl::Header::kMagic) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator::attach_secondary: magic mismatch "
                 "(found 0x{:08x}, expected 0x{:08x})",
                 hdr->magic, queue_allocator_impl::Header::kMagic);
@@ -396,7 +398,7 @@ public:
                 "QueueAllocator::attach_secondary: header magic mismatch"});
         }
         if (hdr->version != queue_allocator_impl::Header::kVersion) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(queue_allocator_logger(),
                 "QueueAllocator::attach_secondary: version mismatch "
                 "(found {}, expected {})",
                 hdr->version, queue_allocator_impl::Header::kVersion);
@@ -432,7 +434,7 @@ public:
                 "QueueAllocator::claim: count must be >= 1"});
         }
         if (count > hdr_->total_queues) {
-            SPDLOG_DEBUG(
+            EPH_LOG_DEBUG(queue_allocator_logger(),
                 "QueueAllocator::claim: count={} > total_queues={} — "
                 "QueuePoolExhausted (request larger than pool capacity)",
                 count, hdr_->total_queues);
@@ -474,7 +476,7 @@ public:
                 // log discrepancy is the lesser evil).
                 const uint16_t free_after = free_queues_unlocked_();
                 pthread_mutex_unlock(&hdr_->mutex);
-                SPDLOG_INFO(
+                EPH_LOG_INFO(queue_allocator_logger(),
                     "QueueAllocator::claim: granted [{}, {}) gen={} "
                     "(count={}, pool={}/{} now free)",
                     lo, hi, gen, count, free_after, total);
@@ -482,7 +484,7 @@ public:
             }
         }
         pthread_mutex_unlock(&hdr_->mutex);
-        SPDLOG_WARN(
+        EPH_LOG_WARN(queue_allocator_logger(),
             "QueueAllocator::claim: pool exhausted (count={}, total={}, "
             "free={}, largest_run={}) — QueuePoolExhausted",
             count, total, free_queues_unlocked_(), largest_free_run_unlocked_());
@@ -505,20 +507,20 @@ public:
     /// silently drop.
     void release(QueueRange range) noexcept {
         if (hdr_ == nullptr) {
-            SPDLOG_DEBUG(
+            EPH_LOG_DEBUG(queue_allocator_logger(),
                 "QueueAllocator::release: not initialized — silent no-op "
                 "(range=[{},{}) gen={})",
                 range.lo, range.hi, range.generation);
             return;
         }
         if (range.empty()) {
-            SPDLOG_DEBUG(
+            EPH_LOG_DEBUG(queue_allocator_logger(),
                 "QueueAllocator::release: empty range — silent no-op "
                 "(lo={} hi={} gen={})", range.lo, range.hi, range.generation);
             return;
         }
         if (range.hi > hdr_->total_queues) {
-            SPDLOG_WARN(
+            EPH_LOG_WARN(queue_allocator_logger(),
                 "QueueAllocator::release: range.hi={} > total_queues={} — "
                 "rejecting (likely cross-version IPC mismatch)",
                 range.hi, hdr_->total_queues);
@@ -527,7 +529,7 @@ public:
         }
         const uint64_t now_gen = hdr_->generation.load(std::memory_order_acquire);
         if (range.generation > now_gen) {
-            SPDLOG_WARN(
+            EPH_LOG_WARN(queue_allocator_logger(),
                 "QueueAllocator::release: caller generation={} > current={} "
                 "— wire corruption / cross-version IPC mismatch, rejecting",
                 range.generation, now_gen);
@@ -557,7 +559,7 @@ public:
         if (stale) {
             pthread_mutex_unlock(&hdr_->mutex);
             hdr_->stale_releases.fetch_add(1, std::memory_order_relaxed);
-            SPDLOG_DEBUG(
+            EPH_LOG_DEBUG(queue_allocator_logger(),
                 "QueueAllocator::release: stale release rejected — "
                 "range=[{},{}) gen={} (bit cleared or claim_gen "
                 "mismatch — likely an ABA recycle)",
@@ -578,7 +580,7 @@ public:
         const uint16_t total_q   = hdr_->total_queues;
         const uint16_t free_now  = free_queues_unlocked_();
         pthread_mutex_unlock(&hdr_->mutex);
-        SPDLOG_INFO(
+        EPH_LOG_INFO(queue_allocator_logger(),
             "QueueAllocator::release: freed [{}, {}) gen={} "
             "(pool {}/{} now claimed)",
             range.lo, range.hi, range.generation,
@@ -639,7 +641,7 @@ private:
             }
             const int rc = rte_memzone_free(mz_);
             if (rc != 0) {
-                SPDLOG_WARN(
+                EPH_LOG_WARN(queue_allocator_logger(),
                     "QueueAllocator: rte_memzone_free failed (rc={}, "
                     "rte_errno={}) — memzone may leak until next daemon "
                     "restart",
@@ -854,14 +856,14 @@ namespace eph::dpdk::detail {
 [[nodiscard]] inline bool
 refresh_reta_for_claimed_(QueueAllocator& alloc, uint16_t port_id) noexcept {
     if (port_id == 0xFFFF) {
-        SPDLOG_DEBUG("refresh_reta_for_claimed_: port_id sentinel — skip "
+        EPH_LOG_DEBUG(queue_allocator_logger(), "refresh_reta_for_claimed_: port_id sentinel — skip "
                      "(test / virtual PMD mode)");
         return true;
     }
     rte_eth_dev_info dev_info{};
     int rc = rte_eth_dev_info_get(port_id, &dev_info);
     if (rc != 0) {
-        SPDLOG_DEBUG("refresh_reta_for_claimed_: rte_eth_dev_info_get(port={}) "
+        EPH_LOG_DEBUG(queue_allocator_logger(), "refresh_reta_for_claimed_: rte_eth_dev_info_get(port={}) "
                      "rc={} — skip RETA refresh (PMD may not support it from "
                      "this proc; allocator state still consistent)",
                      port_id, rc);
@@ -900,7 +902,7 @@ refresh_reta_for_claimed_(QueueAllocator& alloc, uint16_t port_id) noexcept {
     }
     rc = rte_eth_dev_rss_reta_update(port_id, reta, reta_size);
     if (rc == -ENOTSUP || rc == -EOPNOTSUPP) {
-        SPDLOG_WARN(
+        EPH_LOG_WARN(queue_allocator_logger(),
             "refresh_reta_for_claimed_: rte_eth_dev_rss_reta_update returned "
             "ENOTSUP on port={} — PMD does not support runtime RETA changes; "
             "RSS distribution stays at the bring-up configuration. Allocator "
@@ -909,14 +911,14 @@ refresh_reta_for_claimed_(QueueAllocator& alloc, uint16_t port_id) noexcept {
         return true;
     }
     if (rc != 0) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "refresh_reta_for_claimed_: rte_eth_dev_rss_reta_update(port={}, "
             "reta_size={}) rc={} (rte_errno={}: {}) — RSS distribution may be "
             "stale, but allocator state stays consistent",
             port_id, reta_size, rc, rte_errno, rte_strerror(rte_errno));
         return false;
     }
-    SPDLOG_DEBUG(
+    EPH_LOG_DEBUG(queue_allocator_logger(),
         "refresh_reta_for_claimed_: port={} reta_size={} nclaimed={} "
         "(buckets now point at {})",
         port_id, reta_size, nclaimed,
@@ -935,7 +937,7 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
     if (alloc == nullptr) {
         std::strncpy(reply.error, "daemon not ready (allocator inactive)",
                      sizeof(reply.error) - 1);
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_queue_claim_thunk: g_active_queue_allocator is null — "
             "daemon shutdown race? Replying with error.");
         (void)mp_ipc_reply_send(kQueueClaimActionName, reply, peer);
@@ -950,7 +952,7 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
     }
     const auto& req = *parsed;
     if (req.version != 1) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_queue_claim_thunk: version={} unsupported (expected 1) "
             "— rejecting", req.version);
         std::strncpy(reply.error, "unsupported claim wire version",
@@ -966,7 +968,7 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
         // either the full error or "QueuePoolExhausted" for that exact
         // case.
         std::strncpy(reply.error, err.c_str(), sizeof(reply.error) - 1);
-        SPDLOG_INFO(
+        EPH_LOG_INFO(queue_allocator_logger(),
             "on_queue_claim_thunk: claim(count={} requester_pid={}) "
             "rejected: {}", req.count, req.requester_pid, err);
         (void)mp_ipc_reply_send(kQueueClaimActionName, reply, peer);
@@ -985,7 +987,7 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
         g_active_qalloc_port_id.load(std::memory_order_acquire);
     (void)refresh_reta_for_claimed_(*alloc, port_id);
 
-    SPDLOG_INFO(
+    EPH_LOG_INFO(queue_allocator_logger(),
         "on_queue_claim_thunk: granted range=[{}, {}) gen={} to pid={}",
         reply.lo, reply.hi, reply.generation, req.requester_pid);
     auto sr = mp_ipc_reply_send(kQueueClaimActionName, reply, peer);
@@ -993,7 +995,7 @@ on_queue_claim_thunk(const struct rte_mp_msg* msg,
         // The grant is committed in the bitmap; the secondary will time
         // out, retry, or surface a failure. Roll the claim back so the
         // pool isn't permanently leaked.
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_queue_claim_thunk: reply send failed: {} — rolling back "
             "claim [{}, {}) to avoid pool leak",
             sr.error().detail, reply.lo, reply.hi);
@@ -1008,25 +1010,25 @@ on_queue_release_thunk(const struct rte_mp_msg* msg,
                        const void*              /*peer*/) {
     auto* alloc = g_active_queue_allocator.load(std::memory_order_acquire);
     if (alloc == nullptr) {
-        SPDLOG_DEBUG(
+        EPH_LOG_DEBUG(queue_allocator_logger(),
             "on_queue_release_thunk: allocator inactive — drop release msg");
         return 0;
     }
     auto parsed = parse_payload<QueueReleaseRequest>(msg);
     if (!parsed) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_queue_release_thunk: parse_payload failed — drop msg");
         return 0;
     }
     const auto& req = *parsed;
     if (req.version != 1) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_queue_release_thunk: version={} unsupported (expected 1) "
             "— drop msg", req.version);
         return 0;
     }
     QueueRange range{req.lo, req.hi, req.generation};
-    SPDLOG_DEBUG(
+    EPH_LOG_DEBUG(queue_allocator_logger(),
         "on_queue_release_thunk: release request range=[{}, {}) gen={} "
         "from pid={}", range.lo, range.hi, range.generation,
         req.requester_pid);
@@ -1048,7 +1050,7 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
     if (alloc == nullptr) {
         std::strncpy(reply.error, "daemon allocator inactive",
                      sizeof(reply.error) - 1);
-        SPDLOG_ERROR("on_nicctl_query_thunk: allocator inactive — replying error");
+        EPH_LOG_ERROR(queue_allocator_logger(), "on_nicctl_query_thunk: allocator inactive — replying error");
         (void)mp_ipc_reply_send(kNicctlQueryActionName, reply, peer);
         return 0;
     }
@@ -1061,7 +1063,7 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
     }
     const auto& req = *parsed;
     if (req.version != 1) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(queue_allocator_logger(),
             "on_nicctl_query_thunk: version={} unsupported (expected 1) "
             "— rejecting", req.version);
         std::strncpy(reply.error, "unsupported nicctl wire version",
@@ -1071,7 +1073,7 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
     }
     const auto kind = static_cast<NicctlQueryKind>(req.kind);
     if (kind != NicctlQueryKind::Stats) {
-        SPDLOG_INFO(
+        EPH_LOG_INFO(queue_allocator_logger(),
             "on_nicctl_query_thunk: kind={} not yet implemented "
             "(req.kind={})",
             req.kind == 0 ? "Stats" : "Reserved", req.kind);
@@ -1094,7 +1096,7 @@ on_nicctl_query_thunk(const struct rte_mp_msg* msg,
     reply.daemon_port_id     = g_active_qalloc_port_id.load(
         std::memory_order_acquire);
 
-    SPDLOG_DEBUG(
+    EPH_LOG_DEBUG(queue_allocator_logger(),
         "on_nicctl_query_thunk: replying to pid={} (total={} free={} "
         "gen={} stale={})",
         req.requester_pid, reply.total_queues, reply.free_queues,

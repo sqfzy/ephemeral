@@ -77,7 +77,7 @@
 #include <utility>
 #include <vector>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/detail/base64.hpp" // pure-C++ base64 encoder
 #include "eph/net/hmac.hpp"
@@ -90,6 +90,11 @@ namespace eph::net {
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
+
+inline spdlog::logger* signed_request_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.signed_request");
+    return l;
+}
 
 /// @brief Lowercase 64-char hex render of a 32-byte tag.
 ///
@@ -353,7 +358,7 @@ public:
     ///        (HmacSha256Key is non-copyable).
     explicit SignedRequest(HmacSha256Key key) noexcept
         : key_(std::move(key)) {
-        SPDLOG_TRACE("SignedRequest<{}>: constructed",
+        EPH_LOG_TRACE(detail::signed_request_logger(), "SignedRequest<{}>: constructed",
                      typeid(Traits).name());
     }
 
@@ -537,7 +542,7 @@ private:
             }
         }
 
-        SPDLOG_DEBUG("SignedRequest: produced {} headers (sign={}B)",
+        EPH_LOG_DEBUG(detail::signed_request_logger(), "SignedRequest: produced {} headers (sign={}B)",
                      out.headers.size(),
                      out.storage.empty() ? 0 : out.storage.front().size());
         return out;

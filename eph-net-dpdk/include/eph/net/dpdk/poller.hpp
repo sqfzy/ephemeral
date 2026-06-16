@@ -58,9 +58,7 @@
 #include <rte_mbuf.h>
 #include <rte_pause.h>    // rte_pause() — short busy-wait yield for poll(timeout)
 
-#include <spdlog/spdlog.h>
-
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_parse.hpp"
 #include "eph/net/concepts.hpp"
@@ -73,7 +71,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the DPDK poller subsystem.
 inline spdlog::logger* poller_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.dpdk.poller");
+    static spdlog::logger* l = ::eph::log::get("net.dpdk.poller");
     return l;
 }
 
@@ -191,14 +189,14 @@ public:
         // them lurk until the Nth `add` call.
         if (cfg.max_connections == 0 ||
             cfg.max_connections > kMaxConnHard) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkPoller::create: max_connections={} out of range [1, {}]",
                 cfg.max_connections, kMaxConnHard);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkPoller::create: max_connections out of range"});
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "DpdkPoller::create: port={} queue={} max_connections={}",
             cfg.port_id, cfg.rx_queue_id, cfg.max_connections);
         auto p = std::unique_ptr<DpdkPoller>(new DpdkPoller(cfg));
@@ -237,13 +235,13 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo> add(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
-            SPDLOG_LOGGER_ERROR(log, "DpdkPoller::add: nullptr obj");
+            EPH_LOG_ERROR(log, "DpdkPoller::add: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkPoller::add: nullptr"});
         }
         if (n_entries_ >= cfg_.max_connections) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "DpdkPoller::add: entries table full "
                 "(n_entries={}, max_connections={}, kMaxConnHard={})",
                 n_entries_, cfg_.max_connections, kMaxConnHard);
@@ -271,7 +269,7 @@ public:
         // threading obj-pointer through the route table key.
         for (std::size_t i = 0; i < n_entries_; ++i) {
             if (entries_[i].obj == static_cast<void*>(obj)) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "DpdkPoller::add: pointer already registered obj={} "
                     "at idx={} of n_entries={}",
                     static_cast<void*>(obj), i, n_entries_);
@@ -286,7 +284,7 @@ public:
         if (find_route_slot_(new_hash, new_src_ip, new_dst_ip,
                               new_src_port, new_dst_port, new_proto)
                 != kInvalidSlot) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkPoller::add: 5-tuple already registered "
                 "proto={} src=0x{:08x}:{} dst=0x{:08x}:{}",
                 new_proto, new_src_ip, new_src_port,
@@ -331,7 +329,7 @@ public:
                        new_dst_port, new_proto, entry_idx);
 
         obj->notify_attached_(this);
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "DpdkPoller::add: obj={} tuple_hash=0x{:08x} entries={} idx={}",
             static_cast<void*>(obj), entry.conn_hash, n_entries_, entry_idx);
         return {};
@@ -344,7 +342,7 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo> remove(P* obj) noexcept {
         auto* log = detail::poller_logger();
         if (obj == nullptr) {
-            SPDLOG_LOGGER_ERROR(log, "DpdkPoller::remove: nullptr obj");
+            EPH_LOG_ERROR(log, "DpdkPoller::remove: nullptr obj");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "DpdkPoller::remove: nullptr"});
@@ -380,12 +378,12 @@ public:
             }
 
             obj->notify_detached_();
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "DpdkPoller::remove: obj={} entries={}",
                 static_cast<void*>(obj), n_entries_);
             return {};
         }
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "DpdkPoller::remove: obj={} not registered (n_entries={})",
             static_cast<void*>(obj), n_entries_);
         return std::unexpected(core::ErrorInfo{
@@ -503,7 +501,7 @@ public:
     /// **Thread safety**: same as `poll()` — single-thread driver.
     [[nodiscard]] std::size_t poll(std::chrono::nanoseconds timeout) noexcept {
         [[maybe_unused]] auto* log = detail::poller_logger();
-        SPDLOG_LOGGER_TRACE(log,
+        EPH_LOG_TRACE(log,
             "DpdkPoller::poll(timeout): entry timeout={} ns",
             timeout.count());
 
@@ -513,7 +511,7 @@ public:
         // immediately" requirement.
         std::size_t total = drain_injected_for_test_() + poll();
         if (total > 0 || timeout.count() <= 0) {
-            SPDLOG_LOGGER_TRACE(log,
+            EPH_LOG_TRACE(log,
                 "DpdkPoller::poll(timeout): exit fast (n={}, timeout={} ns)",
                 total, timeout.count());
             return total;
@@ -568,7 +566,7 @@ public:
                     const std::size_t n = drain_injected_for_test_() + poll();
                     if (n > 0) {
                         total += n;
-                        SPDLOG_LOGGER_TRACE(log,
+                        EPH_LOG_TRACE(log,
                             "DpdkPoller::poll(timeout): exit spin (n={})", total);
                         return total;
                     }
@@ -582,12 +580,12 @@ public:
                     const std::size_t n = drain_injected_for_test_() + poll();
                     if (n > 0) {
                         total += n;
-                        SPDLOG_LOGGER_TRACE(log,
+                        EPH_LOG_TRACE(log,
                             "DpdkPoller::poll(timeout): exit yield (n={})", total);
                         return total;
                     }
                 }
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "DpdkPoller::poll(timeout): exit deadline (n={})", total);
                 return total;
             }
@@ -618,7 +616,7 @@ public:
             const std::size_t n = drain_injected_for_test_() + poll();
             if (n > 0) {
                 total += n;
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "DpdkPoller::poll(timeout): exit spin/wall (n={})", total);
                 return total;
             }
@@ -628,12 +626,12 @@ public:
             const std::size_t n = drain_injected_for_test_() + poll();
             if (n > 0) {
                 total += n;
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "DpdkPoller::poll(timeout): exit yield/wall (n={})", total);
                 return total;
             }
         }
-        SPDLOG_LOGGER_TRACE(log,
+        EPH_LOG_TRACE(log,
             "DpdkPoller::poll(timeout): exit deadline/wall (n={})", total);
         return total;
     }
@@ -823,7 +821,7 @@ public:
         auto* log = detail::poller_logger();
 
         if (range_begin < 1024) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkPoller::pick_src_port: range_begin={} < 1024",
                 range_begin);
             return std::unexpected(core::ErrorInfo{
@@ -831,7 +829,7 @@ public:
                 "DpdkPoller::pick_src_port: range_begin must be >= 1024"});
         }
         if (range_begin > range_end) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkPoller::pick_src_port: inverted range [{}, {}]",
                 range_begin, range_end);
             return std::unexpected(core::ErrorInfo{
@@ -840,7 +838,7 @@ public:
         }
         if (preferred != 0 &&
             (preferred < range_begin || preferred > range_end)) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkPoller::pick_src_port: preferred={} outside [{}, {}]",
                 preferred, range_begin, range_end);
             return std::unexpected(core::ErrorInfo{
@@ -874,7 +872,7 @@ public:
 
         // Soft preference fast path.
         if (preferred != 0 && !is_in_use(preferred)) {
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "DpdkPoller::pick_src_port: preferred={} accepted", preferred);
             return preferred;
         }
@@ -887,7 +885,7 @@ public:
             static_cast<ssize_t>(sizeof(seed))) {
             // getrandom on Linux ≥ 3.17 never fails for small reads;
             // if it does, fall back to 0 and log loudly.
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "DpdkPoller::pick_src_port: getrandom failed, seed=0");
             seed = 0;
         }
@@ -896,14 +894,14 @@ public:
             const uint16_t candidate = static_cast<uint16_t>(
                 range_begin + ((start + i) % range));
             if (!is_in_use(candidate)) {
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "DpdkPoller::pick_src_port: selected port={} "
                     "after {} probe(s)", candidate, i + 1);
                 return candidate;
             }
         }
 
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "DpdkPoller::pick_src_port: no free port in [{}, {}] for "
             "src_ip=0x{:08x} dst_ip=0x{:08x} dst_port={} entries={}",
             range_begin, range_end, src_ip, dst_ip, dst_port, n_entries_);
@@ -1057,7 +1055,7 @@ private:
         // kRouteTableSize ≥ 2 × kMaxConnHard) makes this branch
         // unreachable. Logging it loudly is the right defensive action
         // for an invariant violation.
-        SPDLOG_LOGGER_ERROR(detail::poller_logger(),
+        EPH_LOG_ERROR(detail::poller_logger(),
             "DpdkPoller::insert_route_: routing table full at n_entries_={}",
             n_entries_);
     }
@@ -1177,7 +1175,7 @@ private:
             const uint64_t cur =
                 hash_collision_drops_.load(std::memory_order_relaxed);
             if (cur == 0 || (cur & kHashCollisionLogMask) == 0) {
-                SPDLOG_LOGGER_WARN(detail::poller_logger(),
+                EPH_LOG_WARN(detail::poller_logger(),
                     "DpdkPoller::lookup_by_5tuple_: hash collision drop #{} "
                     "(pkt_hash=0x{:08x} proto={} src=0x{:08x}:{} dst=0x{:08x}:{}); "
                     "cumulative count via hash_collision_drops()",

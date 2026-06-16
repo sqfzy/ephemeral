@@ -17,8 +17,7 @@
 #include <optional>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_ethdev.h>
 #include <rte_ether.h>
@@ -82,7 +81,7 @@ static_assert(sizeof(ArpPacket) == kArpPacketLen,
 
 namespace detail {
 
-inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::dpdk::detail::LoggerName{"dpdk.arp"}>(); }
+inline spdlog::logger* arp_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.arp"); return l; }
 
 } // namespace detail
 
@@ -106,13 +105,13 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
     // PacketTemplate::build_packet (returns nullptr on null pool) so
     // callers can fail fast without a crash.
     if (!pool) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+        EPH_LOG_ERROR(detail::arp_logger(),
             "ARP request: null mempool — cannot allocate");
         return nullptr;
     }
     auto* mbuf = rte_pktmbuf_alloc(pool);
     if (!mbuf) {
-        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+        EPH_LOG_ERROR(detail::arp_logger(),
             "ARP request: rte_pktmbuf_alloc failed, mempool may be exhausted");
         return nullptr;
     }
@@ -121,7 +120,7 @@ inline spdlog::logger* arp_logger() { return eph::dpdk::detail::get_logger<eph::
     auto* pkt = reinterpret_cast<uint8_t*>(
         rte_pktmbuf_append(mbuf, frame_len));
     if (!pkt) {
-        SPDLOG_LOGGER_ERROR(detail::arp_logger(),
+        EPH_LOG_ERROR(detail::arp_logger(),
             "ARP request: rte_pktmbuf_append failed for {} bytes (pool_avail={})",
             frame_len, rte_mempool_avail_count(pool));
         rte_pktmbuf_free(mbuf);
@@ -232,7 +231,7 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
     if (expected_local_ip.has_value()) {
         const uint32_t reply_target = net::ntoh32(arp->target_ip);
         if (reply_target != *expected_local_ip) {
-            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+            EPH_LOG_WARN(detail::arp_logger(),
                 "ARP reply target_ip mismatch: got {}, expected {} — "
                 "possible reflection attack, rejecting",
                 net::format_ipv4(reply_target).data(),
@@ -256,7 +255,7 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
                                result.addr_bytes[4] | result.addr_bytes[5]) == 0;
         const bool is_group = (result.addr_bytes[0] & 0x01u) != 0;
         if (all_zero || is_group) {
-            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+            EPH_LOG_WARN(detail::arp_logger(),
                 "ARP reply sender MAC invalid ({} — {}), rejecting",
                 net::format_mac(result).data(),
                 all_zero ? "all-zero" : "non-unicast I/G bit set");
@@ -268,7 +267,7 @@ parse_arp_reply(const rte_mbuf* mbuf, uint32_t target_ip,
     if (expected_mac.has_value()) {
         if (std::memcmp(result.addr_bytes,
                         expected_mac->addr_bytes, 6) != 0) {
-            SPDLOG_LOGGER_WARN(detail::arp_logger(),
+            EPH_LOG_WARN(detail::arp_logger(),
                 "ARP reply sender MAC mismatch: got {}, expected {} — "
                 "possible ARP spoofing, rejecting",
                 net::format_mac(result).data(),
@@ -332,13 +331,13 @@ resolve_with_io(uint16_t port_id,
     auto log = detail::arp_logger();
 
     if (!pool) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "ARP resolve: mempool is null (target={} port={} queue={})",
             net::format_ipv4(target_ip).data(), port_id, queue_id);
         return std::unexpected("ARP resolve: mempool is null");
     }
 
-    SPDLOG_LOGGER_DEBUG(log, "ARP resolve: {} -> {} on port {} queue {}",
+    EPH_LOG_DEBUG(log, "ARP resolve: {} -> {} on port {} queue {}",
         net::format_ipv4(src_ip).data(),
         net::format_ipv4(target_ip).data(),
         port_id, queue_id);
@@ -368,7 +367,7 @@ resolve_with_io(uint16_t port_id,
                 // sees which ARP lookup died and where. Pool exhaustion
                 // is the dominant cause; we terminate rather than retry
                 // because the pool will not refill mid-loop.
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "ARP resolve: mbuf allocation failed (target={} "
                     "port={} queue={} request_attempt={})",
                     net::format_ipv4(target_ip).data(),
@@ -383,7 +382,7 @@ resolve_with_io(uint16_t port_id,
             uint16_t sent = Io::tx_burst(port_id, queue_id, &req, 1);
             if (sent != 1) {
                 rte_pktmbuf_free(req);
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "ARP resolve: tx_burst failed (port={} queue={} "
                     "request_attempt={}); will retry after {}ms backoff",
                     port_id, queue_id, requests_sent + 1,
@@ -399,7 +398,7 @@ resolve_with_io(uint16_t port_id,
                 // before giving up).
             } else {
                 requests_sent++;
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "ARP request #{} sent for {}",
                     requests_sent, net::format_ipv4(target_ip).data());
             }
@@ -420,7 +419,7 @@ resolve_with_io(uint16_t port_id,
             auto mac = parse_arp_reply(pkts[i], target_ip, expected_mac,
                                         /*expected_local_ip=*/src_ip);
             if (mac) {
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "ARP resolved: {} -> {} (after {} request(s))",
                     net::format_ipv4(target_ip).data(),
                     net::format_mac(*mac).data(),
@@ -437,7 +436,7 @@ resolve_with_io(uint16_t port_id,
         }
     }
 
-    SPDLOG_LOGGER_ERROR(log,
+    EPH_LOG_ERROR(log,
         "ARP resolve timeout: {} not resolved after {}ms ({} requests sent)",
         net::format_ipv4(target_ip).data(),
         timeout.count(), requests_sent);

@@ -30,6 +30,7 @@
 #include <optional>
 #include <string_view>
 
+#include "eph/core/log.hpp"
 #include "eph/sbe/binance/schema.hpp"
 #include "eph/sbe/byte_order.hpp"
 #include "eph/sbe/errors.hpp"
@@ -40,16 +41,8 @@ namespace eph::sbe::binance {
 /// @brief Internal detail namespace for the Binance SBE accessor logger.
 namespace detail {
 /// @brief Get or create the Binance SBE module logger ("sbe.binance").
-inline const std::shared_ptr<spdlog::logger>& sbe_binance_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("sbe.binance");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("sbe.binance"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("sbe.binance"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* sbe_binance_logger() {
+    static spdlog::logger* l = ::eph::log::get("sbe.binance");
     return l;
 }
 } // namespace detail
@@ -140,7 +133,7 @@ template <typename Fn>
 [[nodiscard]] std::expected<std::size_t, ParseError>
 for_each_ticker(const MessageView& view, Fn&& fn) noexcept {
     if (!is_supported(view)) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::sbe_binance_logger(),
+        EPH_LOG_WARN(detail::sbe_binance_logger(),
             "for_each_ticker: unexpected schema {}:{} (accessors target {}:{})",
             view.schema_id, view.version, kSchemaId, kSchemaVersion);
         // Offsets may not match; refuse rather than decode silently-wrong data.
@@ -150,7 +143,7 @@ for_each_ticker(const MessageView& view, Fn&& fn) noexcept {
     const uint8_t* const body = view.body();
     const std::size_t avail = view.body_len();
     if (avail < kGroupHeaderSize) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::sbe_binance_logger(),
+        EPH_LOG_WARN(detail::sbe_binance_logger(),
             "for_each_ticker: body {} < group header {}", avail, kGroupHeaderSize);
         return std::unexpected(ParseError::kTruncated);
     }
@@ -159,7 +152,7 @@ for_each_ticker(const MessageView& view, Fn&& fn) noexcept {
     // A fixed block smaller than our known layout means the scalar accessors
     // would read past the entry — reject as malformed.
     if (gh.block_length < book_ticker::kBlockLength) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::sbe_binance_logger(),
+        EPH_LOG_WARN(detail::sbe_binance_logger(),
             "for_each_ticker: group blockLength {} < expected {}",
             gh.block_length, book_ticker::kBlockLength);
         return std::unexpected(ParseError::kMalformedGroup);
@@ -169,7 +162,7 @@ for_each_ticker(const MessageView& view, Fn&& fn) noexcept {
     for (uint16_t i = 0; i < gh.num_in_group; ++i) {
         // Need the fixed block + the 1-byte symbol length prefix.
         if (off + gh.block_length + 1 > avail) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::sbe_binance_logger(),
+            EPH_LOG_WARN(detail::sbe_binance_logger(),
                 "for_each_ticker: truncated entry {} at off {} (avail {})",
                 i, off, avail);
             return std::unexpected(ParseError::kTruncated);
@@ -178,7 +171,7 @@ for_each_ticker(const MessageView& view, Fn&& fn) noexcept {
         const std::size_t sym_len = block[gh.block_length];
         const std::size_t entry = gh.block_length + 1 + sym_len;
         if (off + entry > avail) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::sbe_binance_logger(),
+            EPH_LOG_WARN(detail::sbe_binance_logger(),
                 "for_each_ticker: symbol of entry {} overruns buffer "
                 "(off {}, entry {}, avail {})", i, off, entry, avail);
             return std::unexpected(ParseError::kTruncated);

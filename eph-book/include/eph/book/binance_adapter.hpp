@@ -17,8 +17,7 @@
 #include <optional>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/book/array_book.hpp"
 #include "eph/core/parse_number.hpp"
@@ -33,15 +32,8 @@ namespace detail {
 /// @brief Lazily-constructed spdlog logger for BinanceBookAdapter diagnostics.
 /// @return Pointer to the "book.binance_adapter" logger instance.
 inline spdlog::logger* binance_adapter_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("book.binance_adapter");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("book.binance_adapter");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("book.binance_adapter");
+    return l;
 }
 } // namespace detail
 /// @endcond
@@ -89,7 +81,7 @@ public:
     /// @return `true` if the book was modified, `false` on parse
     ///         failure (e.g., non-numeric price/qty strings).
     bool update_from_ticker(const eph::json::binance::BookTicker& ticker) noexcept {
-        SPDLOG_LOGGER_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::update_from_ticker symbol={}", ticker.symbol);
+        EPH_LOG_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::update_from_ticker symbol={}", ticker.symbol);
 
         // Parse string price/qty fields into doubles.
         auto bid_price = parse_number(ticker.bid_price);
@@ -98,14 +90,14 @@ public:
         auto ask_qty   = parse_number(ticker.ask_qty);
 
         if (!bid_price || !bid_qty || !ask_price || !ask_qty) {
-            SPDLOG_LOGGER_WARN(detail::binance_adapter_logger(), "BinanceBookAdapter: failed to parse ticker fields "
+            EPH_LOG_WARN(detail::binance_adapter_logger(), "BinanceBookAdapter: failed to parse ticker fields "
                         "(bid_price={} bid_qty={} ask_price={} ask_qty={})",
                         ticker.bid_price, ticker.bid_qty,
                         ticker.ask_price, ticker.ask_qty);
             return false;
         }
 
-        SPDLOG_LOGGER_TRACE(detail::binance_adapter_logger(), "BinanceBookAdapter: bid={}@{} ask={}@{}",
+        EPH_LOG_TRACE(detail::binance_adapter_logger(), "BinanceBookAdapter: bid={}@{} ask={}@{}",
                      *bid_price, *bid_qty, *ask_price, *ask_qty);
 
         // Snapshot semantics: retire the prior best level if the price
@@ -152,7 +144,7 @@ public:
     /// @param snapshot  Parsed DepthSnapshot obtained from `parse_depth_response()`.
     /// @return The number of levels loaded (bids + asks), capped by MaxLevels per side.
     std::size_t load_snapshot(const eph::json::binance::DepthSnapshot& snapshot) noexcept {
-        SPDLOG_LOGGER_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::load_snapshot last_update_id={} "
+        EPH_LOG_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::load_snapshot last_update_id={} "
                      "bids={} asks={}",
                      snapshot.last_update_id,
                      snapshot.bids.size(),
@@ -167,17 +159,17 @@ public:
         last_ask_valid_ = false;
 
         for (const auto& level : snapshot.bids) {
-            SPDLOG_LOGGER_TRACE(detail::binance_adapter_logger(), "load_snapshot bid price={} qty={}", level.price, level.qty);
+            EPH_LOG_TRACE(detail::binance_adapter_logger(), "load_snapshot bid price={} qty={}", level.price, level.qty);
             book_.update_bid(level.price, level.qty);
         }
 
         for (const auto& level : snapshot.asks) {
-            SPDLOG_LOGGER_TRACE(detail::binance_adapter_logger(), "load_snapshot ask price={} qty={}", level.price, level.qty);
+            EPH_LOG_TRACE(detail::binance_adapter_logger(), "load_snapshot ask price={} qty={}", level.price, level.qty);
             book_.update_ask(level.price, level.qty);
         }
 
         auto total = book_.bid_depth() + book_.ask_depth();
-        SPDLOG_LOGGER_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::load_snapshot complete: {} levels loaded", total);
+        EPH_LOG_DEBUG(detail::binance_adapter_logger(), "BinanceBookAdapter::load_snapshot complete: {} levels loaded", total);
         return total;
     }
 

@@ -19,8 +19,7 @@
 #include <memory>
 #include <utility>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -35,16 +34,8 @@ namespace eph::utils {
 namespace detail {
 
 /// @brief Lazily-initialized logger for the huge-page subsystem.
-inline const std::shared_ptr<spdlog::logger>& hugepage_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.hugepage");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("utils.hugepage"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.hugepage"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* hugepage_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.hugepage");
     return l;
 }
 
@@ -185,7 +176,7 @@ public:
     }
 
     // Huge-page allocation failed, fall back to regular memory
-    SPDLOG_LOGGER_WARN(detail::hugepage_logger(),
+    EPH_LOG_WARN(detail::hugepage_logger(),
         "Hugepage allocation failed for {} bytes, falling back to aligned_alloc",
         actual_size);
     return std::aligned_alloc(actual_alignment, actual_size);
@@ -236,7 +227,7 @@ public:
     if (is_hugepage) {
       // Free mmap-allocated huge-page memory
       if (munmap(ptr, size) != 0) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::hugepage_logger(),
+        EPH_LOG_ERROR(detail::hugepage_logger(),
             "munmap failed for hugepage at {}, size={}, errno={}",
             ptr, size, errno);
       }

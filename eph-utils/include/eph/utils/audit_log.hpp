@@ -32,8 +32,7 @@
 #include <string_view>
 #include <thread>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/utils/time.hpp"
 
@@ -41,16 +40,8 @@ namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for the audit-log subsystem.
-inline const std::shared_ptr<spdlog::logger>& audit_log_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.audit_log");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("utils.audit_log"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.audit_log"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* audit_log_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.audit_log");
     return l;
 }
 } // namespace detail
@@ -183,7 +174,7 @@ public:
         // Log only on the exact wrap boundary to avoid flooding hot-path logs.
         // Subsequent overwrites are expected ring buffer behavior.
         if (idx == Capacity) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),
+            EPH_LOG_WARN(detail::audit_log_logger(),
                 "AuditLog: ring buffer wrapped at capacity={}, "
                 "oldest entries will be overwritten", Capacity);
         }
@@ -231,7 +222,7 @@ public:
         bool overflowed = idx >= Capacity;
         // Log only on the exact wrap boundary to avoid flooding hot-path logs.
         if (idx == Capacity) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::audit_log_logger(),
+            EPH_LOG_WARN(detail::audit_log_logger(),
                 "AuditLog: ring buffer wrapped at capacity={}, "
                 "oldest entries will be overwritten", Capacity);
         }
@@ -307,7 +298,7 @@ public:
     [[nodiscard]] size_t flush_to_file(std::string_view path) const noexcept {
         FILE* f = std::fopen(std::string(path).c_str(), "wb");
         if (!f) {
-            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),
+            EPH_LOG_ERROR(detail::audit_log_logger(),
                 "AuditLog: failed to open '{}' for writing (errno={})",
                 path, errno);
             return 0;
@@ -335,7 +326,7 @@ public:
         const int close_errno = close_ok ? 0 : errno;
 
         if (!flush_ok || !close_ok) {
-            SPDLOG_LOGGER_ERROR(detail::audit_log_logger(),
+            EPH_LOG_ERROR(detail::audit_log_logger(),
                 "AuditLog: persistence integrity FAILED for '{}' "
                 "(fwrite={} entries, fflush_ok={} errno={}, fclose_ok={} errno={}) "
                 "— treating flush as 0 to force operator re-flush; "
@@ -345,7 +336,7 @@ public:
             return 0;
         }
 
-        SPDLOG_LOGGER_INFO(detail::audit_log_logger(),
+        EPH_LOG_INFO(detail::audit_log_logger(),
             "AuditLog: flushed {} entries to '{}'", written, path);
         return written;
     }

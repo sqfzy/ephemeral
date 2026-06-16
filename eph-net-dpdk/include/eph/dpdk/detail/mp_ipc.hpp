@@ -50,7 +50,7 @@
 #include <type_traits>
 #include <utility>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_eal.h>
 #include <rte_errno.h>
@@ -58,6 +58,8 @@
 #include "eph/core/error.hpp"
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* mp_ipc_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.mp_ipc"); return l; }
 
 /// @brief Effective max name length we accept. DPDK's
 /// `RTE_MP_MAX_NAME_LEN = 64` includes trailing NUL; we cap user
@@ -94,14 +96,14 @@ public:
 
     MpIpcAction(std::string_view name, rte_mp_t handler) noexcept {
         if (name.empty() || name.size() >= kMpIpcMaxNameLen) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_ipc_logger(),
                 "MpIpcAction: name '{}' empty or exceeds {} bytes — "
                 "skipping registration (handle will report bool==false)",
                 name, kMpIpcMaxNameLen);
             return;
         }
         if (handler == nullptr) {
-            SPDLOG_ERROR("MpIpcAction: handler is null for action '{}'", name);
+            EPH_LOG_ERROR(mp_ipc_logger(), "MpIpcAction: handler is null for action '{}'", name);
             return;
         }
         // rte_mp_action_register expects null-terminated; std::string
@@ -109,7 +111,7 @@ public:
         name_.assign(name);
         const int rc = rte_mp_action_register(name_.c_str(), handler);
         if (rc != 0) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_ipc_logger(),
                 "MpIpcAction: rte_mp_action_register('{}') failed (rc={}, "
                 "rte_errno={}) — IPC will degrade for this action",
                 name_, rc, rte_errno);
@@ -119,14 +121,14 @@ public:
             return;
         }
         owns_ = true;
-        SPDLOG_DEBUG("MpIpcAction: registered '{}'", name_);
+        EPH_LOG_DEBUG(mp_ipc_logger(), "MpIpcAction: registered '{}'", name_);
     }
 
     ~MpIpcAction() noexcept {
         if (owns_) {
             // rte_mp_action_unregister returns void; no error path.
             rte_mp_action_unregister(name_.c_str());
-            SPDLOG_DEBUG("MpIpcAction: unregistered '{}'", name_);
+            EPH_LOG_DEBUG(mp_ipc_logger(), "MpIpcAction: unregistered '{}'", name_);
         }
     }
 
@@ -199,7 +201,7 @@ parse_payload(const rte_mp_msg* m) noexcept {
     if (m == nullptr) {
         // Pure programmer error — DPDK never delivers a null msg to
         // an action handler. ERROR-log so the call site is identifiable.
-        SPDLOG_ERROR("parse_payload: msg pointer is null (sizeof(MsgT)={})",
+        EPH_LOG_ERROR(mp_ipc_logger(), "parse_payload: msg pointer is null (sizeof(MsgT)={})",
                      sizeof(MsgT));
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
@@ -209,7 +211,7 @@ parse_payload(const rte_mp_msg* m) noexcept {
         // Cross-version IPC mismatch is a genuine protocol-layer bug —
         // log enough state so the operator can identify the offending
         // peer (action name comes from `m->name`).
-        SPDLOG_ERROR("parse_payload: action='{}' wire len_param={} "
+        EPH_LOG_ERROR(mp_ipc_logger(), "parse_payload: action='{}' wire len_param={} "
                      "expected sizeof(MsgT)={} — cross-version IPC mismatch?",
                      m->name, m->len_param, sizeof(MsgT));
         return std::unexpected(core::ErrorInfo{
@@ -239,7 +241,7 @@ mp_ipc_send_oneway(std::string_view name, const MsgT& payload) noexcept {
             "mp_ipc_send_oneway: pack_msg failed (name oversize or empty)"});
     const int rc = rte_mp_sendmsg(&msg);
     if (rc != 0) {
-        SPDLOG_DEBUG(
+        EPH_LOG_DEBUG(mp_ipc_logger(),
             "mp_ipc_send_oneway('{}'): rte_mp_sendmsg rc={} rte_errno={}",
             name, rc, rte_errno);
         return std::unexpected(core::ErrorInfo{
@@ -282,7 +284,7 @@ mp_ipc_request_sync(std::string_view name,
     // caller gets a deterministic error rather than a flaky hang.
     const auto millis = timeout.count();
     if (millis <= 0) {
-        SPDLOG_DEBUG("mp_ipc_request_sync('{}'): non-positive timeout={} ms "
+        EPH_LOG_DEBUG(mp_ipc_logger(), "mp_ipc_request_sync('{}'): non-positive timeout={} ms "
                      "rejected up-front", name, millis);
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
@@ -304,7 +306,7 @@ mp_ipc_request_sync(std::string_view name,
     } guard{&reply};
 
     if (rc != 0) {
-        SPDLOG_DEBUG(
+        EPH_LOG_DEBUG(mp_ipc_logger(),
             "mp_ipc_request_sync('{}'): rc={} rte_errno={} (timeout={} ms)",
             name, rc, rte_errno, millis);
         return std::unexpected(core::ErrorInfo{
@@ -315,7 +317,7 @@ mp_ipc_request_sync(std::string_view name,
     if (reply.nb_received != 1 || reply.nb_sent != 1) {
         // 0/1 mismatch under healthy IPC means the peer responded with an
         // unexpected number of messages — protocol violation worth logging.
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(mp_ipc_logger(),
             "mp_ipc_request_sync('{}'): nb_sent={} nb_received={} — "
             "expected exactly 1 reply (eph IPC is 1:1 primary↔secondary)",
             name, reply.nb_sent, reply.nb_received);

@@ -47,11 +47,13 @@
 
 #include <toml++/toml.hpp>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/dpdk/platform.hpp"  // NicServiceConfig + validate(NicServiceConfig)
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* nic_config_toml_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.nic_config_toml"); return l; }
 
 /// @brief Parse a hex string of exactly 80 characters into a 40-byte RSS key.
 ///
@@ -114,7 +116,7 @@ parse_nic_toml(std::string_view toml_path) {
     //    but this gives a more actionable diagnostic.
     std::error_code ec;
     if (!fs::exists(p, ec)) {
-        SPDLOG_ERROR("nic_config_toml: file not found at '{}'", toml_path);
+        EPH_LOG_ERROR(nic_config_toml_logger(), "nic_config_toml: file not found at '{}'", toml_path);
         return std::unexpected(
             std::string{"nic_config_toml: file not found: "} +
             std::string{toml_path});
@@ -126,7 +128,7 @@ parse_nic_toml(std::string_view toml_path) {
         tbl = toml::parse_file(toml_path);
     } catch (const toml::parse_error& e) {
         const auto src = e.source();
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(nic_config_toml_logger(),
             "nic_config_toml: parse error at line {} col {}: {} (file '{}')",
             src.begin.line, src.begin.column, e.description(), toml_path);
         return std::unexpected(std::string{"nic_config_toml: parse error: "} +
@@ -267,14 +269,14 @@ parse_nic_toml(std::string_view toml_path) {
 
     // 4. Final structural validation (consistency between fields).
     if (auto err = ::eph::dpdk::validate(out.cfg); !err.empty()) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(nic_config_toml_logger(),
             "nic_config_toml: structural validate rejected config from '{}': "
             "{}", toml_path, err);
         return std::unexpected(
             std::string{"nic_config_toml: validate: "} + std::string{err});
     }
 
-    SPDLOG_INFO(
+    EPH_LOG_INFO(nic_config_toml_logger(),
         "nic_config_toml: parsed '{}' → pci='{}', total_queues={}, "
         "promiscuous={}, daemon_lcore={}",
         toml_path, out.pci_owned, out.cfg.total_queues, out.cfg.promiscuous,

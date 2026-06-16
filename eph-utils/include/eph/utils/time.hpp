@@ -25,8 +25,7 @@
 #include <ranges>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
@@ -42,17 +41,8 @@ namespace eph::utils {
 namespace detail {
 
 /// @brief Lazily-initialized logger for the TSC subsystem.
-inline const std::shared_ptr<spdlog::logger>& tsc_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.tsc");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("utils.tsc"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.tsc"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        // Inherit level from spdlog global default
-        return lg;
-    }();
+inline spdlog::logger* tsc_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.tsc");
     return l;
 }
 
@@ -216,7 +206,7 @@ public:
   ///   auto start = TSC::now();
   ///   do_work();
   ///   if (auto ns = TSC::delta_ns(start, TSC::now())) {
-  ///       SPDLOG_INFO("work took {:.1f} ns", *ns);
+  ///       EPH_LOG_INFO(logger, "work took {:.1f} ns", *ns);
   ///   }
   /// @endcode
   [[nodiscard]] static std::optional<double>
@@ -229,7 +219,7 @@ public:
       // Both are bugs in caller's measurement setup; surfacing as
       // nullopt forces the caller to handle it explicitly rather
       // than getting a 1.8e10 ns "fast" sample.
-      SPDLOG_LOGGER_WARN(detail::tsc_logger(),
+      EPH_LOG_WARN(detail::tsc_logger(),
         "TSC::delta_ns: end < start (start={} end={}) — "
         "thread migrated across cores with non-coherent TSCs, "
         "or arguments swapped; returning nullopt",
@@ -289,7 +279,7 @@ private:
     using namespace std::chrono;
 
     auto log = detail::tsc_logger();
-    SPDLOG_LOGGER_INFO(log, "Calibrating TSC...");
+    EPH_LOG_INFO(log, "Calibrating TSC...");
 
     // === 1. Check TSC reliability ===
     check_tsc_reliability();
@@ -317,7 +307,7 @@ private:
       auto t2 = steady_clock::now();
 
       if (c2 <= c1) {
-        SPDLOG_LOGGER_ERROR(log, "TSC went backwards (sample {})", i + 1);
+        EPH_LOG_ERROR(log, "TSC went backwards (sample {})", i + 1);
         return false;
       }
 
@@ -325,7 +315,7 @@ private:
       double cycles_elapsed = static_cast<double>(c2 - c1);
 
       if (cycles_elapsed < 1.0 || ns_elapsed < 1.0) {
-        SPDLOG_LOGGER_ERROR(log, "Invalid calibration sample {}", i + 1);
+        EPH_LOG_ERROR(log, "Invalid calibration sample {}", i + 1);
         return false;
       }
 
@@ -339,7 +329,7 @@ private:
     // === 4. Sanity check ===
     double freq_ghz = 1.0 / ns_per_cycle_;
     if (freq_ghz < 0.5 || freq_ghz > 10.0) {
-      SPDLOG_LOGGER_ERROR(log,
+      EPH_LOG_ERROR(log,
           "Suspicious CPU frequency: {:.2f} GHz (expected 0.5-10 GHz)",
           freq_ghz);
       return false;
@@ -364,7 +354,7 @@ private:
     calibration_cv_ = cv;
 
     if (cv > 0.01) { // >1% variation is considered unstable
-      SPDLOG_LOGGER_ERROR(log,
+      EPH_LOG_ERROR(log,
           "High calibration variance (CV={:.2f}%), TSC may be unstable — "
           "timing measurements are unreliable",
           cv * 100);
@@ -375,7 +365,7 @@ private:
     // are visible to any thread that observes initialized_==true via acquire load.
     initialized_.store(true, std::memory_order_release);
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "TSC calibrated: CPU frequency {:.2f} GHz (CV={:.2f}%)",
         freq_ghz, cv * 100);
 
@@ -398,7 +388,7 @@ private:
     // Read /proc/cpuinfo
     std::ifstream cpuinfo("/proc/cpuinfo");
     if (!cpuinfo) {
-      SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+      EPH_LOG_WARN(log, "Failed to open /proc/cpuinfo, "
                                "cannot verify TSC reliability");
     } else {
       std::string line;
@@ -412,24 +402,24 @@ private:
       }
 
       if (!has_constant_tsc) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "CPU does not support constant_tsc "
             "(frequency scaling may affect accuracy)");
       }
       if (!has_nonstop_tsc) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "CPU does not support nonstop_tsc "
             "(C-states may affect accuracy)");
       }
       if (has_tsc_reliable) {
-        SPDLOG_LOGGER_DEBUG(log, "TSC marked as reliable by kernel");
+        EPH_LOG_DEBUG(log, "TSC marked as reliable by kernel");
       }
     }
 #elif defined(__aarch64__) || defined(_M_ARM64)
     // ARM64 cntvct_el0 is generally reliable
-    SPDLOG_LOGGER_DEBUG(log, "Using ARM64 generic timer (cntvct_el0)");
+    EPH_LOG_DEBUG(log, "Using ARM64 generic timer (cntvct_el0)");
 #else
-    SPDLOG_LOGGER_WARN(log,
+    EPH_LOG_WARN(log,
         "Hardware TSC not available, using std::chrono (higher overhead)");
 #endif
   }

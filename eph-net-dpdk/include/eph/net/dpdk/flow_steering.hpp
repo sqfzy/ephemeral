@@ -62,8 +62,7 @@
 #include <variant>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_ethdev.h>
 #include <rte_flow.h>
@@ -71,7 +70,6 @@
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/detail/icmp_directory.hpp"   // g_active_self_proc_index
-#include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"
 #include "eph/dpdk/net_header.hpp"
 
@@ -79,8 +77,8 @@ namespace eph::net::dpdk {
 
 namespace detail {
 inline spdlog::logger* flow_logger() {
-    return ::eph::dpdk::detail::get_logger<
-        ::eph::dpdk::detail::LoggerName{"dpdk.flow"}>();
+    static spdlog::logger* l = ::eph::log::get("net.dpdk.flow");
+    return l;
 }
 } // namespace detail
 
@@ -138,7 +136,7 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
     // 1. Query device info for RSS offload capabilities
     rte_eth_dev_info dev_info{};
     if (rte_eth_dev_info_get(port_id, &dev_info) != 0) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "rte_eth_dev_info_get failed for port {}, assuming Software mode",
             port_id);
         return RxDispatchMode::Software;
@@ -186,12 +184,12 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
         rte_flow_error error{};
         int ret = rte_flow_validate(port_id, &attr, pattern, actions, &error);
         if (ret == 0) {
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "Port {} supports rte_flow 5-tuple steering (FlowDirector mode)",
                 port_id);
             return RxDispatchMode::FlowDirector;
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "Port {} rte_flow validate failed: {} ({}), trying RSS",
             port_id, error.message ? error.message : "unknown",
             ret);
@@ -201,14 +199,14 @@ detect_rx_dispatch_mode(uint16_t port_id) noexcept {
     constexpr uint64_t kRssTcp =
         RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_IPV4;
     if (dev_info.flow_type_rss_offloads & kRssTcp) {
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "Port {} supports RSS TCP hash (RssPartitioned mode), "
             "offloads=0x{:016x}",
             port_id, dev_info.flow_type_rss_offloads);
         return RxDispatchMode::RssPartitioned;
     }
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Port {} has no RSS/FlowDirector support (Software / single-Poller mode)",
         port_id);
     return RxDispatchMode::Software;
@@ -389,14 +387,14 @@ struct FlowRule {
                 int ret = rte_flow_destroy(port_id, h.h, &error);
                 if (ret != 0) {
                     const int err = rte_errno;
-                    SPDLOG_LOGGER_WARN(detail::flow_logger(),
+                    EPH_LOG_WARN(detail::flow_logger(),
                         "rte_flow_destroy failed: port={}, ret={}, msg={}, "
                         "type={} rte_errno={} ({})",
                         port_id, ret,
                         error.message ? error.message : "unknown",
                         static_cast<int>(error.type), err, rte_strerror(err));
                 } else {
-                    SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
+                    EPH_LOG_DEBUG(detail::flow_logger(),
                         "Flow rule removed: port={}, queue={}",
                         port_id, queue_id);
                 }
@@ -405,13 +403,13 @@ struct FlowRule {
                 if (h.handle_id == 0) return;
                 auto r = detail::fd_destroy_via_ipc(h.owner_proc, h.handle_id);
                 if (!r) {
-                    SPDLOG_LOGGER_WARN(detail::flow_logger(),
+                    EPH_LOG_WARN(detail::flow_logger(),
                         "Remote flow rule destroy IPC failed: owner_proc={}, "
                         "handle_id={}, err={} — primary may have died first; "
                         "rule will be cleaned up at primary teardown",
                         h.owner_proc, h.handle_id, r.error().detail);
                 } else {
-                    SPDLOG_LOGGER_DEBUG(detail::flow_logger(),
+                    EPH_LOG_DEBUG(detail::flow_logger(),
                         "Remote flow rule destroyed: owner_proc={}, handle_id={}",
                         h.owner_proc, h.handle_id);
                 }
@@ -581,11 +579,11 @@ install_flow_rule(uint16_t port_id, uint16_t queue_id,
             error.message ? error.message : "unknown",
             static_cast<int>(error.type),
             err, rte_strerror(err));
-        SPDLOG_LOGGER_WARN(log, "{}", msg);
+        EPH_LOG_WARN(log, "{}", msg);
         return std::unexpected(msg);
     }
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "{} flow rule installed: {}:{} -> {}:{} queue={} (NIC src/dst swapped)",
         flow_protocol_name(proto),
         ::eph::dpdk::net::format_ipv4(tuple.dst_ip).data(), tuple.dst_port,
@@ -626,7 +624,7 @@ fd_destroy_via_ipc([[maybe_unused]] uint8_t  owner_proc,
         FdDestroyMsg, FdDestroyReply>(
             kFdDestroyActionName, req, std::chrono::milliseconds{2000});
     if (!reply) {
-        SPDLOG_LOGGER_DEBUG(flow_logger(),
+        EPH_LOG_DEBUG(flow_logger(),
             "fd_destroy_via_ipc: IPC request failed (owner_proc={}, "
             "handle_id={}, err={})",
             owner_proc, handle_id, reply.error().detail);
@@ -689,7 +687,7 @@ public:
             rte_flow_error err{};
             const int rc = rte_flow_destroy(victim_port, victim, &err);
             if (rc != 0) {
-                SPDLOG_LOGGER_WARN(flow_logger(),
+                EPH_LOG_WARN(flow_logger(),
                     "RemoteFlowRulesMap::destroy_by_id: rte_flow_destroy "
                     "failed (handle_id={}, port={}, rc={}, msg={})",
                     handle_id, victim_port, rc,
@@ -719,7 +717,7 @@ public:
             rte_flow_error err{};
             const int rc = rte_flow_destroy(port, flow, &err);
             if (rc != 0) {
-                SPDLOG_LOGGER_WARN(flow_logger(),
+                EPH_LOG_WARN(flow_logger(),
                     "RemoteFlowRulesMap::destroy_all: rte_flow_destroy "
                     "failed during teardown (port={}, rc={}, msg={}); "
                     "NIC flow state may be stale until port close",
@@ -756,13 +754,13 @@ fd_send_reply_(std::string_view action_name, const ReplyT& payload,
                const void* peer) noexcept {
     rte_mp_msg out{};
     if (!::eph::dpdk::detail::pack_msg(out, action_name, payload)) {
-        SPDLOG_LOGGER_ERROR(flow_logger(),
+        EPH_LOG_ERROR(flow_logger(),
             "fd_send_reply_: pack_msg failed for action '{}'", action_name);
         return;
     }
     const int rc = rte_mp_reply(&out, static_cast<const char*>(peer));
     if (rc != 0) {
-        SPDLOG_LOGGER_ERROR(flow_logger(),
+        EPH_LOG_ERROR(flow_logger(),
             "fd_send_reply_: rte_mp_reply failed for '{}' (rc={})",
             action_name, rc);
     }
@@ -783,7 +781,7 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
     reply.handle_id = 0;
 
     if (rules == nullptr || !parsed) {
-        SPDLOG_LOGGER_WARN(flow_logger(),
+        EPH_LOG_WARN(flow_logger(),
             "on_fd_install_thunk: rules={} parsed={} — IPC degraded; "
             "replying error",
             static_cast<const void*>(rules),
@@ -792,7 +790,7 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
         return 0;
     }
     if (parsed->version != 1) {
-        SPDLOG_LOGGER_WARN(flow_logger(),
+        EPH_LOG_WARN(flow_logger(),
             "on_fd_install_thunk: msg version={} != 1, refusing",
             parsed->version);
         fd_send_reply_(kFdInstallActionName, reply, peer);
@@ -806,7 +804,7 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
     // sanctioned values up front.
     if (parsed->proto != ::eph::dpdk::net::kIpProtoTcp &&
         parsed->proto != ::eph::dpdk::net::kIpProtoUdp) {
-        SPDLOG_LOGGER_WARN(flow_logger(),
+        EPH_LOG_WARN(flow_logger(),
             "on_fd_install_thunk: rejecting unsupported proto={} "
             "(expected {} TCP or {} UDP) — possible schema drift or "
             "corrupt msg from peer",
@@ -829,7 +827,7 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
     auto rule = install_flow_rule(parsed->port_id, parsed->target_queue,
                                   t, proto);
     if (!rule) {
-        SPDLOG_LOGGER_WARN(flow_logger(),
+        EPH_LOG_WARN(flow_logger(),
             "on_fd_install_thunk: install_flow_rule failed: {}",
             rule.error());
         fd_send_reply_(kFdInstallActionName, reply, peer);
@@ -844,14 +842,14 @@ on_fd_install_thunk(const rte_mp_msg* msg, const void* peer) {
 
     const uint64_t id = rules->insert(parsed->port_id, flow);
     if (id == 0) {
-        SPDLOG_LOGGER_ERROR(flow_logger(),
+        EPH_LOG_ERROR(flow_logger(),
             "on_fd_install_thunk: RemoteFlowRulesMap::insert returned 0 "
             "— flow leak (cleaned up at primary exit)");
         fd_send_reply_(kFdInstallActionName, reply, peer);
         return 0;
     }
 
-    SPDLOG_LOGGER_INFO(flow_logger(),
+    EPH_LOG_INFO(flow_logger(),
         "on_fd_install_thunk: installed rule on behalf of secondary "
         "(requester_proc={}, request_id={}, handle_id={}, port={}, queue={})",
         parsed->requester_proc, parsed->request_id, id,
@@ -886,7 +884,7 @@ on_fd_destroy_thunk(const rte_mp_msg* msg, const void* peer) {
 
     const bool ok = rules->destroy_by_id(parsed->handle_id);
     reply.status = ok ? 0 : 1;
-    SPDLOG_LOGGER_DEBUG(flow_logger(),
+    EPH_LOG_DEBUG(flow_logger(),
         "on_fd_destroy_thunk: handle_id={} → status={}",
         parsed->handle_id, reply.status);
     fd_send_reply_(kFdDestroyActionName, reply, peer);
@@ -956,7 +954,7 @@ try_install_flow_rule_via_ipc(uint16_t      port_id,
             reply->status));
     }
 
-    SPDLOG_LOGGER_INFO(detail::flow_logger(),
+    EPH_LOG_INFO(detail::flow_logger(),
         "FlowDir IPC fallback succeeded: owner_proc={}, handle_id={}, "
         "port={}, queue={}",
         owner_proc, reply->handle_id, port_id, queue_id);

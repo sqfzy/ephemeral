@@ -25,12 +25,12 @@
 ///     for (int i = 1; i < argc; ++i) {
 ///         auto consumed = eph::dpdk::cli::consume_one(
 ///             eal, argv[i], (i + 1 < argc) ? argv[i + 1] : nullptr);
-///         if (!consumed) { spdlog::error("{}", consumed.error()); return 1; }
+///         if (!consumed) { EPH_LOG_ERROR(detail::cli_logger(), "{}", consumed.error()); return 1; }
 ///         if (*consumed > 0) { i += *consumed - 1; continue; }
 ///         // ... app-specific flags here ...
 ///     }
 ///     if (auto v = eph::dpdk::cli::validate(eal); !v) {
-///         spdlog::error("{}", v.error());
+///         EPH_LOG_ERROR(detail::cli_logger(), "{}", v.error());
 ///         return 1;
 ///     }
 ///     auto eal_cfg = eph::dpdk::cli::to_eal_config(std::move(eal),
@@ -46,10 +46,15 @@
 #include <utility>
 #include <vector>
 
+#include "eph/core/log.hpp"
 #include "eph/dpdk/eal.hpp"          // EalConfig
 #include "eph/dpdk/lcore_pin.hpp"    // LcorePin / parse_pin_spec
 
 namespace eph::dpdk::cli {
+
+namespace detail {
+inline spdlog::logger* cli_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.cli"); return l; }
+} // namespace detail
 
 /// @brief Accumulator for EAL-related CLI flags.
 ///

@@ -40,11 +40,13 @@
 #include <string>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* bdf_sanitize_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.bdf_sanitize"); return l; }
 
 inline constexpr size_t kBdfMinLen = 7;   // "BB:DD.F"
 inline constexpr size_t kBdfMaxLen = 12;  // "DDDD:BB:DD.F"
@@ -65,14 +67,14 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
     // factories forward the detail back as a `std::string` without
     // a SPDLOG_ call on the failure path).
     if (bdf.empty()) {
-        SPDLOG_ERROR("sanitize_bdf: BDF must be non-empty");
+        EPH_LOG_ERROR(bdf_sanitize_logger(), "sanitize_bdf: BDF must be non-empty");
         return std::unexpected(core::ErrorInfo{
             core::Error::InvalidConfig,
             "sanitize_bdf: BDF must be non-empty"});
     }
 
     if (bdf.size() < kBdfMinLen || bdf.size() > kBdfMaxLen) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(bdf_sanitize_logger(),
             "sanitize_bdf: BDF length {} out of range [7, 12] (bdf='{}')",
             bdf.size(), bdf);
         return std::unexpected(core::ErrorInfo{
@@ -90,7 +92,7 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
         if (c == ':') { has_colon = true; continue; }
         if (c == '.') { has_dot   = true; continue; }
         if (!is_hex) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(bdf_sanitize_logger(),
                 "sanitize_bdf: BDF contains non-hex/':'/'.' char "
                 "(byte={:#x}, bdf='{}')",
                 static_cast<unsigned>(static_cast<unsigned char>(c)), bdf);
@@ -101,7 +103,7 @@ sanitize_bdf_for_file_prefix(std::string_view bdf) noexcept {
         }
     }
     if (!has_colon || !has_dot) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(bdf_sanitize_logger(),
             "sanitize_bdf: BDF missing required separator "
             "(has_colon={} has_dot={} bdf='{}')",
             has_colon, has_dot, bdf);

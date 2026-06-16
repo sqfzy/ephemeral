@@ -37,9 +37,7 @@
 
 #include <rte_mbuf.h>
 
-#include <spdlog/spdlog.h>
-
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_parse.hpp"
@@ -71,7 +69,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the DPDK TCP stream subsystem.
 inline spdlog::logger* tcp_stream_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.dpdk.tcp_stream");
+    static spdlog::logger* l = ::eph::log::get("net.dpdk.tcp_stream");
     return l;
 }
 
@@ -368,7 +366,7 @@ public:
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkTcpStream>, core::ErrorInfo>
     create(StreamConfig cfg) noexcept {
         auto* log = detail::tcp_stream_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "DpdkTcpStream::create: tls={} src={}:{} dst={}:{}", EnableTls,
             cfg.dpdk.wire.tuple.src_ip,
             cfg.dpdk.wire.tuple.src_port,
@@ -382,7 +380,7 @@ public:
         // TcpConfig::validate enforces — but only one of the two layers
         // needs to be the source of truth, and the public one wins.
         if (auto kv = cfg.keepalive.validate(); !kv) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: KeepaliveConfig invalid: {}",
                 kv.error().detail);
             return std::unexpected(kv.error());
@@ -398,7 +396,7 @@ public:
         // to an ErrorInfo so the error contract holds.
         auto verr = cfg.dpdk.wire.validate();
         if (!verr.empty()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: wire validate failed: {}", verr);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -414,7 +412,7 @@ public:
         // of emerging much later as a cryptic `Error::Timeout`. Parity
         // with the kernel backend (MED-2 / commit 7aa19b6).
         if (cfg.connect_timeout <= std::chrono::milliseconds::zero()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: connect_timeout={}ms must be > 0",
                 cfg.connect_timeout.count());
             return std::unexpected(core::ErrorInfo{
@@ -425,7 +423,7 @@ public:
         // disabled state and always validates; non-empty path requires a
         // strictly positive timeout. See `eph/net/ws_config.hpp`.
         if (auto wv = cfg.ws.validate(); !wv) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: WsConfig invalid: {}",
                 wv.error().detail);
             return std::unexpected(wv.error());
@@ -436,7 +434,7 @@ public:
         // doomed handshake.
         if constexpr (EnableTls) {
             if (auto tv = cfg.tls.validate(); !tv) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "DpdkTcpStream::create: TlsConfig invalid: {}",
                     tv.error().detail);
                 return std::unexpected(tv.error());
@@ -452,7 +450,7 @@ public:
         static constexpr std::size_t kMinReasmCapacity = 4096;
         if (cfg.reasm_capacity != 0 &&
             cfg.reasm_capacity < kMinReasmCapacity) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: reasm_capacity={} bytes is below "
                 "floor={} (use 0 for default or >= {}KB)",
                 cfg.reasm_capacity, kMinReasmCapacity,
@@ -478,7 +476,7 @@ public:
         //    process_burst_() (multi-stream Poller) via drive_handshake_().
         //    create() never blocks on I/O. ──
         if (auto b = stream->sess_.begin_connect(); !b) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::create: begin_connect failed: {}",
                 b.error().detail);
             return std::unexpected(b.error());
@@ -486,7 +484,7 @@ public:
         stream->hs_phase_ = ::eph::net::HandshakePhase::TcpConnecting;
         stream->connect_deadline_ =
             std::chrono::steady_clock::now() + stream->cfg_.connect_timeout;
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "DpdkTcpStream::create: non-blocking connect initiated "
             "src=0x{:08x}:{} -> dst=0x{:08x}:{} phase={}",
             stream->cfg_.dpdk.wire.tuple.src_ip, stream->cfg_.dpdk.wire.tuple.src_port,
@@ -518,7 +516,7 @@ public:
         const auto mode = platform.dispatch_mode();
         const uint16_t nb_q = platform.nb_rx_queues();
         if (nb_q == 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "DpdkTcpStream::create_and_attach: Platform has 0 RX queues "
                 "(port_id={}, moved-from or never created)",
                 platform.port_id());
@@ -539,7 +537,7 @@ public:
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkTcpStream::create_and_attach: pin_to_queue={} != 0 "
                     "in Software dispatch mode (single-queue Platform)",
                     *cfg.dpdk.pin_to_queue);
@@ -556,7 +554,7 @@ public:
             // pin_to_queue AND supply an explicit cfg.dpdk.wire.tuple.src_port
             // measured (via tools/dpdk_rss_queue_probe --finder) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkTcpStream::create_and_attach: RssPartitioned requires "
                     "pin_to_queue + an explicit measured src_port "
                     "(run dpdk_rss_queue_probe --finder)");
@@ -567,7 +565,7 @@ public:
             }
             const uint16_t want = *cfg.dpdk.pin_to_queue;
             if (want >= nb_q) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkTcpStream::create_and_attach: pin_to_queue={} "
                     ">= nb_rx_queues={} (RssPartitioned)", want, nb_q);
                 return std::unexpected(core::ErrorInfo{
@@ -575,7 +573,7 @@ public:
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
             if (cfg.dpdk.wire.tuple.src_port == 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkTcpStream::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit "
                     "cfg.dpdk.wire.tuple.src_port measured to land on that "
@@ -592,7 +590,7 @@ public:
             // caller-measured SYN-ACK will land.
             cfg.dpdk.wire.rx_queue_id = target_qid;
             cfg.dpdk.wire.tx_queue_id = target_qid;
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "create_and_attach: RssPartitioned explicit src_port={} pinned "
                 "to queue={} (prediction retired; caller-measured)",
                 cfg.dpdk.wire.tuple.src_port, target_qid);
@@ -672,7 +670,7 @@ public:
                 static_cast<uint16_t>(cfg.dpdk.pool_lcore_hint);
             auto* p = platform.pool_for_lcore(lcore_id);
             if (p == nullptr) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: pool_for_lcore({}) returned nullptr "
                     "(per_lcore_pools may be 0 with non-zero hint, or hint "
                     "exceeds per_lcore_pools)", lcore_id);
@@ -747,7 +745,7 @@ public:
             // unexpected return.
             if (!rule && platform.is_secondary() &&
                 platform.is_multi_process()) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: local rte_flow_create rejected "
                     "({}); trying eph_fd_install IPC fallback to primary",
                     rule.error());
@@ -756,7 +754,7 @@ public:
                     ::eph::net::dpdk::FlowProtocol::Tcp);
             }
             if (!rule) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",
                     rule.error());
                 // Roll back the attach so the stream isn't half-registered.
@@ -851,7 +849,7 @@ public:
             stream.get(),
             &DpdkTcpStream::on_icmp_mtu_thunk_);
         if (!icmp_reg) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "create_and_attach: register_icmp_target failed: {}",
                 icmp_reg.error());
             (void)poller->remove(stream.get());
@@ -864,7 +862,7 @@ public:
         }
         stream->icmp_reg_.emplace(std::move(*icmp_reg));
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "create_and_attach: TCP stream attached → port={}, queue={}, mode={}",
             platform.port_id(), target_qid,
             ::eph::net::dpdk::rx_dispatch_mode_name(mode));
@@ -879,11 +877,11 @@ public:
         // unexpected path) — log loudly so the bug surfaces instead of
         // being swallowed silently by the dtor.
         if (attached_to_ != nullptr) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+            EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                 "~DpdkTcpStream: auto-detach");
             auto r = attached_to_->remove(this);
             if (!r) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "~DpdkTcpStream: auto-detach failed: {} — possible "
                     "Poller/Stream lifecycle mismatch",
                     r.error().detail ? r.error().detail : "unknown");
@@ -978,7 +976,7 @@ public:
                 // path).
                 tls_corrupt_ = true;
                 inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "DpdkTcpStream::send(TLS): encrypt_for_send failed "
                     "({}) — latching tls_corrupt_; AEAD write seq may have "
                     "partially advanced past wire, reconnect required",
@@ -1006,7 +1004,7 @@ public:
                     inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
                     // Pass through the session's typed error — no re-wrap
                     // needed now that sess_.send returns ErrorInfo.
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send(TLS): {} "
                         "(off={}/{}, chunk={}, mss={}) — latching "
                         "tls_corrupt_ since TLS write seq was already "
@@ -1030,7 +1028,7 @@ public:
                 if (*sr == 0) {
                     tls_corrupt_ = true;
                     inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send(TLS): TcpSession::send returned "
                         "0 bytes (off={}/{}, chunk={}) — latching "
                         "tls_corrupt_",
@@ -1092,7 +1090,7 @@ public:
                     if (off > 0) {
                         inc_<::eph::net::StreamMetric::kBytesSent>(off);
                     }
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: {} "
                         "(off={}/{}, chunk={}, mss={})",
                         sr.error().detail, off, app_payload.size(), chunk, mss);
@@ -1111,7 +1109,7 @@ public:
                     if (off > 0) {
                         inc_<::eph::net::StreamMetric::kBytesSent>(off);
                     }
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::send: TcpSession::send returned 0 "
                         "bytes (off={}/{}, chunk={})",
                         off, app_payload.size(), chunk);
@@ -1174,13 +1172,13 @@ public:
                     auto sr = this->send(
                         std::span<const uint8_t>(close_buf, *enc));
                     if (!sr) {
-                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                        EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                             "DpdkTcpStream::close_gracefully: "
                             "WS Close send skipped: {}",
                             sr.error().detail);
                     }
                 } else {
-                    SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                    EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                         "DpdkTcpStream::close_gracefully: "
                         "encode_close skipped: {}",
                         enc.error().detail);
@@ -1190,7 +1188,7 @@ public:
 
         auto r = sess_.close();
         if (!r) {
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            EPH_LOG_WARN(detail::tcp_stream_logger(),
                 "DpdkTcpStream::close_gracefully: {}", r.error().detail);
             return std::unexpected(r.error());
         }
@@ -1236,12 +1234,12 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     drain(std::chrono::milliseconds timeout) noexcept {
         auto* log = detail::tcp_stream_logger();
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "DpdkTcpStream::drain entry: state={} timeout_ms={}",
             ::eph::net::tcp_state_name(sess_.state()), timeout.count());
 
         if (sess_.state() != ::eph::net::TcpState::Established) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::drain: state={} (need Established) — "
                 "rejecting", ::eph::net::tcp_state_name(sess_.state()));
             return std::unexpected(core::ErrorInfo{
@@ -1249,7 +1247,7 @@ public:
                 "DpdkTcpStream::drain: state != Established"});
         }
         if (timeout <= std::chrono::milliseconds::zero()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::drain: timeout_ms={} must be > 0",
                 timeout.count());
             return std::unexpected(core::ErrorInfo{
@@ -1260,7 +1258,7 @@ public:
         // Step 1: send our FIN.
         auto cr = sess_.close();
         if (!cr) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkTcpStream::drain: close() failed: {}", cr.error().detail);
             return std::unexpected(cr.error());
         }
@@ -1307,7 +1305,7 @@ public:
                 // (reorder overflow etc.). Drain semantics: consider
                 // this a forced close, not a timeout. State should
                 // already be Closed via the session's own bookkeeping.
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "DpdkTcpStream::drain: poll_rx err={} state={}",
                     pr.error().detail,
                     ::eph::net::tcp_state_name(sess_.state()));
@@ -1336,7 +1334,7 @@ public:
                 const std::uint64_t end_tsc = ::eph::utils::TSC::now();
                 const auto elapsed_ns_opt =
                     ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "DpdkTcpStream::drain exit: success state={} "
                     "elapsed_ns={} discarded_payload_bytes={}",
                     ::eph::net::tcp_state_name(sess_.state()),
@@ -1357,7 +1355,7 @@ public:
                 const std::uint64_t end_tsc = ::eph::utils::TSC::now();
                 const auto elapsed_ns_opt =
                     ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "DpdkTcpStream::drain: timeout state={} elapsed_ns={} "
                     "budget_ms={} — forcing reset",
                     ::eph::net::tcp_state_name(sess_.state()),
@@ -1622,7 +1620,7 @@ public:
                 codec_.enable_permessage_deflate(
                     ws_deflate_.server_no_context_takeover);
             } else {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "DpdkTcpStream: server accepted permessage-deflate but the "
                     "configured codec does not implement enable_permessage_deflate");
             }
@@ -1643,7 +1641,7 @@ public:
     void become_established_() noexcept {
         hs_phase_ = ::eph::net::HandshakePhase::Established;
         sess_.set_feed_only(false);
-        SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
+        EPH_LOG_INFO(detail::tcp_stream_logger(),
             "DpdkTcpStream: connection established "
             "src=0x{:08x}:{} -> dst=0x{:08x}:{}",
             cfg_.dpdk.wire.tuple.src_ip, cfg_.dpdk.wire.tuple.src_port,
@@ -1654,7 +1652,7 @@ public:
     ///        Failed, and RST the session so state() reports Closed and the
     ///        reconnect loop takes over.
     void fail_handshake_(core::ErrorInfo err) noexcept {
-        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+        EPH_LOG_WARN(detail::tcp_stream_logger(),
             "DpdkTcpStream: handshake failed at phase={}: {}",
             ::eph::net::handshake_phase_name(hs_phase_), err.detail);
         hs_error_ = err;
@@ -1695,7 +1693,7 @@ public:
                 // Silent drop is a reliability bug in HFT — flip the
                 // byte pipe into Closed via RST so the reconnect policy
                 // takes over on the next scheduler tick.
-                SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                EPH_LOG_ERROR(detail::tcp_stream_logger(),
                     "DpdkTcpStream::poll_once_: reasm buffer overflow "
                     "cap={} need={} readable={} — forcing reset",
                     reasm_.capacity(), static_cast<std::size_t>(len),
@@ -2019,7 +2017,7 @@ public:
             if (ip_bad || l4_bad) [[unlikely]] {
                 if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
                 if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
-                SPDLOG_LOGGER_TRACE(detail::tcp_stream_logger(),
+                EPH_LOG_TRACE(detail::tcp_stream_logger(),
                     "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}"
                     " (strict={})", olf, strict);
                 rte_pktmbuf_free(mbufs[read]);
@@ -2068,7 +2066,7 @@ public:
                 if (reasm_overflowed_) return;
                 if (!this->reasm_.append(rx_chunk, len)) {
                     inc_<::eph::net::StreamMetric::kReasmOverflows>();
-                    SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                    EPH_LOG_ERROR(detail::tcp_stream_logger(),
                         "DpdkTcpStream::process_burst_: reasm buffer overflow "
                         "cap={} need={} readable={} — forcing reset",
                         reasm_.capacity(), static_cast<std::size_t>(len),
@@ -2167,7 +2165,7 @@ private:
     ///        the session from the RX side" — stay clean.
     void handle_rx_session_error_(std::string_view site,
                                    const core::ErrorInfo& err) noexcept {
-        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+        EPH_LOG_WARN(detail::tcp_stream_logger(),
             "{}: {} — forcing reset", site, err.detail);
         if (sess_.state() != ::eph::net::TcpState::Closed) {
             sess_.reset();
@@ -2277,12 +2275,12 @@ private:
                             auto sr = this->send(std::span<const uint8_t>(
                                 out_sink.data(), out_sink.size()));
                             if (!sr) {
-                                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                                EPH_LOG_WARN(detail::tcp_stream_logger(),
                                     "DpdkTcpStream::drain_codec_(TLS): "
                                     "auto-response send failed ({} bytes): {}",
                                     out_sink.size(), sr.error().detail);
                             } else {
-                                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                                EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                                     "DpdkTcpStream::drain_codec_(TLS): "
                                     "sent {} auto-response bytes",
                                     out_sink.size());
@@ -2290,7 +2288,7 @@ private:
                         }
                         if (!dr) {
                             inc_<::eph::net::StreamMetric::kCodecErrors>();
-                            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            EPH_LOG_WARN(detail::tcp_stream_logger(),
                                 "DpdkTcpStream::drain_codec_(TLS): decode err={}",
                                 dr.error().detail);
                             tls_codec_pending_.clear();
@@ -2308,7 +2306,7 @@ private:
                         // Guard against infinite loop: codec returned a frame
                         // but did not advance the view.
                         if (view.length() == before) {
-                            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                            EPH_LOG_WARN(detail::tcp_stream_logger(),
                                 "DpdkTcpStream::drain_codec_(TLS): codec returned frame "
                                 "but consumed 0 bytes — breaking to avoid infinite loop");
                             break;
@@ -2338,7 +2336,7 @@ private:
                     }
                 });
             if (!dec_r) {
-                SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                EPH_LOG_ERROR(detail::tcp_stream_logger(),
                     "DpdkTcpStream::drain_codec_(TLS): decrypt err={} "
                     "— forcing reset to prevent re-processing corrupt data",
                     dec_r.error().detail);
@@ -2357,7 +2355,7 @@ private:
                     // message, etc.) — escalate the same way AEAD failures
                     // do: latch reasm_overflowed_ and reset the session so
                     // the reconnect policy can spin up a fresh one.
-                    SPDLOG_LOGGER_ERROR(detail::tcp_stream_logger(),
+                    EPH_LOG_ERROR(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_(TLS): codec err latched "
                         "({}) — forcing session reset",
                         codec_err_detail ? codec_err_detail : "no detail");
@@ -2382,19 +2380,19 @@ private:
                     auto sr = this->send(std::span<const uint8_t>(
                         out_sink.data(), out_sink.size()));
                     if (!sr) {
-                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        EPH_LOG_WARN(detail::tcp_stream_logger(),
                             "DpdkTcpStream::drain_codec_: "
                             "auto-response send failed ({} bytes): {}",
                             out_sink.size(), sr.error().detail);
                     } else {
-                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                        EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                             "DpdkTcpStream::drain_codec_: sent {} "
                             "auto-response bytes", out_sink.size());
                     }
                 }
                 if (!dr) {
                     inc_<::eph::net::StreamMetric::kCodecErrors>();
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_: decode err={}",
                         dr.error().detail);
                     break;
@@ -2413,7 +2411,7 @@ private:
                 // but did not advance the view, we cannot make progress.
                 // Break to avoid spinning forever on malformed codec output.
                 if (consumed == 0) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "DpdkTcpStream::drain_codec_: codec returned frame "
                         "but consumed 0 bytes — breaking to avoid infinite loop");
                     break;

@@ -78,12 +78,19 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/detail/json_escape.hpp"
 #include "eph/core/error.hpp"
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* jwt_signed_request_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.jwt_signed_request");
+    return l;
+}
+} // namespace detail
 
 // ────────────────────────────────────────────────────────────────────────────
 // detail — base64url + JSON glue
@@ -215,7 +222,7 @@ public:
     [[nodiscard]] static std::expected<Es256PrivateKey, ::eph::core::ErrorInfo>
     from_pem(std::string_view pem) noexcept {
         if (pem.empty()) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: empty PEM");
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: empty PEM");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::InvalidConfig, "empty PEM"});
         }
@@ -225,7 +232,7 @@ public:
         BIO* bio = BIO_new_mem_buf(
             pem.data(), static_cast<int>(pem.size()));
         if (bio == nullptr) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: BIO_new_mem_buf failed");
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: BIO_new_mem_buf failed");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::OutOfMemory, "BIO alloc"});
         }
@@ -238,7 +245,7 @@ public:
         BIO_free(bio);
 
         if (pkey == nullptr) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: PEM_read_bio_PrivateKey "
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: PEM_read_bio_PrivateKey "
                          "returned null (malformed PEM, encrypted PEM with "
                          "no callback, or unrecognized key type)");
             return std::unexpected(::eph::core::ErrorInfo{
@@ -249,7 +256,7 @@ public:
         // Validate algorithm: must be EC.
         const int id = EVP_PKEY_id(pkey);
         if (id != EVP_PKEY_EC) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: key is not EC "
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: key is not EC "
                          "(EVP_PKEY_id={})", id);
             EVP_PKEY_free(pkey);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -260,7 +267,7 @@ public:
         // Validate curve: must be P-256 (NID_X9_62_prime256v1).
         const EC_KEY* ec = EVP_PKEY_get0_EC_KEY(pkey);
         if (ec == nullptr) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: EVP_PKEY_get0_EC_KEY "
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: EVP_PKEY_get0_EC_KEY "
                          "returned null");
             EVP_PKEY_free(pkey);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -270,7 +277,7 @@ public:
         const EC_GROUP* group = EC_KEY_get0_group(ec);
         if (group == nullptr ||
             EC_GROUP_get_curve_name(group) != NID_X9_62_prime256v1) {
-            SPDLOG_ERROR("Es256PrivateKey::from_pem: key is EC but not "
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: key is EC but not "
                          "P-256 (curve_nid={})",
                          group ? EC_GROUP_get_curve_name(group) : 0);
             EVP_PKEY_free(pkey);
@@ -279,7 +286,7 @@ public:
                 "key is not P-256"});
         }
 
-        SPDLOG_DEBUG("Es256PrivateKey::from_pem: loaded P-256 key OK");
+        EPH_LOG_DEBUG(detail::jwt_signed_request_logger(), "Es256PrivateKey::from_pem: loaded P-256 key OK");
         Es256PrivateKey out;
         out.key_ = pkey;
         return out;
@@ -418,7 +425,7 @@ namespace detail {
 ecdsa_der_to_p1363_(const uint8_t* der, size_t der_len) noexcept {
     ECDSA_SIG* sig = ECDSA_SIG_from_bytes(der, der_len);
     if (sig == nullptr) {
-        SPDLOG_ERROR("ecdsa_der_to_p1363_: ECDSA_SIG_from_bytes failed "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "ecdsa_der_to_p1363_: ECDSA_SIG_from_bytes failed "
                      "(der_len={})", der_len);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
@@ -440,7 +447,7 @@ ecdsa_der_to_p1363_(const uint8_t* der, size_t der_len) noexcept {
     ECDSA_SIG_free(sig);
 
     if (wr != 32 || ws != 32) {
-        SPDLOG_ERROR("ecdsa_der_to_p1363_: BN_bn2binpad unexpected width "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "ecdsa_der_to_p1363_: BN_bn2binpad unexpected width "
                      "(wr={}, ws={})", wr, ws);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
@@ -470,13 +477,13 @@ ecdsa_der_to_p1363_(const uint8_t* der, size_t der_len) noexcept {
 build_coinbase_jwt(const Es256PrivateKey&    key,
                    const CoinbaseJwtParams&  p) noexcept {
     if (!key) {
-        SPDLOG_ERROR("build_coinbase_jwt: null key");
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: null key");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig, "null key"});
     }
     if (p.method.empty() || p.uri.empty() ||
         p.key_id.empty() || p.api_key_name.empty()) {
-        SPDLOG_ERROR("build_coinbase_jwt: missing required field "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: missing required field "
                      "(method.empty={}, uri.empty={}, kid.empty={}, "
                      "sub.empty={})",
                      p.method.empty(), p.uri.empty(),
@@ -498,7 +505,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     // but the failure mode is identical to the ttl issue (silent 401).
     if (p.ttl_secs < kCoinbaseJwtTtlSecsMin ||
         p.ttl_secs > kCoinbaseJwtTtlSecsMax) {
-        SPDLOG_ERROR("build_coinbase_jwt: ttl_secs={} out of range "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: ttl_secs={} out of range "
                      "[{}, {}] per Coinbase docs",
                      p.ttl_secs, kCoinbaseJwtTtlSecsMin,
                      kCoinbaseJwtTtlSecsMax);
@@ -507,7 +514,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
             "ttl_secs out of [1, 120] (Coinbase exp - nbf cap)"});
     }
     if (p.now_unix_secs == 0) {
-        SPDLOG_ERROR("build_coinbase_jwt: now_unix_secs == 0 (caller "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: now_unix_secs == 0 (caller "
                      "forgot to populate? — venue would reject token "
                      "with nbf=0,exp=ttl as past-validity)");
         return std::unexpected(::eph::core::ErrorInfo{
@@ -521,7 +528,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     // to an "expired in the past" exp claim, which is the exact bug
     // class we're trying to surface.
     if (p.now_unix_secs > UINT64_MAX - p.ttl_secs) {
-        SPDLOG_ERROR("build_coinbase_jwt: now_unix_secs={} + ttl_secs={} "
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: now_unix_secs={} + ttl_secs={} "
                      "would overflow uint64_t",
                      p.now_unix_secs, p.ttl_secs);
         return std::unexpected(::eph::core::ErrorInfo{
@@ -540,7 +547,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
         // accept while flagging the request — both surfaces are
         // confusing to debug. See `kCoinbaseJwtNonceLen` doc.
         if (p.nonce_override.size() != kCoinbaseJwtNonceLen) {
-            SPDLOG_ERROR("build_coinbase_jwt: nonce_override size={} "
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: nonce_override size={} "
                          "(must be exactly {} bytes)",
                          p.nonce_override.size(), kCoinbaseJwtNonceLen);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -553,7 +560,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
         // /dev/urandom (or getrandom(2) on Linux ≥ 3.17) at process start
         // so this should never fail in practice; surface failure anyway.
         if (RAND_bytes(nonce_buf.data(), nonce_buf.size()) != 1) {
-            SPDLOG_ERROR("build_coinbase_jwt: RAND_bytes failed");
+            EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: RAND_bytes failed");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::OutOfMemory, "CSPRNG failed"});
         }
@@ -623,7 +630,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
 
     EVP_MD_CTX* ctx = EVP_MD_CTX_new();
     if (ctx == nullptr) {
-        SPDLOG_ERROR("build_coinbase_jwt: EVP_MD_CTX_new failed");
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: EVP_MD_CTX_new failed");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::OutOfMemory, "EVP_MD_CTX alloc"});
     }
@@ -633,7 +640,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     // EVP_DigestSignInit(ctx, pctx_out, md, engine, pkey)
     if (EVP_DigestSignInit(ctx, /*pctx=*/nullptr, EVP_sha256(),
                            /*engine=*/nullptr, pkey) != 1) {
-        SPDLOG_ERROR("build_coinbase_jwt: EVP_DigestSignInit failed");
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: EVP_DigestSignInit failed");
         EVP_MD_CTX_free(ctx);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::TlsCipherFailed, "DigestSignInit"});
@@ -647,7 +654,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     if (EVP_DigestSign(ctx, /*out_sig=*/nullptr, &sig_der_len,
                        reinterpret_cast<const uint8_t*>(signing_input.data()),
                        signing_input.size()) != 1) {
-        SPDLOG_ERROR("build_coinbase_jwt: EVP_DigestSign size-probe failed");
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: EVP_DigestSign size-probe failed");
         EVP_MD_CTX_free(ctx);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::TlsCipherFailed, "DigestSign size probe"});
@@ -656,7 +663,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     // 72 bytes (sequence/length 2B + two integers each up to 33B
     // including the optional leading zero byte for sign + length tag).
     if (sig_der_len == 0 || sig_der_len > 80) {
-        SPDLOG_ERROR("build_coinbase_jwt: implausible DER sig length {}",
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: implausible DER sig length {}",
                      sig_der_len);
         EVP_MD_CTX_free(ctx);
         return std::unexpected(::eph::core::ErrorInfo{
@@ -668,7 +675,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     if (EVP_DigestSign(ctx, der_buf.data(), &sig_der_len,
                        reinterpret_cast<const uint8_t*>(signing_input.data()),
                        signing_input.size()) != 1) {
-        SPDLOG_ERROR("build_coinbase_jwt: EVP_DigestSign failed");
+        EPH_LOG_ERROR(detail::jwt_signed_request_logger(), "build_coinbase_jwt: EVP_DigestSign failed");
         EVP_MD_CTX_free(ctx);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::TlsCipherFailed, "DigestSign"});
@@ -691,7 +698,7 @@ build_coinbase_jwt(const Es256PrivateKey&    key,
     jwt.push_back('.');
     jwt.append(sig_b64u);
 
-    SPDLOG_DEBUG("build_coinbase_jwt: produced JWT ({} bytes, kid={}, "
+    EPH_LOG_DEBUG(detail::jwt_signed_request_logger(), "build_coinbase_jwt: produced JWT ({} bytes, kid={}, "
                  "sub={}, method={})",
                  jwt.size(), p.key_id, p.api_key_name, p.method);
     return jwt;

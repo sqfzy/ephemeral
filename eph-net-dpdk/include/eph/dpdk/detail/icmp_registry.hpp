@@ -54,13 +54,15 @@
 #include <memory>
 #include <mutex>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/packet_core.hpp"    // ConnectionTuple
 #include "eph/dpdk/packet_parse.hpp"   // ParsedIcmp
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* icmp_registry_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.icmp_registry"); return l; }
 
 class IcmpRegistry : public std::enable_shared_from_this<IcmpRegistry> {
 public:
@@ -174,7 +176,7 @@ public:
                     void*       stream,
                     MtuCallback cb) noexcept {
         if (stream == nullptr || cb == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_registry_logger(),
                 "IcmpRegistry::register_target: stream={} cb={} must not be null "
                 "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
                 stream, reinterpret_cast<void*>(cb), proto,
@@ -185,7 +187,7 @@ public:
         }
         std::lock_guard<std::mutex> g(mu_);
         if (n_targets_ >= kMaxTargets) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_registry_logger(),
                 "IcmpRegistry::register_target: registry full ({} entries) "
                 "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
                 kMaxTargets, proto, tuple.src_ip, tuple.src_port,
@@ -196,7 +198,7 @@ public:
         }
         for (std::size_t i = 0; i < n_targets_; ++i) {
             if (entry_matches_(targets_[i], tuple, proto)) {
-                SPDLOG_WARN(
+                EPH_LOG_WARN(icmp_registry_logger(),
                     "IcmpRegistry::register_target: tuple already registered "
                     "at index {} (proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
                     i, proto, tuple.src_ip, tuple.src_port,

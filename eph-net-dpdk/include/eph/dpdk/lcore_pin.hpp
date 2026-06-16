@@ -30,15 +30,13 @@
 #include <utility>
 #include <vector>
 
-#include "eph/dpdk/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/utils/cpu.hpp"  // CpuPinPolicy, register_external_pin, validate_pin_policy
 
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* lcore_pin_logger() {
-    return get_logger<LoggerName{"dpdk.lcore_pin"}>();
-}
+inline spdlog::logger* lcore_pin_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.lcore_pin"); return l; }
 } // namespace detail
 
 /// @brief Declarative spec for "EAL lcore N runs pinned on physical cpu M".
@@ -200,14 +198,14 @@ pin_lcore(std::uint16_t lcore_id, int cpu, std::string_view label,
           eph::utils::CpuPinPolicy policy = {}) {
     [[maybe_unused]] auto* log = detail::lcore_pin_logger();
     if (cpu < 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "pin_lcore: lcore={} has invalid cpu_id={} label='{}'",
             lcore_id, cpu, label);
         return std::unexpected(std::format(
             "pin_lcore: lcore={} has invalid cpu_id={}", lcore_id, cpu));
     }
     if (auto v = eph::utils::detail::validate_pin_policy(cpu, policy); !v) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "pin_lcore: policy validation failed lcore={} cpu={} label='{}': {}",
             lcore_id, cpu, label, v.error());
         return std::unexpected(std::format(
@@ -220,7 +218,7 @@ pin_lcore(std::uint16_t lcore_id, int cpu, std::string_view label,
         // the existing role, but the log line gives the operator a
         // stable trace of the registry contention without parsing the
         // unexpected message.
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "pin_lcore: register_external_pin failed lcore={} cpu={} "
             "label='{}': {}", lcore_id, cpu, label, r.error());
         return std::unexpected(std::format(
@@ -264,7 +262,7 @@ pin_lcores(std::span<LcorePin const> pins,
         // for cpu errors so the call site sees a coherent message.
         for (std::size_t j = 0; j < i; ++j) {
             if (pins[j].lcore_id == p.lcore_id) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "pin_lcores: pin[{}] lcore_id={} duplicates pin[{}] "
                     "(prev cpu={} role='{}', new cpu={} role='{}')",
                     i, p.lcore_id, j, pins[j].cpu_id, pins[j].role,
@@ -283,7 +281,7 @@ pin_lcores(std::span<LcorePin const> pins,
             // can map the failure back into the LcorePin span without
             // re-parsing nested error strings. `guards` going out of scope
             // unregisters every staged cpu.
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "pin_lcores: aborting batch at pin[{}/{}]: {}",
                 i, pins.size(), g.error());
             return std::unexpected(std::format(
@@ -292,7 +290,7 @@ pin_lcores(std::span<LcorePin const> pins,
         guards.push_back(std::move(*g));
     }
 
-    SPDLOG_LOGGER_DEBUG(log,
+    EPH_LOG_DEBUG(log,
         "pin_lcores: registered {} lcore(s)", guards.size());
     return guards;
 }

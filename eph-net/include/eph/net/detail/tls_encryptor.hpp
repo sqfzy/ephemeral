@@ -12,13 +12,12 @@
 #include <string>
 #include <type_traits>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <openssl/aead.h>
 #include <openssl/err.h>
 #include <openssl/mem.h>
 
-#include "eph/core/detail/logger.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 namespace eph::net {
@@ -27,7 +26,7 @@ namespace detail {
 /// Lazily-initialized logger for TLS encryption operations.
 /// @return Pointer to the "transport.tls_enc" spdlog logger.
 inline spdlog::logger* tls_enc_logger() {
-    static auto* l = ::eph::core::detail::make_logger("transport.tls_enc");
+    static spdlog::logger* l = ::eph::log::get("transport.tls_enc");
     return l;
 }
 } // namespace detail
@@ -154,20 +153,20 @@ public:
     [[nodiscard]] uint16_t encrypt(const uint8_t* plaintext, uint16_t plaintext_len,
                      uint8_t* out) noexcept {
         if (plaintext_len > tls_const::kMaxRecordPayload) {
-            SPDLOG_LOGGER_WARN(detail::tls_enc_logger(),
+            EPH_LOG_WARN(detail::tls_enc_logger(),
                 "encrypt: plaintext_len={} exceeds kMaxRecordPayload={}",
                 plaintext_len, tls_const::kMaxRecordPayload);
             return 0;
         }
 
         if (seq_ >= tls_record::kMaxSequenceNumber) {
-            SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
+            EPH_LOG_ERROR(detail::tls_enc_logger(),
                 "TLS write sequence limit reached ({}): must reconnect", seq_);
             return 0;
         }
 
         if (plaintext == nullptr && plaintext_len > 0) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
+            EPH_LOG_ERROR(detail::tls_enc_logger(),
                 "encrypt: plaintext is null but plaintext_len={}", plaintext_len);
             return 0;
         }
@@ -189,11 +188,11 @@ public:
         seq_++;
 
         if (seq_ >= tls_record::kMaxSequenceNumber) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
+            EPH_LOG_ERROR(detail::tls_enc_logger(),
                 "TLS write sequence exhausted ({}/{}): must reconnect immediately",
                 seq_, tls_record::kMaxSequenceNumber);
         } else if (seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::tls_enc_logger(),
+            EPH_LOG_WARN(detail::tls_enc_logger(),
                 "TLS write sequence approaching limit ({}/{})",
                 seq_, tls_record::kMaxSequenceNumber);
         }
@@ -365,7 +364,7 @@ private:
         if (err_code != 0) {
             ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
         }
-        SPDLOG_LOGGER_ERROR(detail::tls_enc_logger(),
+        EPH_LOG_ERROR(detail::tls_enc_logger(),
             "EVP_AEAD_CTX_seal failed: format={} plaintext_len={} seq={} "
             "openssl_err=0x{:08x} ({})",
             fmt_label, plaintext_len, seq_, err_code,

@@ -21,9 +21,16 @@
 #include <sched.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::utils::linux_ {
+
+namespace detail {
+inline spdlog::logger* netns_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.netns");
+    return l;
+}
+} // namespace detail
 
 /// Move the calling thread into the network namespace
 /// `/var/run/netns/<name>`.  `name` must not contain '/'.  Returns `{}`
@@ -46,13 +53,13 @@ enter_netns(std::string_view name) {
     // wasting an fd on a non-netns file and hiding the input bug behind
     // a downstream error.
     if (name.empty()) {
-        SPDLOG_WARN("netns::enter_netns: rejecting empty name");
+        EPH_LOG_WARN(detail::netns_logger(), "netns::enter_netns: rejecting empty name");
         return std::unexpected(std::string("netns name must not be empty"));
     }
     if (name.find('/') != std::string_view::npos ||
         name.find('\0') != std::string_view::npos ||
         name == "." || name == "..") {
-        SPDLOG_WARN("netns::enter_netns: rejecting unsafe name=\"{}\" "
+        EPH_LOG_WARN(detail::netns_logger(), "netns::enter_netns: rejecting unsafe name=\"{}\" "
                     "(must be a bare netns name without path separators)",
                     name);
         return std::unexpected(
@@ -60,10 +67,10 @@ enter_netns(std::string_view name) {
             "\" must not contain '/', NUL, or be '.'/'..'");
     }
     std::string path = "/var/run/netns/" + std::string(name);
-    SPDLOG_DEBUG("netns::enter_netns: enter name=\"{}\" path=\"{}\"", name, path);
+    EPH_LOG_DEBUG(detail::netns_logger(), "netns::enter_netns: enter name=\"{}\" path=\"{}\"", name, path);
     int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        SPDLOG_WARN("netns::enter_netns: open(\"{}\") failed errno={} ({}) "
+        EPH_LOG_WARN(detail::netns_logger(), "netns::enter_netns: open(\"{}\") failed errno={} ({}) "
                     "(netns must exist; create with `ip netns add {}`)",
                     path, errno, std::strerror(errno), name);
         return std::unexpected(
@@ -74,7 +81,7 @@ enter_netns(std::string_view name) {
     if (::setns(fd, CLONE_NEWNET) < 0) {
         int err = errno;
         ::close(fd);
-        SPDLOG_WARN("netns::enter_netns: setns(\"{}\", CLONE_NEWNET) failed "
+        EPH_LOG_WARN(detail::netns_logger(), "netns::enter_netns: setns(\"{}\", CLONE_NEWNET) failed "
                     "errno={} ({}) (CAP_SYS_ADMIN required — run as root or "
                     "setcap cap_sys_admin+ep)",
                     path, err, std::strerror(err));
@@ -84,7 +91,7 @@ enter_netns(std::string_view name) {
             " (CAP_SYS_ADMIN required)");
     }
     ::close(fd);
-    SPDLOG_DEBUG("netns::enter_netns: ok name=\"{}\"", name);
+    EPH_LOG_DEBUG(detail::netns_logger(), "netns::enter_netns: ok name=\"{}\"", name);
     return {};
 }
 

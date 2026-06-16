@@ -31,8 +31,7 @@
 #include <cstring>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/itch/messages.hpp"  // reuse read_be16/32/64, trim
 
@@ -43,15 +42,8 @@ namespace detail {
 /// @brief Get or create the OUCH module logger.
 /// @return Raw pointer to the spdlog logger instance (never null after first call).
 inline spdlog::logger* ouch_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("itch.ouch");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("itch.ouch");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("itch.ouch");
+    return l;
 }
 } // namespace detail
 
@@ -160,11 +152,11 @@ struct EnterOrder {
                         std::string_view firm) noexcept {
         // Caller must ensure buf has at least kSize (49) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"EnterOrder::build: null buffer");
+            EPH_LOG_DEBUG(detail::ouch_logger(),"EnterOrder::build: null buffer");
             return 0;
         }
         if (side != 'B' && side != 'S') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: invalid side='{}', expected 'B' or 'S'", side);
+            EPH_LOG_WARN(detail::ouch_logger(),"EnterOrder::build: invalid side='{}', expected 'B' or 'S'", side);
             return 0;
         }
         // Reject oversize text fields up-front. write_padded would silently
@@ -173,15 +165,15 @@ struct EnterOrder {
         // wire, mis-routing later cancel/replace messages. Same applies to
         // symbol (8) and firm (4) — wrong symbol = wrong instrument routed.
         if (token.size() > 14) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: token too long ({} > 14)", token.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"EnterOrder::build: token too long ({} > 14)", token.size());
             return 0;
         }
         if (symbol.size() > 8) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: symbol too long ({} > 8)", symbol.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"EnterOrder::build: symbol too long ({} > 8)", symbol.size());
             return 0;
         }
         if (firm.size() > 4) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"EnterOrder::build: firm too long ({} > 4)", firm.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"EnterOrder::build: firm too long ({} > 4)", firm.size());
             return 0;
         }
 
@@ -203,7 +195,7 @@ struct EnterOrder {
         buf[off] = ' ';                                   off += 1;   // 44  customer type
         // 45..48: reserved (4 bytes, already set to spaces)
 
-        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"EnterOrder::build: token='{}' side={} shares={} symbol='{}' "
+        EPH_LOG_DEBUG(detail::ouch_logger(),"EnterOrder::build: token='{}' side={} shares={} symbol='{}' "
                      "price={} tif={}",
                      token, side, shares, symbol, price, time_in_force);
         return kSize;
@@ -237,17 +229,17 @@ struct ReplaceOrder {
                         uint32_t time_in_force) noexcept {
         // Caller must ensure buf has at least kSize (47) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: null buffer");
+            EPH_LOG_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: null buffer");
             return 0;
         }
         // Reject oversize tokens — silent truncation would route the replace
         // to the wrong existing order or stamp the wrong replacement_token.
         if (existing_token.size() > 14) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplaceOrder::build: existing_token too long ({} > 14)", existing_token.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"ReplaceOrder::build: existing_token too long ({} > 14)", existing_token.size());
             return 0;
         }
         if (replacement_token.size() > 14) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplaceOrder::build: replacement_token too long ({} > 14)", replacement_token.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"ReplaceOrder::build: replacement_token too long ({} > 14)", replacement_token.size());
             return 0;
         }
 
@@ -265,7 +257,7 @@ struct ReplaceOrder {
         buf[off] = ' ';                                        off += 1;   // 43  customer type
         // 44..46: reserved (3 bytes, already set to spaces)
 
-        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: existing='{}' replacement='{}' "
+        EPH_LOG_DEBUG(detail::ouch_logger(),"ReplaceOrder::build: existing='{}' replacement='{}' "
                      "shares={} price={} tif={}",
                      existing_token, replacement_token, shares, price,
                      time_in_force);
@@ -293,14 +285,14 @@ struct CancelOrder {
                         uint32_t shares) noexcept {
         // Caller must ensure buf has at least kSize (19) bytes available
         if (!buf) [[unlikely]] {
-            SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"CancelOrder::build: null buffer");
+            EPH_LOG_DEBUG(detail::ouch_logger(),"CancelOrder::build: null buffer");
             return 0;
         }
         // Reject oversize token — silent truncation would target the wrong
         // existing order. CancelOrder doesn't memset so we still need to
         // pad explicitly via write_padded after the bound check.
         if (token.size() > 14) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"CancelOrder::build: token too long ({} > 14)", token.size());
+            EPH_LOG_WARN(detail::ouch_logger(),"CancelOrder::build: token too long ({} > 14)", token.size());
             return 0;
         }
 
@@ -309,7 +301,7 @@ struct CancelOrder {
         write_padded(buf + off, token, 14);      off += 14;  // 1..14
         write_be32(buf + off, shares);           off += 4;   // 15..18
 
-        SPDLOG_LOGGER_DEBUG(detail::ouch_logger(),"CancelOrder::build: token='{}' shares={}", token, shares);
+        EPH_LOG_DEBUG(detail::ouch_logger(),"CancelOrder::build: token='{}' shares={}", token, shares);
         return kSize;
     }
 };
@@ -342,7 +334,7 @@ public:
     explicit AcceptedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"AcceptedView: buffer too small, need {} but got {}", kSize, len);
+            EPH_LOG_WARN(detail::ouch_logger(),"AcceptedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -433,7 +425,7 @@ public:
     explicit ExecutedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ExecutedView: buffer too small, need {} but got {}", kSize, len);
+            EPH_LOG_WARN(detail::ouch_logger(),"ExecutedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -487,7 +479,7 @@ public:
     explicit CanceledView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"CanceledView: buffer too small, need {} but got {}", kSize, len);
+            EPH_LOG_WARN(detail::ouch_logger(),"CanceledView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 
@@ -540,7 +532,7 @@ public:
     explicit ReplacedView(const uint8_t* data, size_t len) noexcept
         : data_(len >= kSize ? data : nullptr) {
         if (!data_ && data) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ouch_logger(),"ReplacedView: buffer too small, need {} but got {}", kSize, len);
+            EPH_LOG_WARN(detail::ouch_logger(),"ReplacedView: buffer too small, need {} but got {}", kSize, len);
         }
     }
 

@@ -20,14 +20,13 @@
 #include <string_view>
 #include <vector>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <openssl/evp.h>
 #include <openssl/hkdf.h>
 #include <openssl/mem.h>     // OPENSSL_cleanse
 
 #include "eph/core/detail/json_escape.hpp"
-#include "eph/core/detail/logger.hpp"
 #include "eph/core/error.hpp"
 
 namespace eph::net {
@@ -38,7 +37,7 @@ using eph::core::detail::json_escape;
 /// Lazily-initialized logger for TLS record-layer operations.
 /// @return Pointer to the "transport.tls_record" spdlog logger.
 inline spdlog::logger* tls_record_logger() {
-    static auto* l = ::eph::core::detail::make_logger("transport.tls_record");
+    static spdlog::logger* l = ::eph::log::get("transport.tls_record");
     return l;
 }
 } // namespace detail
@@ -610,7 +609,7 @@ inline void write_record_header(uint8_t* dst, uint8_t content_type,
     // records.  Non-conforming values indicate protocol violations or
     // middlebox interference — warn instead of silently accepting.
     if (src[1] != 0x03 || src[2] != 0x03) {
-        SPDLOG_LOGGER_WARN(detail::tls_record_logger(),
+        EPH_LOG_WARN(detail::tls_record_logger(),
             "TLS record header: unexpected version bytes 0x{:02X}{:02X} "
             "(expected 0x0303 per RFC 8446)",
             src[1], src[2]);

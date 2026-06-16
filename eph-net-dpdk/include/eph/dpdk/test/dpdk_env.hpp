@@ -43,7 +43,7 @@
 #include <arpa/inet.h>
 #include <rte_ethdev.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/dpdk/arp.hpp"
 #include "eph/dpdk/net_header.hpp"
@@ -52,6 +52,8 @@
 #include "eph/dpdk/udp.hpp"
 
 namespace eph::dpdk::test {
+
+inline spdlog::logger* dpdk_env_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.dpdk_env"); return l; }
 
 /// Move-only bundle of all DPDK resources needed to drive a real-NIC
 /// scenario: Platform (which owns the EAL session — see `Platform::create`),
@@ -136,7 +138,7 @@ struct DpdkBenchEnv {
             return std::unexpected("rte_eth_macaddr_get failed: " +
                                    std::to_string(rc));
         }
-        SPDLOG_INFO("dpdk_env: local MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        EPH_LOG_INFO(dpdk_env_logger(), "dpdk_env: local MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     src_mac.addr_bytes[0], src_mac.addr_bytes[1],
                     src_mac.addr_bytes[2], src_mac.addr_bytes[3],
                     src_mac.addr_bytes[4], src_mac.addr_bytes[5]);
@@ -149,7 +151,7 @@ struct DpdkBenchEnv {
         if (!gw_mac_result) {
             return std::unexpected("ARP resolve gateway: " + gw_mac_result.error());
         }
-        SPDLOG_INFO("dpdk_env: gateway MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        EPH_LOG_INFO(dpdk_env_logger(), "dpdk_env: gateway MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     gw_mac_result->addr_bytes[0], gw_mac_result->addr_bytes[1],
                     gw_mac_result->addr_bytes[2], gw_mac_result->addr_bytes[3],
                     gw_mac_result->addr_bytes[4], gw_mac_result->addr_bytes[5]);

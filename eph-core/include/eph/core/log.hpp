@@ -46,13 +46,31 @@
 #  define EPH_LOG_ERROR(logger, ...)    SPDLOG_LOGGER_ERROR((logger), __VA_ARGS__)
 #  define EPH_LOG_CRITICAL(logger, ...) SPDLOG_LOGGER_CRITICAL((logger), __VA_ARGS__)
 #else
-#  define EPH_LOG_TRACE(logger, ...)    (void)0
-#  define EPH_LOG_DEBUG(logger, ...)    (void)0
-#  define EPH_LOG_INFO(logger, ...)     (void)0
-#  define EPH_LOG_WARN(logger, ...)     (void)0
-#  define EPH_LOG_ERROR(logger, ...)    (void)0
-#  define EPH_LOG_CRITICAL(logger, ...) (void)0
+// Disabled: expand to an unevaluated reference of every argument so that
+// variables/parameters used *only* for logging do not trip -Wunused in
+// consumer builds (the common case, since logging is off by default). The
+// `false ? ... : (void)0` keeps the sink() call in a potentially-evaluated
+// branch (marking args odr-used) while guaranteeing it is never actually
+// executed — zero runtime cost and no side effects from the arguments. As a
+// bonus, disabled log calls are still type-checked.
+#  define EPH_LOG_TRACE(logger, ...)    (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
+#  define EPH_LOG_DEBUG(logger, ...)    (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
+#  define EPH_LOG_INFO(logger, ...)     (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
+#  define EPH_LOG_WARN(logger, ...)     (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
+#  define EPH_LOG_ERROR(logger, ...)    (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
+#  define EPH_LOG_CRITICAL(logger, ...) (false ? ::eph::log::detail::sink((logger), __VA_ARGS__) : (void)0)
 #endif
+
+namespace eph::log::detail {
+
+/// Sink for the disabled `EPH_LOG_*` branch: accepts the logger plus every log
+/// argument by reference and does nothing. Invoked only from the never-taken
+/// arm of a `false ? ... : (void)0`, so it marks all arguments odr-used
+/// (suppressing -Wunused) without ever executing or evaluating them.
+template <typename... Ts>
+constexpr void sink(const Ts&...) noexcept {}
+
+} // namespace eph::log::detail
 
 namespace eph::log {
 

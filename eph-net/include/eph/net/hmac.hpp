@@ -74,9 +74,16 @@
 #include <openssl/hmac.h>     // HMAC
 #include <openssl/sha.h>      // SHA256
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::net {
+
+namespace detail {
+inline spdlog::logger* hmac_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.hmac");
+    return l;
+}
+} // namespace detail
 
 // Forward declarations so Key can friend the sign functions before Tag is
 // fully defined below.
@@ -124,7 +131,7 @@ public:
         if (raw.size() > 64) {
             // Long key → hash to 32 bytes, tail stays zero-padded.
             SHA256(raw.data(), raw.size(), normalized_);
-            SPDLOG_TRACE("HmacSha256Key: hashed long key ({} bytes) to 32B",
+            EPH_LOG_TRACE(detail::hmac_logger(), "HmacSha256Key: hashed long key ({} bytes) to 32B",
                          raw.size());
         } else if (!raw.empty()) {
             // memcpy(_, nullptr, 0) is ISO C UB even though zero-byte. An
@@ -134,10 +141,10 @@ public:
             // an empty key normalizes to all-zero — same RFC 2104 result
             // as a single-byte zero-padded key, with no UB on the way.
             std::memcpy(normalized_, raw.data(), raw.size());
-            SPDLOG_TRACE("HmacSha256Key: copied key ({} bytes), zero-padded",
+            EPH_LOG_TRACE(detail::hmac_logger(), "HmacSha256Key: copied key ({} bytes), zero-padded",
                          raw.size());
         } else {
-            SPDLOG_TRACE("HmacSha256Key: empty key (degenerate; "
+            EPH_LOG_TRACE(detail::hmac_logger(), "HmacSha256Key: empty key (degenerate; "
                          "normalized to zeros)");
         }
     }
@@ -279,7 +286,7 @@ struct HmacSha256Tag {
     // Defensive: on any sane aws-lc build these are guaranteed, so this
     // check is compile-time constant-folded away in release.
     if (result == nullptr || tag_len != 32) [[unlikely]] {
-        SPDLOG_ERROR("hmac_sha256_sign: HMAC() returned unexpected state "
+        EPH_LOG_ERROR(detail::hmac_logger(), "hmac_sha256_sign: HMAC() returned unexpected state "
                      "(result={}, tag_len={})",
                      static_cast<const void*>(result), tag_len);
         // The tag is INPUT to HMAC() — aws-lc may have written partial

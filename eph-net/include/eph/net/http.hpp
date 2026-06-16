@@ -60,7 +60,7 @@
 #include <span>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 
@@ -145,10 +145,8 @@ namespace detail {
 
 /// @brief Tag unused to key a named logger shared by the parser & builder.
 [[nodiscard]] inline spdlog::logger* http_logger() noexcept {
-    // Defer to default logger — we do not want to own a named sink here;
-    // callers of the parser almost always run inside a module that has
-    // already configured spdlog.
-    return spdlog::default_logger_raw();
+    static spdlog::logger* l = ::eph::log::get("net.http");
+    return l;
 }
 
 /// @brief ASCII lower-case (no locale dependence).
@@ -319,7 +317,7 @@ parse_header_block(std::span<const uint8_t> buf,
         if (buf[pos] == '\r') {
             if (pos + 1 >= end) return std::optional<HeaderParseState>{}; // need more
             if (buf[pos + 1] != '\n') {
-                SPDLOG_WARN("http: header block: bare CR (offset {})", pos);
+                EPH_LOG_WARN(detail::http_logger(), "http: header block: bare CR (offset {})", pos);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "bare CR in header block"});
             }
@@ -329,7 +327,7 @@ parse_header_block(std::span<const uint8_t> buf,
         // Bare LF at line start is an injection attempt (some proxies accept
         // lone LF as a line terminator; we do not).
         if (buf[pos] == '\n') [[unlikely]] {
-            SPDLOG_WARN("http: header block: bare LF (offset {})", pos);
+            EPH_LOG_WARN(detail::http_logger(), "http: header block: bare LF (offset {})", pos);
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "bare LF at header start"});
         }
@@ -344,7 +342,7 @@ parse_header_block(std::span<const uint8_t> buf,
                 // or the bound was the actual buffer end but the line is
                 // already over the cap. Either way: reject.
                 if ((end - line_start) > kMaxHeaderLineLength) {
-                    SPDLOG_WARN("http: header line too long ({} > {})",
+                    EPH_LOG_WARN(detail::http_logger(), "http: header line too long ({} > {})",
                                 end - line_start, kMaxHeaderLineLength);
                     return std::unexpected(core::ErrorInfo{
                         core::Error::CodecOverflow, "header line exceeds max length"});
@@ -357,7 +355,7 @@ parse_header_block(std::span<const uint8_t> buf,
         // Scan for bare LF inside the line (would be an injection).
         for (size_t i = line_start; i < crlf; ++i) {
             if (buf[i] == '\n') [[unlikely]] {
-                SPDLOG_WARN("http: header line: bare LF (offset {})", i);
+                EPH_LOG_WARN(detail::http_logger(), "http: header line: bare LF (offset {})", i);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "bare LF inside header line"});
             }
@@ -371,20 +369,20 @@ parse_header_block(std::span<const uint8_t> buf,
         // Split on the first ':'.
         auto colon = line.find(':');
         if (colon == std::string_view::npos) [[unlikely]] {
-            SPDLOG_WARN("http: header line missing ':' (len={})", line.size());
+            EPH_LOG_WARN(detail::http_logger(), "http: header line missing ':' (len={})", line.size());
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "header line missing ':'"});
         }
         auto raw_name = line.substr(0, colon);
         auto name     = trim_field_name(raw_name);
         if (!is_valid_token(name)) [[unlikely]] {
-            SPDLOG_WARN("http: invalid header field-name");
+            EPH_LOG_WARN(detail::http_logger(), "http: invalid header field-name");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "invalid header field-name"});
         }
         auto value = trim_ows(line.substr(colon + 1));
         if (!is_valid_field_value(value)) [[unlikely]] {
-            SPDLOG_WARN("http: invalid header field-value (CTL char)");
+            EPH_LOG_WARN(detail::http_logger(), "http: invalid header field-value (CTL char)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "invalid header field-value"});
         }
@@ -392,7 +390,7 @@ parse_header_block(std::span<const uint8_t> buf,
         // ── Smuggling defenses ──────────────────────────────────────────
         // 1. Any Transfer-Encoding header → rejected outright (D-1).
         if (iequal(name, "Transfer-Encoding")) [[unlikely]] {
-            SPDLOG_WARN("http: Transfer-Encoding header present — rejecting (D-1)");
+            EPH_LOG_WARN(detail::http_logger(), "http: Transfer-Encoding header present — rejecting (D-1)");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad,
                 "Transfer-Encoding not supported (see D-1)"});
@@ -401,13 +399,13 @@ parse_header_block(std::span<const uint8_t> buf,
         if (iequal(name, "Content-Length")) {
             size_t cl = 0;
             if (!parse_decimal(value, cl)) [[unlikely]] {
-                SPDLOG_WARN("http: Content-Length non-numeric ('{}')",
+                EPH_LOG_WARN(detail::http_logger(), "http: Content-Length non-numeric ('{}')",
                             value);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "Content-Length not numeric"});
             }
             if (cl > kMaxBodySize) [[unlikely]] {
-                SPDLOG_WARN("http: Content-Length {} exceeds max {}",
+                EPH_LOG_WARN(detail::http_logger(), "http: Content-Length {} exceeds max {}",
                             cl, kMaxBodySize);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecOverflow, "Content-Length exceeds max body size"});
@@ -415,7 +413,7 @@ parse_header_block(std::span<const uint8_t> buf,
             if (cl_parsed_count == 0) {
                 first_cl_value = cl;
             } else if (cl != first_cl_value) [[unlikely]] {
-                SPDLOG_WARN("http: conflicting Content-Length headers ({} vs {})",
+                EPH_LOG_WARN(detail::http_logger(), "http: conflicting Content-Length headers ({} vs {})",
                             first_cl_value, cl);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::CodecBad, "conflicting Content-Length values"});
@@ -425,7 +423,7 @@ parse_header_block(std::span<const uint8_t> buf,
 
         // Store header (bounded).
         if (st.count >= cap) {
-            SPDLOG_WARN("http: header count exceeds storage/limit ({})", cap);
+            EPH_LOG_WARN(detail::http_logger(), "http: header count exceeds storage/limit ({})", cap);
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecOverflow, "too many headers"});
         }
@@ -567,14 +565,14 @@ parse_http_request(
     if (sl_crlf == sl_search_end) {
         if (sl_search_end < end) {
             // Reached kMaxStartLineLength without a CRLF — oversize.
-            SPDLOG_WARN("http: start line exceeds {} bytes", kMaxStartLineLength);
+            EPH_LOG_WARN(detail::http_logger(), "http: start line exceeds {} bytes", kMaxStartLineLength);
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecOverflow, "request start line too long"});
         }
         return std::optional<ParseResult<HttpRequest>>{}; // need more
     }
     if (sl_crlf == 0) {
-        SPDLOG_WARN("http: empty start line");
+        EPH_LOG_WARN(detail::http_logger(), "http: empty start line");
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "empty start line"});
     }
@@ -599,7 +597,7 @@ parse_http_request(
     auto version = start_line.substr(sp2 + 1);
 
     if (method.empty() || !detail::is_valid_token(method)) {
-        SPDLOG_WARN("http: invalid method token");
+        EPH_LOG_WARN(detail::http_logger(), "http: invalid method token");
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "invalid method token"});
     }
@@ -611,7 +609,7 @@ parse_http_request(
     }
     for (char c : target) {
         if (!detail::is_target_char(static_cast<uint8_t>(c))) {
-            SPDLOG_WARN("http: CTL/SP in request-target");
+            EPH_LOG_WARN(detail::http_logger(), "http: CTL/SP in request-target");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad, "CTL or SP in request-target"});
         }
@@ -619,7 +617,7 @@ parse_http_request(
     // HTTP version: "HTTP/1.0" or "HTTP/1.1"
     if (version.size() != 8 || version.substr(0, 7) != "HTTP/1." ||
         (version[7] != '0' && version[7] != '1')) {
-        SPDLOG_WARN("http: unsupported version '{}'", version);
+        EPH_LOG_WARN(detail::http_logger(), "http: unsupported version '{}'", version);
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "unsupported HTTP version (need 1.0/1.1)"});
     }
@@ -653,7 +651,7 @@ parse_http_request(
         .headers       = header_storage.subspan(0, st.count),
         .body          = body_span,
     };
-    SPDLOG_DEBUG("http: parsed request method='{}' target='{}' hdrs={} body={}B",
+    EPH_LOG_DEBUG(detail::http_logger(), "http: parsed request method='{}' target='{}' hdrs={} body={}B",
                  method, target, st.count,
                  body_span.size());
     return std::optional<ParseResult<HttpRequest>>{
@@ -687,7 +685,7 @@ parse_http_response(
     size_t sl_crlf = detail::find_crlf(buffer, 0, sl_search_end);
     if (sl_crlf == sl_search_end) {
         if (sl_search_end < end) {
-            SPDLOG_WARN("http: status line exceeds {} bytes", kMaxStartLineLength);
+            EPH_LOG_WARN(detail::http_logger(), "http: status line exceeds {} bytes", kMaxStartLineLength);
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecOverflow, "response status line too long"});
         }
@@ -706,7 +704,7 @@ parse_http_response(
         status_line.substr(0, 7) != "HTTP/1." ||
         (status_line[7] != '0' && status_line[7] != '1') ||
         status_line[8] != ' ') {
-        SPDLOG_WARN("http: unsupported response version");
+        EPH_LOG_WARN(detail::http_logger(), "http: unsupported response version");
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "unsupported HTTP version in response"});
     }
@@ -718,7 +716,7 @@ parse_http_response(
         code_str[0] < '0' || code_str[0] > '9' ||
         code_str[1] < '0' || code_str[1] > '9' ||
         code_str[2] < '0' || code_str[2] > '9') {
-        SPDLOG_WARN("http: non-3-digit status code");
+        EPH_LOG_WARN(detail::http_logger(), "http: non-3-digit status code");
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad, "status code must be 3 digits (RFC 7230 §3.1.2)"});
     }
@@ -770,7 +768,7 @@ parse_http_response(
         // We cannot safely frame this — reject. Exchange REST servers
         // always set Content-Length, so hitting this is a bug or a proxy
         // rewriting the response.
-        SPDLOG_WARN("http: response without Content-Length (status {})", status_code);
+        EPH_LOG_WARN(detail::http_logger(), "http: response without Content-Length (status {})", status_code);
         return std::unexpected(core::ErrorInfo{
             core::Error::CodecBad,
             "response has no Content-Length and is not bodyless"});
@@ -783,7 +781,7 @@ parse_http_response(
         .headers       = header_storage.subspan(0, st.count),
         .body          = body_span,
     };
-    SPDLOG_DEBUG("http: parsed response status={} reason='{}' hdrs={} body={}B",
+    EPH_LOG_DEBUG(detail::http_logger(), "http: parsed response status={} reason='{}' hdrs={} body={}B",
                  status_code, reason_phrase, st.count,
                  body_span.size());
     return std::optional<ParseResult<HttpResponse>>{
@@ -845,7 +843,7 @@ build_http_request(
         if (!detail::buf_append(out_buf, cap, off, body.data(), body.size()))
             goto overflow;
     }
-    SPDLOG_DEBUG("http: built request {} {} bytes={}",
+    EPH_LOG_DEBUG(detail::http_logger(), "http: built request {} {} bytes={}",
                  method, target, off);
     return off;
 
@@ -903,7 +901,7 @@ build_http_response(
         if (!detail::buf_append(out_buf, cap, off, body.data(), body.size()))
             goto overflow;
     }
-    SPDLOG_DEBUG("http: built response status={} bytes={}", status_code, off);
+    EPH_LOG_DEBUG(detail::http_logger(), "http: built response status={} bytes={}", status_code, off);
     return off;
 
 overflow:

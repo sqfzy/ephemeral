@@ -58,13 +58,18 @@
 
 #include <sys/random.h>  // getrandom(2)
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/detail/base64.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/http.hpp"
 
 namespace eph::net::detail {
+
+inline spdlog::logger* ws_handshake_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.ws_handshake");
+    return l;
+}
 
 // ---------------------------------------------------------------------------
 // SHA-1 (RFC 3174)
@@ -200,7 +205,7 @@ ws_compute_accept(std::string_view client_key) noexcept {
                   "ws_compute_accept scratch must hold key + magic GUID");
     const size_t n1 = std::min<size_t>(client_key.size(), kMaxKeyLen);
     if (n1 < client_key.size()) [[unlikely]] {
-        SPDLOG_WARN("ws_compute_accept: client_key truncated from {} to {} "
+        EPH_LOG_WARN(ws_handshake_logger(), "ws_compute_accept: client_key truncated from {} to {} "
                     "bytes (expected ~24)", client_key.size(), n1);
     }
     if (n1 > 0) {
@@ -220,7 +225,7 @@ ws_compute_accept(std::string_view client_key) noexcept {
         if (got == 16) return true;
         // On EINTR / short read the glibc wrapper already loops, but be
         // defensive; retry up to 3x before giving up.
-        SPDLOG_WARN("ws_handshake: getrandom returned {} (attempt {}/3)",
+        EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: getrandom returned {} (attempt {}/3)",
                     got, attempt + 1);
     }
     return false;
@@ -380,14 +385,14 @@ ws_parse_permessage_deflate_token(std::string_view              tok,
             // Anything else needs re-init we don't bother with — fail
             // closed and let the user disable deflate via config.
             if (pvalue != "15") {
-                SPDLOG_WARN(
+                EPH_LOG_WARN(ws_handshake_logger(), 
                     "ws_handshake: server set {}={} (we only support 15)",
                     pname, pvalue);
                 state.negotiated = false;
                 return false;
             }
         } else {
-            SPDLOG_WARN("ws_handshake: unknown permessage-deflate "
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: unknown permessage-deflate "
                         "parameter '{}'", pname);
             state.negotiated = false;
             return false;
@@ -433,7 +438,7 @@ public:
             for (const auto& eh : extra_headers) {
                 for (auto mn : kMandatoryNames) {
                     if (iequal(eh.name, mn)) {
-                        SPDLOG_WARN("ws_handshake: extra header '{}' conflicts "
+                        EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: extra header '{}' conflicts "
                                     "with mandatory WebSocket header", eh.name);
                         return std::unexpected(::eph::core::ErrorInfo{
                             ::eph::core::Error::WsHandshakeFailed,
@@ -447,7 +452,7 @@ public:
         // ── 1. Generate + base64-encode the 16-byte client nonce ──────────────
         uint8_t nonce[16];
         if (!ws_random_nonce(nonce)) {
-            SPDLOG_ERROR("ws_handshake: getrandom failed; cannot generate nonce");
+            EPH_LOG_ERROR(ws_handshake_logger(), "ws_handshake: getrandom failed; cannot generate nonce");
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
                 "ws_handshake: getrandom failed"});
@@ -464,7 +469,7 @@ public:
                          });
         const size_t injected_count = inject_deflate ? 1u : 0u;
         if (extra_headers.size() + injected_count > kMaxHeaderCount - kBaseHdrs) {
-            SPDLOG_WARN("ws_handshake: too many extra headers: {} (+ {} injected)",
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: too many extra headers: {} (+ {} injected)",
                         extra_headers.size(), injected_count);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
@@ -490,7 +495,7 @@ public:
             d.req_.data(), d.req_.size(), "GET", ws_path,
             std::span<const HttpHeader>(hdrs.data(), total_hdrs));
         if (!built) {
-            SPDLOG_WARN("ws_handshake: build_http_request failed: {}",
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: build_http_request failed: {}",
                         built.error().detail);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
@@ -514,7 +519,7 @@ public:
                 req_.data() + sent_, req_len_ - sent_));
             if (!sr) {
                 if (sr.error().code == ::eph::core::Error::WouldBlock) return false;
-                SPDLOG_WARN("ws_handshake: ByteSink::send err={}", sr.error().detail);
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: ByteSink::send err={}", sr.error().detail);
                 return std::unexpected(sr.error());
             }
             if (*sr == 0) {
@@ -524,14 +529,14 @@ public:
             }
             sent_ += *sr;
             if (sent_ < req_len_) return false;  // partial — resume next cycle
-            SPDLOG_DEBUG("ws_handshake: sent {}B request", req_len_);
+            EPH_LOG_DEBUG(ws_handshake_logger(), "ws_handshake: sent {}B request", req_len_);
             phase_ = Phase::Receiving;
             return false;  // begin receiving next cycle
         }
 
         if (phase_ == Phase::Receiving) {
             if (rx_len_ == rx_.size()) {
-                SPDLOG_WARN("ws_handshake: response exceeds {}B buffer", rx_.size());
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: response exceeds {}B buffer", rx_.size());
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::WsHandshakeFailed,
                     "ws_handshake: response too large"});
@@ -539,7 +544,7 @@ public:
             auto rr = io.recv(rx_.data() + rx_len_, rx_.size() - rx_len_);
             if (!rr) {
                 if (rr.error().code == ::eph::core::Error::WouldBlock) return false;
-                SPDLOG_WARN("ws_handshake: ByteSink::recv err={}", rr.error().detail);
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: ByteSink::recv err={}", rr.error().detail);
                 return std::unexpected(rr.error());
             }
             if (*rr == 0) return false;  // no data yet — pending
@@ -549,7 +554,7 @@ public:
                 std::span<const uint8_t>(rx_.data(), rx_len_),
                 std::span<HttpHeader>(header_storage_, kMaxHeaderCount));
             if (!pr) {
-                SPDLOG_WARN("ws_handshake: parse_http_response err={}",
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: parse_http_response err={}",
                             pr.error().detail);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::WsHandshakeFailed,
@@ -582,7 +587,7 @@ private:
 
         // ── 5. status == 101 ──
         if (resp.status_code != 101) [[unlikely]] {
-            SPDLOG_WARN("ws_handshake: unexpected status {} (reason='{}')",
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: unexpected status {} (reason='{}')",
                         resp.status_code, resp.reason_phrase);
             phase_ = Phase::Failed;
             return std::unexpected(::eph::core::ErrorInfo{
@@ -592,7 +597,7 @@ private:
         // ── 6. Upgrade: websocket ──
         auto upgrade_hdr = ws_find_header(resp.headers, "Upgrade");
         if (!upgrade_hdr || !iequal(*upgrade_hdr, "websocket")) [[unlikely]] {
-            SPDLOG_WARN("ws_handshake: missing/invalid Upgrade header");
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: missing/invalid Upgrade header");
             phase_ = Phase::Failed;
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
@@ -601,7 +606,7 @@ private:
         // ── 7. Connection: Upgrade ──
         auto conn_hdr = ws_find_header(resp.headers, "Connection");
         if (!conn_hdr || !ws_connection_has_upgrade(*conn_hdr)) [[unlikely]] {
-            SPDLOG_WARN("ws_handshake: missing/invalid Connection: Upgrade");
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: missing/invalid Connection: Upgrade");
             phase_ = Phase::Failed;
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
@@ -610,7 +615,7 @@ private:
         // ── 8. Sec-WebSocket-Accept ──
         auto accept_hdr = ws_find_header(resp.headers, "Sec-WebSocket-Accept");
         if (!accept_hdr) [[unlikely]] {
-            SPDLOG_WARN("ws_handshake: missing Sec-WebSocket-Accept header");
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: missing Sec-WebSocket-Accept header");
             phase_ = Phase::Failed;
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::WsHandshakeFailed,
@@ -618,7 +623,7 @@ private:
         }
         const std::string expected_accept = ws_compute_accept(client_key_);
         if (*accept_hdr != expected_accept) [[unlikely]] {
-            SPDLOG_WARN("ws_handshake: Sec-WebSocket-Accept mismatch "
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: Sec-WebSocket-Accept mismatch "
                         "(expected='{}' got='{}')", expected_accept, *accept_hdr);
             phase_ = Phase::Failed;
             return std::unexpected(::eph::core::ErrorInfo{
@@ -631,7 +636,7 @@ private:
         if (ext_hdr) {
             const bool requested_deflate = (deflate_ && deflate_->request);
             if (!requested_deflate) {
-                SPDLOG_WARN("ws_handshake: server enabled unsolicited extension(s) "
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: server enabled unsolicited extension(s) "
                             "'{}' — rejecting (no extensions were offered)", *ext_hdr);
                 phase_ = Phase::Failed;
                 return std::unexpected(::eph::core::ErrorInfo{
@@ -648,7 +653,7 @@ private:
                            ? std::string_view{} : list.substr(comma + 1);
                 if (tok.empty()) continue;
                 if (!ws_parse_permessage_deflate_token(tok, *deflate_)) {
-                    SPDLOG_WARN("ws_handshake: server returned unsupported "
+                    EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: server returned unsupported "
                                 "extension token '{}' (full: '{}')", tok, *ext_hdr);
                     phase_ = Phase::Failed;
                     return std::unexpected(::eph::core::ErrorInfo{
@@ -659,18 +664,18 @@ private:
                 any_known = true;
             }
             if (!any_known || !deflate_->negotiated) {
-                SPDLOG_WARN("ws_handshake: empty/unparseable "
+                EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: empty/unparseable "
                             "Sec-WebSocket-Extensions response '{}'", *ext_hdr);
                 phase_ = Phase::Failed;
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::WsHandshakeFailed,
                     "ws_handshake: empty/unparseable extension response"});
             }
-            SPDLOG_INFO("ws_handshake: permessage-deflate negotiated "
+            EPH_LOG_INFO(ws_handshake_logger(), "ws_handshake: permessage-deflate negotiated "
                         "(server_no_context_takeover={})",
                         deflate_->server_no_context_takeover);
         } else if (deflate_ && deflate_->request) {
-            SPDLOG_DEBUG("ws_handshake: server did not accept "
+            EPH_LOG_DEBUG(ws_handshake_logger(), "ws_handshake: server did not accept "
                          "permessage-deflate — falling back to uncompressed");
         }
 
@@ -678,10 +683,10 @@ private:
         const size_t consumed = parsed.consumed;
         if (consumed < rx_len_) {
             leftover_.assign(rx_.data() + consumed, rx_.data() + rx_len_);
-            SPDLOG_DEBUG("ws_handshake: stashed {}B of over-read post-handshake "
+            EPH_LOG_DEBUG(ws_handshake_logger(), "ws_handshake: stashed {}B of over-read post-handshake "
                          "bytes", rx_len_ - consumed);
         }
-        SPDLOG_INFO("ws_handshake: OK path='{}' host='{}' ({}B req, {}B resp)",
+        EPH_LOG_INFO(ws_handshake_logger(), "ws_handshake: OK path='{}' host='{}' ({}B req, {}B resp)",
                     ws_path_, host_, req_len_, consumed);
         phase_ = Phase::Done;
         return true;
@@ -745,7 +750,7 @@ perform_ws_handshake(
         if (!r) return std::unexpected(r.error());
         if (*r) break;
         if (std::chrono::steady_clock::now() >= deadline) {
-            SPDLOG_WARN("ws_handshake: deadline exceeded ({}ms)", timeout.count());
+            EPH_LOG_WARN(ws_handshake_logger(), "ws_handshake: deadline exceeded ({}ms)", timeout.count());
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::Timeout, "ws_handshake: deadline exceeded"});
         }

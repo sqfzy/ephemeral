@@ -20,9 +20,6 @@
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 
-// Logger factory (LoggerName, get_logger) — re-exported for backward compat.
-#include "eph/dpdk/detail/logger.hpp"
-
 namespace eph::dpdk::net {
 
 // ─────────────────────────────────────────────────────────────────────────────

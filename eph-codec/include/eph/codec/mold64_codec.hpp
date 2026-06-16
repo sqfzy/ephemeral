@@ -32,12 +32,10 @@
 #include <functional>
 #include <span>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
 #include "eph/codec/detail/span_packet_view.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 #include "eph/itch/moldudp64.hpp"
 
 namespace eph::codec {
@@ -46,18 +44,7 @@ namespace detail {
 
 /// @brief Lazily-initialised logger for the Mold64 codec.
 inline spdlog::logger* mold64_codec_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("codec.mold64");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("codec.mold64");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("codec.mold64");
-            }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg.get();
-    }();
+    static spdlog::logger* l = ::eph::log::get("codec.mold64");
     return l;
 }
 
@@ -126,7 +113,7 @@ public:
         // typed InvalidConfig before we touch any datagram bytes.
         // Mirrors the same defense applied to RawDatagramCodec (R56).
         if (!sink) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+            EPH_LOG_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: sink is empty (caller forgot to "
                 "assign or moved-from); rejecting datagram of {} bytes", len);
             return std::unexpected(core::ErrorInfo{
@@ -138,7 +125,7 @@ public:
         // datagrams (parse_moldudp64 silently returns 0 on bad headers).
         auto hdr = eph::itch::parse_moldudp64_header(data, len);
         if (!hdr) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+            EPH_LOG_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: malformed header, len={}", len);
             // Consume the datagram regardless — contract says we must.
             dgram.trim_front(len);
@@ -149,7 +136,7 @@ public:
 
         // End-of-session: no frames, no gap bookkeeping.
         if (hdr->message_count == eph::itch::moldudp64::kEndOfSession) {
-            SPDLOG_LOGGER_INFO(detail::mold64_codec_logger(),
+            EPH_LOG_INFO(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: end-of-session for session='{}'",
                 hdr->session);
             dgram.trim_front(len);
@@ -162,12 +149,12 @@ public:
         if (hdr->sequence_number > expected_seq_) {
             const uint64_t gap = hdr->sequence_number - expected_seq_;
             gaps_ += gap;
-            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+            EPH_LOG_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: gap detected, expected={} got={} "
                 "(missing {} msgs, total gaps={})",
                 expected_seq_, hdr->sequence_number, gap, gaps_);
         } else if (hdr->sequence_number < expected_seq_) {
-            SPDLOG_LOGGER_DEBUG(detail::mold64_codec_logger(),
+            EPH_LOG_DEBUG(detail::mold64_codec_logger(),
                 "Mold64Codec::decode: duplicate/replay, expected={} got={} "
                 "(delivering but not rewinding)",
                 expected_seq_, hdr->sequence_number);
@@ -193,7 +180,7 @@ public:
 
         // Datagram codecs must consume the whole input on success.
         dgram.trim_front(len);
-        SPDLOG_LOGGER_TRACE(detail::mold64_codec_logger(),
+        EPH_LOG_TRACE(detail::mold64_codec_logger(),
             "Mold64Codec::decode: delivered {} msgs, expected_seq now {}",
             delivered, expected_seq_);
         return delivered;
@@ -216,7 +203,7 @@ public:
         // i.e. a 65535-byte heap overflow. The 16-bit length prefix is
         // the wire-format ceiling, so reject anything bigger up front.
         if (frame.payload.size() > 0xFFFFu) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+            EPH_LOG_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::encode: payload {} exceeds 65535 bytes",
                 frame.payload.size());
             return std::unexpected(core::ErrorInfo{
@@ -226,7 +213,7 @@ public:
         const std::size_t needed =
             eph::itch::moldudp64::kHeaderLen + 2 + frame.payload.size();
         if (needed > cap) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::mold64_codec_logger(),
+            EPH_LOG_WARN(detail::mold64_codec_logger(),
                 "Mold64Codec::encode: buffer too small (need {}, have {})",
                 needed, cap);
             return std::unexpected(core::ErrorInfo{

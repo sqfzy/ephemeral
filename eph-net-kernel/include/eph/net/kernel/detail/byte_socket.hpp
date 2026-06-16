@@ -45,9 +45,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
 
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/socket_addr.hpp"
 
@@ -59,7 +58,7 @@ namespace eph::net::kernel::detail {
 
 /// @brief Lazily-initialized logger for the kernel byte-socket subsystem.
 inline spdlog::logger* byte_socket_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.kernel.byte_socket");
+    static spdlog::logger* l = ::eph::log::get("net.kernel.byte_socket");
     return l;
 }
 
@@ -126,7 +125,7 @@ public:
     connect(const SocketAddr& addr, std::chrono::milliseconds timeout,
             const SocketAddr& local = SocketAddr{}) noexcept {
         [[maybe_unused]] auto* log = byte_socket_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "ByteSocket::connect entry: addr={} local={} timeout_ms={}",
             addr.to_string(), local.to_string(), timeout.count());
 
@@ -145,7 +144,7 @@ public:
         if (!begun) return std::unexpected(begun.error());
         if (*begun) {
             // Loopback frequently completes synchronously.
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "ByteSocket::connect: immediate success fd={}", fd_);
             return {};
         }
@@ -158,7 +157,7 @@ public:
             auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {
                 close();
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "ByteSocket::connect: deadline expired ({}ms)",
                     timeout.count());
                 return std::unexpected(core::ErrorInfo{
@@ -176,7 +175,7 @@ public:
             if (pr < 0 && errno == EINTR) continue;
             if (pr <= 0) {
                 close();
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "ByteSocket::connect: poll timeout/error pr={}", pr);
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Timeout,
@@ -190,7 +189,7 @@ public:
                 return std::unexpected(done.error());
             }
             if (*done) {
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "ByteSocket::connect: success fd={} addr={}",
                     fd_, addr.to_string());
                 return {};
@@ -233,7 +232,7 @@ public:
                                SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
                                IPPROTO_TCP);
         if (s < 0) {
-            SPDLOG_LOGGER_ERROR(log, "ByteSocket::begin_connect: socket() failed: {}",
+            EPH_LOG_ERROR(log, "ByteSocket::begin_connect: socket() failed: {}",
                                 std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
                 core::Error::ConnectFailed,
@@ -245,7 +244,7 @@ public:
         // Nagle-coalescing latency footgun.
         int one = 1;
         if (::setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "ByteSocket::begin_connect: setsockopt(TCP_NODELAY) failed: "
                 "errno={} ({}) — Nagle may remain enabled",
                 errno, std::strerror(errno));
@@ -266,7 +265,7 @@ public:
                        sizeof(lsa)) != 0) {
                 const int err = errno;
                 ::close(s);
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "ByteSocket::begin_connect: bind({}) failed: errno={} ({})",
                     local.to_string(), err, std::strerror(err));
                 return std::unexpected(core::ErrorInfo{
@@ -284,14 +283,14 @@ public:
                                  sizeof(sa));
         if (rc == 0) {
             fd_ = s;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "ByteSocket::begin_connect: immediate success fd={}", fd_);
             return true;
         }
         if (errno != EINPROGRESS) {
             const int err = errno;
             ::close(s);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "ByteSocket::begin_connect: ::connect() failed: {}",
                 std::strerror(err));
             return std::unexpected(core::ErrorInfo{
@@ -302,7 +301,7 @@ public:
         // In progress. We OWN the fd from here so `poll_connect()` can harvest
         // the result and the dtor / `close()` reclaims it on any failure path.
         fd_ = s;
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "ByteSocket::begin_connect: in progress fd={} addr={}",
             fd_, addr.to_string());
         return false;
@@ -336,7 +335,7 @@ public:
         const int pr = ::poll(&pfd, 1, 0);
         if (pr < 0) {
             if (errno == EINTR) return false;  // transient — retry next cycle
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "ByteSocket::poll_connect: poll() failed: errno={} ({})",
                 errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -348,7 +347,7 @@ public:
         int so_err = 0;
         socklen_t so_len = sizeof(so_err);
         if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_err, &so_len) != 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "ByteSocket::poll_connect: getsockopt(SO_ERROR) failed: {}",
                 std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -356,14 +355,14 @@ public:
                 "ByteSocket::poll_connect: getsockopt(SO_ERROR) failed"});
         }
         if (so_err != 0) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "ByteSocket::poll_connect: async connect failed: {}",
                 std::strerror(so_err));
             return std::unexpected(core::ErrorInfo{
                 core::Error::ConnectFailed,
                 "ByteSocket::poll_connect: SO_ERROR reported failure"});
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "ByteSocket::poll_connect: connected fd={}", fd_);
         return true;
     }
@@ -371,7 +370,7 @@ public:
     /// @brief Close the fd if open. Idempotent.
     void close() noexcept {
         if (fd_ >= 0) {
-            SPDLOG_LOGGER_TRACE(byte_socket_logger(),
+            EPH_LOG_TRACE(byte_socket_logger(),
                 "ByteSocket::close fd={}", fd_);
             ::close(fd_);
             fd_ = -1;
@@ -417,7 +416,7 @@ public:
             // that legitimately drops the expected<> would otherwise have
             // no signal that the send was a no-op — surfaces a programmer
             // error that's catastrophic on the order path.
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::send: fd closed (bytes={})", wire_bytes.size());
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
@@ -440,7 +439,7 @@ public:
             if (n == 0) {
                 // POSIX: send() never returns 0 for stream sockets, but be
                 // defensive.
-                SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                EPH_LOG_WARN(byte_socket_logger(),
                     "ByteSocket::send: unexpected zero return");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
@@ -460,7 +459,7 @@ public:
                     // Actionable context: fd, remaining bytes, wait budget.
                     // Operators need this to distinguish a one-off spike
                     // from a systematic backpressure problem.
-                    SPDLOG_LOGGER_WARN(byte_socket_logger(),
+                    EPH_LOG_WARN(byte_socket_logger(),
                         "ByteSocket::send: poll for writable failed "
                         "fd={} sent={} remain={} budget_ms={} pr={} errno={} ({})",
                         fd_, sent, remain, kSendBackpressurePollMs, pr,
@@ -476,7 +475,7 @@ public:
                 // Include sent / remain so operators can tell whether
                 // any bytes already escaped to the wire before the peer
                 // closed — see the partial-send contract docstring above.
-                SPDLOG_LOGGER_INFO(byte_socket_logger(),
+                EPH_LOG_INFO(byte_socket_logger(),
                     "ByteSocket::send: peer closed ({}) "
                     "fd={} sent={} remain={}",
                     std::strerror(errno), fd_, sent, remain);
@@ -484,7 +483,7 @@ public:
                     core::Error::Disconnected,
                     "ByteSocket::send: peer closed"});
             }
-            SPDLOG_LOGGER_ERROR(byte_socket_logger(),
+            EPH_LOG_ERROR(byte_socket_logger(),
                 "ByteSocket::send: unexpected errno {} ({}) "
                 "fd={} sent={} remain={}",
                 errno, std::strerror(errno), fd_, sent, remain);
@@ -512,7 +511,7 @@ public:
     recv(uint8_t* wire_out, std::size_t cap) noexcept {
         if (fd_ < 0) {
             // WARN-log: pattern matches send() above — same rationale.
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::recv: fd closed (cap={})", cap);
             return std::unexpected(core::ErrorInfo{
                 core::Error::Disconnected,
@@ -526,7 +525,7 @@ public:
                 return static_cast<std::size_t>(n);
             }
             if (n == 0) {
-                SPDLOG_LOGGER_DEBUG(byte_socket_logger(),
+                EPH_LOG_DEBUG(byte_socket_logger(),
                     "ByteSocket::recv: peer FIN");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
@@ -539,13 +538,13 @@ public:
                     "ByteSocket::recv: would block"});
             }
             if (errno == ECONNRESET) {
-                SPDLOG_LOGGER_INFO(byte_socket_logger(),
+                EPH_LOG_INFO(byte_socket_logger(),
                     "ByteSocket::recv: RST from peer");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
                     "ByteSocket::recv: peer RST"});
             }
-            SPDLOG_LOGGER_ERROR(byte_socket_logger(),
+            EPH_LOG_ERROR(byte_socket_logger(),
                 "ByteSocket::recv: errno {} ({})",
                 errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -564,7 +563,7 @@ public:
         if (fd_ < 0) {
             // WARN-log: setting Nagle on a closed fd is a programmer error;
             // matches the existing setsockopt-failure WARN below.
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_no_delay: fd closed (enable={})", enable);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -576,7 +575,7 @@ public:
             // the expected<> return still sees evidence in the log stream
             // that the option took effect — this matters in HFT because
             // silent Nagle-on is catastrophic for tail latency.
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_no_delay: setsockopt errno={} ({}) enable={}",
                 errno, std::strerror(errno), enable);
             return std::unexpected(core::ErrorInfo{
@@ -600,7 +599,7 @@ public:
         if (fd_ < 0) {
             // WARN-log: keepalive on a closed fd is a programmer error;
             // matches set_no_delay() pattern.
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: fd closed "
                 "(interval_secs={} probes={})", interval_secs, probes);
             return std::unexpected(core::ErrorInfo{
@@ -621,7 +620,7 @@ public:
         // [1,10] bound, but this lower-layer API is reachable directly
         // from tests and future callers, so it must defend itself.
         if (probes == 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: probes=0 rejected — "
                 "setsockopt(TCP_KEEPCNT, 0) is EINVAL on Linux and "
                 "would leave keepalive partially configured");
@@ -645,7 +644,7 @@ public:
         // and re-RST as a "stale connection" signal).
         if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPIDLE,
                          &interval_secs, sizeof(interval_secs)) != 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: TCP_KEEPIDLE errno={} ({}) "
                 "interval_secs={}",
                 errno, std::strerror(errno), interval_secs);
@@ -655,7 +654,7 @@ public:
         }
         if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPINTVL,
                          &interval_secs, sizeof(interval_secs)) != 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: TCP_KEEPINTVL errno={} ({}) "
                 "interval_secs={}",
                 errno, std::strerror(errno), interval_secs);
@@ -666,7 +665,7 @@ public:
         int p = static_cast<int>(probes);
         if (::setsockopt(fd_, IPPROTO_TCP, TCP_KEEPCNT,
                          &p, sizeof(p)) != 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: TCP_KEEPCNT errno={} ({}) "
                 "probes={}",
                 errno, std::strerror(errno), probes);
@@ -682,14 +681,14 @@ public:
         int one = 1;
         if (::setsockopt(fd_, SOL_SOCKET, SO_KEEPALIVE,
                          &one, sizeof(one)) != 0) {
-            SPDLOG_LOGGER_WARN(byte_socket_logger(),
+            EPH_LOG_WARN(byte_socket_logger(),
                 "ByteSocket::set_keepalive: SO_KEEPALIVE errno={} ({})",
                 errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "ByteSocket::set_keepalive: SO_KEEPALIVE failed"});
         }
-        SPDLOG_LOGGER_DEBUG(byte_socket_logger(),
+        EPH_LOG_DEBUG(byte_socket_logger(),
             "ByteSocket::set_keepalive: fd={} interval={}s probes={}",
             fd_, interval_secs, probes);
         return {};

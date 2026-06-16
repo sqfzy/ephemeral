@@ -15,8 +15,7 @@
 #include <string>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/metrics_concept.hpp"
 
@@ -24,28 +23,8 @@ namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for the console metrics sink.
-///
-/// Catches `spdlog::stdout_color_mt`'s already-registered exception (a
-/// rare race between concurrent first-call paths from two TUs) and
-/// falls back to `spdlog::get` and finally `spdlog::default_logger`.
-/// Mirrors `eph::core::detail::make_logger`'s shape so this stays
-/// crash-free on the rare edge where the registry is contended at
-/// startup. (`make_logger` itself is in `eph-core`; this header sits
-/// in `eph-utils` and predates the shared helper, so it carries the
-/// same race-handling inline.)
-inline const std::shared_ptr<spdlog::logger>& console_sink_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.console_sink");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("utils.console_sink");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("utils.console_sink");
-            }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* console_sink_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.console_sink");
     return l;
 }
 
@@ -107,7 +86,7 @@ public:
     /// @param tags  Optional key-value tags for dimensional grouping.
     void push_counter(std::string_view name, int64_t value,
                       std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[COUNTER] {} = {}{}", name, value, format_tags(tags));
+        EPH_LOG_INFO(detail::console_sink_logger(),"[COUNTER] {} = {}{}", name, value, format_tags(tags));
     }
 
     /// @brief Log a floating-point gauge metric.
@@ -116,7 +95,7 @@ public:
     /// @param tags  Optional key-value tags for dimensional grouping.
     void push_gauge(std::string_view name, double value,
                     std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[GAUGE]   {} = {:.2f}{}", name, value, format_tags(tags));
+        EPH_LOG_INFO(detail::console_sink_logger(),"[GAUGE]   {} = {:.2f}{}", name, value, format_tags(tags));
     }
 
     /// @brief Log a histogram observation.
@@ -125,7 +104,7 @@ public:
     /// @param tags  Optional key-value tags for dimensional grouping.
     void push_histogram(std::string_view name, double value,
                         std::span<const core::MetricTag> tags = {}) noexcept {
-        SPDLOG_LOGGER_INFO(detail::console_sink_logger(),"[HISTO]   {} = {:.2f}{}", name, value, format_tags(tags));
+        EPH_LOG_INFO(detail::console_sink_logger(),"[HISTO]   {} = {:.2f}{}", name, value, format_tags(tags));
     }
 
     /// @brief Flush all buffered log messages to the underlying sink.

@@ -12,13 +12,12 @@
 #include <string>
 #include <type_traits>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <openssl/aead.h>
 #include <openssl/err.h>
 #include <openssl/mem.h>
 
-#include "eph/core/detail/logger.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 namespace eph::net {
@@ -27,7 +26,7 @@ namespace detail {
 /// Lazily-initialized logger for TLS decryption operations.
 /// @return Pointer to the "transport.tls_dec" spdlog logger.
 inline spdlog::logger* tls_dec_logger() {
-    static auto* l = ::eph::core::detail::make_logger("transport.tls_dec");
+    static spdlog::logger* l = ::eph::log::get("transport.tls_dec");
     return l;
 }
 } // namespace detail
@@ -141,20 +140,20 @@ public:
                  uint8_t* out, uint16_t& out_len,
                  uint8_t* inner_ct = nullptr) noexcept {
         if (!record || !out) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+            EPH_LOG_ERROR(detail::tls_dec_logger(),
                 "decrypt: null pointer — record={}, out={}",
                 static_cast<const void*>(record), static_cast<void*>(out));
             return false;
         }
         if (record_len < tls_record::kRecordHeaderLen + tls_record::kAuthTagLen) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+            EPH_LOG_DEBUG(detail::tls_dec_logger(),
                 "decrypt: record too short: {} < {}",
                 record_len, tls_record::kRecordHeaderLen + tls_record::kAuthTagLen);
             return false;
         }
 
         if (seq_ >= tls_record::kMaxSequenceNumber) {
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+            EPH_LOG_ERROR(detail::tls_dec_logger(),
                 "TLS read sequence limit reached ({}): must reconnect", seq_);
             return false;
         }
@@ -162,7 +161,7 @@ public:
         uint8_t content_type;
         uint16_t payload_len;
         if (!tls_record::parse_record_header(record, content_type, payload_len)) {
-            SPDLOG_LOGGER_WARN(detail::tls_dec_logger(),
+            EPH_LOG_WARN(detail::tls_dec_logger(),
                 "decrypt: invalid record header — content_type=0x{:02X}, "
                 "payload_len={}, record_len={}",
                 content_type, payload_len, record_len);
@@ -170,7 +169,7 @@ public:
         }
 
         if (tls_record::kRecordHeaderLen + payload_len > record_len) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+            EPH_LOG_DEBUG(detail::tls_dec_logger(),
                 "decrypt: record truncated: header+payload={} > record_len={}",
                 tls_record::kRecordHeaderLen + payload_len, record_len);
             return false;
@@ -194,11 +193,11 @@ public:
 
         seq_++;
         if (seq_ >= tls_record::kMaxSequenceNumber) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+            EPH_LOG_ERROR(detail::tls_dec_logger(),
                 "TLS read sequence exhausted ({}/{}): must reconnect immediately",
                 seq_, tls_record::kMaxSequenceNumber);
         } else if (seq_ == tls_record::kSequenceWarnThreshold) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::tls_dec_logger(),
+            EPH_LOG_WARN(detail::tls_dec_logger(),
                 "TLS read sequence approaching limit ({}/{})",
                 seq_, tls_record::kMaxSequenceNumber);
         }
@@ -223,7 +222,7 @@ private:
                                       uint8_t* out, uint16_t& out_len,
                                       uint8_t* inner_ct) noexcept {
         if (payload_len < tls_record::kAuthTagLen + 1) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+            EPH_LOG_DEBUG(detail::tls_dec_logger(),
                 "decrypt: TLS 1.3 record too short: payload_len={} < min {}",
                 payload_len, tls_record::kAuthTagLen + 1);
             return false;
@@ -246,7 +245,7 @@ private:
         // TLS 1.3 spec violation if AEAD output is empty — the trailing
         // inner content-type byte MUST be present. Reject defensively.
         if (plaintext_len == 0) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+            EPH_LOG_ERROR(detail::tls_dec_logger(),
                 "decrypt: TLS 1.3 AEAD reported zero-length plaintext "
                 "(seq={})", seq_);
             return false;
@@ -266,7 +265,7 @@ private:
                                                uint8_t* inner_ct) noexcept {
         // payload = explicit_nonce(8B) + ciphertext + tag(16B)
         if (payload_len < tls_record_v12::kExplicitNonceLen + tls_record::kAuthTagLen) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+            EPH_LOG_DEBUG(detail::tls_dec_logger(),
                 "decrypt: TLS 1.2 AES-GCM record too short: payload_len={} < min {}",
                 payload_len,
                 tls_record_v12::kExplicitNonceLen + tls_record::kAuthTagLen);
@@ -317,7 +316,7 @@ private:
                                                 uint8_t content_type,
                                                 uint8_t* inner_ct) noexcept {
         if (payload_len < tls_record::kAuthTagLen) {
-            SPDLOG_LOGGER_DEBUG(detail::tls_dec_logger(),
+            EPH_LOG_DEBUG(detail::tls_dec_logger(),
                 "decrypt: TLS 1.2 CHACHA20 record too short: payload_len={} < min {}",
                 payload_len, tls_record::kAuthTagLen);
             return false;
@@ -351,7 +350,7 @@ private:
         if (err_code != 0) {
             ERR_error_string_n(err_code, err_buf, sizeof(err_buf));
         }
-        SPDLOG_LOGGER_ERROR(detail::tls_dec_logger(),
+        EPH_LOG_ERROR(detail::tls_dec_logger(),
             "EVP_AEAD_CTX_open failed: format={} payload_len={} seq={} "
             "openssl_err=0x{:08x} ({})",
             fmt_label, payload_len, seq_, err_code,

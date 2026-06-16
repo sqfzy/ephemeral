@@ -47,8 +47,7 @@
 #include <sys/mman.h>
 #endif
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 // for _mm_pause
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||             \
@@ -61,17 +60,8 @@ namespace eph::utils {
 namespace detail {
 
 /// @brief Lazily-initialized logger for the CPU utilities subsystem.
-inline const std::shared_ptr<spdlog::logger>& cpu_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.cpu");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("utils.cpu"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.cpu"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        // Inherit level from spdlog global default
-        return lg;
-    }();
+inline spdlog::logger* cpu_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.cpu");
     return l;
 }
 
@@ -240,7 +230,7 @@ get_cpu_topology() {
   auto log = detail::cpu_logger();
   std::vector<CpuTopologyInfo> cpus;
 
-  SPDLOG_LOGGER_DEBUG(log, "Detecting CPU topology");
+  EPH_LOG_DEBUG(log, "Detecting CPU topology");
 
 #if defined(__linux__)
   // /proc/cpuinfo format: "key\t: value\n" per field, blank lines between CPUs.
@@ -275,7 +265,7 @@ get_cpu_topology() {
 
   std::ifstream cpuinfo("/proc/cpuinfo");
   if (!cpuinfo) {
-    SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+    EPH_LOG_WARN(log, "Failed to open /proc/cpuinfo, "
                              "returning simplified topology");
     // Fall through to the non-Linux fallback below
   }
@@ -290,7 +280,7 @@ get_cpu_topology() {
     // (e.g., ARM where physical id / core id may be absent).
     if (line.empty() || line.find_first_not_of(" \t\r") == std::string::npos) {
       if (valid_mask != 0 && valid_mask != 7) {
-        SPDLOG_LOGGER_TRACE(log,
+        EPH_LOG_TRACE(log,
             "Discarding partial CPU entry (valid_mask=0x{:x})", valid_mask);
       }
       valid_mask = 0;
@@ -324,7 +314,7 @@ get_cpu_topology() {
   // ARM /proc/cpuinfo lacks "physical id" and "core id" — fall back to
   // simplified topology using only the "processor" field we collected.
   if (cpus.empty() && !processor_ids.empty()) {
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "physical id/core id not found in /proc/cpuinfo, "
         "using simplified topology ({} processors)", processor_ids.size());
     for (unsigned id : processor_ids) {
@@ -338,12 +328,12 @@ get_cpu_topology() {
     auto msg = std::format(
         "CPU topology detection failed: parsed {} CPUs, expected {}",
         cpus.size(), hw_threads);
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    EPH_LOG_ERROR(log, "{}", msg);
     return std::unexpected(std::move(msg));
   }
   if (cpus.empty()) {
     auto msg = std::string("CPU topology detection failed: no CPUs found");
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    EPH_LOG_ERROR(log, "{}", msg);
     return std::unexpected(std::move(msg));
   }
 
@@ -351,13 +341,13 @@ get_cpu_topology() {
   std::ranges::sort(cpus, {}, &CpuTopologyInfo::hw_thread_id);
 #else
   // macOS/Windows fallback
-  SPDLOG_LOGGER_DEBUG(log, "Using simplified topology (non-Linux)");
+  EPH_LOG_DEBUG(log, "Using simplified topology (non-Linux)");
   for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) {
     cpus.push_back({0, i, i});
   }
 #endif
 
-  SPDLOG_LOGGER_INFO(log, "Detected {} CPUs", cpus.size());
+  EPH_LOG_INFO(log, "Detected {} CPUs", cpus.size());
   return cpus;
 }
 
@@ -403,7 +393,7 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
   if (max_prio < 0 || min_prio < 0) {
     auto msg = std::format("Failed to query {} priority range for {}: {}",
         policy_name, tag, std::generic_category().message(errno));
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    EPH_LOG_ERROR(log, "{}", msg);
     return std::unexpected(std::move(msg));
   }
 
@@ -423,18 +413,18 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
         "Failed to set {} priority={} for {}: {}. "
         "Hint: run as root, or: setcap cap_sys_nice+ep <binary>",
         policy_name, priority, tag, std::generic_category().message(ret));
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    EPH_LOG_ERROR(log, "{}", msg);
     return std::unexpected(std::move(msg));
   }
 
-  SPDLOG_LOGGER_INFO(log, "{} set to {} priority={} (range {}-{})",
+  EPH_LOG_INFO(log, "{} set to {} priority={} (range {}-{})",
       tag, policy_name, priority, min_prio, max_prio);
   return {};
 
 #elif defined(__APPLE__)
   // macOS: use THREAD_TIME_CONSTRAINT_POLICY for near-realtime behavior.
   // This requests the Mach scheduler to treat this thread as time-critical.
-  SPDLOG_LOGGER_DEBUG(log,
+  EPH_LOG_DEBUG(log,
       "macOS: setting THREAD_TIME_CONSTRAINT_POLICY for {} (priority={})",
       tag, priority);
   // Period/computation/constraint in Mach absolute time units.
@@ -458,16 +448,16 @@ set_thread_realtime(RealtimePolicy policy = RealtimePolicy::Fifo,
     auto msg = std::format(
         "macOS: THREAD_TIME_CONSTRAINT_POLICY failed for {}: kern_return={}",
         tag, kr);
-    SPDLOG_LOGGER_WARN(log, "{}", msg);
+    EPH_LOG_WARN(log, "{}", msg);
     return std::unexpected(std::move(msg));
   }
-  SPDLOG_LOGGER_INFO(log, "{} set to THREAD_TIME_CONSTRAINT_POLICY", tag);
+  EPH_LOG_INFO(log, "{} set to THREAD_TIME_CONSTRAINT_POLICY", tag);
   return {};
 
 #else
   auto msg = std::format(
       "Realtime scheduling not supported on this platform for {}", tag);
-  SPDLOG_LOGGER_WARN(log, "{}", msg);
+  EPH_LOG_WARN(log, "{}", msg);
   return std::unexpected(std::move(msg));
 #endif
 }
@@ -526,7 +516,7 @@ lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
     if (opts.on_fault) flags |= MCL_ONFAULT;
 #  else
     if (opts.on_fault) {
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "[{}] lock_memory: MCL_ONFAULT not available on this platform; "
             "ignoring on_fault=true", label);
     }
@@ -536,13 +526,13 @@ lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
         // Caller passed all-false options; treat as a no-op rather than
         // an error — easier to wire `lock_memory({.current=cfg.lock})`
         // style without conditionals.
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "[{}] lock_memory: no flags requested, no-op", label);
         return {};
     }
 
     if (::mlockall(flags) == 0) {
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "[{}] lock_memory: ok (current={} future={} on_fault={})",
             label, opts.current, opts.future, opts.on_fault);
         return {};
@@ -586,13 +576,13 @@ lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
     auto msg = std::format(
         "[{}] lock_memory: mlockall(flags={:#x}) failed: {} ({})",
         label, flags, std::generic_category().message(err), hint);
-    SPDLOG_LOGGER_ERROR(log, "{}", msg);
+    EPH_LOG_ERROR(log, "{}", msg);
     return std::unexpected(std::move(msg));
 
 #else
     auto msg = std::format(
         "[{}] lock_memory: not supported on this platform", label);
-    SPDLOG_LOGGER_WARN(log, "{}", msg);
+    EPH_LOG_WARN(log, "{}", msg);
     return std::unexpected(std::move(msg));
 #endif
 }
@@ -615,7 +605,7 @@ lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
   // Example: "model name\t: Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz"
   std::ifstream cpuinfo("/proc/cpuinfo");
   if (!cpuinfo) {
-    SPDLOG_LOGGER_WARN(log, "Failed to open /proc/cpuinfo, "
+    EPH_LOG_WARN(log, "Failed to open /proc/cpuinfo, "
                              "cannot detect CPU frequency");
     return std::nullopt;
   }
@@ -639,14 +629,14 @@ lock_memory(LockMemoryOptions opts = {}, const char* tag = nullptr) {
     std::string_view rest(ptr, line.data() + line.size() - ptr);
     while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
     if (rest.starts_with("GHz")) {
-      SPDLOG_LOGGER_DEBUG(log, "CPU base frequency: {:.2f} GHz", freq);
+      EPH_LOG_DEBUG(log, "CPU base frequency: {:.2f} GHz", freq);
       return freq;
     }
   }
-  SPDLOG_LOGGER_WARN(log,
+  EPH_LOG_WARN(log,
       "Could not parse CPU frequency from /proc/cpuinfo");
 #else
-  SPDLOG_LOGGER_DEBUG(log,
+  EPH_LOG_DEBUG(log,
       "CPU frequency detection not available on this platform");
 #endif
   return std::nullopt;
@@ -775,7 +765,7 @@ validate_pin_policy(int cpu, CpuPinPolicy const& policy) {
     }
 
     if (policy.warn_irq_overlap && cpu_has_active_irq(cpu)) {
-        spdlog::warn(
+        EPH_LOG_WARN(detail::cpu_logger(), 
             "pin_thread: cpu {} has active IRQs in /proc/interrupts "
             "(rebind NIC IRQs via /proc/irq/N/smp_affinity)", cpu);
     }
@@ -883,13 +873,13 @@ private:
 [[nodiscard]] inline std::expected<PinGuard, std::string>
 pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     if (cpu < 0) {
-        spdlog::error("pin_thread('{}'): cpu={} must be >= 0", name, cpu);
+        EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): cpu={} must be >= 0", name, cpu);
         return std::unexpected("pin_thread: cpu must be >= 0");
     }
 
 #if defined(__linux__)
     if (auto v = detail::validate_pin_policy(cpu, policy); !v) {
-        spdlog::error("pin_thread('{}'): validate_pin_policy(cpu={}) "
+        EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): validate_pin_policy(cpu={}) "
                       "failed: {}", name, cpu, v.error());
         return std::unexpected(std::move(v.error()));
     }
@@ -899,7 +889,7 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     CPU_SET(cpu, &set);
     if (int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
         rc != 0) {
-        spdlog::error("pin_thread('{}'): pthread_setaffinity_np(cpu={}) "
+        EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): pthread_setaffinity_np(cpu={}) "
                       "failed: {} (rc={})",
                       name, cpu, std::strerror(rc), rc);
         return std::unexpected(
@@ -909,7 +899,7 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     cpu_set_t verify;
     CPU_ZERO(&verify);
     if (pthread_getaffinity_np(pthread_self(), sizeof(verify), &verify) != 0) {
-        spdlog::error("pin_thread('{}'): pthread_getaffinity_np(cpu={}) "
+        EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): pthread_getaffinity_np(cpu={}) "
                       "failed: {} (errno={})",
                       name, cpu, std::strerror(errno), errno);
         return std::unexpected(
@@ -917,7 +907,7 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
             std::strerror(errno));
     }
     if (!CPU_ISSET(cpu, &verify) || CPU_COUNT(&verify) != 1) {
-        spdlog::error("pin_thread('{}'): affinity verification mismatch — "
+        EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): affinity verification mismatch — "
                       "requested cpu={}, verified isset={}, cpu_count={}",
                       name, cpu, CPU_ISSET(cpu, &verify), CPU_COUNT(&verify));
         return std::unexpected(
@@ -941,7 +931,7 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
             // OS affinity is already in effect (pthread_setaffinity_np
             // returned success above), so this is the only chance for an
             // operator to see *who* the colliding owner is.
-            spdlog::warn("pin_thread('{}'): cpu {} already pinned{} "
+            EPH_LOG_WARN(detail::cpu_logger(), "pin_thread('{}'): cpu {} already pinned{} "
                          "— OS affinity is in effect but registry rejected",
                          name, cpu, by);
             return std::unexpected(std::format(
@@ -952,19 +942,19 @@ pin_thread(int cpu, std::string_view name, CpuPinPolicy policy = {}) {
     }
     detail::set_thread_name(name);
 
-    spdlog::info("pin_thread: '{}' pinned to cpu {} (verified)", name, cpu);
+    EPH_LOG_INFO(detail::cpu_logger(), "pin_thread: '{}' pinned to cpu {} (verified)", name, cpu);
     return PinGuard::adopt(cpu);
 #elif defined(__APPLE__)
     (void)policy;
     detail::set_thread_name(name);
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-    spdlog::info("pin_thread: '{}' QoS set (macOS has no hard affinity)", name);
+    EPH_LOG_INFO(detail::cpu_logger(), "pin_thread: '{}' QoS set (macOS has no hard affinity)", name);
     // No registry entry on macOS (no hard affinity to track) — return
     // an empty guard so callers' API shape stays consistent.
     return PinGuard{};
 #else
     (void)policy;
-    spdlog::error("pin_thread('{}'): hard affinity not supported on this "
+    EPH_LOG_ERROR(detail::cpu_logger(), "pin_thread('{}'): hard affinity not supported on this "
                   "platform (cpu={} requested)",
                   name, cpu);
     return std::unexpected(
@@ -1017,7 +1007,7 @@ pin_thread(int cpu) noexcept {
 [[nodiscard]] inline std::expected<void, std::string>
 register_external_pin(int cpu, std::string role) {
     if (cpu < 0) {
-        spdlog::error("register_external_pin: cpu={} must be >= 0 (role='{}')",
+        EPH_LOG_ERROR(detail::cpu_logger(), "register_external_pin: cpu={} must be >= 0 (role='{}')",
                       cpu, role);
         return std::unexpected("register_external_pin: cpu must be >= 0");
     }
@@ -1027,13 +1017,13 @@ register_external_pin(int cpu, std::string role) {
         std::string by = (it != detail::g_pinned_owner_role.end() && !it->second.empty())
                              ? std::format(" by {}", it->second)
                              : std::string{};
-        spdlog::warn("register_external_pin: cpu {} already occupied{}", cpu, by);
+        EPH_LOG_WARN(detail::cpu_logger(), "register_external_pin: cpu {} already occupied{}", cpu, by);
         return std::unexpected(std::format(
             "register_external_pin: cpu {} already occupied{}", cpu, by));
     }
     detail::g_pinned_cpus.insert(cpu);
     detail::g_pinned_owner_role[cpu] = std::move(role);
-    spdlog::info("register_external_pin: cpu {} registered as '{}'",
+    EPH_LOG_INFO(detail::cpu_logger(), "register_external_pin: cpu {} registered as '{}'",
                  cpu, detail::g_pinned_owner_role[cpu]);
     return {};
 }

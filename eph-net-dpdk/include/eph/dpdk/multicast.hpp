@@ -29,8 +29,7 @@
 #include <thread>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_errno.h>
 #include <rte_ethdev.h>
@@ -48,7 +47,7 @@ namespace eph::dpdk {
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace detail {
-inline spdlog::logger* multicast_logger() { return get_logger<LoggerName{"dpdk.multicast"}>(); }
+inline spdlog::logger* multicast_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.multicast"); return l; }
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -339,14 +338,14 @@ class MulticastReceiver {
 public:
     explicit MulticastReceiver(MulticastConfig config) noexcept
         : config_(config) {
-        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+        EPH_LOG_DEBUG(detail::multicast_logger(),
             "MulticastReceiver created: port={}, queue={}, rx_burst={}",
             config_.port_id, config_.rx_queue_id, config_.rx_burst);
         // Surface non-fatal misconfigurations (no CPU pinning, unusual
         // rx_burst). Advisory only — operators see them in production
         // logs. Parallel to Platform / UdpSender / TcpSession / DNS.
         for (const auto& w : config_.warnings()) {
-            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+            EPH_LOG_WARN(detail::multicast_logger(),
                 "MulticastConfig advisory: {}", w);
         }
     }
@@ -377,7 +376,7 @@ public:
     [[nodiscard]] std::expected<size_t, std::string>
     join_group(const MulticastGroup& group) {
         if (running_.load(std::memory_order_acquire)) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "join_group({}:{}) rejected: receiver already running — "
                 "join must be called before start()",
                 net::format_ipv4(group.group_ip).data(), group.group_port);
@@ -386,7 +385,7 @@ public:
 
         // Validate group parameters
         if (auto err = group.validate(); !err.empty()) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "Invalid multicast group: {}", err);
             return std::unexpected(std::format("Invalid group: {}", err));
         }
@@ -394,7 +393,7 @@ public:
         // Check for duplicate
         for (size_t i = 0; i < group_count_; ++i) {
             if (groups_[i].active && groups_[i].group == group) {
-                SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                EPH_LOG_WARN(detail::multicast_logger(),
                     "Group {}:{} already joined at index {}",
                     net::format_ipv4(group.group_ip).data(),
                     group.group_port, i);
@@ -412,7 +411,7 @@ public:
         }
 
         if (idx >= kMaxMulticastGroups) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "Cannot join group: receiver full ({}/{} groups)",
                 group_count_, kMaxMulticastGroups);
             return std::unexpected(std::format(
@@ -457,7 +456,7 @@ public:
             return std::unexpected(result.error());
         }
 
-        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+        EPH_LOG_INFO(detail::multicast_logger(),
             "Joined multicast group {}: {}:{} -> MAC {} (source_filter={})",
             idx,
             net::format_ipv4(group.group_ip).data(),
@@ -479,14 +478,14 @@ public:
     [[nodiscard]] std::expected<void, std::string>
     leave_group(size_t group_idx) {
         if (running_.load(std::memory_order_acquire)) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "leave_group({}) rejected: receiver already running — "
                 "leave must be called before start()", group_idx);
             return std::unexpected("leave_group() must be called before start()");
         }
 
         if (group_idx >= group_count_ || !groups_[group_idx].active) {
-            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+            EPH_LOG_WARN(detail::multicast_logger(),
                 "leave_group({}): invalid index (count={}, active={})",
                 group_idx, group_count_,
                 group_idx < group_count_
@@ -497,7 +496,7 @@ public:
         }
 
         auto& entry = groups_[group_idx];
-        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+        EPH_LOG_INFO(detail::multicast_logger(),
             "Leaving multicast group {}: {}:{} (rx_packets={})",
             group_idx,
             net::format_ipv4(entry.group.group_ip).data(),
@@ -525,7 +524,7 @@ public:
                 return leave_group(i);
             }
         }
-        SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+        EPH_LOG_WARN(detail::multicast_logger(),
             "leave_group({}:{}): not found among {} active group(s)",
             net::format_ipv4(group.group_ip).data(), group.group_port,
             group_count_);
@@ -544,7 +543,7 @@ public:
     ///            received UDP multicast datagram.
     void on_packet(MulticastPacketCallback cb) {
         callback_ = std::move(cb);
-        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+        EPH_LOG_DEBUG(detail::multicast_logger(),
             "Packet callback registered");
     }
 
@@ -560,7 +559,7 @@ public:
         // stop() (a rare but possible orchestration glitch) must observe
         // stop()'s release-store.
         if (running_.load(std::memory_order_acquire)) {
-            SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+            EPH_LOG_WARN(detail::multicast_logger(),
                 "start() rejected: receiver already running "
                 "(active_groups={}, port={}, queue={})",
                 active_group_count(), config_.port_id,
@@ -570,7 +569,7 @@ public:
 
         // Validate config
         if (auto err = config_.validate(); !err.empty()) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "Invalid config: {}", err);
             return std::unexpected(std::format("Invalid config: {}", err));
         }
@@ -583,7 +582,7 @@ public:
         // caller to either single-queue the Platform or pin via
         // FlowDirector first (then clear this flag to acknowledge).
         if (config_.rss_active_multi_queue) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "MulticastReceiver: rss_active_multi_queue=true with "
                 "rx_queue_id={} — RSS hashes inbound multicast across "
                 "all queues; the receiver cannot guarantee delivery to "
@@ -600,13 +599,13 @@ public:
         }
 
         if (active_group_count() == 0) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "Cannot start: no multicast groups joined");
             return std::unexpected("No multicast groups joined");
         }
 
         if (!callback_) {
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "Cannot start: no packet callback registered");
             return std::unexpected("No packet callback registered");
         }
@@ -622,7 +621,7 @@ public:
             thread_ = std::thread([this] { rx_loop(); });
         } catch (const std::system_error& e) {
             running_.store(false, std::memory_order_release);
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "MulticastReceiver::start: std::thread ctor failed: {} "
                 "(code={}); running_ rolled back so start() may be retried",
                 e.what(), e.code().value());
@@ -630,7 +629,7 @@ public:
                 "MulticastReceiver::start: thread ctor failed: {}", e.what()));
         }
 
-        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+        EPH_LOG_INFO(detail::multicast_logger(),
             "MulticastReceiver started: {} active groups, port={}, queue={}",
             active_group_count(), config_.port_id, config_.rx_queue_id);
 
@@ -652,7 +651,7 @@ public:
         const uint64_t rx  = total_rx_packets_.load(std::memory_order_relaxed);
         const uint64_t unm = rx_unmatched_.load(std::memory_order_relaxed);
         const uint64_t ssm = rx_ssm_rejected_.load(std::memory_order_relaxed);
-        SPDLOG_LOGGER_INFO(detail::multicast_logger(),
+        EPH_LOG_INFO(detail::multicast_logger(),
             "MulticastReceiver stopped (total_rx={}, rx_unmatched={}, rx_ssm_rejected={})",
             rx, unm, ssm);
     }
@@ -771,7 +770,7 @@ private:
             }
         }
 
-        SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+        EPH_LOG_DEBUG(detail::multicast_logger(),
             "Applying MC addr list: {} unique MACs on port {}",
             mc_count, config_.port_id);
 
@@ -783,7 +782,7 @@ private:
             // multicast filter table is full, -EINVAL for malformed list).
             // Without these, operators see only "ret=-95" and have to guess.
             const int err = rte_errno;
-            SPDLOG_LOGGER_ERROR(detail::multicast_logger(),
+            EPH_LOG_ERROR(detail::multicast_logger(),
                 "rte_eth_dev_set_mc_addr_list failed: port={} mc_count={} "
                 "ret={} rte_errno={} ({})",
                 config_.port_id, mc_count, ret, err, rte_strerror(err));
@@ -800,7 +799,7 @@ private:
         bool had_active = false;
         for (size_t i = 0; i < group_count_; ++i) {
             if (groups_[i].active) {
-                SPDLOG_LOGGER_DEBUG(detail::multicast_logger(),
+                EPH_LOG_DEBUG(detail::multicast_logger(),
                     "Auto-leaving group {}: {}:{}",
                     i,
                     net::format_ipv4(groups_[i].group.group_ip).data(),
@@ -816,7 +815,7 @@ private:
             int ret = rte_eth_dev_set_mc_addr_list(config_.port_id, nullptr, 0);
             if (ret != 0) {
                 const int err = rte_errno;
-                SPDLOG_LOGGER_WARN(detail::multicast_logger(),
+                EPH_LOG_WARN(detail::multicast_logger(),
                     "Failed to clear MC addr list on cleanup: port={} "
                     "ret={} rte_errno={} ({})",
                     config_.port_id, ret, err, rte_strerror(err));
@@ -843,7 +842,7 @@ private:
         }
 
         [[maybe_unused]] auto* log = detail::multicast_logger();
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "Multicast RX loop started: {} active groups, port={}, queue={}, cpu={}",
             active_group_count(), config_.port_id, config_.rx_queue_id, config_.rx_cpu);
 
@@ -880,7 +879,7 @@ private:
             }
         }
 
-        SPDLOG_LOGGER_DEBUG(log, "Multicast RX loop exited");
+        EPH_LOG_DEBUG(log, "Multicast RX loop exited");
     }
 
     /// Process a single received packet: parse, match against joined groups,
@@ -917,7 +916,7 @@ private:
             // joined group had an SSM filter active. Returning here keeps
             // the unmatched counter reserved for its documented purpose.
             if (entry.group.source_ip != 0 && entry.group.source_ip != src_ip) {
-                SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
+                EPH_LOG_TRACE(detail::multicast_logger(),
                     "SSM filter: dropping packet from {} (expected {})",
                     net::format_ipv4(src_ip).data(),
                     net::format_ipv4(entry.group.source_ip).data());
@@ -930,7 +929,7 @@ private:
             total_rx_packets_.fetch_add(1, std::memory_order_relaxed);
 
             if (parsed.payload && parsed.payload_len > 0) {
-                SPDLOG_LOGGER_TRACE(detail::multicast_logger(),
+                EPH_LOG_TRACE(detail::multicast_logger(),
                     "Delivering packet: group={} src={}:{} len={}",
                     i, net::format_ipv4(src_ip).data(),
                     parsed.src_port(), parsed.payload_len);

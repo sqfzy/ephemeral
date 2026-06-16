@@ -7,7 +7,7 @@
 ///
 /// @code
 ///   eph::utils::KillSwitch ks{[] {
-///       SPDLOG_ERROR("kill switch tripped — cancelling open orders");
+///       EPH_LOG_ERROR(logger, "kill switch tripped — cancelling open orders");
 ///       cancel_all();
 ///   }};
 ///
@@ -30,9 +30,16 @@
 #include <functional>
 #include <utility>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* kill_switch_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.kill_switch");
+    return l;
+}
+} // namespace detail
 
 /// Irreversible kill switch.  Once tripped, stays tripped forever.
 ///
@@ -56,7 +63,7 @@ public:
         : tripped_{false}
         , on_trip_{std::move(on_trip)}
     {
-        SPDLOG_DEBUG("KillSwitch constructed, has_callback={}",
+        EPH_LOG_DEBUG(detail::kill_switch_logger(), "KillSwitch constructed, has_callback={}",
                      static_cast<bool>(on_trip_));
     }
 
@@ -100,7 +107,7 @@ public:
             return;
         }
 
-        SPDLOG_WARN("KillSwitch tripped");
+        EPH_LOG_WARN(detail::kill_switch_logger(), "KillSwitch tripped");
 
         if (on_trip_) {
             // Callback is invoked exactly once, on the winning thread.

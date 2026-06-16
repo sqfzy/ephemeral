@@ -13,8 +13,7 @@
 #include <span>
 #include <string_view>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/tags.hpp"
 
@@ -24,12 +23,8 @@ namespace eph::fix {
 namespace detail {
 /// @brief Get or create the spdlog logger for the builder module.
 /// @return Shared pointer to the "fix.builder" logger.
-inline const std::shared_ptr<spdlog::logger>& fix_builder_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("fix.builder");
-        if (!lg) lg = spdlog::stdout_color_mt("fix.builder");
-        return lg;
-    }();
+inline spdlog::logger* fix_builder_logger() {
+    static spdlog::logger* l = ::eph::log::get("fix.builder");
     return l;
 }
 } // namespace detail
@@ -425,7 +420,7 @@ public:
         // and memcpy(p, nullptr, 0) is technically UB per ISO C. Reject
         // here so neither failure mode reaches the wire.
         if (begin_string.empty()) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            EPH_LOG_WARN(detail::fix_builder_logger(),
                 "FIX builder: begin_string must be non-empty "
                 "(use \"FIX.4.4\" or another negotiated version literal)");
             overflow_ = true;
@@ -444,7 +439,7 @@ public:
         for (size_t i = 0; i < begin_string.size(); ++i) {
             const auto b_ch = static_cast<uint8_t>(begin_string[i]);
             if (b_ch == 0x01 || b_ch == 0x00) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+                EPH_LOG_WARN(detail::fix_builder_logger(),
                     "FIX builder: begin_string contains illegal byte 0x{:02x} "
                     "at offset {} — SOH/NUL would corrupt header framing",
                     b_ch, i);
@@ -705,7 +700,7 @@ private:
     MessageBuilder& set_trusted(uint32_t t, std::string_view value) noexcept {
         if (overflow_) [[unlikely]] return *this;
         if (finished_) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+            EPH_LOG_WARN(detail::fix_builder_logger(),
                 "set(tag={}) called after finish() — ignored. Call reset() first.",
                 t);
             return *this;
@@ -867,21 +862,21 @@ private:
 
     [[gnu::noinline, gnu::cold]]
     static void log_invalid_construction(bool null_buf, size_t capacity) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: invalid construction, null_buf={}, capacity={} (min {})",
             null_buf, capacity, kHeaderReserve);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_overflow(uint32_t tag, size_t needed, size_t remaining) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: buffer overflow at tag={}, needed={} bytes, remaining={}",
             tag, needed, remaining);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_soh_found(uint32_t tag, size_t offset) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: SOH byte found in value at offset {}, tag={} — "
             "SOH is the FIX field delimiter and would corrupt the message",
             offset, tag);
@@ -889,33 +884,33 @@ private:
 
     [[gnu::noinline, gnu::cold]]
     static void log_non_finite(uint32_t tag) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: non-finite double for tag={}", tag);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_invalid_decimal(uint32_t tag, std::string_view value) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: invalid decimal format '{}' for tag={}", value, tag);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_header_overflow(size_t hpos, size_t body_start) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: header too large ({} bytes) for reserved space ({})",
             hpos, body_start);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_trailer_overflow(size_t pos, size_t capacity) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: no room for checksum trailer, pos={}, capacity={}",
             pos, capacity);
     }
 
     [[gnu::noinline, gnu::cold]]
     static void log_duplicate_tag(uint32_t tag) noexcept {
-        SPDLOG_LOGGER_WARN(detail::fix_builder_logger(),
+        EPH_LOG_WARN(detail::fix_builder_logger(),
             "FIX builder: duplicate tag={} rejected by set_unique()", tag);
     }
 };

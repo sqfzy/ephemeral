@@ -43,11 +43,17 @@
 
 #include <zlib.h>
 
-#include <spdlog/spdlog.h>
-
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 
 namespace eph::codec::detail {
+
+/// @brief Lazily-initialised logger for the WebSocket permessage-deflate
+///        inflater.
+inline spdlog::logger* ws_inflate_logger() {
+    static spdlog::logger* l = ::eph::log::get("codec.ws_inflate");
+    return l;
+}
 
 /// @brief One compressed message's worth of inflate. The lifetime of
 ///        `std::vector<uint8_t>` is owned here; callers receive a
@@ -111,7 +117,8 @@ public:
             strm_.avail_in = 0;
             const int ret = ::inflateInit2(&strm_, -MAX_WBITS);
             if (ret != Z_OK) {
-                SPDLOG_WARN("WsInflater: inflateInit2 failed ret={}", ret);
+                EPH_LOG_WARN(ws_inflate_logger(),
+                    "WsInflater: inflateInit2 failed ret={}", ret);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecBad,
                     "WsInflater: inflateInit2 failed"});
@@ -140,7 +147,8 @@ public:
 
             while (strm_.avail_in > 0) {
                 if (out_.size() >= max_inflated_size) {
-                    SPDLOG_WARN("WsInflater: max_inflated_size {} hit "
+                    EPH_LOG_WARN(ws_inflate_logger(),
+                                "WsInflater: max_inflated_size {} hit "
                                 "before message complete (deflate bomb?)",
                                 max_inflated_size);
                     return std::unexpected(::eph::core::ErrorInfo{
@@ -183,7 +191,8 @@ public:
                         // disagree. Treat as a malformed message rather
                         // than spin: WsCodec will surface CodecBad and
                         // drop the connection, identical to Z_DATA_ERROR.
-                        SPDLOG_WARN("WsInflater: inflate ret={} made no "
+                        EPH_LOG_WARN(ws_inflate_logger(),
+                                    "WsInflater: inflate ret={} made no "
                                     "forward progress (avail_in={} produced=0)"
                                     " — treating as malformed deflate",
                                     ret, avail_in_before);
@@ -199,7 +208,8 @@ public:
                     // tail). If it does, we're done early — fine.
                     return {};
                 }
-                SPDLOG_WARN("WsInflater: inflate ret={} msg='{}'",
+                EPH_LOG_WARN(ws_inflate_logger(),
+                            "WsInflater: inflate ret={} msg='{}'",
                             ret, strm_.msg ? strm_.msg : "(null)");
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecBad,
@@ -263,7 +273,8 @@ public:
                 break;
             }
             if (ret != Z_OK && ret != Z_STREAM_END) {
-                SPDLOG_WARN("WsInflater: drain inflate ret={} msg='{}'",
+                EPH_LOG_WARN(ws_inflate_logger(),
+                            "WsInflater: drain inflate ret={} msg='{}'",
                             ret, strm_.msg ? strm_.msg : "(null)");
                 return reset_on_error(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecBad,
@@ -276,7 +287,8 @@ public:
             // next message starts from an empty dictionary.
             const int ret = ::inflateReset(&strm_);
             if (ret != Z_OK) {
-                SPDLOG_WARN("WsInflater: inflateReset ret={}", ret);
+                EPH_LOG_WARN(ws_inflate_logger(),
+                    "WsInflater: inflateReset ret={}", ret);
                 return std::unexpected(::eph::core::ErrorInfo{
                     ::eph::core::Error::CodecBad,
                     "WsInflater: inflateReset failed"});

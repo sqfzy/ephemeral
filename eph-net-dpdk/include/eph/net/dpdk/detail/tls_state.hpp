@@ -54,8 +54,7 @@
 #include <utility>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/tcp.hpp"
@@ -68,7 +67,7 @@ namespace eph::net::dpdk::detail {
 
 /// @brief Lazily-initialized logger for the DPDK TLS state subsystem.
 inline spdlog::logger* tls_state_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.dpdk.tls_state");
+    static spdlog::logger* l = ::eph::log::get("net.dpdk.tls_state");
     return l;
 }
 
@@ -101,14 +100,14 @@ public:
         // `TlsHandshakeFailed` ErrorInfo and has to retry under a debugger
         // to find out *which* sub-step failed.
         auto* log = tls_state_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::handshake: entry hostname='{}' verify_peer={}",
             cfg.hostname, cfg.verify_peer);
 
         auto sess_r =
             ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>::create(sess, cfg);
         if (!sess_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake: TlsSession::create failed "
                 "hostname='{}'", cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -116,7 +115,7 @@ public:
                 "TlsState::handshake: TlsSession::create failed"});
         }
         if (auto h = sess_r->handshake(); !h) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake: handshake() failed hostname='{}'",
                 cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -136,12 +135,12 @@ public:
     begin_handshake(::eph::dpdk::TcpSession<>& sess,
                     const ::eph::net::TlsConfig& cfg) noexcept {
         auto* log = tls_state_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::begin_handshake: hostname='{}'", cfg.hostname);
         auto sess_r =
             ::eph::net::TlsSession<::eph::dpdk::TcpSession<>>::create(sess, cfg);
         if (!sess_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::begin_handshake: TlsSession::create failed "
                 "hostname='{}'", cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -168,7 +167,7 @@ public:
         }
         auto step = hs_session_->handshake_step();
         if (!step) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake_step: handshake failed: {}", step.error());
             hs_session_.reset();
             return std::unexpected(::eph::core::ErrorInfo{
@@ -215,7 +214,7 @@ public:
     [[nodiscard]] std::expected<std::size_t, ::eph::core::ErrorInfo>
     process_records_in_place(uint8_t* buf, std::size_t len, Emit&& emit) noexcept {
         if (!established_ || !dec_) {
-            SPDLOG_LOGGER_WARN(tls_state_logger(),
+            EPH_LOG_WARN(tls_state_logger(),
                 "TlsState::process_records_in_place: not established "
                 "(established_={} dec_={} len={})",
                 established_, static_cast<bool>(dec_), len);
@@ -259,7 +258,7 @@ public:
                     ::eph::net::plaintext_offset_for(dec_->record_format());
                 emit(rec + pt_off, plaintext_len);
             } else {
-                SPDLOG_LOGGER_DEBUG(tls_state_logger(),
+                EPH_LOG_DEBUG(tls_state_logger(),
                     "TlsState: skipping non-appdata record inner_ct={:#x} len={}",
                     inner_ct, plaintext_len);
             }
@@ -274,7 +273,7 @@ public:
     encrypt_for_send(const uint8_t* data, std::size_t len,
                       std::vector<uint8_t>& out) noexcept {
         if (!established_ || !enc_) {
-            SPDLOG_LOGGER_WARN(tls_state_logger(),
+            EPH_LOG_WARN(tls_state_logger(),
                 "TlsState::encrypt_for_send: not established "
                 "(established_={} enc_={} len={})",
                 established_, static_cast<bool>(enc_), len);
@@ -322,13 +321,13 @@ private:
         // survive into the stream's metric path.
         was_resumed_     = session.was_resumed();
         captured_ticket_ = session.take_resumption_ticket();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::finalize: resumed={} captured_ticket={}B hostname='{}'",
             was_resumed_, captured_ticket_.size(), cfg.hostname);
 
         auto state_r = session.extract_hot_state();
         if (!state_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: extract_hot_state failed hostname='{}'",
                 cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -337,7 +336,7 @@ private:
         }
         const std::size_t key_len = session.cipher_key_len();
         if (key_len != 16 && key_len != 32) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: unsupported AEAD key_len={} hostname='{}'",
                 key_len, cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -352,7 +351,7 @@ private:
             state_r->read.seq,
             state_r->record_format);
         if (!dec_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: TlsInPlaceDecryptor::create failed "
                 "hostname='{}' key_len={} detail='{}'",
                 cfg.hostname, key_len, dec_r.error().detail);
@@ -364,7 +363,7 @@ private:
         // Encryptor (write direction) — TX is not on the hot decrypt path.
         auto enc_r = ::eph::net::TlsEncryptor::create(*state_r, key_len);
         if (!enc_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: TlsEncryptor::create failed "
                 "hostname='{}' key_len={}", cfg.hostname, key_len);
             return std::unexpected(::eph::core::ErrorInfo{

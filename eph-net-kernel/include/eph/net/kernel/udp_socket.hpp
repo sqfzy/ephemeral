@@ -34,9 +34,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
 
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -54,7 +53,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel UDP socket subsystem.
 inline spdlog::logger* udp_socket_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.kernel.udp_socket");
+    static spdlog::logger* l = ::eph::log::get("net.kernel.udp_socket");
     return l;
 }
 
@@ -87,14 +86,14 @@ public:
     [[nodiscard]] static std::expected<std::unique_ptr<KernelUdpSocket>, core::ErrorInfo>
     create(UdpConfig cfg) noexcept {
         auto* log = detail::udp_socket_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelUdpSocket::create: bind={}", cfg.bind.to_string());
 
         const int s = ::socket(AF_INET,
                                SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC,
                                IPPROTO_UDP);
         if (s < 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelUdpSocket::create: socket() failed: {}",
                 std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -111,7 +110,7 @@ public:
         if (cfg.reuse_addr) {
             int one = 1;
             if (::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelUdpSocket::create: setsockopt(SO_REUSEADDR) "
                     "errno={} ({})", errno, std::strerror(errno));
             }
@@ -126,13 +125,13 @@ public:
             const std::size_t clamped = std::min<std::size_t>(
                 cfg.rcv_buf, static_cast<std::size_t>(std::numeric_limits<int>::max()));
             if (clamped != cfg.rcv_buf) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelUdpSocket::create: rcv_buf={} exceeds INT_MAX, "
                     "clamping to {}", cfg.rcv_buf, clamped);
             }
             int v = static_cast<int>(clamped);
             if (::setsockopt(s, SOL_SOCKET, SO_RCVBUF, &v, sizeof(v)) != 0) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelUdpSocket::create: setsockopt(SO_RCVBUF={}) "
                     "errno={} ({}) — kernel default in effect",
                     clamped, errno, std::strerror(errno));
@@ -142,13 +141,13 @@ public:
             const std::size_t clamped = std::min<std::size_t>(
                 cfg.snd_buf, static_cast<std::size_t>(std::numeric_limits<int>::max()));
             if (clamped != cfg.snd_buf) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelUdpSocket::create: snd_buf={} exceeds INT_MAX, "
                     "clamping to {}", cfg.snd_buf, clamped);
             }
             int v = static_cast<int>(clamped);
             if (::setsockopt(s, SOL_SOCKET, SO_SNDBUF, &v, sizeof(v)) != 0) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelUdpSocket::create: setsockopt(SO_SNDBUF={}) "
                     "errno={} ({}) — kernel default in effect",
                     clamped, errno, std::strerror(errno));
@@ -162,7 +161,7 @@ public:
         if (::bind(s, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0) {
             const int err = errno;
             ::close(s);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "KernelUdpSocket::create: bind() failed: {}", std::strerror(err));
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -177,7 +176,7 @@ public:
             if (!cr) return std::unexpected(cr.error());
         }
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "KernelUdpSocket::create: bound fd={} addr={}",
             sock->fd_, cfg.bind.to_string());
         return sock;
@@ -192,7 +191,7 @@ public:
         if (attached_to_ != nullptr) {
             auto r = attached_to_->remove(this);
             if (!r) {
-                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                EPH_LOG_WARN(detail::udp_socket_logger(),
                     "~KernelUdpSocket: auto-detach failed: {} — possible "
                     "Poller/Socket lifecycle mismatch",
                     r.error().detail ? r.error().detail : "unknown");
@@ -259,7 +258,7 @@ public:
                     core::Error::WouldBlock,
                     "KernelUdpSocket::send_to: would block"});
             }
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::send_to: errno {} ({})",
                 err, std::strerror(err));
             // Classify by errno so operators can distinguish a bad
@@ -331,7 +330,7 @@ public:
             // WARN-log: cold-path guard, matches the WARN below on
             // setsockopt-style failures so callers that drop the
             // expected<> return still see the misuse in the journal.
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::connect_to: fd closed (peer={})",
                 peer.to_string());
             return std::unexpected(core::ErrorInfo{
@@ -346,7 +345,7 @@ public:
         // `disconnect()` API can carry that intent without overloading
         // the same entry point.
         if (peer.ip == Ipv4Addr{} && peer.port == 0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::connect_to: rejecting (0.0.0.0:0) "
                 "peer — caller likely wanted explicit disconnect()");
             return std::unexpected(core::ErrorInfo{
@@ -361,7 +360,7 @@ public:
         sa.sin_addr.s_addr = ::htonl(peer.ip.to_be32());
         if (::connect(fd_, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa))
             != 0) {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::connect_to: errno {} ({})",
                 errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{
@@ -431,7 +430,7 @@ public:
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 return 0;
             }
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::poll_once_: recvfrom errno {} ({})",
                 errno, std::strerror(errno));
             return 0;
@@ -481,13 +480,13 @@ public:
                 std::span<const uint8_t>(out_sink.data(), out_sink.size()),
                 src_addr);
             if (!sr) {
-                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                EPH_LOG_WARN(detail::udp_socket_logger(),
                     "KernelUdpSocket::poll_once_: auto-response send_to "
                     "failed ({} bytes to {}): {}",
                     out_sink.size(), src_addr.to_string(),
                     sr.error().detail);
             } else {
-                SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+                EPH_LOG_DEBUG(detail::udp_socket_logger(),
                     "KernelUdpSocket::poll_once_: sent {} auto-response "
                     "bytes to {}",
                     out_sink.size(), src_addr.to_string());
@@ -501,7 +500,7 @@ public:
             // must see. Include the source address and payload length so
             // the offending peer is identifiable from the log.
             inc_<::eph::net::StreamMetric::kCodecErrors>();
-            SPDLOG_LOGGER_ERROR(detail::udp_socket_logger(),
+            EPH_LOG_ERROR(detail::udp_socket_logger(),
                 "KernelUdpSocket::poll_once_: decode err={} "
                 "src={} payload_len={} delivered_before_err={}",
                 dr.error().detail, src_addr.to_string(),
@@ -569,7 +568,7 @@ private:
             // WARN-log: cold-path guard. Matches the existing
             // setsockopt-failure WARN below so a caller that drops
             // the expected<> return still has signal in the log.
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::set_membership_: fd closed "
                 "(group={} optname={})",
                 group.to_string(), optname);
@@ -587,7 +586,7 @@ private:
         // actionable error string at the same call site.
         const uint32_t ip_he = group.ip.to_be32();
         if ((ip_he & 0xF0000000u) != 0xE0000000u) {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::set_membership_: group={} is not in "
                 "224.0.0.0/4 (IPv4 multicast range) — kernel would reject "
                 "with EINVAL",
@@ -601,7 +600,7 @@ private:
         mreq.imr_multiaddr.s_addr = ::htonl(ip_he);
         mreq.imr_interface.s_addr = htonl(INADDR_ANY);
         if (::setsockopt(fd_, IPPROTO_IP, optname, &mreq, sizeof(mreq)) != 0) {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "KernelUdpSocket::set_membership_: errno {} ({})",
                 errno, std::strerror(errno));
             return std::unexpected(core::ErrorInfo{

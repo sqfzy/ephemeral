@@ -43,9 +43,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
 
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -71,7 +70,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the kernel TcpStream subsystem.
 inline spdlog::logger* tcp_stream_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.kernel.tcp_stream");
+    static spdlog::logger* l = ::eph::log::get("net.kernel.tcp_stream");
     return l;
 }
 
@@ -304,12 +303,12 @@ public:
     [[nodiscard]] static std::expected<std::unique_ptr<KernelTcpStream>, core::ErrorInfo>
     create(StreamConfig cfg) noexcept {
         auto* log = detail::tcp_stream_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelTcpStream::create: remote={} tls={}",
             cfg.remote.to_string(), EnableTls);
 
         if (cfg.reasm_capacity == 0) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: reasm_capacity=0 — must be > 0");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -323,7 +322,7 @@ public:
         // the config boundary the same way `cfg.connect_timeout <= 0`
         // is.
         if (cfg.remote.port == 0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: cfg.remote.port == 0 "
                 "(uninitialised SocketAddr?) — rejecting before connect");
             return std::unexpected(core::ErrorInfo{
@@ -338,7 +337,7 @@ public:
         // config. Surface the cause at the validation boundary instead.
         // See review-audit-net-batch3-round4 MEDIUM-2.
         if (cfg.connect_timeout <= std::chrono::milliseconds::zero()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: connect_timeout={}ms must be > 0",
                 cfg.connect_timeout.count());
             return std::unexpected(core::ErrorInfo{
@@ -349,7 +348,7 @@ public:
         // disabled state and always validates; non-empty path requires a
         // strictly positive timeout. See `eph/net/ws_config.hpp`.
         if (auto wv = cfg.ws.validate(); !wv) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: WsConfig invalid: {}",
                 wv.error().detail);
             return std::unexpected(wv.error());
@@ -362,7 +361,7 @@ public:
         // before TCP connect spends an RTT.
         if constexpr (EnableTls) {
             if (auto tv = cfg.tls.validate(); !tv) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::create: TlsConfig invalid: {}",
                     tv.error().detail);
                 return std::unexpected(tv.error());
@@ -371,7 +370,7 @@ public:
         // Delegate keepalive sub-config validation. Empty (interval == 0)
         // = disabled; non-empty requires probes in [1, 10].
         if (auto kv = cfg.keepalive.validate(); !kv) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: KeepaliveConfig invalid: {}",
                 kv.error().detail);
             return std::unexpected(kv.error());
@@ -382,7 +381,7 @@ public:
         if (cfg.proxy.has_value()) {
             auto pv = cfg.proxy->validate();
             if (!pv) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::create: ProxyConfig invalid: {}",
                     pv.error().detail);
                 return std::unexpected(pv.error());
@@ -404,7 +403,7 @@ public:
         if (stream->cfg_.proxy.has_value()) {
             auto proxy_ip_r = Ipv4Addr::parse(stream->cfg_.proxy->host);
             if (!proxy_ip_r) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::create: ProxyConfig.host='{}' "
                     "must be a dotted-quad IPv4 literal: {}",
                     stream->cfg_.proxy->host, proxy_ip_r.error().detail);
@@ -413,7 +412,7 @@ public:
                     "KernelTcpStream::create: proxy.host must be IPv4 literal"});
             }
             connect_target = SocketAddr{*proxy_ip_r, stream->cfg_.proxy->port};
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "KernelTcpStream::create: routing via proxy {}",
                 connect_target.to_string());
         }
@@ -430,7 +429,7 @@ public:
         auto br = stream->sock_.begin_connect(connect_target,
                                               stream->cfg_.kernel.local_bind);
         if (!br) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::create: begin_connect failed: {}",
                 br.error().detail);
             // Distinguish proxy-TCP-connect failure from direct connect
@@ -473,7 +472,7 @@ public:
         } else {
             stream->hs_phase_ = HandshakePhase::TcpConnecting;
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelTcpStream::create: non-blocking connect initiated fd={} "
             "phase={}", stream->sock_.fd(),
             handshake_phase_name(stream->hs_phase_));
@@ -491,11 +490,11 @@ public:
         // silently `(void)`-discarded, so an out-of-sync teardown was
         // invisible at the kernel-backend tier.
         if (attached_to_ != nullptr) {
-            SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+            EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                 "~KernelTcpStream: auto-detach fd={}", sock_.fd());
             auto r = attached_to_->remove(this);
             if (!r) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "~KernelTcpStream: auto-detach failed: {} — possible "
                     "Poller/Stream lifecycle mismatch",
                     r.error().detail ? r.error().detail : "unknown");
@@ -573,7 +572,7 @@ public:
                 // reconnect, which is benign on the error path.
                 tls_corrupt_ = true;
                 inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::send(TLS): encrypt_for_send failed "
                     "({}) — latching tls_corrupt_; AEAD write seq may have "
                     "partially advanced past wire, reconnect required",
@@ -603,7 +602,7 @@ public:
             if (!sr) [[unlikely]] {
                 tls_corrupt_ = true;
                 inc_<::eph::net::StreamMetric::kTlsSendDesyncs>();
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::send(TLS): socket send failed "
                     "({}) — latching tls_corrupt_ since TLS write seq "
                     "was already advanced; reconnect required",
@@ -719,13 +718,13 @@ public:
                     auto sr = this->send(
                         std::span<const uint8_t>(close_buf, *enc));
                     if (!sr) {
-                        SPDLOG_LOGGER_DEBUG(log,
+                        EPH_LOG_DEBUG(log,
                             "KernelTcpStream::close_gracefully: "
                             "WS Close send skipped: {}",
                             sr.error().detail);
                     }
                 } else {
-                    SPDLOG_LOGGER_DEBUG(log,
+                    EPH_LOG_DEBUG(log,
                         "KernelTcpStream::close_gracefully: "
                         "encode_close skipped: {}",
                         enc.error().detail);
@@ -737,7 +736,7 @@ public:
         if (fd < 0) {
             // Already closed — treat as idempotent success and flip state.
             state_ = TcpState::Closed;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "KernelTcpStream::close_gracefully: fd already closed");
             return {};
         }
@@ -746,13 +745,13 @@ public:
             if (err == ENOTCONN) {
                 // Peer already tore the TCP session down before we got here.
                 // Not an error — our half-close intent is fulfilled.
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "KernelTcpStream::close_gracefully fd={} "
                     "peer already closed (ENOTCONN)", fd);
                 state_ = TcpState::FinWait1;
                 return {};
             }
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::close_gracefully fd={} errno={} ({})",
                 fd, err, std::strerror(err));
             return std::unexpected(core::ErrorInfo{
@@ -760,7 +759,7 @@ public:
                 "KernelTcpStream::close_gracefully: shutdown(SHUT_WR) failed"});
         }
         state_ = TcpState::FinWait1;
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "KernelTcpStream::close_gracefully fd={}", fd);
         return {};
     }
@@ -803,7 +802,7 @@ public:
     [[nodiscard]] std::expected<void, core::ErrorInfo>
     drain(std::chrono::milliseconds timeout) noexcept {
         auto* log = detail::tcp_stream_logger();
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "KernelTcpStream::drain entry: fd={} timeout_ms={}",
             sock_.fd(), timeout.count());
 
@@ -812,7 +811,7 @@ public:
         // surface InvalidConfig so the caller doesn't conflate "we never
         // got there" with "we tried but the peer didn't answer".
         if (state_ != TcpState::Established) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::drain: state={} (need Established) — "
                 "rejecting", tcp_state_name(state_));
             return std::unexpected(core::ErrorInfo{
@@ -820,7 +819,7 @@ public:
                 "KernelTcpStream::drain: state != Established"});
         }
         if (timeout <= std::chrono::milliseconds::zero()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "KernelTcpStream::drain: timeout_ms={} must be > 0",
                 timeout.count());
             return std::unexpected(core::ErrorInfo{
@@ -833,7 +832,7 @@ public:
             // Already closed — treat as idempotent success (mirrors
             // close_gracefully's "fd already closed" branch).
             state_ = TcpState::Closed;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "KernelTcpStream::drain: fd already closed — no-op");
             return {};
         }
@@ -848,14 +847,14 @@ public:
             // half-close-fulfilled, then proceed to wait for the rest of
             // the teardown (peer FIN may already be queued to recv()).
             if (err != ENOTCONN) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::drain: shutdown(SHUT_WR) fd={} "
                     "errno={} ({})", fd, err, std::strerror(err));
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
                     "KernelTcpStream::drain: shutdown(SHUT_WR) failed"});
             }
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "KernelTcpStream::drain: peer already closed (ENOTCONN) — "
                 "proceeding to wait for EOF");
         }
@@ -931,7 +930,7 @@ public:
             if (prc < 0) {
                 const int err = errno;
                 if (err == EINTR) continue; // benign — re-check the deadline
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::drain: poll fd={} errno={} ({})",
                     fd, err, std::strerror(err));
                 // Hard syscall failure is treated as a forced shutdown:
@@ -951,7 +950,7 @@ public:
                 const auto elapsed_ns_opt =
                     ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
                 inc_<::eph::net::StreamMetric::kRxSessionResets>();
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::drain: timeout fd={} elapsed_ns={} "
                     "budget_ms={}",
                     fd,
@@ -975,7 +974,7 @@ public:
                 const auto elapsed_ns_opt =
                     ::eph::utils::TSC::delta_ns(start_tsc, end_tsc);
                 state_ = TcpState::Closed;
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "KernelTcpStream::drain exit: fd={} success "
                     "elapsed_ns={}",
                     fd, elapsed_ns_opt ? *elapsed_ns_opt : 0ull);
@@ -987,7 +986,7 @@ public:
                     // Spurious wakeup — re-poll.
                     continue;
                 }
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "KernelTcpStream::drain: recv fd={} errno={} ({})",
                     fd, err, std::strerror(err));
                 state_ = TcpState::Closed;
@@ -1000,7 +999,7 @@ public:
             // the codec here — drain is a teardown path, not a data path.
             // The bytes are intentionally dropped. Loop and keep waiting
             // for EOF.
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "KernelTcpStream::drain: discarded {}B in-flight payload "
                 "from peer (fd={})", static_cast<std::size_t>(nr), fd);
         }
@@ -1100,7 +1099,7 @@ public:
         // stream out of Established for the reconnect orchestrator.
         if constexpr (EnableTls) {
             if (tls_corrupt_) [[unlikely]] {
-                SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                     "KernelTcpStream::poll_once_: tls_corrupt_ latched; "
                     "skipping decode and tearing down fd={}",
                     sock_.fd());
@@ -1118,7 +1117,7 @@ public:
             // on the first sink-less drain so the mistake surfaces at
             // runtime instead of becoming silent data loss.
             if (!no_sink_warned_) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::poll_once_: on_message is unset for "
                     "fd={} — discarding inbound bytes (warn-once per stream). "
                     "Assign on_message before attaching to the Poller.",
@@ -1156,7 +1155,7 @@ public:
         rx_bytes_.compact();
 
         if (rx_bytes_.writable_capacity() == 0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            EPH_LOG_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: reasm buffer full; "
                 "dropping connection");
             inc_<::eph::net::StreamMetric::kReasmOverflows>();
@@ -1173,13 +1172,13 @@ public:
                 return preserved;
             }
             if (err.code == core::Error::Disconnected) {
-                SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
+                EPH_LOG_INFO(detail::tcp_stream_logger(),
                     "KernelTcpStream::poll_once_: peer closed fd={}",
                     sock_.fd());
                 state_ = TcpState::Closed;
                 return preserved;
             }
-            SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+            EPH_LOG_WARN(detail::tcp_stream_logger(),
                 "KernelTcpStream::poll_once_: recv err={}", err.detail);
             state_ = TcpState::Closed;
             return preserved;
@@ -1487,7 +1486,7 @@ private:
                 codec_.enable_permessage_deflate(
                     ws_deflate_.server_no_context_takeover);
             } else {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream: server accepted permessage-deflate but "
                     "the configured codec does not implement "
                     "enable_permessage_deflate — inflate unavailable");
@@ -1546,7 +1545,7 @@ private:
             (void)attached_to_->modify_interest_(static_cast<void*>(this),
                                                  EPOLLIN);
         }
-        SPDLOG_LOGGER_INFO(detail::tcp_stream_logger(),
+        EPH_LOG_INFO(detail::tcp_stream_logger(),
             "KernelTcpStream: connection established fd={}", sock_.fd());
     }
 
@@ -1561,7 +1560,7 @@ private:
     /// @brief Terminal handshake failure: latch Failed + Closed so the caller
     ///        (or ReconnectOrchestrator) observes the dead stream via state().
     void fail_handshake_(core::ErrorInfo err) noexcept {
-        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+        EPH_LOG_WARN(detail::tcp_stream_logger(),
             "KernelTcpStream: handshake failed at phase={} fd={}: {}",
             handshake_phase_name(hs_phase_), sock_.fd(), err.detail);
         hs_error_ = err;
@@ -1630,7 +1629,7 @@ private:
                                             rx_bytes_.readable(),
                                             rx_plaintext_);
             if (!cr) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: TLS process_records "
                     "failed: {}", cr.error().detail);
                 state_ = TcpState::Closed;
@@ -1663,18 +1662,18 @@ private:
                     auto sr = this->send(std::span<const uint8_t>(
                         out_sink.data(), out_sink.size()));
                     if (!sr) {
-                        SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                        EPH_LOG_WARN(detail::tcp_stream_logger(),
                             "KernelTcpStream::drain_codec_(TLS): "
                             "auto-response send failed ({} bytes): {}",
                             out_sink.size(), sr.error().detail);
                     } else {
-                        SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                        EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                             "KernelTcpStream::drain_codec_(TLS): sent {} "
                             "auto-response bytes", out_sink.size());
                     }
                 }
                 if (!dr) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_: decode error (TLS): {}",
                         dr.error().detail);
                     inc_<::eph::net::StreamMetric::kCodecErrors>();
@@ -1703,7 +1702,7 @@ private:
                 // Guard against infinite loop: codec returned a frame
                 // but did not advance the view.
                 if (consumed == 0) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_(TLS): codec returned frame "
                         "but consumed 0 bytes — breaking to avoid infinite loop");
                     break;
@@ -1760,18 +1759,18 @@ private:
                 auto sr = this->send(std::span<const uint8_t>(
                     out_sink.data(), out_sink.size()));
                 if (!sr) {
-                    SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                    EPH_LOG_WARN(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_: "
                         "auto-response send failed ({} bytes): {}",
                         out_sink.size(), sr.error().detail);
                 } else {
-                    SPDLOG_LOGGER_DEBUG(detail::tcp_stream_logger(),
+                    EPH_LOG_DEBUG(detail::tcp_stream_logger(),
                         "KernelTcpStream::drain_codec_: sent {} "
                         "auto-response bytes", out_sink.size());
                 }
             }
             if (!dr) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: decode error: {}",
                     dr.error().detail);
                 inc_<::eph::net::StreamMetric::kCodecErrors>();
@@ -1792,7 +1791,7 @@ private:
             // Guard against infinite loop: codec returned a frame
             // but did not advance the view.
             if (consumed == 0) {
-                SPDLOG_LOGGER_WARN(detail::tcp_stream_logger(),
+                EPH_LOG_WARN(detail::tcp_stream_logger(),
                     "KernelTcpStream::drain_codec_: codec returned frame "
                     "but consumed 0 bytes — breaking to avoid infinite loop");
                 break;

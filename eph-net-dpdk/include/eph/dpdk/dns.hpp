@@ -24,8 +24,7 @@
 #include <string>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <sys/random.h>  // getrandom(2) for CSPRNG
 
@@ -160,7 +159,7 @@ struct DnsConfig {
 
 namespace detail {
 
-inline spdlog::logger* dns_logger() { return eph::dpdk::detail::get_logger<eph::dpdk::detail::LoggerName{"dpdk.dns"}>(); }
+inline spdlog::logger* dns_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.dns"); return l; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Ephemeral port helper
@@ -458,7 +457,7 @@ parse_dns_response(const uint8_t* dns_data, size_t dns_len,
     // arp::build_arp_request (returns nullptr on null pool) so callers
     // fail fast without a crash.
     if (!pool) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+        EPH_LOG_ERROR(detail::dns_logger(),
             "build_dns_packet: null mempool — cannot allocate");
         return nullptr;
     }
@@ -611,7 +610,7 @@ try_parse_dns_packet(const rte_mbuf* mbuf, uint16_t tx_id,
     auto result = detail::parse_dns_response(dns_data, dns_len, tx_id);
     if (result) return *result;
 
-    SPDLOG_LOGGER_DEBUG(dns_logger(),
+    EPH_LOG_DEBUG(dns_logger(),
         "DNS packet from {} discarded: {}",
         net::format_ipv4(nameserver_ip).data(), result.error());
     return std::nullopt;
@@ -747,7 +746,7 @@ public:
         : port_id_(port_id), queue_id_(queue_id), pool_(pool),
           src_mac_(src_mac), dst_mac_(dst_mac), src_ip_(src_ip),
           cfg_(cfg) {
-        SPDLOG_LOGGER_TRACE(detail::dns_logger(),
+        EPH_LOG_TRACE(detail::dns_logger(),
             "AsyncDnsResolver ctor: port={} queue={} ns={} timeout={}ms",
             port_id_, queue_id_, net::format_ipv4(cfg_.nameserver_ip).data(),
             cfg_.timeout.count());
@@ -765,12 +764,12 @@ public:
     /// are now covered.
     ~AsyncDnsResolverT() {
         if (attached_to_ != nullptr) {
-            SPDLOG_LOGGER_DEBUG(detail::dns_logger(),
+            EPH_LOG_DEBUG(detail::dns_logger(),
                 "~AsyncDnsResolverT: auto-detach (resolver outlived Poller "
                 "registration without an explicit remove())");
             auto r = attached_to_->remove(this);
             if (!r) {
-                SPDLOG_LOGGER_WARN(detail::dns_logger(),
+                EPH_LOG_WARN(detail::dns_logger(),
                     "~AsyncDnsResolverT: auto-detach failed: {} — possible "
                     "Poller/Resolver lifecycle mismatch",
                     r.error().detail ? r.error().detail : "unknown");
@@ -803,13 +802,13 @@ public:
     [[nodiscard]] std::expected<void, eph::core::ErrorInfo>
     start(const std::string& hostname) noexcept {
         auto* log = detail::dns_logger();
-        SPDLOG_LOGGER_DEBUG(log, "AsyncDnsResolver::start: hostname='{}'",
+        EPH_LOG_DEBUG(log, "AsyncDnsResolver::start: hostname='{}'",
                             hostname);
 
         // Repeated start() is a programming error — the resolver is
         // single-shot. Surface it loudly rather than silently re-starting.
         if (status_ != ResolveStatus::Idle) [[unlikely]] {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "AsyncDnsResolver::start called in non-Idle state ({}) for '{}'",
                 to_string(status_), hostname);
             return std::unexpected(eph::core::ErrorInfo{
@@ -825,7 +824,7 @@ public:
         if (fast_ip != 0) {
             result_ip_ = fast_ip;
             status_ = ResolveStatus::Ready;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "AsyncDnsResolver::start: dotted-decimal fast path '{}' -> {}",
                 hostname, net::format_ipv4(fast_ip).data());
             return {};
@@ -847,7 +846,7 @@ public:
         // Surface advisory warnings (loopback nameserver on DPDK, etc.)
         // — same advisory pattern as blocking resolve() / Platform / etc.
         for (const auto& w : cfg_.warnings()) {
-            SPDLOG_LOGGER_WARN(log, "DnsConfig advisory: {}", w);
+            EPH_LOG_WARN(log, "DnsConfig advisory: {}", w);
         }
 
         // Generate random transaction ID + ephemeral source port via
@@ -863,7 +862,7 @@ public:
         if (auto sp = detail::select_dns_src_port(); sp) {
             src_port_ = *sp;
         } else {
-            SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+            EPH_LOG_ERROR(detail::dns_logger(),
                 "AsyncDnsResolver: src_port selection failed: {}", sp.error());
             return set_error_("DNS src_port selection failed (RSS hash exhausted "
                               "or CSPRNG failure; see ERROR log for detail)",
@@ -913,7 +912,7 @@ public:
             // eventually rather than spinning forever; emit a single
             // WARN so misconfiguration is visible. Production paths
             // call TSC::init() at startup and never hit this branch.
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "AsyncDnsResolver::start: TSC not calibrated, "
                 "using 3GHz fallback for timeout deadline");
             timeout_cycles_ = saturating_ms_to_cycles(cfg_.timeout.count());
@@ -938,7 +937,7 @@ public:
         // ring fullness), we still transition to InProgress so the
         // periodic tick will retry; first-attempt errors are not fatal.
         if (!send_query_()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "AsyncDnsResolver::start: initial tx failed for '{}', "
                 "will retry on next poll tick", hostname);
             // attempts_sent_ stayed at 0 so the first tick attempts again
@@ -948,7 +947,7 @@ public:
         } else {
             ++attempts_sent_;
             next_send_tsc_ = start_tsc_ + retry_interval_cycles_;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "AsyncDnsResolver::start: query #1 in flight for '{}' "
                 "(txid=0x{:04x}, src_port={})",
                 hostname, tx_id_, src_port_);
@@ -1025,7 +1024,7 @@ public:
                 result_ip_ = *resolved;
                 status_ = ResolveStatus::Ready;
                 resolve_duration_tsc_ = rx_tsc - start_tsc_;
-                SPDLOG_LOGGER_INFO(detail::dns_logger(),
+                EPH_LOG_INFO(detail::dns_logger(),
                     "AsyncDnsResolver: resolved '{}' -> {} "
                     "(after {} attempt(s), {} cycles)",
                     hostname_, net::format_ipv4(*resolved).data(),
@@ -1049,7 +1048,7 @@ public:
                 eph::core::Error::Timeout,
                 "AsyncDnsResolver: DNS resolve timeout"};
             resolve_duration_tsc_ = tsc - start_tsc_;
-            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+            EPH_LOG_WARN(detail::dns_logger(),
                 "AsyncDnsResolver: timeout for '{}' after {} attempt(s) "
                 "({}ms budget)",
                 hostname_, attempts_sent_, cfg_.timeout.count());
@@ -1060,7 +1059,7 @@ public:
         if (attempts_sent_ < kMaxAttempts && tsc >= next_send_tsc_) {
             if (send_query_()) {
                 ++attempts_sent_;
-                SPDLOG_LOGGER_DEBUG(detail::dns_logger(),
+                EPH_LOG_DEBUG(detail::dns_logger(),
                     "AsyncDnsResolver: retry #{} for '{}'",
                     attempts_sent_, hostname_);
             }
@@ -1110,7 +1109,7 @@ private:
     set_error_(const char* detail, eph::core::Error code) noexcept {
         status_ = ResolveStatus::Error;
         error_ = eph::core::ErrorInfo{code, detail};
-        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+        EPH_LOG_ERROR(detail::dns_logger(),
             "AsyncDnsResolver error: {}", detail);
         return std::unexpected(error_);
     }
@@ -1125,7 +1124,7 @@ private:
         if (!pkt) {
             // Pool exhaustion is the typical cause. Logged once per
             // failure so a stuck condition is visible without flooding.
-            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+            EPH_LOG_WARN(detail::dns_logger(),
                 "AsyncDnsResolver: mbuf alloc failed for '{}' "
                 "(port={} queue={} attempt={})",
                 hostname_, port_id_, queue_id_, attempts_sent_ + 1);
@@ -1134,7 +1133,7 @@ private:
         uint16_t sent = Io::tx_burst(port_id_, queue_id_, &pkt, 1);
         if (sent != 1) {
             rte_pktmbuf_free(pkt);
-            SPDLOG_LOGGER_WARN(detail::dns_logger(),
+            EPH_LOG_WARN(detail::dns_logger(),
                 "AsyncDnsResolver: tx_burst rejected packet for '{}' "
                 "(port={} queue={} attempt={})",
                 hostname_, port_id_, queue_id_, attempts_sent_ + 1);
@@ -1241,7 +1240,7 @@ resolve(uint16_t port_id,
         // so it's safe to surface via SPDLOG context — but the ErrorInfo
         // detail itself uses a fixed literal (no heap concat) to satisfy
         // the static-lifetime contract.
-        SPDLOG_LOGGER_ERROR(detail::dns_logger(),
+        EPH_LOG_ERROR(detail::dns_logger(),
             "DNS resolve: invalid config ({}) for hostname='{}'",
             err, hostname);
         return std::unexpected(eph::core::ErrorInfo{
@@ -1255,11 +1254,11 @@ resolve(uint16_t port_id,
     // very short timeout, non-standard port) — advisory, does not block
     // the resolve. Parallel to Platform / UdpSender / TcpSession.
     for (const auto& w : cfg.warnings()) {
-        SPDLOG_LOGGER_WARN(log, "DnsConfig advisory: {}", w);
+        EPH_LOG_WARN(log, "DnsConfig advisory: {}", w);
     }
 
     if (hostname.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "DNS resolve: hostname is empty (port_id={} queue_id={})",
             port_id, queue_id);
         return std::unexpected(eph::core::ErrorInfo{
@@ -1267,7 +1266,7 @@ resolve(uint16_t port_id,
             "DNS resolve: hostname is empty"});
     }
     if (!pool) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "DNS resolve: mempool is null (hostname='{}' port_id={} queue_id={})",
             hostname, port_id, queue_id);
         return std::unexpected(eph::core::ErrorInfo{
@@ -1276,7 +1275,7 @@ resolve(uint16_t port_id,
     }
     // Note: nameserver_ip == 0 is already caught by cfg.validate() above.
 
-    SPDLOG_LOGGER_DEBUG(log, "DNS resolve: {} via {} on port {} queue {}",
+    EPH_LOG_DEBUG(log, "DNS resolve: {} via {} on port {} queue {}",
         hostname, net::format_ipv4(cfg.nameserver_ip).data(),
         port_id, queue_id);
 
@@ -1288,7 +1287,7 @@ resolve(uint16_t port_id,
         // GRND_NONBLOCK only returns short on EAGAIN (entropy pool not
         // initialised) — extraordinary on Linux long after boot. Surface
         // errno so operators can diagnose seccomp / kernel-too-old.
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "DNS resolve: CSPRNG (getrandom) failure: errno={} ({}) "
             "hostname='{}' port_id={} queue_id={}",
             errno, std::strerror(errno), hostname, port_id, queue_id);
@@ -1299,7 +1298,7 @@ resolve(uint16_t port_id,
     // Random ephemeral src_port (RSS reverse-pick retired; ENA-first).
     auto src_port_r = detail::select_dns_src_port();
     if (!src_port_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "DNS resolve: src_port selection failed: {}", src_port_r.error());
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
@@ -1311,7 +1310,7 @@ resolve(uint16_t port_id,
     uint8_t dns_buf[kMaxDnsPacketLen];
     size_t dns_len = detail::build_dns_query(dns_buf, net::hton16(tx_id), hostname);
     if (dns_len == 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "DNS resolve: failed to encode query for '{}'", hostname);
         return std::unexpected(eph::core::ErrorInfo{
             eph::core::Error::InvalidConfig,
@@ -1344,7 +1343,7 @@ resolve(uint16_t port_id,
                 // where. mbuf alloc failure is usually pool exhaustion;
                 // the lookup terminates rather than retrying because
                 // the pool will not refill mid-loop.
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DNS resolve: mbuf allocation failed (hostname='{}' "
                     "port={} queue={} query_attempt={})",
                     hostname, port_id, queue_id, requests_sent + 1);
@@ -1361,7 +1360,7 @@ resolve(uint16_t port_id,
                 // tells the operator which TX path is broken and when the
                 // next attempt will fire. next_send below applies even on
                 // failure so the loop self-rate-limits.
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "DNS resolve: tx_burst failed (port={} queue={} "
                     "query_attempt={} hostname='{}'); will retry after "
                     "{}ms backoff",
@@ -1372,7 +1371,7 @@ resolve(uint16_t port_id,
                 [[maybe_unused]] auto remaining_ms = std::chrono::duration_cast<
                     std::chrono::milliseconds>(
                     deadline - std::chrono::steady_clock::now()).count();
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "DNS query #{} sent for '{}' (txid=0x{:04x}, {}ms remaining)",
                     requests_sent, hostname, tx_id, remaining_ms);
             }
@@ -1390,7 +1389,7 @@ resolve(uint16_t port_id,
                 pkts[i], tx_id_net, cfg.nameserver_ip, cfg.port,
                 src_port, src_ip);
             if (resolved_ip) {
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "DNS resolved: {} -> {} (after {} query/queries)",
                     hostname, net::format_ipv4(*resolved_ip).data(),
                     requests_sent);
@@ -1405,7 +1404,7 @@ resolve(uint16_t port_id,
         }
     }
 
-    SPDLOG_LOGGER_ERROR(log,
+    EPH_LOG_ERROR(log,
         "DNS resolve timeout: '{}' not resolved after {}ms ({} queries sent)",
         hostname, cfg.timeout.count(), requests_sent);
 

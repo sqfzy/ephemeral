@@ -31,12 +31,10 @@
 #include <optional>
 #include <span>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
 #include "eph/codec/detail/span_packet_view.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 
 namespace eph::codec {
 
@@ -44,18 +42,7 @@ namespace detail {
 
 /// @brief Lazily-initialised logger for the length-prefix codec.
 inline spdlog::logger* length_prefix_codec_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("codec.length_prefix");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("codec.length_prefix");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("codec.length_prefix");
-            }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg.get();
-    }();
+    static spdlog::logger* l = ::eph::log::get("codec.length_prefix");
     return l;
 }
 
@@ -93,7 +80,7 @@ public:
         const std::size_t avail = view.length();
         if (avail < 4) {
             // Header not yet complete — caller should re-poll for more data.
-            SPDLOG_LOGGER_TRACE(detail::length_prefix_codec_logger(),
+            EPH_LOG_TRACE(detail::length_prefix_codec_logger(),
                 "LengthPrefixCodec::decode: incomplete header, avail={}", avail);
             return std::optional<Frame>{};
         }
@@ -108,7 +95,7 @@ public:
             (static_cast<std::uint32_t>(p[3]));
 
         if (payload_len > kMaxFrameLen) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::length_prefix_codec_logger(),
+            EPH_LOG_WARN(detail::length_prefix_codec_logger(),
                 "LengthPrefixCodec::decode: oversized frame, len={} max={}",
                 payload_len, kMaxFrameLen);
             return std::unexpected(core::ErrorInfo{
@@ -119,7 +106,7 @@ public:
         const std::size_t needed = std::size_t{4} + payload_len;
         if (avail < needed) {
             // Have header but not enough payload yet.
-            SPDLOG_LOGGER_TRACE(detail::length_prefix_codec_logger(),
+            EPH_LOG_TRACE(detail::length_prefix_codec_logger(),
                 "LengthPrefixCodec::decode: incomplete payload, "
                 "need={} avail={}", needed, avail);
             return std::optional<Frame>{};
@@ -128,7 +115,7 @@ public:
         // Snapshot the payload span before advancing the view.
         Frame frame{p + 4, payload_len};
         view.trim_front(needed);
-        SPDLOG_LOGGER_TRACE(detail::length_prefix_codec_logger(),
+        EPH_LOG_TRACE(detail::length_prefix_codec_logger(),
             "LengthPrefixCodec::decode: delivered frame payload_len={}",
             payload_len);
         return std::optional<Frame>{frame};
@@ -141,7 +128,7 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     encode(uint8_t* buf, std::size_t cap, Frame payload) noexcept {
         if (payload.size() > kMaxFrameLen) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::length_prefix_codec_logger(),
+            EPH_LOG_WARN(detail::length_prefix_codec_logger(),
                 "LengthPrefixCodec::encode: payload {} exceeds kMaxFrameLen {}",
                 payload.size(), kMaxFrameLen);
             return std::unexpected(core::ErrorInfo{
@@ -150,7 +137,7 @@ public:
         }
         const std::size_t needed = 4 + payload.size();
         if (needed > cap) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::length_prefix_codec_logger(),
+            EPH_LOG_WARN(detail::length_prefix_codec_logger(),
                 "LengthPrefixCodec::encode: buffer too small (need {}, have {})",
                 needed, cap);
             return std::unexpected(core::ErrorInfo{

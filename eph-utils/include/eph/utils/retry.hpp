@@ -52,11 +52,18 @@
 #include <type_traits>
 #include <utility>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/utils/backoff.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* retry_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.retry");
+    return l;
+}
+} // namespace detail
 
 // ---------------------------------------------------------------------------
 // Default policy objects
@@ -127,7 +134,7 @@ template <Backoff B, class Fn, class When = RetryAlways, class Sleeper = ThreadS
     while (!static_cast<bool>(result)) {
         // Non-retriable? Surface immediately.
         if (!when(std::as_const(result).error())) {
-            SPDLOG_DEBUG("retry: attempt {} failed with non-retriable error; "
+            EPH_LOG_DEBUG(detail::retry_logger(), "retry: attempt {} failed with non-retriable error; "
                          "giving up",
                          attempt);
             break;
@@ -136,7 +143,7 @@ template <Backoff B, class Fn, class When = RetryAlways, class Sleeper = ThreadS
         // Backoff exhausted? Surface the last error.
         const auto delay = backoff.next_delay();
         if (!delay) {
-            SPDLOG_DEBUG("retry: backoff exhausted after {} attempt(s); "
+            EPH_LOG_DEBUG(detail::retry_logger(), "retry: backoff exhausted after {} attempt(s); "
                          "giving up",
                          attempt);
             break;
@@ -149,11 +156,11 @@ template <Backoff B, class Fn, class When = RetryAlways, class Sleeper = ThreadS
         if constexpr (std::formattable<
                           std::remove_cvref_t<decltype(std::as_const(result).error())>,
                           char>) {
-            SPDLOG_DEBUG("retry: attempt {} failed ({}); backing off {} ms",
+            EPH_LOG_DEBUG(detail::retry_logger(), "retry: attempt {} failed ({}); backing off {} ms",
                          attempt, std::format("{}", std::as_const(result).error()),
                          delay->count());
         } else {
-            SPDLOG_DEBUG("retry: attempt {} failed; backing off {} ms", attempt,
+            EPH_LOG_DEBUG(detail::retry_logger(), "retry: attempt {} failed; backing off {} ms", attempt,
                          delay->count());
         }
 

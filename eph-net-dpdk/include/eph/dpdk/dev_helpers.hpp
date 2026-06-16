@@ -56,7 +56,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 #include "eph/dpdk/detail/bdf_sanitize.hpp"
@@ -64,6 +64,8 @@
 namespace eph::dpdk::dev {
 
 namespace detail {
+
+inline spdlog::logger* dev_helpers_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.dev_helpers"); return l; }
 
 /// @brief DPDK's runtime config dir for this prefix; presence of the
 /// `config` file indicates a primary is (or was) running. Mirrors
@@ -128,7 +130,7 @@ double_fork_exec_(const std::string& bin_path,
                   const std::string& pci) noexcept {
     pid_t pid1 = ::fork();
     if (pid1 < 0) {
-        SPDLOG_ERROR("ensure_local_daemon: first fork failed: {}",
+        EPH_LOG_ERROR(dev_helpers_logger(), "ensure_local_daemon: first fork failed: {}",
                      ::strerror(errno));
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::OutOfMemory,
@@ -184,12 +186,12 @@ double_fork_exec_(const std::string& bin_path,
     int status = 0;
     pid_t r = ::waitpid(pid1, &status, 0);
     if (r < 0) {
-        SPDLOG_WARN("ensure_local_daemon: waitpid({}) failed: {}",
+        EPH_LOG_WARN(dev_helpers_logger(), "ensure_local_daemon: waitpid({}) failed: {}",
                     pid1, ::strerror(errno));
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
         const int code = WEXITSTATUS(status);
-        SPDLOG_WARN("ensure_local_daemon: first child exited with code {} "
+        EPH_LOG_WARN(dev_helpers_logger(), "ensure_local_daemon: first child exited with code {} "
                     "(125 = execvp failed; 126 = second fork failed; "
                     "127 = setsid failed)", code);
         // Don't return error here — the grandchild may have started
@@ -230,14 +232,14 @@ double_fork_exec_(const std::string& bin_path,
 [[nodiscard]] inline std::expected<void, ::eph::core::ErrorInfo>
 ensure_local_daemon(std::string_view pci) noexcept {
     if (pci.empty()) {
-        SPDLOG_ERROR("ensure_local_daemon: pci must be non-empty");
+        EPH_LOG_ERROR(detail::dev_helpers_logger(), "ensure_local_daemon: pci must be non-empty");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "ensure_local_daemon: pci must be non-empty"});
     }
     auto san = ::eph::dpdk::detail::sanitize_bdf_for_file_prefix(pci);
     if (!san) {
-        SPDLOG_ERROR("ensure_local_daemon: bad pci '{}': {}",
+        EPH_LOG_ERROR(detail::dev_helpers_logger(), "ensure_local_daemon: bad pci '{}': {}",
                      pci, san.error().detail);
         return std::unexpected(san.error());
     }
@@ -245,14 +247,14 @@ ensure_local_daemon(std::string_view pci) noexcept {
 
     // Already up? No-op.
     if (detail::daemon_config_exists_(file_prefix)) {
-        SPDLOG_DEBUG(
+        EPH_LOG_DEBUG(detail::dev_helpers_logger(),
             "ensure_local_daemon: daemon for pci='{}' (file_prefix='{}') "
             "already running — no-op", pci, file_prefix);
         return {};
     }
 
     if (::geteuid() != 0) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(detail::dev_helpers_logger(),
             "ensure_local_daemon: daemon for pci='{}' is not running and "
             "current process (euid={}) is not root — cannot spawn eph-nicd. "
             "Either run this binary under sudo OR pre-launch eph-nicd "
@@ -266,7 +268,7 @@ ensure_local_daemon(std::string_view pci) noexcept {
     }
 
     const std::string bin = detail::locate_eph_nicd_();
-    SPDLOG_INFO(
+    EPH_LOG_INFO(detail::dev_helpers_logger(),
         "ensure_local_daemon: daemon for pci='{}' not running; "
         "double-fork-exec'ing '{}' --no-config-file --pci={}",
         pci, bin, pci);
@@ -283,7 +285,7 @@ ensure_local_daemon(std::string_view pci) noexcept {
     const auto deadline = std::chrono::steady_clock::now() + 3s;
     while (std::chrono::steady_clock::now() < deadline) {
         if (detail::daemon_config_exists_(file_prefix)) {
-            SPDLOG_INFO(
+            EPH_LOG_INFO(detail::dev_helpers_logger(),
                 "ensure_local_daemon: daemon for pci='{}' is up "
                 "(file_prefix='{}')", pci, file_prefix);
             return {};
@@ -291,7 +293,7 @@ ensure_local_daemon(std::string_view pci) noexcept {
         std::this_thread::sleep_for(50ms);
     }
 
-    SPDLOG_ERROR(
+    EPH_LOG_ERROR(detail::dev_helpers_logger(),
         "ensure_local_daemon: timed out waiting for daemon to come up "
         "(pci='{}', file_prefix='{}', expected '{}'). Common causes: "
         "eph-nicd binary not installed (check /usr/local/bin/eph-nicd "

@@ -17,8 +17,7 @@
 #include <map>
 #include <unordered_map>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 #include "eph/book/array_book.hpp"
 #include "eph/itch/messages.hpp"
@@ -31,15 +30,8 @@ namespace detail {
 /// @brief Lazily-constructed spdlog logger for ItchBookBuilder diagnostics.
 /// @return Pointer to the "book.itch_adapter" logger instance.
 inline spdlog::logger* itch_adapter_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("book.itch_adapter");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("book.itch_adapter");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("book.itch_adapter");
+    return l;
 }
 } // namespace detail
 /// @endcond
@@ -108,7 +100,7 @@ public:
         case eph::itch::kOrderDelete:  return handle_order_delete(msg.data);
         case eph::itch::kOrderReplace: return handle_order_replace(msg.data);
         default:
-            SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "ItchBookBuilder: ignoring msg_type=0x{:02x}", msg.msg_type);
+            EPH_LOG_TRACE(detail::itch_adapter_logger(), "ItchBookBuilder: ignoring msg_type=0x{:02x}", msg.msg_type);
             return false;
         }
     }
@@ -134,7 +126,7 @@ public:
         bid_qty_.clear();
         ask_qty_.clear();
         book_.clear();
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "ItchBookBuilder cleared: orders={} levels={}",
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "ItchBookBuilder cleared: orders={} levels={}",
                      orders_.size(), book_.level_count());
     }
 
@@ -183,7 +175,7 @@ private:
         auto& m = qty_map(side);
         double& total = m[qp];
         total += qty;
-        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "add_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
+        EPH_LOG_TRACE(detail::itch_adapter_logger(), "add_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
         if (side == 'B') {
             book_.update_bid(qp, total);
         } else {
@@ -199,7 +191,7 @@ private:
         auto& m = qty_map(side);
         auto it = m.find(qp);
         if (it == m.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "sub_qty: price={} qp={} side={} not in qty map", price, qp, side);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "sub_qty: price={} qp={} side={} not in qty map", price, qp, side);
             if (side == 'B') book_.update_bid(qp, 0.0);
             else             book_.update_ask(qp, 0.0);
             return;
@@ -210,7 +202,7 @@ private:
             m.erase(it);
             total = 0.0;
         }
-        SPDLOG_LOGGER_TRACE(detail::itch_adapter_logger(), "sub_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
+        EPH_LOG_TRACE(detail::itch_adapter_logger(), "sub_qty side={} price={} qp={} delta={} total={}", side, price, qp, qty, total);
         if (side == 'B') {
             book_.update_bid(qp, total);
         } else {
@@ -225,14 +217,14 @@ private:
         const uint32_t shares = eph::itch::add_order::shares(msg);
         const double   price = eph::itch::add_order::price(msg);
 
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrder ref={} side={} shares={} price={}", ref, side, shares, price);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "AddOrder ref={} side={} shares={} price={}", ref, side, shares, price);
 
         // ITCH wire format does not validate the side byte — a corrupt /
         // adversarial feed could send any value. qty_map() treats any
         // non-'B' as ask, which would silently route bids onto the ask
         // side and corrupt every subsequent BBO read. Reject up-front.
         if (side != 'B' && side != 'S') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+            EPH_LOG_WARN(detail::itch_adapter_logger(),
                 "AddOrder ref={} invalid side=0x{:02x} (expected 'B' or 'S') — dropping",
                 ref, static_cast<uint8_t>(side));
             return false;
@@ -258,11 +250,11 @@ private:
         const uint32_t shares = eph::itch::add_order_mpid::shares(msg);
         const double   price = eph::itch::add_order_mpid::price(msg);
 
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "AddOrderMPID ref={} side={} shares={} price={}", ref, side, shares, price);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "AddOrderMPID ref={} side={} shares={} price={}", ref, side, shares, price);
 
         // See handle_add_order for rationale.
         if (side != 'B' && side != 'S') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+            EPH_LOG_WARN(detail::itch_adapter_logger(),
                 "AddOrderMPID ref={} invalid side=0x{:02x} (expected 'B' or 'S') — dropping",
                 ref, static_cast<uint8_t>(side));
             return false;
@@ -283,7 +275,7 @@ private:
 
         auto it = orders_.find(ref);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderExecuted ref={} not found in order map", ref);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderExecuted ref={} not found in order map", ref);
             return false;
         }
 
@@ -293,11 +285,11 @@ private:
         // when exchange reports over-execution (e.g., cancel/replace race).
         const double clamped = std::min(static_cast<double>(shares), old_qty);
         if (clamped < static_cast<double>(shares)) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderExecuted ref={} shares={} exceeds remaining={}, clamped to {}",
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderExecuted ref={} shares={} exceeds remaining={}, clamped to {}",
                         ref, shares, old_qty, clamped);
         }
         ord.remaining_qty -= clamped;
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "OrderExecuted ref={} exec_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "OrderExecuted ref={} exec_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
 
         const double price = ord.price;
         const char side = ord.side;
@@ -320,7 +312,7 @@ private:
 
         auto it = orders_.find(ref);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} not found in order map", ref);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} not found in order map", ref);
             return false;
         }
 
@@ -328,11 +320,11 @@ private:
         const double old_qty = ord.remaining_qty;
         const double clamped = std::min(static_cast<double>(shares), old_qty);
         if (clamped < static_cast<double>(shares)) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} shares={} exceeds remaining={}, clamped to {}",
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} shares={} exceeds remaining={}, clamped to {}",
                         ref, shares, old_qty, clamped);
         }
         ord.remaining_qty -= clamped;
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} exec_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "OrderExecutedWithPrice ref={} exec_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
 
         const double price = ord.price;
         const char side = ord.side;
@@ -352,7 +344,7 @@ private:
 
         auto it = orders_.find(ref);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderCancel ref={} not found in order map", ref);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderCancel ref={} not found in order map", ref);
             return false;
         }
 
@@ -360,11 +352,11 @@ private:
         const double old_qty = ord.remaining_qty;
         const double clamped = std::min(static_cast<double>(shares), old_qty);
         if (clamped < static_cast<double>(shares)) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderCancel ref={} shares={} exceeds remaining={}, clamped to {}",
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderCancel ref={} shares={} exceeds remaining={}, clamped to {}",
                         ref, shares, old_qty, clamped);
         }
         ord.remaining_qty -= clamped;
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "OrderCancel ref={} cancel_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "OrderCancel ref={} cancel_shares={} qty {}->{}", ref, shares, old_qty, ord.remaining_qty);
 
         const double price = ord.price;
         const char side = ord.side;
@@ -384,13 +376,13 @@ private:
 
         auto it = orders_.find(ref);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderDelete ref={} not found in order map", ref);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderDelete ref={} not found in order map", ref);
             return false;
         }
 
         const double price = it->second.price;
         const char side = it->second.side;
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "OrderDelete ref={} price={} side={}", ref, price, side);
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "OrderDelete ref={} price={} side={}", ref, price, side);
 
         double rem_qty = it->second.remaining_qty;
         orders_.erase(it);
@@ -409,13 +401,13 @@ private:
 
         auto it = orders_.find(orig_ref);
         if (it == orders_.end()) {
-            SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(), "OrderReplace orig_ref={} not found in order map", orig_ref);
+            EPH_LOG_WARN(detail::itch_adapter_logger(), "OrderReplace orig_ref={} not found in order map", orig_ref);
             return false;
         }
 
         const double old_price = it->second.price;
         const char side = it->second.side;
-        SPDLOG_LOGGER_DEBUG(detail::itch_adapter_logger(), "OrderReplace orig_ref={} new_ref={} old_price={} new_price={} shares={}",
+        EPH_LOG_DEBUG(detail::itch_adapter_logger(), "OrderReplace orig_ref={} new_ref={} old_price={} new_price={} shares={}",
                      orig_ref, new_ref, old_price, new_price, shares);
 
         // Remove old order qty from old level.
@@ -450,7 +442,7 @@ private:
         const double old_price = it->second.price;
         const double old_qty   = it->second.remaining_qty;
         const char   old_side  = it->second.side;
-        SPDLOG_LOGGER_WARN(detail::itch_adapter_logger(),
+        EPH_LOG_WARN(detail::itch_adapter_logger(),
             "{} ref={} already live at price={} side={} qty={} — "
             "evicting old level before applying new state to avoid "
             "phantom qty in the aggregation map",

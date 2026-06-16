@@ -15,8 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 namespace eph::fix {
 
@@ -25,15 +24,8 @@ namespace detail {
 /// @brief Get or create the spdlog logger for position tracking.
 /// @return Raw pointer to the "fix.position" logger (never null after first call).
 inline spdlog::logger* position_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("fix.position");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("fix.position");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("fix.position");
+    return l;
 }
 } // namespace detail
 
@@ -112,18 +104,18 @@ public:
         // produce nonsense PnL once close_qty clamps it to a finite
         // old_qty inside the reducing-fill branch.
         if (!std::isfinite(qty) || !std::isfinite(price)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::position_logger(),
+            EPH_LOG_WARN(detail::position_logger(),
                 "on_fill: non-finite qty/price rejected symbol={} side={} qty={} price={}",
                 symbol, side, qty, price);
             return;
         }
         if (qty <= 0.0 || price <= 0.0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: ignoring invalid fill symbol={} side={} qty={} price={}",
+            EPH_LOG_WARN(detail::position_logger(), "on_fill: ignoring invalid fill symbol={} side={} qty={} price={}",
                         symbol, side, qty, price);
             return;
         }
         if (side != '1' && side != '2') [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: ignoring unknown side={} for symbol={}", side, symbol);
+            EPH_LOG_WARN(detail::position_logger(), "on_fill: ignoring unknown side={} for symbol={}", side, symbol);
             return;
         }
 
@@ -159,7 +151,7 @@ public:
             }
             // Guard against non-finite results from degenerate inputs.
             if (!std::isfinite(pos.avg_price)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: symbol={} avg_price became non-finite, "
+                EPH_LOG_WARN(detail::position_logger(), "on_fill: symbol={} avg_price became non-finite, "
                             "resetting to fill price={}", symbol, price);
                 pos.avg_price = price;
             }
@@ -169,7 +161,7 @@ public:
 
             // Realized PnL on the closed portion.
             if (!std::isfinite(pos.avg_price)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: avg_price non-finite for symbol={}, "
+                EPH_LOG_WARN(detail::position_logger(), "on_fill: avg_price non-finite for symbol={}, "
                             "resetting to fill price and skipping PnL calc", symbol);
                 pos.avg_price = price;
             } else if (old_qty > 0.0) {
@@ -180,7 +172,7 @@ public:
                 pos.realized_pnl += (pos.avg_price - price) * close_qty;
             }
 
-            SPDLOG_LOGGER_DEBUG(detail::position_logger(), "on_fill: symbol={} closed qty={} realized_pnl={}",
+            EPH_LOG_DEBUG(detail::position_logger(), "on_fill: symbol={} closed qty={} realized_pnl={}",
                          symbol, close_qty, pos.realized_pnl);
 
             // If the fill crosses zero, the remainder opens a new position
@@ -192,7 +184,7 @@ public:
 
             // Guard against non-finite results from degenerate inputs.
             if (!std::isfinite(pos.avg_price)) {
-                SPDLOG_LOGGER_WARN(detail::position_logger(), "on_fill: symbol={} avg_price became non-finite after "
+                EPH_LOG_WARN(detail::position_logger(), "on_fill: symbol={} avg_price became non-finite after "
                             "reducing fill, resetting to fill price={}", symbol, price);
                 pos.avg_price = price;
             }
@@ -201,7 +193,7 @@ public:
         pos.qty      = new_qty;
         pos.notional = std::abs(new_qty) * pos.avg_price;
 
-        SPDLOG_LOGGER_DEBUG(detail::position_logger(), "on_fill: symbol={} side={} fill_qty={} price={} "
+        EPH_LOG_DEBUG(detail::position_logger(), "on_fill: symbol={} side={} fill_qty={} price={} "
                      "pos_qty={} avg_price={} notional={} realized_pnl={}",
                      symbol, side, qty, price,
                      pos.qty, pos.avg_price, pos.notional, pos.realized_pnl);
@@ -241,7 +233,7 @@ public:
             if (pos.qty == 0.0) continue;
             auto it = market_prices.find(sym);
             if (it == market_prices.end()) {
-                SPDLOG_LOGGER_WARN(detail::position_logger(), "total_unrealized_pnl: no market price for symbol={}", sym);
+                EPH_LOG_WARN(detail::position_logger(), "total_unrealized_pnl: no market price for symbol={}", sym);
                 continue;
             }
             // Defense-in-depth: a NaN/+-Inf market price (corrupt feed,
@@ -254,7 +246,7 @@ public:
             // isfinite guard inside on_fill which prevents NaN from
             // entering pos.avg_price in the first place.)
             if (!std::isfinite(it->second)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                EPH_LOG_WARN(detail::position_logger(),
                     "total_unrealized_pnl: non-finite market price={} "
                     "for symbol={}, skipping (would poison the running "
                     "total with NaN)", it->second, sym);
@@ -272,7 +264,7 @@ public:
             // portfolio aggregating cleanly.
             if (!std::isfinite(pos.avg_price) ||
                 !std::isfinite(pos.qty)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                EPH_LOG_WARN(detail::position_logger(),
                     "total_unrealized_pnl: non-finite position state "
                     "(avg_price={} qty={}) for symbol={}, skipping (would "
                     "poison the running total with NaN)",
@@ -302,7 +294,7 @@ public:
         double total = 0.0;
         for (const auto& [sym, pos] : positions_) {
             if (!std::isfinite(pos.realized_pnl)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                EPH_LOG_WARN(detail::position_logger(),
                     "total_realized_pnl: non-finite realized_pnl={} for "
                     "symbol={}, skipping (would poison the running total "
                     "with NaN)", pos.realized_pnl, sym);
@@ -339,7 +331,7 @@ public:
             // catches the bad input one layer earlier with the
             // actionable per-symbol diagnostic).
             if (!std::isfinite(pos.notional)) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::position_logger(),
+                EPH_LOG_WARN(detail::position_logger(),
                     "net_exposure: non-finite notional={} for symbol={}, "
                     "skipping (would poison the running exposure total "
                     "with NaN)", pos.notional, sym);
@@ -362,7 +354,7 @@ public:
     void clear() noexcept
     {
         positions_.clear();
-        SPDLOG_LOGGER_DEBUG(detail::position_logger(), "PositionTracker::clear: all positions reset");
+        EPH_LOG_DEBUG(detail::position_logger(), "PositionTracker::clear: all positions reset");
     }
 
 private:

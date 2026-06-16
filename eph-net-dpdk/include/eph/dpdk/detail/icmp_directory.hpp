@@ -46,7 +46,7 @@
 #include <type_traits>
 #include <utility>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_eal.h>
 #include <rte_errno.h>
@@ -60,6 +60,8 @@
 #include "eph/dpdk/packet_parse.hpp"          // ParsedIcmp
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* icmp_directory_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.icmp_directory"); return l; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time constants
@@ -212,7 +214,7 @@ static_assert(alignof(IcmpDirectoryHeader) >= 64,
                                    core::ErrorInfo>
 build_icmp_directory_name(std::string_view file_prefix) noexcept {
     if (file_prefix.empty()) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(icmp_directory_logger(),
             "IcmpDirectory::build_name: file_prefix is empty — "
             "PlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
@@ -220,7 +222,7 @@ build_icmp_directory_name(std::string_view file_prefix) noexcept {
             "IcmpDirectory: file_prefix must be non-empty"});
     }
     if (file_prefix.size() > kIcmpDirectoryFilePrefixMax) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(icmp_directory_logger(),
             "IcmpDirectory::build_name: file_prefix='{}' size={} exceeds "
             "{} bytes (RTE_MEMZONE_NAMESIZE - len(\"eph_mp_icmp/\") - 1)",
             file_prefix, file_prefix.size(), kIcmpDirectoryFilePrefixMax);
@@ -332,7 +334,7 @@ public:
         // Free any stale memzone from a previous run — primary always
         // resets (matches mp_registry's contract).
         if (auto* old = rte_memzone_lookup(name)) {
-            SPDLOG_INFO(
+            EPH_LOG_INFO(icmp_directory_logger(),
                 "IcmpDirectory: primary found stale memzone '{}' from a "
                 "previous run; freeing before re-reserving",
                 name);
@@ -346,7 +348,7 @@ public:
             /*flags=*/0,
             /*align=*/64);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory: rte_memzone_reserve_aligned('{}', size={}) "
                 "failed (rte_errno={})",
                 name, sizeof(IcmpDirectoryHeader), rte_errno);
@@ -359,7 +361,7 @@ public:
         auto* hdr = static_cast<IcmpDirectoryHeader*>(mz->addr);
         init_icmp_directory_header(hdr, file_prefix);
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(icmp_directory_logger(),
             "IcmpDirectory: primary reserved memzone '{}' "
             "(magic=0x{:08x} ver={} max_entries={})",
             name, kIcmpDirectoryMagic, kIcmpDirectoryVersion,
@@ -381,7 +383,7 @@ public:
 
         const auto* mz = rte_memzone_lookup(name);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory: rte_memzone_lookup('{}') returned NULL — "
                 "primary not running, file_prefix mismatch, or EAL not "
                 "initialized as secondary",
@@ -393,7 +395,7 @@ public:
 
         auto* hdr = static_cast<IcmpDirectoryHeader*>(mz->addr);
         if (hdr->magic != kIcmpDirectoryMagic) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory: header magic mismatch on '{}' "
                 "(got=0x{:08x}, expected=0x{:08x}) — memzone collision "
                 "or corruption",
@@ -404,7 +406,7 @@ public:
                 "or corruption)"});
         }
         if (hdr->version != kIcmpDirectoryVersion) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory: header version mismatch on '{}' "
                 "(got={}, expected={}) — primary built with a different "
                 "eph-net-dpdk revision",
@@ -426,7 +428,7 @@ public:
         // Use strict equality — any drift means "this header isn't ours
         // and we don't want to silently truncate".
         if (hdr->max_entries != kIcmpDirectoryMaxEntries) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory: header max_entries={} disagrees with the "
                 "compile-time constant kIcmpDirectoryMaxEntries={} on '{}' "
                 "— registry corruption or undeclared schema skew (magic+"
@@ -441,7 +443,7 @@ public:
                 "undeclared schema skew despite magic+version match)"});
         }
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(icmp_directory_logger(),
             "IcmpDirectory: secondary attached to '{}' (max_entries={})",
             name, hdr->max_entries);
 
@@ -463,7 +465,7 @@ public:
                     uint8_t                     proto,
                     uint8_t                     owner_proc) noexcept {
         if (hdr_ == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory::register_target: handle is moved-from "
                 "(proto={} owner_proc={})", proto, owner_proc);
             return std::unexpected(core::ErrorInfo{
@@ -471,7 +473,7 @@ public:
                 "IcmpDirectory::register_target: handle is moved-from"});
         }
         if (owner_proc == kIcmpDirectoryNoOwner) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(icmp_directory_logger(),
                 "IcmpDirectory::register_target: owner_proc=0xFF is the "
                 "no-owner sentinel (proto={} src=0x{:08x}:{} dst=0x{:08x}:{})",
                 proto, tuple.src_ip, tuple.src_port,
@@ -505,7 +507,7 @@ public:
             if (e.proto == proto &&
                 e.src_ip == tuple.src_ip && e.dst_ip == tuple.dst_ip &&
                 e.src_port == tuple.src_port && e.dst_port == tuple.dst_port) {
-                SPDLOG_WARN(
+                EPH_LOG_WARN(icmp_directory_logger(),
                     "IcmpDirectory::register_target: duplicate (tuple, proto) "
                     "found at slot {} (proto={} src=0x{:08x}:{} "
                     "dst=0x{:08x}:{} existing owner_proc={})",
@@ -622,7 +624,7 @@ public:
                         // gate-on-Published invariant.
                         e.claimed.store(kIcmpSlotFree,
                                         std::memory_order_release);
-                        SPDLOG_DEBUG(
+                        EPH_LOG_DEBUG(icmp_directory_logger(),
                             "IcmpDirectory::register_target: lost "
                             "TOCTOU race for (proto={} src=0x{:08x}:{} "
                             "dst=0x{:08x}:{}) — peer claimed lower "
@@ -642,7 +644,7 @@ public:
             }
             return i;
         }
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(icmp_directory_logger(),
             "IcmpDirectory::register_target: directory full ({} slots) "
             "(proto={} src=0x{:08x}:{} dst=0x{:08x}:{} owner_proc={}) — "
             "increase kIcmpDirectoryMaxEntries or shorten stream lifetime",
@@ -692,7 +694,7 @@ public:
         const uint8_t state = e.claimed.load(std::memory_order_acquire);
         if (state == kIcmpSlotFree) return;
         if (state == kIcmpSlotInProgress) {
-            SPDLOG_WARN(
+            EPH_LOG_WARN(icmp_directory_logger(),
                 "IcmpDirectory::unregister: slot {} is InProgress "
                 "(another peer mid-publish) — refusing to release; "
                 "caller likely passed a stale slot_idx",
@@ -800,7 +802,7 @@ private:
         if (owns_memzone_ && mz_ != nullptr) {
             const int rc = rte_memzone_free(mz_);
             if (rc != 0) {
-                SPDLOG_ERROR(
+                EPH_LOG_ERROR(icmp_directory_logger(),
                     "IcmpDirectory: rte_memzone_free failed (rc={}) — "
                     "hugepage segment will leak until process exit",
                     rc);

@@ -33,14 +33,12 @@
 
 #include <pthread.h>
 
-#include <spdlog/spdlog.h>
-
 #include "eph/core/error.hpp"                  // core::Error / core::ErrorInfo
+#include "eph/core/log.hpp"
 #include "eph/dpdk/detail/bdf_sanitize.hpp"     // detail::sanitize_bdf_for_file_prefix
 #include "eph/dpdk/detail/default_nic_scan.hpp"  // default-NIC resolver
 #include "eph/dpdk/detail/icmp_directory.hpp"  // detail::IcmpDirectoryHandle, IPC thunk
 #include "eph/dpdk/detail/icmp_registry.hpp"   // detail::IcmpRegistry
-#include "eph/dpdk/detail/logger.hpp"
 #include "eph/dpdk/detail/mp_ipc.hpp"          // detail::MpIpcAction, mp_ipc_send_oneway
 #include "eph/dpdk/detail/mp_registry.hpp"     // detail::MpRegistryHandle
 #include "eph/dpdk/detail/platform_config.hpp" // PlatformConfig + NicServiceConfig (T2.1 partial split)
@@ -119,7 +117,7 @@ namespace detail {
     return clamp_desc(requested, lim.nb_min, lim.nb_max, lim.nb_align);
 }
 
-inline spdlog::logger* platform_logger() { return get_logger<LoggerName{"dpdk.platform"}>(); }
+inline spdlog::logger* platform_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.platform"); return l; }
 
 } // namespace detail
 
@@ -1372,13 +1370,13 @@ struct Platform::Impl {
             auto sr = ::eph::dpdk::detail::mp_ipc_send_oneway(
                 ::eph::dpdk::detail::kQueueReleaseActionName, req);
             if (!sr) {
-                SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+                EPH_LOG_DEBUG(detail::platform_logger(),
                     "~Impl(secondary): queue release IPC failed: {} — "
                     "daemon may have exited; primary's reset-on-create "
                     "will reclaim the slot on next bring-up.",
                     sr.error().detail);
             } else {
-                SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+                EPH_LOG_DEBUG(detail::platform_logger(),
                     "~Impl(secondary): released queue range=[{},{}) gen={} "
                     "back to daemon", owned_queues_range.lo,
                     owned_queues_range.hi, owned_queues_range.generation);
@@ -1466,15 +1464,15 @@ struct Platform::Impl {
         uint16_t count = rte_eth_dev_count_avail();
 
         if (count == 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "No DPDK ports available (count=0); "
                 "check VFIO binding and hugepage configuration");
             return std::unexpected("No DPDK ports available; check VFIO binding");
         }
-        SPDLOG_LOGGER_INFO(log, "Available DPDK ports: {}", count);
+        EPH_LOG_INFO(log, "Available DPDK ports: {}", count);
 
         if (config.port_id >= count) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "Requested port_id={} but only {} port(s) available",
                 config.port_id, count);
             return std::unexpected(std::format(
@@ -1486,7 +1484,7 @@ struct Platform::Impl {
 
     [[nodiscard]] std::expected<void, std::string> create_mempool() {
         [[maybe_unused]] auto log = detail::platform_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "Creating mbuf pool: size={}, cache={}, data_room={}, per_lcore_pools={}",
             config.mbuf_pool_size, config.mbuf_cache_size,
             RTE_MBUF_DEFAULT_BUF_SIZE, config.per_lcore_pools);
@@ -1505,14 +1503,14 @@ struct Platform::Impl {
                 0, RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
 
             if (mempool == nullptr) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "rte_pktmbuf_pool_create failed: pool_size={}, rte_errno={}: {}",
                     config.mbuf_pool_size, rte_errno, rte_strerror(rte_errno));
                 return std::unexpected(std::format(
                     "Failed to create mbuf pool (rte_errno={}): {}",
                     rte_errno, rte_strerror(rte_errno)));
             }
-            SPDLOG_LOGGER_DEBUG(log, "mbuf pool created at {:p}",
+            EPH_LOG_DEBUG(log, "mbuf pool created at {:p}",
                                 static_cast<void*>(mempool));
             return {};
         }
@@ -1552,7 +1550,7 @@ struct Platform::Impl {
                 socket_id);
             if (p == nullptr) {
                 const int err = rte_errno;
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "rte_pktmbuf_pool_create('{}', socket={}) failed: "
                     "pool_size={}, rte_errno={}: {} — rolling back partial "
                     "per-lcore pool init",
@@ -1572,7 +1570,7 @@ struct Platform::Impl {
                     pool_name, socket_id, err, rte_strerror(err)));
             }
             per_lcore_pool[i] = p;
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "per-lcore pool created: lcore={}, socket={}, pool='{}', ptr={:p}",
                 i, socket_id, pool_name, static_cast<void*>(p));
         }
@@ -1582,7 +1580,7 @@ struct Platform::Impl {
         // call sites that haven't migrated to `pool_lcore_hint`) draw from
         // a real, live pool. Slot 0 is always populated when n_pools > 0.
         mempool = per_lcore_pool[0];
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "per-lcore mempool layout active: pools={}, pool_size={}, "
             "cache={}, canonical (lcore=0) at {:p}",
             n_pools, config.mbuf_pool_size, config.mbuf_cache_size,
@@ -1609,7 +1607,7 @@ struct Platform::Impl {
             mempool = rte_mempool_lookup(pool_name.c_str());
             if (mempool == nullptr) {
                 const int err = rte_errno;
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "rte_mempool_lookup('{}') failed — primary not running or "
                     "file_prefix mismatch (expected runtime dir "
                     "/var/run/dpdk/{}/, rte_errno={}): {}",
@@ -1626,7 +1624,7 @@ struct Platform::Impl {
                                                : std::string{config.file_prefix},
                     err, rte_strerror(err)));
             }
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "Secondary attached to mempool '{}' at {:p} (shared from primary)",
                 pool_name, static_cast<void*>(mempool));
             return {};
@@ -1641,7 +1639,7 @@ struct Platform::Impl {
             rte_mempool* p = rte_mempool_lookup(pool_name.c_str());
             if (p == nullptr) {
                 const int err = rte_errno;
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "rte_mempool_lookup('{}') failed in secondary "
                     "(per_lcore_pools={}; expected primary to have created "
                     "all {} pools, rte_errno={}): {}",
@@ -1659,7 +1657,7 @@ struct Platform::Impl {
             per_lcore_pool[i] = p;
         }
         mempool = per_lcore_pool[0];
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "Secondary attached to per-lcore mempool layout: pools={}, "
             "canonical (lcore=0) at {:p}",
             n_pools, static_cast<void*>(mempool));
@@ -1670,7 +1668,7 @@ struct Platform::Impl {
     configure_port(const rte_eth_dev_info& dev_info) {
         [[maybe_unused]] auto log = detail::platform_logger();
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "port={} driver={} max_rx_q={} max_tx_q={} "
             "rx_offload_capa={:#x} tx_offload_capa={:#x}",
             config.port_id,
@@ -1683,13 +1681,13 @@ struct Platform::Impl {
         uint16_t nb_rx = std::min(config.nb_rx_queues, dev_info.max_rx_queues);
         uint16_t nb_tx = std::min(config.nb_tx_queues, dev_info.max_tx_queues);
         if (nb_rx != config.nb_rx_queues) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "nb_rx_queues={} exceeds NIC max={}; clamped to {}",
                 config.nb_rx_queues, dev_info.max_rx_queues, nb_rx);
             config.nb_rx_queues = nb_rx;
         }
         if (nb_tx != config.nb_tx_queues) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "nb_tx_queues={} exceeds NIC max={}; clamped to {}",
                 config.nb_tx_queues, dev_info.max_tx_queues, nb_tx);
             config.nb_tx_queues = nb_tx;
@@ -1724,7 +1722,7 @@ struct Platform::Impl {
             eth_conf.rxmode.offloads |= (have_ip | have_udp | have_tcp);
 
             if (!have_ip || !have_udp || !have_tcp) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "port={} enable_rx_checksum_offload=true but NIC lacks"
                     " capability: ipv4={} udp={} tcp={} (rx_offload_capa={:#x})"
                     " - proceeding without the missing flag(s); bad-cksum"
@@ -1735,7 +1733,7 @@ struct Platform::Impl {
                     have_tcp ? "ok" : "MISSING",
                     dev_info.rx_offload_capa);
             } else {
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "port={} RX checksum offload enabled (IPv4 + UDP + TCP)",
                     config.port_id);
             }
@@ -1755,7 +1753,7 @@ struct Platform::Impl {
                  RTE_ETH_RSS_NONFRAG_IPV4_UDP |
                  RTE_ETH_RSS_IPV4);
             if (eth_conf.rx_adv_conf.rss_conf.rss_hf == 0) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "port={} nb_rx_queues > 1 but NIC reports no IPv4 TCP/UDP "
                     "RSS hash offloads (flow_type_rss_offloads=0x{:016x}); "
                     "RSS will be inactive — falling back to single-queue dispatch",
@@ -1766,7 +1764,7 @@ struct Platform::Impl {
 
         int ret = rte_eth_dev_configure(config.port_id, nb_rx, nb_tx, &eth_conf);
         if (ret != 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "rte_eth_dev_configure(port={}) failed: ret={}: {}",
                 config.port_id, ret, rte_strerror(-ret));
             return std::unexpected(std::format(
@@ -1779,7 +1777,7 @@ struct Platform::Impl {
         // a placeholder, so we never install/read it; queue landing is measured
         // empirically (dpdk_rss_queue_probe --finder). See docs/cpu-no-cross-core.md.
         rss_active = (eth_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS);
-        SPDLOG_LOGGER_DEBUG(log, "port={} configured (rss_active={})",
+        EPH_LOG_DEBUG(log, "port={} configured (rss_active={})",
                             config.port_id, rss_active);
         return {};
     }
@@ -1794,19 +1792,19 @@ struct Platform::Impl {
                                                dev_info.tx_desc_lim);
 
         if (rx_desc != config.nb_rx_desc)
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "nb_rx_desc adjusted {} -> {} [min={}, max={}, align={}]",
                 config.nb_rx_desc, rx_desc,
                 dev_info.rx_desc_lim.nb_min, dev_info.rx_desc_lim.nb_max,
                 dev_info.rx_desc_lim.nb_align);
         if (tx_desc != config.nb_tx_desc)
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "nb_tx_desc adjusted {} -> {} [min={}, max={}, align={}]",
                 config.nb_tx_desc, tx_desc,
                 dev_info.tx_desc_lim.nb_min, dev_info.tx_desc_lim.nb_max,
                 dev_info.tx_desc_lim.nb_align);
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "Setting up {} RX queue(s) x {} descs, {} TX queue(s) x {} descs",
             config.nb_rx_queues, rx_desc, config.nb_tx_queues, tx_desc);
 
@@ -1814,7 +1812,7 @@ struct Platform::Impl {
             int ret = rte_eth_rx_queue_setup(
                 config.port_id, q, rx_desc, SOCKET_ID_ANY, nullptr, mempool);
             if (ret != 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "eth_rx_queue_setup(port={}, queue={}) failed: ret={}: {}",
                     config.port_id, q, ret, rte_strerror(-ret));
                 return std::unexpected(std::format(
@@ -1826,7 +1824,7 @@ struct Platform::Impl {
             int ret = rte_eth_tx_queue_setup(
                 config.port_id, q, tx_desc, SOCKET_ID_ANY, nullptr);
             if (ret != 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "eth_tx_queue_setup(port={}, queue={}) failed: ret={}: {}",
                     config.port_id, q, ret, rte_strerror(-ret));
                 return std::unexpected(std::format(
@@ -1834,7 +1832,7 @@ struct Platform::Impl {
                     config.port_id, q, ret, rte_strerror(-ret)));
             }
         }
-        SPDLOG_LOGGER_DEBUG(log, "All queues configured for port={}",
+        EPH_LOG_DEBUG(log, "All queues configured for port={}",
                             config.port_id);
         return {};
     }
@@ -1845,20 +1843,20 @@ struct Platform::Impl {
         if (config.enable_promiscuous) {
             int ret = rte_eth_promiscuous_enable(config.port_id);
             if (ret != 0) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "eth_promiscuous_enable(port={}) failed: ret={} "
                     "(promiscuous mode will be inactive)",
                     config.port_id, ret);
             } else {
                 promiscuous_active = true;
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "port={} promiscuous mode enabled", config.port_id);
             }
         }
 
         int ret = rte_eth_dev_start(config.port_id);
         if (ret != 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "rte_eth_dev_start(port={}) failed: ret={}: {}",
                 config.port_id, ret, rte_strerror(-ret));
             return std::unexpected(std::format(
@@ -1866,7 +1864,7 @@ struct Platform::Impl {
                 config.port_id, ret, rte_strerror(-ret)));
         }
         port_started = true;
-        SPDLOG_LOGGER_DEBUG(log, "port={} started", config.port_id);
+        EPH_LOG_DEBUG(log, "port={} started", config.port_id);
         return {};
     }
 
@@ -1884,13 +1882,13 @@ struct Platform::Impl {
             // the link-down-but-NIC-ok common case.
             int ret = rte_eth_link_get_nowait(config.port_id, &link);
             if (ret != 0) {
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "port={} rte_eth_link_get_nowait ret={} ({}) "
                     "— treating as link DOWN",
                     config.port_id, ret, rte_strerror(-ret));
             }
             if (link.link_status == RTE_ETH_LINK_UP) {
-                SPDLOG_LOGGER_INFO(log, "port={} link up: {} Mbps {}",
+                EPH_LOG_INFO(log, "port={} link up: {} Mbps {}",
                     config.port_id, link.link_speed,
                     link.link_duplex ? "full-duplex" : "half-duplex");
                 return true;
@@ -1900,7 +1898,7 @@ struct Platform::Impl {
 
         if (config.link_timeout_ms == 0) {
             if (!check_once())
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "port={} link not yet up (timeout=0); "
                     "link may negotiate asynchronously", config.port_id);
             return;
@@ -1912,7 +1910,7 @@ struct Platform::Impl {
             if (check_once()) return;
             std::this_thread::sleep_for(milliseconds(10));
         }
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "port={} link not yet up after {}ms; "
             "continuing — link may negotiate asynchronously",
             config.port_id, config.link_timeout_ms);
@@ -1929,7 +1927,7 @@ struct Platform::Impl {
         // the shared-view pointers here so any lingering accessor returns
         // nullptr instead of a dangling primary-owned handle.
         if (resolved_proc_type == ProcType::Secondary) {
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "secondary cleanup (port={}, file_prefix='{}'): "
                 "stream/poller teardown only, port + mempool untouched "
                 "(owned by primary)",
@@ -1953,7 +1951,7 @@ struct Platform::Impl {
         // — byte-equal to pre-fix behavior.
         if (defer_for_peers()) {
             const uint32_t alive = mp_registry->count_alive_procs();
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "primary cleanup: {} peers still attached — deferring "
                 "rte_eth_dev_stop/close + mempool_free per DPDK MP "
                 "teardown protocol. port stays running; physical "
@@ -1970,7 +1968,7 @@ struct Platform::Impl {
         }
 
         if (port_started) {
-            SPDLOG_LOGGER_DEBUG(log, "Stopping port={}", config.port_id);
+            EPH_LOG_DEBUG(log, "Stopping port={}", config.port_id);
             rte_eth_dev_stop(config.port_id);
             rte_eth_dev_close(config.port_id);
             port_started = false;
@@ -1983,7 +1981,7 @@ struct Platform::Impl {
         bool freed_via_per_lcore = false;
         for (auto& slot : per_lcore_pool) {
             if (slot != nullptr) {
-                SPDLOG_LOGGER_DEBUG(log, "Freeing per-lcore mbuf pool {:p}",
+                EPH_LOG_DEBUG(log, "Freeing per-lcore mbuf pool {:p}",
                                     static_cast<void*>(slot));
                 rte_mempool_free(slot);
                 slot = nullptr;
@@ -1995,7 +1993,7 @@ struct Platform::Impl {
             // freed. Zero the alias so accessors return nullptr.
             mempool = nullptr;
         } else if (mempool != nullptr) {
-            SPDLOG_LOGGER_DEBUG(log, "Freeing mbuf pool {:p}",
+            EPH_LOG_DEBUG(log, "Freeing mbuf pool {:p}",
                                 static_cast<void*>(mempool));
             rte_mempool_free(mempool);
             mempool = nullptr;
@@ -2030,12 +2028,12 @@ inline Platform::~Platform() {
         if (owns_eal) {
             [[maybe_unused]] auto log = detail::platform_logger();
             if (defer_eal_for_peers) {
-                SPDLOG_LOGGER_INFO(log,
+                EPH_LOG_INFO(log,
                     "~Platform: deferring rte_eal_cleanup — peers still "
                     "attached. OS releases per-process hugepage mappings "
                     "on exit; shared state stays alive for peers.");
             } else {
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "~Platform: owns_eal_init=true — running eal_cleanup");
                 [[maybe_unused]] bool ok = ::eph::dpdk::eal_cleanup();
             }
@@ -2077,7 +2075,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     [[maybe_unused]] auto log = detail::platform_logger();
 
     if (auto err = detail::validate_bringup_(config); !err.empty()) {
-        SPDLOG_LOGGER_ERROR(log, "Invalid BringupConfig: {}", err);
+        EPH_LOG_ERROR(log, "Invalid BringupConfig: {}", err);
         return std::unexpected(std::string{err});
     }
 
@@ -2085,7 +2083,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     // zero link-timeout, etc.) at WARN so operators see them in production
     // logs. Advisory only — does not block construction.
     for (const auto& w : config.warnings()) {
-        SPDLOG_LOGGER_WARN(log, "BringupConfig advisory: {}", w);
+        EPH_LOG_WARN(log, "BringupConfig advisory: {}", w);
     }
 
     auto impl = std::make_unique<Impl>();
@@ -2124,7 +2122,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     // DPDK syscalls.
     rte_eth_dev_info dev_info{};
     if (int ret = rte_eth_dev_info_get(config.port_id, &dev_info); ret != 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "rte_eth_dev_info_get(port={}) failed: ret={}",
             config.port_id, ret);
         return std::unexpected(std::format(
@@ -2162,7 +2160,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     if (impl->config.nb_rx_queues <= 1 || !impl->rss_active) {
         if (impl->dispatch_mode !=
                 ::eph::net::dpdk::RxDispatchMode::Software) {
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "Platform: NIC supports {} but RSS not active "
                 "(nb_rx_queues={}, rss_active={}); pinning dispatch_mode "
                 "to Software for attach decisions",
@@ -2180,7 +2178,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
     //    (which would mask the misconfiguration). Single-queue Platforms
     //    (nb_rx_queues==1) are exempt.
     if (impl->config.nb_rx_queues > 1 && !impl->rss_active) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform: nb_rx_queues={} but rss_active=false on port={}; "
             "cannot route packets to multiple queues without functional RSS",
             impl->config.nb_rx_queues, config.port_id);
@@ -2193,7 +2191,7 @@ Platform::bringup_port_(const detail::BringupConfig& config) {
             impl->config.nb_rx_queues, config.port_id));
     }
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform ready (port={}, nb_rx_queues={}, rss_active={}, "
         "dispatch_mode={})",
         config.port_id, impl->config.nb_rx_queues,
@@ -2237,12 +2235,12 @@ Platform::primary_bringup_(detail::BringupConfig config) {
     uint8_t captured_self_idx = 0xFF;   // mp_topology not set
     if (config.mp_topology.has_value()) {
         if (auto err = detail::validate_bringup_(config); !err.empty()) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "primary_bringup_: invalid BringupConfig: {}", err);
             return std::unexpected(std::string{err});
         }
         if (config.file_prefix.empty()) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "primary_bringup_: mp_topology requires a non-empty "
                 "file_prefix (used as the registry memzone name "
                 "eph_mp/<file_prefix>)");
@@ -2252,7 +2250,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
         auto r = ::eph::dpdk::detail::MpRegistryHandle::create_primary(
             config.file_prefix, *config.mp_topology);
         if (!r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "primary_bringup_: registry reserve failed: {}",
                 r.error().detail);
             return std::unexpected(std::string{r.error().detail});
@@ -2274,7 +2272,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
         if (icmp_r) {
             icmp_dir = std::move(*icmp_r);
         } else {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "primary_bringup_: IcmpDirectory reserve failed: {} "
                 "— ICMP cross-process forwarding degraded to per-process drop",
                 icmp_r.error().detail);
@@ -2284,7 +2282,7 @@ Platform::primary_bringup_(detail::BringupConfig config) {
         // the mp_topology⇄rx_queue_range mutual-exclusion check.
         config.mp_topology.reset();
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "primary_bringup_: mp_topology derived "
             "rx_queue_range=[{},{}) self_index={} (registry attached, "
             "icmp_directory={})",
@@ -2357,13 +2355,13 @@ Platform::secondary_bringup_(detail::BringupConfig config,
     // `docs/dpdk-multiprocess.md`.
 
     if (auto err = detail::validate_bringup_(config); !err.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "secondary_bringup_: invalid BringupConfig: {}", err);
         return std::unexpected(std::string{err});
     }
 
     if (config.file_prefix.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "secondary_bringup_: file_prefix is empty "
             "(must match the primary's EAL --file-prefix)");
         return std::unexpected(std::string{
@@ -2389,7 +2387,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         auto r = ::eph::dpdk::detail::MpRegistryHandle::attach_secondary(
             config.file_prefix, *config.mp_topology, registry_preclaimed);
         if (!r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "secondary_bringup_{}: registry attach failed: {}",
                 registry_preclaimed ? " (preclaimed)" : "",
                 r.error().detail);
@@ -2408,14 +2406,14 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         if (icmp_r) {
             icmp_dir = std::move(*icmp_r);
         } else {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "secondary_bringup_: IcmpDirectory attach failed: {} "
                 "— ICMP cross-process forwarding degraded to per-process drop",
                 icmp_r.error().detail);
         }
 
         config.mp_topology.reset();
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "secondary_bringup_: mp_topology derived "
             "rx_queue_range=[{},{}) self_index={} (registry attached, "
             "icmp_directory={})",
@@ -2444,11 +2442,11 @@ Platform::secondary_bringup_(detail::BringupConfig config,
     // Surface non-fatal misconfigurations (undersized rings, etc.) to
     // keep parity with the primary path's advisory output.
     for (const auto& w : config.warnings()) {
-        SPDLOG_LOGGER_WARN(log, "BringupConfig advisory: {}", w);
+        EPH_LOG_WARN(log, "BringupConfig advisory: {}", w);
     }
 
     if (!rte_eth_dev_is_valid_port(config.port_id)) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "secondary_bringup_: port_id={} not valid from "
             "secondary — primary may not have started this port yet, "
             "or file_prefix may not match",
@@ -2496,7 +2494,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         if (probe_ret == 0) {
             if (dev_info.max_rx_queues > 0 &&
                 config.nb_rx_queues > dev_info.max_rx_queues) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "secondary_bringup_: caller nb_rx_queues={} exceeds live "
                     "max_rx_queues={} on port {} — rr_counter may hand out "
                     "queue ids the NIC has no rings for; check that the "
@@ -2505,7 +2503,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
                     config.port_id);
             }
         } else {
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "secondary_bringup_: rte_eth_dev_info_get probe rejected "
                 "(ret={}, rte_errno={}: {}) — PMD does not support it from "
                 "secondary; skipping nb_rx_queues cross-check (advisory)",
@@ -2549,7 +2547,7 @@ Platform::secondary_bringup_(detail::BringupConfig config,
         }
     }
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "secondary_bringup_ ready (port={}, file_prefix='{}', "
         "rx_queue_range=[{},{}), dispatch_mode={})",
         config.port_id, config.file_prefix,
@@ -2652,7 +2650,7 @@ Platform::create(PlatformConfig cfg) {
     [[maybe_unused]] auto* log = detail::platform_logger();
 
     if (auto err = ::eph::dpdk::validate(cfg); !err.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: invalid PlatformConfig: {}", err);
         return std::unexpected(std::string{err});
     }
@@ -2667,26 +2665,26 @@ Platform::create(PlatformConfig cfg) {
     if (effective_pci.empty()) {
         auto scan_r = detail::find_default_nic_pci();
         if (!scan_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "Platform::create: default-NIC resolution failed: {}",
                 scan_r.error());
             return std::unexpected(std::move(scan_r.error()));
         }
         resolved_pci  = std::move(*scan_r);
         effective_pci = resolved_pci;
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "Platform::create: pci empty — resolved to default NIC "
             "'{}' (only running eph-nicd daemon)", effective_pci);
     }
 
     auto fp_r = detail::derive_file_prefix_(effective_pci);
     if (!fp_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: {}", fp_r.error());
         return std::unexpected(std::move(fp_r.error()));
     }
     const std::string derived_prefix = std::move(*fp_r);
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::create: derived file_prefix='{}' from pci='{}', "
         "queues={}", derived_prefix, effective_pci, cfg.queues);
 
@@ -2714,7 +2712,7 @@ Platform::create(PlatformConfig cfg) {
     // loudly because forcing a reset is morally questionable — any DPDK
     // resource the dead Platform leaked stays leaked until process exit.
     if (eal_initialized_flag().load(std::memory_order_acquire)) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "Platform::create: EAL is still flagged initialized in this "
             "process despite no live Platform — most likely the previous "
             "Platform's eal_cleanup failed (daemon died mid-flight). "
@@ -2739,7 +2737,7 @@ Platform::create(PlatformConfig cfg) {
     if (!cfg.pins.empty()) {
         auto pg = pin_lcores(cfg.pins, cfg.pin_policy);
         if (!pg) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "Platform::create: pin_lcores rejected: {}", pg.error());
             return std::unexpected(std::format(
                 "Platform::create: pin_lcores: {}", pg.error()));
@@ -2767,7 +2765,7 @@ Platform::create(PlatformConfig cfg) {
 
     auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
     if (!eal_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: eal_init failed: {} — pin_guards roll "
             "back automatically on return", eal_r.error());
         return std::unexpected(std::format(
@@ -2798,7 +2796,7 @@ Platform::create(PlatformConfig cfg) {
         claim_req,
         std::chrono::milliseconds{2000});
     if (!reply_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: queue claim IPC failed: {} — is the "
             "eph-nicd daemon running on pci='{}'? (file_prefix='{}')",
             reply_r.error().detail, effective_pci, derived_prefix);
@@ -2810,7 +2808,7 @@ Platform::create(PlatformConfig cfg) {
     if (!reply_r->ok) {
         // Daemon-formatted error; "QueuePoolExhausted" is the canonical
         // pool-empty reply.
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: daemon rejected claim for {} queue(s): {}",
             cfg.queues, reply_r->error);
         [[maybe_unused]] bool ok = eal_cleanup();
@@ -2820,7 +2818,7 @@ Platform::create(PlatformConfig cfg) {
     }
     const ::eph::dpdk::detail::QueueRange granted{
         reply_r->lo, reply_r->hi, reply_r->generation};
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::create: daemon granted queue range=[{},{}) gen={} "
         "for pci='{}' (requested count={})",
         granted.lo, granted.hi, granted.generation, effective_pci, cfg.queues);
@@ -2845,7 +2843,7 @@ Platform::create(PlatformConfig cfg) {
     auto plat_r = Platform::secondary_bringup_(
         std::move(bcfg), /*registry_preclaimed=*/false);
     if (!plat_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::create: secondary_bringup_ failed: {} — "
             "rolling back EAL + releasing claim", plat_r.error());
         // Best-effort release IPC: roll back the claim we just got so
@@ -2870,7 +2868,7 @@ Platform::create(PlatformConfig cfg) {
         plat.impl_->owns_eal_init      = true;
         plat.impl_->owned_queues_range = granted;
     }
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::create: ready (pci='{}', file_prefix='{}', "
         "queues=[{},{}) gen={})",
         effective_pci, derived_prefix, granted.lo, granted.hi, granted.generation);
@@ -2882,19 +2880,19 @@ Platform::serve_nic(NicServiceConfig cfg) {
     [[maybe_unused]] auto* log = detail::platform_logger();
 
     if (auto err = ::eph::dpdk::validate(cfg); !err.empty()) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::serve_nic: invalid NicServiceConfig: {}", err);
         return std::unexpected(std::string{err});
     }
 
     auto fp_r = detail::derive_file_prefix_(cfg.pci);
     if (!fp_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::serve_nic: {}", fp_r.error());
         return std::unexpected(std::move(fp_r.error()));
     }
     const std::string derived_prefix = std::move(*fp_r);
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::serve_nic: derived file_prefix='{}' from pci='{}', "
         "total_queues={}, daemon_lcore={}",
         derived_prefix, cfg.pci, cfg.total_queues, cfg.daemon_lcore);
@@ -2916,7 +2914,7 @@ Platform::serve_nic(NicServiceConfig cfg) {
 
     auto eal_r = eal_init(static_cast<int>(argv.size()), argv.data());
     if (!eal_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::serve_nic: eal_init failed: {}", eal_r.error());
         return std::unexpected(std::format(
             "Platform::serve_nic: eal_init failed: {}", eal_r.error()));
@@ -2928,7 +2926,7 @@ Platform::serve_nic(NicServiceConfig cfg) {
 
     auto plat_r = Platform::primary_bringup_(std::move(bcfg));
     if (!plat_r) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::serve_nic: primary_bringup_ failed: {} — "
             "rolling back EAL", plat_r.error());
         [[maybe_unused]] bool ok = eal_cleanup();
@@ -2956,7 +2954,7 @@ Platform::serve_nic(NicServiceConfig cfg) {
         auto alloc_r = ::eph::dpdk::detail::QueueAllocator::create_primary(
             derived_prefix, cfg.total_queues);
         if (!alloc_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "Platform::serve_nic: QueueAllocator::create_primary failed: "
                 "{} — rolling back EAL", alloc_r.error());
             // plat goes out of scope; ~Platform tears down primary_bringup_'s
@@ -2997,7 +2995,7 @@ Platform::serve_nic(NicServiceConfig cfg) {
         (void)::eph::dpdk::detail::refresh_reta_for_claimed_(
             *plat.impl_->queue_allocator, plat.impl_->config.port_id);
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "Platform::serve_nic: QueueAllocator ready (total_queues={}, "
             "claim_action={}, release_action={}, nicctl_query_action={})",
             cfg.total_queues,
@@ -3014,17 +3012,17 @@ Platform::serve_nic(NicServiceConfig cfg) {
     // explicitly", not a hard daemon failure.
     if (auto r = ::eph::dpdk::detail::write_pci_announce_file(
             derived_prefix, cfg.pci); !r) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "Platform::serve_nic: pci announce file write failed: {} — "
             "default-NIC resolution will skip this daemon; apps must "
             "specify .pci='{}' explicitly", r.error(), cfg.pci);
     } else {
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "Platform::serve_nic: pci announce file written "
             "(file_prefix='{}', pci='{}')", derived_prefix, cfg.pci);
     }
 
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::serve_nic: ready (pci='{}', file_prefix='{}', "
         "total_queues={})",
         cfg.pci, derived_prefix, cfg.total_queues);
@@ -3045,7 +3043,7 @@ inline void Platform::join() noexcept {
     // thread per POSIX). Surface the failure so a daemon operator sees it
     // rather than a silent immediate-return that tears down the NIC.
     if (const int rc = pthread_sigmask(SIG_BLOCK, &set, nullptr); rc != 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::join: pthread_sigmask(SIG_BLOCK) failed (rc={}: {}) — "
             "signals may not be delivered via sigwait; daemon will return "
             "immediately and tear down the NIC. Check signal-mask state.",
@@ -3059,14 +3057,14 @@ inline void Platform::join() noexcept {
     // against the rare error so a corrupted set doesn't manifest as a
     // legitimate-looking "signal 0 received" log entry.
     if (const int rc = sigwait(&set, &sig); rc != 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "Platform::join: sigwait failed (rc={}: {}) — daemon will "
             "return for shutdown without a real signal. Investigate the "
             "blocking state of SIGTERM/SIGINT on this thread.",
             rc, std::strerror(rc));
         return;
     }
-    SPDLOG_LOGGER_INFO(log,
+    EPH_LOG_INFO(log,
         "Platform::join: signal {} received, returning for graceful "
         "shutdown", sig);
     // S5/S6 will add cross-process notify (rte_mp_sendmsg "I'm leaving")
@@ -3163,7 +3161,7 @@ Platform::owned_queues() const noexcept {
         impl_->owned_queues_cache_count = span_len;
         impl_->owned_queues_cache_valid = true;
         if (span_len < (hi - lo)) {
-            SPDLOG_LOGGER_WARN(detail::platform_logger(),
+            EPH_LOG_WARN(detail::platform_logger(),
                 "Platform::owned_queues: granted range [{}, {}) ({} queues) "
                 "exceeds local cache budget kMaxRssQueues={}; materialising "
                 "first {} only — bump kMaxRssQueues if your deployment "
@@ -3195,7 +3193,7 @@ inline void Platform::mark_daemon_disconnected_() noexcept {
     // disconnect flag is observable.
     bool prev = impl_->is_alive.exchange(false, std::memory_order_acq_rel);
     if (prev) {
-        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+        EPH_LOG_WARN(detail::platform_logger(),
             "Platform: marking daemon-disconnected (pid={}, port_id={}). "
             "All subsequent fallible operations will surface "
             "Error::DaemonDisconnected. Application should drop this "
@@ -3231,7 +3229,7 @@ Platform::register_poller(uint16_t queue_id,
             ::eph::core::Error::InvalidConfig,
             "Platform::register_poller: poller pointer is null"});
     if (queue_id >= impl_->config.nb_rx_queues || queue_id >= kMaxRssQueues) {
-        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+        EPH_LOG_WARN(detail::platform_logger(),
             "Platform::register_poller: queue_id={} not in [0, {})",
             queue_id,
             std::min(impl_->config.nb_rx_queues, kMaxRssQueues));
@@ -3240,7 +3238,7 @@ Platform::register_poller(uint16_t queue_id,
             "Platform::register_poller: queue_id out of range"});
     }
     if (impl_->pollers[queue_id] != nullptr) {
-        SPDLOG_LOGGER_WARN(detail::platform_logger(),
+        EPH_LOG_WARN(detail::platform_logger(),
             "Platform::register_poller: queue_id={} already has a registered Poller",
             queue_id);
         return std::unexpected(::eph::core::ErrorInfo{
@@ -3255,7 +3253,7 @@ Platform::register_poller(uint16_t queue_id,
     // scan over kMaxRssQueues = 64 is trivial at attach time.
     for (uint16_t q = 0; q < impl_->config.nb_rx_queues && q < kMaxRssQueues; ++q) {
         if (impl_->pollers[q] == poller) {
-            SPDLOG_LOGGER_WARN(detail::platform_logger(),
+            EPH_LOG_WARN(detail::platform_logger(),
                 "Platform::register_poller: poller={:p} already registered on "
                 "queue={} — a Poller owns one RX queue exclusively",
                 static_cast<void*>(poller), q);
@@ -3274,7 +3272,7 @@ Platform::register_poller(uint16_t queue_id,
     // (`poller->set_alive_flag_(...)`) follows the same pattern; see
     // `Platform::alive_flag_addr_()` below for the accessor that
     // Stream::create_and_attach reaches for.
-    SPDLOG_LOGGER_DEBUG(detail::platform_logger(),
+    EPH_LOG_DEBUG(detail::platform_logger(),
         "Poller registered: port={}, queue={}, ptr={:p}",
         impl_->config.port_id, queue_id, static_cast<void*>(poller));
     return {};
@@ -3325,7 +3323,7 @@ Platform::register_icmp_target(::eph::dpdk::net::ConnectionTuple tuple,
     auto slot = impl_->icmp_directory->register_target(
         tuple, proto, impl_->self_proc_index);
     if (!slot) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "register_icmp_target: cross-proc directory register failed: "
             "{} — falling back to per-process ICMP only",
             slot.error().detail);
@@ -3351,14 +3349,14 @@ Platform::icmp_registry_shared_() const noexcept {
 inline Platform::Stats Platform::collect_stats() const {
     [[maybe_unused]] auto log = detail::platform_logger();
     if (!impl_) {
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "collect_stats() called on moved-from Platform; returning empty stats");
         return {};
     }
     rte_eth_stats raw{};
     int ret = rte_eth_stats_get(impl_->config.port_id, &raw);
     if (ret != 0) {
-        SPDLOG_LOGGER_ERROR(log,
+        EPH_LOG_ERROR(log,
             "eth_stats_get(port={}) failed: ret={}; returning zeroed stats",
             impl_->config.port_id, ret);
         return {};

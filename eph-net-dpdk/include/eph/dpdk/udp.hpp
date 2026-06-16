@@ -24,18 +24,17 @@
 #include <string_view>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
+#include "eph/core/log.hpp"
 #include "eph/dpdk/net_header.hpp"
 
 namespace eph::dpdk {
 
 namespace detail {
-inline spdlog::logger* udp_logger() { return get_logger<LoggerName{"dpdk.udp"}>(); }
+inline spdlog::logger* udp_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.udp"); return l; }
 } // namespace detail
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,7 +226,7 @@ public:
 
         auto err = cfg.validate();
         if (!err.empty()) {
-            SPDLOG_LOGGER_ERROR(log, "UdpSender::create config validation failed: {}", err);
+            EPH_LOG_ERROR(log, "UdpSender::create config validation failed: {}", err);
             return std::unexpected(std::string(err));
         }
 
@@ -236,7 +235,7 @@ public:
         // block construction. Parallel to Platform::create emitting
         // PlatformConfig::warnings() at WARN.
         for (const auto& w : cfg.warnings()) {
-            SPDLOG_LOGGER_WARN(log, "wire::UdpConfig advisory: {}", w);
+            EPH_LOG_WARN(log, "wire::UdpConfig advisory: {}", w);
         }
 
         // Verify NIC supports UDP checksum offload if requested
@@ -253,7 +252,7 @@ public:
                     "rte_eth_dev_info_get failed for port {}: ret={}, "
                     "rte_errno={} ({})",
                     cfg.port_id, ret, err, rte_strerror(err));
-                SPDLOG_LOGGER_ERROR(log, "{}", msg);
+                EPH_LOG_ERROR(log, "{}", msg);
                 return std::unexpected(msg);
             }
             if (!(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM)) {
@@ -261,10 +260,10 @@ public:
                     "Port {} does not support UDP TX checksum offload "
                     "(tx_offload_capa=0x{:016x})",
                     cfg.port_id, dev_info.tx_offload_capa);
-                SPDLOG_LOGGER_ERROR(log, "{}", msg);
+                EPH_LOG_ERROR(log, "{}", msg);
                 return std::unexpected(msg);
             }
-            SPDLOG_LOGGER_DEBUG(log, "Port {} supports UDP TX checksum offload", cfg.port_id);
+            EPH_LOG_DEBUG(log, "Port {} supports UDP TX checksum offload", cfg.port_id);
         }
 
         UdpSender sender;
@@ -276,7 +275,7 @@ public:
         sender.port_id_ = cfg.port_id;
         sender.tx_queue_id_ = cfg.tx_queue_id;
 
-        SPDLOG_LOGGER_INFO(log, "UdpSender created: {}", cfg.dump());
+        EPH_LOG_INFO(log, "UdpSender created: {}", cfg.dump());
 
         return sender;
     }
@@ -293,7 +292,7 @@ public:
         rte_mbuf* mbuf = tmpl_.build(pool_, data, len);
         if (!mbuf) [[unlikely]] {
             ++stats_.tx_errors;
-            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+            EPH_LOG_TRACE(detail::udp_logger(),
                 "send: mbuf alloc failed, payload_len={}, port={}, queue={}",
                 len, port_id_, tx_queue_id_);
             return false;
@@ -303,7 +302,7 @@ public:
         if (sent == 0) [[unlikely]] {
             rte_pktmbuf_free(mbuf);
             ++stats_.tx_errors;
-            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+            EPH_LOG_TRACE(detail::udp_logger(),
                 "send: tx_burst returned 0, payload_len={}, port={}, queue={}",
                 len, port_id_, tx_queue_id_);
             return false;
@@ -337,7 +336,7 @@ public:
         if (count > kMaxBatchSize) [[unlikely]] {
             const uint16_t dropped = count - kMaxBatchSize;
             stats_.tx_errors += dropped;
-            SPDLOG_LOGGER_TRACE(detail::udp_logger(),
+            EPH_LOG_TRACE(detail::udp_logger(),
                 "send_batch: count={} > kMaxBatchSize={}; "
                 "dropping {} trailing segment(s) and bumping tx_errors",
                 count, kMaxBatchSize, dropped);

@@ -63,7 +63,7 @@
 #include <thread>
 #include <vector>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/detail/base64.hpp"
 #include "eph/core/error.hpp"
@@ -71,6 +71,11 @@
 #include "eph/net/proxy.hpp"
 
 namespace eph::net::detail {
+
+inline spdlog::logger* http_connect_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.http_connect");
+    return l;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -231,7 +236,7 @@ perform_http_connect(
     uint16_t             target_port,
     std::vector<uint8_t>* leftover = nullptr) noexcept
 {
-    SPDLOG_DEBUG("http_connect: begin proxy={}:{} target={}:{} auth={} timeout={}ms",
+    EPH_LOG_DEBUG(http_connect_logger(), "http_connect: begin proxy={}:{} target={}:{} auth={} timeout={}ms",
                  proxy.host, proxy.port,
                  target_host, target_port,
                  proxy.basic_auth_user.has_value(),
@@ -246,13 +251,13 @@ perform_http_connect(
     // IPv4 dotted-quad (max 15 chars) so this is a safety net for
     // direct callers of the helper.
     if (target_host.empty()) {
-        SPDLOG_WARN("http_connect: target_host is empty");
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: target_host is empty");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
             "http_connect: target_host must be non-empty"});
     }
     if (target_host.size() > 253) {
-        SPDLOG_WARN("http_connect: target_host len {} exceeds 253",
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: target_host len {} exceeds 253",
                     target_host.size());
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::InvalidConfig,
@@ -275,7 +280,7 @@ perform_http_connect(
     } catch (...) {
         // base64_encode uses std::string and can theoretically throw
         // bad_alloc. We intentionally suppress to keep the helper noexcept.
-        SPDLOG_ERROR("http_connect: build_proxy_auth_value threw; bailing out");
+        EPH_LOG_ERROR(http_connect_logger(), "http_connect: build_proxy_auth_value threw; bailing out");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::ProxyHandshakeFailed,
             "http_connect: proxy auth encoding failed"});
@@ -300,7 +305,7 @@ perform_http_connect(
         "CONNECT", target_authority,
         std::span<const HttpHeader>(hdrs.data(), nhdrs));
     if (!built) {
-        SPDLOG_WARN("http_connect: build_http_request failed: {}",
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: build_http_request failed: {}",
                     built.error().detail);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::ProxyHandshakeFailed,
@@ -313,7 +318,7 @@ perform_http_connect(
     size_t sent = 0;
     while (sent < req_len) {
         if (std::chrono::steady_clock::now() >= deadline) {
-            SPDLOG_WARN("http_connect: send deadline exceeded at {}/{} bytes",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: send deadline exceeded at {}/{} bytes",
                         sent, req_len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::Timeout,
@@ -333,7 +338,7 @@ perform_http_connect(
                 std::this_thread::yield();
                 continue;
             }
-            SPDLOG_WARN("http_connect: ByteSink::send err={}",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: ByteSink::send err={}",
                         sr.error().detail);
             return std::unexpected(sr.error());
         }
@@ -344,7 +349,7 @@ perform_http_connect(
         }
         sent += *sr;
     }
-    SPDLOG_DEBUG("http_connect: sent {}B CONNECT request", req_len);
+    EPH_LOG_DEBUG(http_connect_logger(), "http_connect: sent {}B CONNECT request", req_len);
 
     // ── 5. Recv response and parse incrementally ──────────────────────────
     //
@@ -357,14 +362,14 @@ perform_http_connect(
     std::optional<ParseResult<HttpResponse>> parsed;
     while (true) {
         if (std::chrono::steady_clock::now() >= deadline) {
-            SPDLOG_WARN("http_connect: read deadline exceeded at {}B buffered",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: read deadline exceeded at {}B buffered",
                         rx_len);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::Timeout,
                 "http_connect: read timeout"});
         }
         if (rx_len == sizeof(rx_buf)) {
-            SPDLOG_WARN("http_connect: response exceeds {}B buffer",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: response exceeds {}B buffer",
                         sizeof(rx_buf));
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::ProxyHandshakeFailed,
@@ -377,7 +382,7 @@ perform_http_connect(
                 std::this_thread::yield();
                 continue;
             }
-            SPDLOG_WARN("http_connect: ByteSink::recv err={}",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: ByteSink::recv err={}",
                         rr.error().detail);
             return std::unexpected(rr.error());
         }
@@ -414,7 +419,7 @@ perform_http_connect(
                 };
                 break;
             }
-            SPDLOG_WARN("http_connect: parse_http_response err={}",
+            EPH_LOG_WARN(http_connect_logger(), "http_connect: parse_http_response err={}",
                         pr.error().detail);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::ProxyHandshakeFailed,
@@ -436,20 +441,20 @@ perform_http_connect(
     // 200..299 band for robustness but log non-200 success as a WARN so
     // operators notice.
     if (resp.status_code == 407) {
-        SPDLOG_WARN("http_connect: proxy returned 407 Proxy Auth Required");
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: proxy returned 407 Proxy Auth Required");
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::ProxyAuthRequired,
             "http_connect: proxy requires authentication (407)"});
     }
     if (resp.status_code < 200 || resp.status_code >= 300) {
-        SPDLOG_WARN("http_connect: non-2xx status {} (reason='{}')",
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: non-2xx status {} (reason='{}')",
                     resp.status_code, resp.reason_phrase);
         return std::unexpected(::eph::core::ErrorInfo{
             ::eph::core::Error::ProxyHandshakeFailed,
             "http_connect: proxy returned non-2xx status"});
     }
     if (resp.status_code != 200) {
-        SPDLOG_WARN("http_connect: unexpected 2xx {} (reason='{}')",
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: unexpected 2xx {} (reason='{}')",
                     resp.status_code, resp.reason_phrase);
     }
 
@@ -464,14 +469,14 @@ perform_http_connect(
         leftover->insert(leftover->end(),
                           rx_buf + consumed,
                           rx_buf + consumed + tail);
-        SPDLOG_DEBUG("http_connect: stashed {}B of over-read post-CONNECT bytes",
+        EPH_LOG_DEBUG(http_connect_logger(), "http_connect: stashed {}B of over-read post-CONNECT bytes",
                      tail);
     } else if (leftover == nullptr && consumed < rx_len) {
-        SPDLOG_WARN("http_connect: {}B of over-read bytes dropped "
+        EPH_LOG_WARN(http_connect_logger(), "http_connect: {}B of over-read bytes dropped "
                     "(no leftover sink provided)", rx_len - consumed);
     }
 
-    SPDLOG_INFO("http_connect: OK target={}:{} via {}:{} ({}B req, {}B resp)",
+    EPH_LOG_INFO(http_connect_logger(), "http_connect: OK target={}:{} via {}:{} ({}B req, {}B resp)",
                 target_host, target_port,
                 proxy.host, proxy.port, req_len, consumed);
     return {};

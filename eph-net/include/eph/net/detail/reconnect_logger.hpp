@@ -5,9 +5,7 @@
 /// the other transport-internal loggers (`tls_record_logger` etc.) and
 /// follows the same lazy-initialized singleton pattern.
 
-#include <spdlog/spdlog.h>
-
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 
 namespace eph::net::detail {
 
@@ -19,7 +17,7 @@ namespace eph::net::detail {
 /// delete it. Compile-time level filtering is via `SPDLOG_ACTIVE_LEVEL`,
 /// so DEBUG/TRACE calls compile out in release builds.
 inline spdlog::logger* reconnect_logger() noexcept {
-    static auto* l = ::eph::core::detail::make_logger("net.reconnect");
+    static spdlog::logger* l = ::eph::log::get("net.reconnect");
     return l;
 }
 

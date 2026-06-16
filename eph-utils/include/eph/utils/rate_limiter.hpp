@@ -11,7 +11,7 @@
 ///   TokenBucket binance{{.capacity = 1200, .refill_per_second = 20.0}};
 ///   // weight=1 per normal request, weight=10 for expensive endpoints
 ///   if (!binance.try_acquire(1)) {
-///       SPDLOG_WARN("binance rate limit exhausted");
+///       EPH_LOG_WARN(logger, "binance rate limit exhausted");
 ///       return;
 ///   }
 /// @endcode
@@ -40,9 +40,16 @@
 #include <cstdint>
 #include <mutex>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* rate_limiter_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.rate_limiter");
+    return l;
+}
+} // namespace detail
 
 /// Token bucket rate limiter.
 ///
@@ -70,7 +77,7 @@ public:
         , tokens_{static_cast<double>(cfg.capacity)}
         , last_refill_{std::chrono::steady_clock::now()}
     {
-        SPDLOG_DEBUG("TokenBucket ctor capacity={} refill_per_second={}",
+        EPH_LOG_DEBUG(detail::rate_limiter_logger(), "TokenBucket ctor capacity={} refill_per_second={}",
                      capacity_, refill_per_sec_);
     }
 
@@ -97,7 +104,7 @@ public:
         }
         if (weight > capacity_) {
             // Impossible to ever satisfy — fail fast instead of spinning.
-            SPDLOG_DEBUG("TokenBucket::try_acquire weight={} > capacity={} — reject",
+            EPH_LOG_DEBUG(detail::rate_limiter_logger(), "TokenBucket::try_acquire weight={} > capacity={} — reject",
                          weight, capacity_);
             return false;
         }
@@ -109,7 +116,7 @@ public:
             tokens_ -= static_cast<double>(weight);
             return true;
         }
-        SPDLOG_DEBUG("TokenBucket::try_acquire weight={} tokens={} — reject",
+        EPH_LOG_DEBUG(detail::rate_limiter_logger(), "TokenBucket::try_acquire weight={} tokens={} — reject",
                      weight, tokens_);
         return false;
     }

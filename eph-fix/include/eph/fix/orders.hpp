@@ -14,8 +14,7 @@
 #include <format>
 #include <string_view>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/builder.hpp"
 #include "eph/fix/tags.hpp"
@@ -27,16 +26,8 @@ namespace detail {
 /// @brief Get or create the spdlog logger for the orders module.
 /// @return Raw pointer to the "fix.orders" logger (never null after first call).
 inline spdlog::logger* fix_orders_logger() noexcept {
-    static auto l = [] {
-        auto lg = spdlog::get("fix.orders");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("fix.orders"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.orders"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("fix.orders");
+    return l;
 }
 
 /// Get current wall-clock time as nanoseconds since Unix epoch.
@@ -130,7 +121,7 @@ enum class TimeInForce : char {
     TimeInForce tif = TimeInForce::Day,
     uint64_t sending_time_ns = 0) noexcept
 {
-    SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+    EPH_LOG_DEBUG(detail::fix_orders_logger(),
         "build_new_order: cl_ord_id={}, symbol={}, side={}, ord_type={}, qty={}, price={}",
         cl_ord_id, symbol, static_cast<char>(side), static_cast<char>(ord_type), qty, price);
 
@@ -144,7 +135,7 @@ enum class TimeInForce : char {
     // later. Same isfinite-first ordering as the sibling guards in
     // PositionTracker / RiskChecker / OrderManager.
     if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+        EPH_LOG_WARN(detail::fix_orders_logger(),
             "build_new_order: rejected qty={} (must be finite and > 0) "
             "for cl_ord_id={} symbol={}", qty, cl_ord_id, symbol);
         return 0;
@@ -179,21 +170,21 @@ enum class TimeInForce : char {
         // without the actionable "non-positive price" diagnostic. Surface
         // NaN/Inf in the same WARN so log readers can fix the right knob.
         if (!std::isfinite(price) || price <= 0.0) {
-            SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+            EPH_LOG_WARN(detail::fix_orders_logger(),
                 "build_new_order: Limit order with invalid price={} "
                 "(must be finite and > 0), cl_ord_id={}",
                 price, cl_ord_id);
         }
         b.set_double(tag::Price, price);
     } else if (ord_type == OrdType::Market && price != 0.0) {
-        SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+        EPH_LOG_DEBUG(detail::fix_orders_logger(),
             "build_new_order: Market order ignoring price={}, cl_ord_id={}",
             price, cl_ord_id);
     }
 
     size_t len = b.finish();
     if (len == 0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+        EPH_LOG_WARN(detail::fix_orders_logger(),
             "build_new_order: failed (overflow or error), cl_ord_id={}", cl_ord_id);
     }
     return len;
@@ -222,7 +213,7 @@ enum class TimeInForce : char {
     std::string_view symbol,
     Side side) noexcept
 {
-    SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+    EPH_LOG_DEBUG(detail::fix_orders_logger(),
         "build_cancel_order: cl_ord_id={}, orig_cl_ord_id={}, symbol={}, side={}",
         cl_ord_id, orig_cl_ord_id, symbol, static_cast<char>(side));
 
@@ -242,7 +233,7 @@ enum class TimeInForce : char {
 
     size_t len = b.finish();
     if (len == 0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+        EPH_LOG_WARN(detail::fix_orders_logger(),
             "build_cancel_order: failed (overflow or error), cl_ord_id={}", cl_ord_id);
     }
     return len;
@@ -280,7 +271,7 @@ enum class TimeInForce : char {
     double price = 0.0,
     TimeInForce tif = TimeInForce::Day) noexcept
 {
-    SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+    EPH_LOG_DEBUG(detail::fix_orders_logger(),
         "build_replace_order: cl_ord_id={}, orig_cl_ord_id={}, symbol={}, side={}, qty={}, price={}",
         cl_ord_id, orig_cl_ord_id, symbol, static_cast<char>(side), qty, price);
 
@@ -292,7 +283,7 @@ enum class TimeInForce : char {
     // knows immediately that the replace was never sent. The omission
     // here vs. build_new_order was a copy-paste gap in 2893608f.
     if (!std::isfinite(qty) || qty <= 0.0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+        EPH_LOG_WARN(detail::fix_orders_logger(),
             "build_replace_order: rejected qty={} (must be finite and > 0) "
             "for cl_ord_id={} orig_cl_ord_id={} symbol={}",
             qty, cl_ord_id, orig_cl_ord_id, symbol);
@@ -325,21 +316,21 @@ enum class TimeInForce : char {
         // behind the generic "(overflow or error)" line. See the
         // matching guard in build_new_order above for the rationale.
         if (!std::isfinite(price) || price <= 0.0) {
-            SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+            EPH_LOG_WARN(detail::fix_orders_logger(),
                 "build_replace_order: Limit order with invalid price={} "
                 "(must be finite and > 0), cl_ord_id={}",
                 price, cl_ord_id);
         }
         b.set_double(tag::Price, price);
     } else if (ord_type == OrdType::Market && price != 0.0) {
-        SPDLOG_LOGGER_DEBUG(detail::fix_orders_logger(),
+        EPH_LOG_DEBUG(detail::fix_orders_logger(),
             "build_replace_order: Market order ignoring price={}, cl_ord_id={}",
             price, cl_ord_id);
     }
 
     size_t len = b.finish();
     if (len == 0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::fix_orders_logger(),
+        EPH_LOG_WARN(detail::fix_orders_logger(),
             "build_replace_order: failed (overflow or error), cl_ord_id={}", cl_ord_id);
     }
     return len;

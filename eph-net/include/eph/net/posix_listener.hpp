@@ -28,9 +28,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::net::posix {
+
+namespace detail {
+inline spdlog::logger* posix_listener_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.posix_listener");
+    return l;
+}
+} // namespace detail
 
 /// Open a TCP listening socket bound to `ip:port` with SO_REUSEADDR and
 /// TCP_NODELAY.  `backlog` defaults to 1 — most mocks only ever serve
@@ -42,11 +49,11 @@ namespace eph::net::posix {
 /// equivalent of the bind sequence is recoverable from logs alone.
 [[nodiscard]] inline std::expected<int, std::string>
 tcp_bind_listen(std::string_view ip, uint16_t port, int backlog = 1) {
-    SPDLOG_DEBUG("posix::tcp_bind_listen: enter ip={} port={} backlog={}",
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::tcp_bind_listen: enter ip={} port={} backlog={}",
                  ip, port, backlog);
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        SPDLOG_WARN("posix::tcp_bind_listen: socket() failed errno={} ({})",
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::tcp_bind_listen: socket() failed errno={} ({})",
                     errno, std::strerror(errno));
         return std::unexpected(std::string("socket() failed: ") +
                                std::strerror(errno));
@@ -59,11 +66,11 @@ tcp_bind_listen(std::string_view ip, uint16_t port, int backlog = 1) {
     // still works, but a strange port-already-in-use error or tail-
     // latency surprise downstream now has a breadcrumb in the journal.
     if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
-        SPDLOG_DEBUG("posix::tcp_bind_listen: setsockopt(SO_REUSEADDR) failed "
+        EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::tcp_bind_listen: setsockopt(SO_REUSEADDR) failed "
                      "fd={} errno={} ({})", fd, errno, std::strerror(errno));
     }
     if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-        SPDLOG_DEBUG("posix::tcp_bind_listen: setsockopt(TCP_NODELAY) failed "
+        EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::tcp_bind_listen: setsockopt(TCP_NODELAY) failed "
                      "fd={} errno={} ({})", fd, errno, std::strerror(errno));
     }
 
@@ -72,7 +79,7 @@ tcp_bind_listen(std::string_view ip, uint16_t port, int backlog = 1) {
     addr.sin_port = htons(port);
     std::string ip_str(ip);
     if (::inet_pton(AF_INET, ip_str.c_str(), &addr.sin_addr) != 1) {
-        SPDLOG_WARN("posix::tcp_bind_listen: invalid bind IP \"{}\"", ip_str);
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::tcp_bind_listen: invalid bind IP \"{}\"", ip_str);
         ::close(fd);
         return std::unexpected("invalid bind IP \"" + ip_str + "\"");
     }
@@ -80,29 +87,29 @@ tcp_bind_listen(std::string_view ip, uint16_t port, int backlog = 1) {
         std::string err = std::string("bind(") + ip_str + ":" +
                           std::to_string(port) + ") failed: " +
                           std::strerror(errno);
-        SPDLOG_WARN("posix::tcp_bind_listen: bind({}:{}) failed errno={} ({})",
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::tcp_bind_listen: bind({}:{}) failed errno={} ({})",
                     ip_str, port, errno, std::strerror(errno));
         ::close(fd);
         return std::unexpected(std::move(err));
     }
     if (::listen(fd, backlog) < 0) {
         std::string err = std::string("listen() failed: ") + std::strerror(errno);
-        SPDLOG_WARN("posix::tcp_bind_listen: listen(backlog={}) failed errno={} ({})",
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::tcp_bind_listen: listen(backlog={}) failed errno={} ({})",
                     backlog, errno, std::strerror(errno));
         ::close(fd);
         return std::unexpected(std::move(err));
     }
-    SPDLOG_DEBUG("posix::tcp_bind_listen: ok fd={} {}:{}", fd, ip_str, port);
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::tcp_bind_listen: ok fd={} {}:{}", fd, ip_str, port);
     return fd;
 }
 
 /// Open a UDP socket bound to `ip:port` with SO_REUSEADDR.
 [[nodiscard]] inline std::expected<int, std::string>
 udp_bind(std::string_view ip, uint16_t port) {
-    SPDLOG_DEBUG("posix::udp_bind: enter ip={} port={}", ip, port);
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::udp_bind: enter ip={} port={}", ip, port);
     int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        SPDLOG_WARN("posix::udp_bind: socket() failed errno={} ({})",
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::udp_bind: socket() failed errno={} ({})",
                     errno, std::strerror(errno));
         return std::unexpected(std::string("socket() failed: ") +
                                std::strerror(errno));
@@ -110,7 +117,7 @@ udp_bind(std::string_view ip, uint16_t port) {
 
     int one = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
-        SPDLOG_DEBUG("posix::udp_bind: setsockopt(SO_REUSEADDR) failed "
+        EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::udp_bind: setsockopt(SO_REUSEADDR) failed "
                      "fd={} errno={} ({})", fd, errno, std::strerror(errno));
     }
 
@@ -119,7 +126,7 @@ udp_bind(std::string_view ip, uint16_t port) {
     addr.sin_port = htons(port);
     std::string ip_str(ip);
     if (::inet_pton(AF_INET, ip_str.c_str(), &addr.sin_addr) != 1) {
-        SPDLOG_WARN("posix::udp_bind: invalid bind IP \"{}\"", ip_str);
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::udp_bind: invalid bind IP \"{}\"", ip_str);
         ::close(fd);
         return std::unexpected("invalid bind IP \"" + ip_str + "\"");
     }
@@ -127,12 +134,12 @@ udp_bind(std::string_view ip, uint16_t port) {
         std::string err = std::string("bind(") + ip_str + ":" +
                           std::to_string(port) + ") failed: " +
                           std::strerror(errno);
-        SPDLOG_WARN("posix::udp_bind: bind({}:{}) failed errno={} ({})",
+        EPH_LOG_WARN(detail::posix_listener_logger(), "posix::udp_bind: bind({}:{}) failed errno={} ({})",
                     ip_str, port, errno, std::strerror(errno));
         ::close(fd);
         return std::unexpected(std::move(err));
     }
-    SPDLOG_DEBUG("posix::udp_bind: ok fd={} {}:{}", fd, ip_str, port);
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::udp_bind: ok fd={} {}:{}", fd, ip_str, port);
     return fd;
 }
 
@@ -162,13 +169,13 @@ udp_bind(std::string_view ip, uint16_t port) {
 /// is WARN+ — consistent with the rest of the codebase per CLAUDE.md.
 [[nodiscard]] inline std::expected<int, std::string>
 accept_one(int listen_fd, std::atomic<bool>& running) {
-    SPDLOG_DEBUG("posix::accept_one: enter listen_fd={}", listen_fd);
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::accept_one: enter listen_fd={}", listen_fd);
     while (running.load(std::memory_order_acquire)) {
         pollfd p{}; p.fd = listen_fd; p.events = POLLIN;
         int rv = ::poll(&p, 1, 100);
         if (rv < 0) {
             if (errno == EINTR) continue;
-            SPDLOG_WARN("posix::accept_one: poll() failed listen_fd={} errno={} ({})",
+            EPH_LOG_WARN(detail::posix_listener_logger(), "posix::accept_one: poll() failed listen_fd={} errno={} ({})",
                         listen_fd, errno, std::strerror(errno));
             return std::unexpected(
                 std::string("poll(accept) failed: ") + std::strerror(errno));
@@ -179,7 +186,7 @@ accept_one(int listen_fd, std::atomic<bool>& running) {
         int cfd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&caddr), &clen);
         if (cfd < 0) {
             if (errno == EINTR) continue;
-            SPDLOG_WARN("posix::accept_one: accept() failed listen_fd={} errno={} ({})",
+            EPH_LOG_WARN(detail::posix_listener_logger(), "posix::accept_one: accept() failed listen_fd={} errno={} ({})",
                         listen_fd, errno, std::strerror(errno));
             return std::unexpected(
                 std::string("accept() failed: ") + std::strerror(errno));
@@ -189,7 +196,7 @@ accept_one(int listen_fd, std::atomic<bool>& running) {
         // at DEBUG instead of silently swallowing so a strange tail
         // latency in a downstream test has a breadcrumb.
         if (::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
-            SPDLOG_DEBUG("posix::accept_one: setsockopt(TCP_NODELAY) failed "
+            EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::accept_one: setsockopt(TCP_NODELAY) failed "
                          "cfd={} errno={} ({}) — connection still usable",
                          cfd, errno, std::strerror(errno));
         }
@@ -203,16 +210,16 @@ accept_one(int listen_fd, std::atomic<bool>& running) {
         // failure mode is invisible from a journal entry alone.
         char ip[INET_ADDRSTRLEN] = {};
         if (::inet_ntop(AF_INET, &caddr.sin_addr, ip, sizeof(ip)) == nullptr) {
-            SPDLOG_WARN("posix::accept_one: inet_ntop failed cfd={} errno={} ({}) "
+            EPH_LOG_WARN(detail::posix_listener_logger(), "posix::accept_one: inet_ntop failed cfd={} errno={} ({}) "
                         "— peer IP rendered as '?'", cfd, errno, std::strerror(errno));
             ip[0] = '?';
             ip[1] = '\0';
         }
-        SPDLOG_INFO("posix::accept_one: client {}:{} cfd={}",
+        EPH_LOG_INFO(detail::posix_listener_logger(), "posix::accept_one: client {}:{} cfd={}",
                     ip, ntohs(caddr.sin_port), cfd);
         return cfd;
     }
-    SPDLOG_DEBUG("posix::accept_one: exit before connect (running=false)");
+    EPH_LOG_DEBUG(detail::posix_listener_logger(), "posix::accept_one: exit before connect (running=false)");
     return -1;
 }
 

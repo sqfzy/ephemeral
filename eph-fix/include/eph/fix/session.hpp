@@ -66,8 +66,7 @@
 #include <thread>
 #include <vector>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/fix/builder.hpp"
 #include "eph/fix/parser.hpp"
@@ -256,19 +255,8 @@ struct FixSessionConfig {
 namespace detail {
 /// @brief Get or create the spdlog logger for the session module.
 /// @return Shared pointer to the "fix.session" logger.
-inline const std::shared_ptr<spdlog::logger>& fix_session_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("fix.session");
-        if (!lg) {
-            // try/catch around the create: a concurrent first-call from
-            // another TU can win the registry slot and make this throw
-            // "logger already exists". Recover via spdlog::get.
-            try { lg = spdlog::stdout_color_mt("fix.session"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("fix.session"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* fix_session_logger() {
+    static spdlog::logger* l = ::eph::log::get("fix.session");
     return l;
 }
 } // namespace detail
@@ -297,7 +285,7 @@ public:
     FixSession(SendFn send_fn, FixSessionConfig cfg)
         : send_(std::move(send_fn)), cfg_(std::move(cfg)),
           heartbeat_interval_sec_(cfg_.heartbeat_interval_sec) {
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+        EPH_LOG_INFO(detail::fix_session_logger(),
             "FixSession created: {} → {}, HeartBtInt={}s, ResetSeq={}",
             cfg_.sender_comp_id, cfg_.target_comp_id,
             cfg_.heartbeat_interval_sec, cfg_.reset_seq_on_logon);
@@ -328,7 +316,7 @@ public:
             return std::unexpected("logon: failed to send Logon message");
         }
         set_state(SessionState::kLogonSent);
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+        EPH_LOG_INFO(detail::fix_session_logger(),
             "Logon sent (MsgSeqNum=1), waiting for response...");
 
         auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -352,7 +340,7 @@ public:
             return std::unexpected("logon: session did not reach ACTIVE state");
         }
 
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+        EPH_LOG_INFO(detail::fix_session_logger(),
             "Session active (HeartBtInt={}s)",
             heartbeat_interval_sec_.load(std::memory_order_relaxed));
         auto now = std::chrono::steady_clock::now();
@@ -387,13 +375,13 @@ public:
             return std::unexpected("logout: failed to send Logout message");
         }
         set_state(SessionState::kLogoutSent);
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(), "Logout sent");
+        EPH_LOG_INFO(detail::fix_session_logger(), "Logout sent");
 
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (state_.load(std::memory_order_acquire) == SessionState::kLogoutSent) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 set_state(SessionState::kDisconnected);
-                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                EPH_LOG_WARN(detail::fix_session_logger(),
                     "Logout timeout — forcing disconnect");
                 return {};
             }
@@ -408,7 +396,7 @@ public:
 #endif
         }
 
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(), "Logout complete");
+        EPH_LOG_INFO(detail::fix_session_logger(), "Logout complete");
         return {};
     }
 
@@ -421,7 +409,7 @@ public:
         last_inbound_seq_.store(0, std::memory_order_relaxed);
         test_request_pending_.store(false, std::memory_order_relaxed);
         heartbeat_interval_sec_.store(cfg_.heartbeat_interval_sec, std::memory_order_relaxed);
-        SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(), "Session reset");
+        EPH_LOG_DEBUG(detail::fix_session_logger(), "Session reset");
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -437,7 +425,7 @@ public:
 
         auto result = parse(data, len);
         if (!result) {
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "on_rx: parse failed ({} bytes): {} — dropping message",
                 len, parse_error_name(result.error()));
             return true;
@@ -446,7 +434,7 @@ public:
         auto& msg = *result;
         auto msg_type = msg.msg_type();
         if (!msg_type) {
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "on_rx: message has no MsgType field");
             return false;
         }
@@ -455,7 +443,7 @@ public:
         auto received_seq = msg.get_int(tag::MsgSeqNum);
         if (received_seq) {
             if (*received_seq < 1) {
-                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                EPH_LOG_WARN(detail::fix_session_logger(),
                     "Invalid MsgSeqNum={} (must be >= 1), ignoring", *received_seq);
                 return true;
             }
@@ -471,7 +459,7 @@ public:
             // SequenceReset handler below.
             if (*received_seq >
                 static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-                SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                EPH_LOG_ERROR(detail::fix_session_logger(),
                     "MsgSeqNum={} exceeds UINT32_MAX — FIX 4.4 caps "
                     "MsgSeqNum at uint32; ignoring message to avoid "
                     "local sequence corruption", *received_seq);
@@ -491,7 +479,7 @@ public:
 
             if (recv > expected && !is_dup) {
                 // Gap detected
-                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                EPH_LOG_WARN(detail::fix_session_logger(),
                     "Sequence gap: expected={}, received={} (missing {} msgs)",
                     expected, recv, recv - expected);
                 if (cfg_.resend_on_gap) {
@@ -507,7 +495,7 @@ public:
                 // then, freeze the watermark at UINT32_MAX and ERROR-log
                 // for the operator.
                 if (recv == UINT32_MAX) [[unlikely]] {
-                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    EPH_LOG_ERROR(detail::fix_session_logger(),
                         "Inbound MsgSeqNum at UINT32_MAX boundary "
                         "(recv={}, expected={}): cannot advance, session "
                         "must be reset (Logoff + Logon with "
@@ -520,7 +508,7 @@ public:
             } else if (recv == expected) {
                 if (recv == UINT32_MAX) [[unlikely]] {
                     // Same boundary as the gap branch — see above.
-                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    EPH_LOG_ERROR(detail::fix_session_logger(),
                         "Inbound MsgSeqNum at UINT32_MAX boundary "
                         "(recv={}): cannot advance, session must be reset",
                         recv);
@@ -530,12 +518,12 @@ public:
                     expected_inbound_seq_.store(recv + 1, std::memory_order_relaxed);
                 }
             } else if (recv < expected && !is_dup) {
-                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                EPH_LOG_WARN(detail::fix_session_logger(),
                     "Unexpected low sequence: expected={}, received={}", expected, recv);
             }
             // PossDupFlag=Y: log but don't update expected sequence
             if (is_dup) {
-                SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+                EPH_LOG_DEBUG(detail::fix_session_logger(),
                     "PossDupFlag=Y on MsgSeqNum={}", recv);
             }
         }
@@ -551,18 +539,18 @@ public:
                 if (*server_hb > 0 && *server_hb <= kMaxHeartbeatSec) {
                     int prev = heartbeat_interval_sec_.load(std::memory_order_acquire);
                     if (*server_hb != prev) {
-                        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+                        EPH_LOG_INFO(detail::fix_session_logger(),
                             "Server HeartBtInt={} overrides client value={}",
                             *server_hb, prev);
                         heartbeat_interval_sec_.store(
                             static_cast<int>(*server_hb), std::memory_order_release);
                     }
                 } else {
-                    SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                    EPH_LOG_WARN(detail::fix_session_logger(),
                         "Ignoring unreasonable HeartBtInt={}", *server_hb);
                 }
             }
-            SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+            EPH_LOG_INFO(detail::fix_session_logger(),
                 "Received Logon response (MsgSeqNum={})",
                 last_inbound_seq_.load(std::memory_order_relaxed));
             if (cur_state == SessionState::kLogonSent) {
@@ -574,13 +562,13 @@ public:
         // ── Logout ──
         if (type == std::string_view(&tag::msg_type::Logout, 1)) {
             auto text = msg.get(tag::Text);
-            SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+            EPH_LOG_INFO(detail::fix_session_logger(),
                 "Received Logout{}", text ? std::string(": ").append(*text) : "");
             if (cur_state == SessionState::kLogoutSent) {
                 set_state(SessionState::kDisconnected);
             } else if (cur_state == SessionState::kActive) {
                 if (!send_logout()) {
-                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    EPH_LOG_ERROR(detail::fix_session_logger(),
                         "Failed to send Logout response to server-initiated Logout");
                 }
                 set_state(SessionState::kDisconnected);
@@ -596,7 +584,7 @@ public:
                 // reject; transition to kDisconnected immediately so the
                 // logon() spin-wait exits with the unexpected-state
                 // error path on the next observe.
-                SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                EPH_LOG_WARN(detail::fix_session_logger(),
                     "Server-rejected Logon with Logout — transitioning to "
                     "Disconnected so logon() exits the spin-wait promptly");
                 set_state(SessionState::kDisconnected);
@@ -608,7 +596,7 @@ public:
         if (type == std::string_view(&tag::msg_type::Heartbeat, 1)) {
             // If we sent a TestRequest and got Heartbeat back, clear the pending flag
             test_request_pending_.store(false, std::memory_order_relaxed);
-            SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+            EPH_LOG_DEBUG(detail::fix_session_logger(),
                 "Received Heartbeat (MsgSeqNum={})",
                 last_inbound_seq_.load(std::memory_order_relaxed));
             return true;
@@ -617,7 +605,7 @@ public:
         // ── TestRequest → respond with Heartbeat echoing TestReqID (tag 112) ──
         if (type == std::string_view(&tag::msg_type::TestRequest, 1)) {
             auto test_req_id = msg.get(tag::TestReqID);
-            SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+            EPH_LOG_DEBUG(detail::fix_session_logger(),
                 "Received TestRequest (TestReqID={}), sending Heartbeat",
                 test_req_id.value_or("(none)"));
             send_heartbeat(test_req_id.value_or(""));
@@ -630,7 +618,7 @@ public:
             auto new_seq = msg.get_int(tag::NewSeqNo);
             if (new_seq) {
                 if (*new_seq < 1) {
-                    SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                    EPH_LOG_WARN(detail::fix_session_logger(),
                         "Invalid NewSeqNo={} in SequenceReset (must be >= 1), ignoring", *new_seq);
                     return true;
                 }
@@ -646,7 +634,7 @@ public:
                 // to follow up with a Logoff + Logon ResetSeqNumFlag=Y.
                 if (*new_seq >
                     static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-                    SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                    EPH_LOG_ERROR(detail::fix_session_logger(),
                         "SequenceReset NewSeqNo={} exceeds UINT32_MAX — "
                         "FIX 4.4 caps MsgSeqNum at uint32; ignoring "
                         "to avoid local sequence corruption (operator "
@@ -659,21 +647,21 @@ public:
                     // GapFill mode: advance expected sequence (must not go backward)
                     uint32_t expected = expected_inbound_seq_.load(std::memory_order_relaxed);
                     if (ns < expected) {
-                        SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+                        EPH_LOG_WARN(detail::fix_session_logger(),
                             "GapFill rejected: NewSeqNo={} < expected_inbound_seq_={} "
                             "(backward reset not allowed in GapFill mode)", ns, expected);
                         return true;
                     }
                     if (ns == expected) {
-                        SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+                        EPH_LOG_DEBUG(detail::fix_session_logger(),
                             "GapFill no-op: NewSeqNo={} == expected_inbound_seq_={}", ns, expected);
                         return true;
                     }
-                    SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+                    EPH_LOG_INFO(detail::fix_session_logger(),
                         "GapFill: advancing expected sequence to {}", ns);
                 } else {
                     // Reset mode: unconditional reset
-                    SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+                    EPH_LOG_INFO(detail::fix_session_logger(),
                         "SequenceReset: resetting expected sequence to {}", ns);
                 }
                 expected_inbound_seq_.store(ns, std::memory_order_relaxed);
@@ -687,7 +675,7 @@ public:
         if (type == "2") {
             auto begin = msg.get_int(tag::BeginSeqNo);
             auto end = msg.get_int(tag::EndSeqNo);
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "Received ResendRequest (BeginSeqNo={}, EndSeqNo={}) — "
                 "no message journal, sending GapFill",
                 begin.value_or(-1), end.value_or(-1));
@@ -759,7 +747,7 @@ public:
         if (recv_elapsed >= timeout_secs) {
             // Server dead — no response even after TestRequest
             if (test_request_pending_.load(std::memory_order_relaxed)) {
-                SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                EPH_LOG_ERROR(detail::fix_session_logger(),
                     "Server unresponsive: no message for {:.1f}s "
                     "(HeartBtInt={}s, timeout factor={:.1f}), TestRequest unanswered",
                     static_cast<double>(recv_elapsed), hb_sec,
@@ -771,7 +759,7 @@ public:
 
         if (recv_elapsed >= hb_sec && !test_request_pending_.load(std::memory_order_relaxed)) {
             // Server idle beyond HeartBtInt — probe with TestRequest
-            SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+            EPH_LOG_DEBUG(detail::fix_session_logger(),
                 "Server idle for {}s, sending TestRequest", recv_elapsed);
             send_test_request();
         }
@@ -790,7 +778,7 @@ public:
     /// @return true if sent successfully
     bool send_app(MessageBuilder& builder) noexcept {
         if (state_.load(std::memory_order_acquire) != SessionState::kActive) {
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "send_app: session not active (state={})",
                 session_state_name(state_.load(std::memory_order_relaxed)));
             return false;
@@ -799,7 +787,7 @@ public:
         if (!fill_session_header(builder)) return false;
         size_t len = builder.finish(cfg_.begin_string);
         if (len == 0) {
-            SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+            EPH_LOG_ERROR(detail::fix_session_logger(),
                 "send_app: MessageBuilder::finish() failed (overflow?)");
             return false;
         }
@@ -856,7 +844,7 @@ private:
     void set_state(SessionState new_state) noexcept {
         auto old = state_.exchange(new_state, std::memory_order_acq_rel);
         if (old != new_state) {
-            SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+            EPH_LOG_DEBUG(detail::fix_session_logger(),
                 "State: {} → {}", session_state_name(old), session_state_name(new_state));
             if (cfg_.on_state_change) {
                 cfg_.on_state_change(old, new_state);
@@ -919,7 +907,7 @@ private:
         uint32_t seq = outbound_seq_.load(std::memory_order_relaxed);
         for (;;) {
             if (seq >= UINT32_MAX) [[unlikely]] {
-                SPDLOG_LOGGER_ERROR(detail::fix_session_logger(),
+                EPH_LOG_ERROR(detail::fix_session_logger(),
                     "Outbound sequence number exhausted (seq={}): cannot send, "
                     "must reset session", seq);
                 return false;
@@ -937,7 +925,7 @@ private:
         constexpr uint32_t warn_threshold =
             static_cast<uint32_t>(static_cast<uint64_t>(UINT32_MAX) * 9 / 10);
         if (seq >= warn_threshold) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "Outbound sequence number at {}% capacity (seq={}): "
                 "schedule session reset (Logoff + Logon with ResetSeqNumFlag=Y) "
                 "before exhaustion",
@@ -993,7 +981,7 @@ private:
         if (!test_req_id.empty()) {
             b.set(tag::TestReqID, test_req_id);
         }
-        SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+        EPH_LOG_DEBUG(detail::fix_session_logger(),
             "Sending Heartbeat (MsgSeqNum={})",
             outbound_seq_.load(std::memory_order_relaxed) - 1);
         return send_message(b);
@@ -1021,7 +1009,7 @@ private:
         b.set(tag::MsgType, "1");
         if (!fill_session_header(b)) return false;
         b.set(tag::TestReqID, std::string_view(id_buf, id_len));
-        SPDLOG_LOGGER_DEBUG(detail::fix_session_logger(),
+        EPH_LOG_DEBUG(detail::fix_session_logger(),
             "Sending TestRequest (TestReqID={})", std::string_view(id_buf, id_len));
         // Mark pending ONLY if the wire write succeeded. Previous order
         // set pending=true before send_message returned — on TX failure
@@ -1043,7 +1031,7 @@ private:
             // n >= sizeof(id_buf) (truncation) would over-read past the
             // null terminator. The success branch builds the wire field
             // from `id_len`; the diagnostic must use the same length.
-            SPDLOG_LOGGER_WARN(detail::fix_session_logger(),
+            EPH_LOG_WARN(detail::fix_session_logger(),
                 "send_test_request: TX failed (TestReqID={}) — pending flag "
                 "NOT set; next tick() will re-probe instead of declaring "
                 "the server dead",
@@ -1059,7 +1047,7 @@ private:
         if (!fill_session_header(b)) return false;
         b.set_int(tag::BeginSeqNo, static_cast<int64_t>(begin_seq));
         b.set_int(tag::EndSeqNo, static_cast<int64_t>(end_seq));
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+        EPH_LOG_INFO(detail::fix_session_logger(),
             "Sending ResendRequest (BeginSeqNo={}, EndSeqNo={})", begin_seq, end_seq);
         return send_message(b);
     }
@@ -1071,7 +1059,7 @@ private:
         if (!fill_session_header(b)) return false;
         b.set_bool(tag::GapFillFlag, true);
         b.set_int(tag::NewSeqNo, static_cast<int64_t>(new_seq));
-        SPDLOG_LOGGER_INFO(detail::fix_session_logger(),
+        EPH_LOG_INFO(detail::fix_session_logger(),
             "Sending SequenceReset-GapFill (NewSeqNo={})", new_seq);
         return send_message(b);
     }

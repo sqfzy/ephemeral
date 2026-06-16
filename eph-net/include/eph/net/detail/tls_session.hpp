@@ -31,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -40,7 +40,6 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>    // X509_get_X509_PUBKEY, i2d_X509_PUBKEY
 
-#include "eph/core/detail/logger.hpp"
 #include "eph/net/detail/tls_constants.hpp"
 
 namespace eph::net {
@@ -53,7 +52,7 @@ namespace detail {
 
 /// @return Pointer to the "transport.tls" spdlog logger.
 inline spdlog::logger* tls_logger() {
-    static auto* l = ::eph::core::detail::make_logger("transport.tls");
+    static spdlog::logger* l = ::eph::log::get("transport.tls");
     return l;
 }
 
@@ -144,7 +143,7 @@ class TlsSession {
             };
             auto result = tcp->poll_rx(append_data);
             if (!result) {
-                SPDLOG_LOGGER_WARN(detail::tls_logger(),
+                EPH_LOG_WARN(detail::tls_logger(),
                     "TCP rx error during BIO poll: {}", result.error());
                 return -1;
             }
@@ -161,7 +160,7 @@ class TlsSession {
                 // Reduce CPU waste while waiting for handshake data
                 std::this_thread::yield();
             }
-            SPDLOG_LOGGER_WARN(detail::tls_logger(),
+            EPH_LOG_WARN(detail::tls_logger(),
                 "BIO poll_rx_blocking timed out after {}ms",
                 poll_timeout.count());
             return 0; // Timeout
@@ -184,7 +183,7 @@ class TlsSession {
             size_t chunk = std::min(remaining, static_cast<size_t>(ctx->tcp->mss()));
             auto result = ctx->tcp->send(ptr, chunk);
             if (!result) {
-                SPDLOG_LOGGER_ERROR(detail::tls_logger(),
+                EPH_LOG_ERROR(detail::tls_logger(),
                     "BIO write failed: {}", result.error());
                 if (total_sent > 0) break;
                 return -1;
@@ -277,7 +276,7 @@ class TlsSession {
 
         auto* ctx = static_cast<BioContext*>(SSL_get_app_data(ssl));
         if (!ctx) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TlsSession::new_session_cb_: app_data is null — "
                 "ticket will be discarded");
             return 0;
@@ -288,7 +287,7 @@ class TlsSession {
         // advances the pointer.
         int needed = i2d_SSL_SESSION(sess, nullptr);
         if (needed <= 0) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TlsSession::new_session_cb_: i2d_SSL_SESSION sizing "
                 "returned {}", needed);
             return 0;
@@ -298,14 +297,14 @@ class TlsSession {
         uint8_t* p = buf.data();
         int written = i2d_SSL_SESSION(sess, &p);
         if (written <= 0) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TlsSession::new_session_cb_: i2d_SSL_SESSION serialize "
                 "returned {}", written);
             return 0;
         }
         buf.resize(static_cast<size_t>(written));
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsSession::new_session_cb_: captured TLS ticket ({} bytes)",
             written);
         ctx->captured_ticket = std::move(buf);
@@ -335,7 +334,7 @@ class TlsSession {
         m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK,
                          "net_tcp_bio");
         if (!m) {
-            SPDLOG_LOGGER_ERROR(detail::tls_logger(),
+            EPH_LOG_ERROR(detail::tls_logger(),
                 "TlsSession::bio_method: BIO_meth_new returned nullptr — "
                 "TLS unavailable until aws-lc allocation succeeds");
             return nullptr;
@@ -365,7 +364,7 @@ public:
             return std::unexpected("TCP session not established");
         }
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "Creating TLS session for host: {} (resumption_ticket={}B)",
             config.hostname, config.tls_resumption_ticket.size());
 
@@ -373,7 +372,7 @@ public:
         SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
         if (!ctx) {
             auto err = detail::ssl_error_string();
-            SPDLOG_LOGGER_ERROR(log, "SSL_CTX_new failed: {}", err);
+            EPH_LOG_ERROR(log, "SSL_CTX_new failed: {}", err);
             return std::unexpected(std::format("SSL_CTX_new failed: {}", err));
         }
 
@@ -395,7 +394,7 @@ public:
         if (!SSL_CTX_set_min_proto_version(ctx, min_proto)) {
             auto err = detail::ssl_error_string();
             SSL_CTX_free(ctx);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "Failed to set TLS minimum version (min_version={}): {}",
                 to_string(config.min_version), err);
             return std::unexpected(std::format(
@@ -423,12 +422,12 @@ public:
             if (!SSL_CTX_set_cipher_list(ctx, kTls12AeadOnly)) {
                 auto err = detail::ssl_error_string();
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "Failed to install TLS 1.2 AEAD cipher whitelist: {}", err);
                 return std::unexpected(std::format(
                     "Failed to install TLS 1.2 AEAD cipher whitelist: {}", err));
             }
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "TLS 1.2 negotiation enabled (AEAD-only ciphers, no CBC)");
         }
 
@@ -438,7 +437,7 @@ public:
                     config.ca_cert_path.c_str(), nullptr)) {
                 auto err = detail::ssl_error_string();
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "Failed to load CA cert {}: {}",
                     config.ca_cert_path, err);
                 return std::unexpected(std::format(
@@ -449,14 +448,14 @@ public:
                 if (config.verify_peer) {
                     auto err = detail::ssl_error_string();
                     SSL_CTX_free(ctx);
-                    SPDLOG_LOGGER_ERROR(log,
+                    EPH_LOG_ERROR(log,
                         "SSL_CTX_set_default_verify_paths failed with "
                         "verify_peer=true: no CA certificates available: {}",
                         err);
                     return std::unexpected(std::format(
                         "No CA certificates available: {}", err));
                 }
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "SSL_CTX_set_default_verify_paths failed: "
                     "default CA certificates may not be available "
                     "(continuing because verify_peer=false)");
@@ -476,7 +475,7 @@ public:
         // up-front so the misconfiguration surfaces at SSL_CTX setup
         // rather than as an opaque "alert handshake_failure" later.
         if (config.client_cert_path.empty() != config.client_key_path.empty()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TLS mTLS misconfigured: client_cert_path={} "
                 "client_key_path={} — both must be set together for mTLS, "
                 "or both empty to disable. Ignoring lone field; mTLS will "
@@ -489,7 +488,7 @@ public:
                     ctx, config.client_cert_path.c_str()) != 1) {
                 auto err = detail::ssl_error_string();
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "Failed to load client certificate {}: {}",
                     config.client_cert_path, err);
                 return std::unexpected(std::format(
@@ -499,7 +498,7 @@ public:
                     ctx, config.client_key_path.c_str(), SSL_FILETYPE_PEM) != 1) {
                 auto err = detail::ssl_error_string();
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "Failed to load client private key {}: {}",
                     config.client_key_path, err);
                 return std::unexpected(std::format(
@@ -508,12 +507,12 @@ public:
             if (SSL_CTX_check_private_key(ctx) != 1) {
                 auto err = detail::ssl_error_string();
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "Client certificate/key mismatch: {}", err);
                 return std::unexpected(std::format(
                     "Client certificate/key mismatch: {}", err));
             }
-            SPDLOG_LOGGER_DEBUG(log, "mTLS: loaded client certificate {}",
+            EPH_LOG_DEBUG(log, "mTLS: loaded client certificate {}",
                 config.client_cert_path);
         }
 
@@ -522,7 +521,7 @@ public:
         if (!ssl) {
             auto err = detail::ssl_error_string();
             SSL_CTX_free(ctx);
-            SPDLOG_LOGGER_ERROR(log, "SSL_new failed: {}", err);
+            EPH_LOG_ERROR(log, "SSL_new failed: {}", err);
             return std::unexpected(std::format("SSL_new failed: {}", err));
         }
 
@@ -537,14 +536,14 @@ public:
                 if (config.verify_peer) {
                     SSL_free(ssl);
                     SSL_CTX_free(ctx);
-                    SPDLOG_LOGGER_ERROR(log,
+                    EPH_LOG_ERROR(log,
                         "Failed to set SNI hostname '{}' with verify_peer=true: {}",
                         config.hostname, sni_err);
                     return std::unexpected(std::format(
                         "Failed to set SNI hostname '{}': {}",
                         config.hostname, sni_err));
                 }
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "Failed to set SNI hostname '{}': {} "
                     "(continuing because verify_peer=false)",
                     config.hostname, sni_err);
@@ -567,14 +566,14 @@ public:
                 auto host_err = detail::ssl_error_string();
                 SSL_free(ssl);
                 SSL_CTX_free(ctx);
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "SSL_set1_host('{}') failed with verify_peer=true: {}",
                     config.hostname, host_err);
                 return std::unexpected(std::format(
                     "SSL_set1_host('{}') failed: {}",
                     config.hostname, host_err));
             }
-            SPDLOG_LOGGER_DEBUG(log,
+            EPH_LOG_DEBUG(log,
                 "TLS hostname verification enabled for '{}'",
                 config.hostname);
         } else if (config.verify_peer && config.hostname.empty()) {
@@ -583,7 +582,7 @@ public:
             // by IP literal in test harnesses). Surface a WARN so this
             // is auditable in logs — the chain is still verified, just
             // not the identity.
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "TLS verify_peer=true but hostname is empty — chain is "
                 "verified, but cert identity binding is OFF (any trusted "
                 "cert for any hostname is accepted; only safe when "
@@ -599,7 +598,7 @@ public:
             auto err = detail::ssl_error_string();
             SSL_free(ssl);
             SSL_CTX_free(ctx);
-            SPDLOG_LOGGER_ERROR(log, "BIO_new failed: {}", err);
+            EPH_LOG_ERROR(log, "BIO_new failed: {}", err);
             return std::unexpected(std::format("BIO_new failed: {}", err));
         }
 
@@ -635,7 +634,7 @@ public:
             auto err = detail::ssl_error_string();
             SSL_free(ssl);
             SSL_CTX_free(ctx);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "SSL_set_app_data failed (likely internal allocation "
                 "failure) — would silently break session resumption: {}",
                 err);
@@ -654,7 +653,7 @@ public:
                 nullptr, &p,
                 static_cast<long>(config.tls_resumption_ticket.size()));
             if (!restored) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "TlsSession::create: d2i_SSL_SESSION failed for "
                     "resumption ticket ({} bytes) — proceeding with "
                     "full handshake: {}",
@@ -662,13 +661,13 @@ public:
                     detail::ssl_error_string());
             } else {
                 if (SSL_set_session(ssl, restored) != 1) {
-                    SPDLOG_LOGGER_WARN(log,
+                    EPH_LOG_WARN(log,
                         "TlsSession::create: SSL_set_session rejected "
                         "the restored ticket — proceeding with full "
                         "handshake: {}",
                         detail::ssl_error_string());
                 } else {
-                    SPDLOG_LOGGER_DEBUG(log,
+                    EPH_LOG_DEBUG(log,
                         "TlsSession::create: resumption ticket applied "
                         "({} bytes), abbreviated handshake will be "
                         "attempted",
@@ -686,7 +685,7 @@ public:
         session.bio_ctx_ = std::move(bio_ctx);
         session.config_ = config;
 
-        SPDLOG_LOGGER_DEBUG(log, "TLS session created, ready for handshake");
+        EPH_LOG_DEBUG(log, "TLS session created, ready for handshake");
         return session;
     }
 
@@ -757,7 +756,7 @@ public:
             return std::unexpected("Handshake already completed");
         }
 
-        SPDLOG_LOGGER_INFO(log, "Starting TLS 1.3 handshake with {}",
+        EPH_LOG_INFO(log, "Starting TLS 1.3 handshake with {}",
                            config_.hostname);
 
         auto deadline = std::chrono::steady_clock::now() +
@@ -779,7 +778,7 @@ public:
                 // bio_read busy-waits internally in the blocking path, so a
                 // WANT_READ here means poll_rx_blocking already timed out.
                 if (std::chrono::steady_clock::now() >= deadline) {
-                    SPDLOG_LOGGER_ERROR(log,
+                    EPH_LOG_ERROR(log,
                         "TLS handshake timeout ({}ms)",
                         config_.handshake_timeout.count());
                     return std::unexpected(std::format(
@@ -835,7 +834,7 @@ private:
         // returns a non-null cipher, but `SSL_CIPHER_get_name(nullptr)` is
         // UB; keep the log path hardened so a stub TLS impl can't crash it.
         const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_);
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "TLS handshake complete: version={}, cipher={}",
             SSL_get_version(ssl_),
             cipher ? SSL_CIPHER_get_name(cipher) : "<unknown>");
@@ -904,7 +903,7 @@ private:
             if (polled < 0) {
                 // TCP error — let the normal record-layer path
                 // raise it; do not promote to handshake failure.
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "TlsSession::handshake: post-handshake drain "
                     "saw TCP poll error on round {}, stopping",
                     i);
@@ -915,7 +914,7 @@ private:
                 // Nothing buffered, nothing new on the wire —
                 // server hasn't packed NSE with Finished. Quit
                 // without burning further wall-clock time.
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "TlsSession::handshake: post-handshake drain "
                     "round {} found no data, stopping",
                     i);
@@ -934,7 +933,7 @@ private:
                 // NSE + app data into one flight). Stop the
                 // drain; the caller's hot-path read will pick
                 // these bytes up through the AEAD context.
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "TlsSession::handshake: post-handshake drain "
                     "round {} surfaced {} byte(s) of app data, "
                     "leaving for caller",
@@ -946,13 +945,13 @@ private:
                 perr != SSL_ERROR_WANT_WRITE) {
                 // Other condition — let the hot path resurface
                 // it on its first read attempt.
-                SPDLOG_LOGGER_TRACE(log,
+                EPH_LOG_TRACE(log,
                     "TlsSession::handshake: post-handshake drain "
                     "SSL_peek err={} on round {}, stopping",
                     perr, i);
                 break;
             }
-            SPDLOG_LOGGER_TRACE(log,
+            EPH_LOG_TRACE(log,
                 "TlsSession::handshake: post-handshake drain "
                 "round {} processed {} TCP byte(s), "
                 "peek=WANT_READ",
@@ -977,7 +976,7 @@ private:
     ///        the blocking and non-blocking handshake drivers.
     [[nodiscard]] std::string classify_handshake_error_(int err) {
         auto ssl_err = detail::ssl_error_string();
-        SPDLOG_LOGGER_ERROR(detail::tls_logger(),
+        EPH_LOG_ERROR(detail::tls_logger(),
             "TLS handshake failed: ssl_error={}, detail={}", err, ssl_err);
         const char* prefix = (err == SSL_ERROR_SSL &&
             (ssl_err.find("certificate") != std::string::npos ||
@@ -1174,7 +1173,7 @@ public:
         state.write.seq = SSL_get_write_sequence(ssl_);
         state.read.seq  = SSL_get_read_sequence(ssl_);
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "TLS traffic keys extracted: version={} format={} cipher={} "
             "key_len={} write_seq={} read_seq={}",
             to_string(state.version), to_string(state.record_format),
@@ -1273,7 +1272,7 @@ private:
         // Get peer certificate
         X509* cert = SSL_get_peer_certificate(ssl_);
         if (!cert) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "SPKI pin check: no peer certificate available");
             return std::unexpected("spki_pin: no peer certificate");
         }
@@ -1283,7 +1282,7 @@ private:
         X509_PUBKEY* spki = X509_get_X509_PUBKEY(cert);
         if (!spki) {
             X509_free(cert);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "SPKI pin check: failed to extract SPKI from peer certificate");
             return std::unexpected("spki_pin: failed to extract SPKI");
         }
@@ -1294,7 +1293,7 @@ private:
         int der_len = i2d_X509_PUBKEY(spki, &der_buf);
         if (der_len <= 0 || !der_buf) {
             X509_free(cert);
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "SPKI pin check: i2d_X509_PUBKEY failed (der_len={})", der_len);
             return std::unexpected("spki_pin: SPKI DER serialization failed");
         }
@@ -1306,24 +1305,24 @@ private:
         X509_free(cert);
 
         if (actual_hash.empty()) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "SPKI pin check: SHA-256 hash computation failed");
             return std::unexpected("spki_pin: hash computation failed");
         }
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "SPKI pin check: actual_hash={}, pin_count={}",
             actual_hash, config_.pinned_spki_sha256.size());
 
         // Check against pin list
         if (spki_pin::matches_any_pin(actual_hash, config_.pinned_spki_sha256)) {
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "SPKI pin check: peer certificate matches pinned hash");
             return {};
         }
 
         // Mismatch — invoke callback or apply default soft-pin behavior
-        SPDLOG_LOGGER_WARN(log,
+        EPH_LOG_WARN(log,
             "SPKI pin MISMATCH: peer_hash={}, expected one of [{}]",
             actual_hash,
             [&] {
@@ -1338,18 +1337,18 @@ private:
         if (config_.on_pin_mismatch) {
             bool allow = config_.on_pin_mismatch(actual_hash);
             if (!allow) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "SPKI pin mismatch: on_pin_mismatch callback rejected connection");
                 return std::unexpected(std::format(
                     "spki_pin: mismatch rejected by callback (actual={})",
                     actual_hash));
             }
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "SPKI pin mismatch: on_pin_mismatch callback allowed connection to continue");
         } else {
             // P0-3: Hard pin default — reject connection when pin list is set but no
             // override callback is configured. Safe default prevents MITM bypass.
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "SPKI pin mismatch: no on_pin_mismatch callback set, "
                 "rejecting connection (configure callback to override)");
             return std::unexpected(std::format(

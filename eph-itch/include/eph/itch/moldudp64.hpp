@@ -21,7 +21,7 @@
 #include <expected>
 #include <string_view>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/itch/messages.hpp"  // read_be16, read_be64
 #include "eph/itch/parser.hpp"    // ParseError
@@ -49,16 +49,8 @@ inline constexpr uint16_t kEndOfSession  = 0xFFFF; ///< Sentinel message_count i
 namespace detail {
 /// @brief Get or create the MoldUDP64 module logger.
 /// @return Shared pointer reference to the spdlog logger instance.
-inline const std::shared_ptr<spdlog::logger>& moldudp64_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("itch.moldudp64");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("itch.moldudp64"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("itch.moldudp64"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* moldudp64_logger() {
+    static spdlog::logger* l = ::eph::log::get("itch.moldudp64");
     return l;
 }
 }  // namespace detail
@@ -86,7 +78,7 @@ struct MoldUDP64Header {
 [[nodiscard]] inline std::expected<MoldUDP64Header, ParseError>
 parse_moldudp64_header(const uint8_t* data, size_t len) noexcept {
     if (len < moldudp64::kHeaderLen) {
-        SPDLOG_LOGGER_DEBUG(detail::moldudp64_logger(),
+        EPH_LOG_DEBUG(detail::moldudp64_logger(),
             "MoldUDP64: truncated header, have {} bytes, need {}",
             len, moldudp64::kHeaderLen);
         return std::unexpected(ParseError::kTruncated);
@@ -102,7 +94,7 @@ parse_moldudp64_header(const uint8_t* data, size_t len) noexcept {
     // Message count: bytes 18..19, big-endian uint16_t
     uint16_t count = read_be16(data + moldudp64::kSessionLen + 8);
 
-    SPDLOG_LOGGER_TRACE(detail::moldudp64_logger(),
+    EPH_LOG_TRACE(detail::moldudp64_logger(),
         "MoldUDP64: header parsed session='{}' seq={} count={}",
         session, seq, count);
 
@@ -136,7 +128,7 @@ template <typename Fn>
 size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept {
     auto hdr_result = parse_moldudp64_header(data, len);
     if (!hdr_result) {
-        SPDLOG_LOGGER_DEBUG(detail::moldudp64_logger(),
+        EPH_LOG_DEBUG(detail::moldudp64_logger(),
             "MoldUDP64: failed to parse header");
         return 0;
     }
@@ -145,7 +137,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
 
     // End-of-session marker: no messages to deliver
     if (hdr.message_count == moldudp64::kEndOfSession) {
-        SPDLOG_LOGGER_INFO(detail::moldudp64_logger(),
+        EPH_LOG_INFO(detail::moldudp64_logger(),
             "MoldUDP64: end-of-session signal for session='{}'", hdr.session);
         return 0;
     }
@@ -155,7 +147,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
     // addition is UINT64_MAX - 65533, so this check is almost never triggered
     // in practice but prevents silent wraparound on malformed packets.
     if (hdr.sequence_number > UINT64_MAX - hdr.message_count) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+        EPH_LOG_WARN(detail::moldudp64_logger(),
             "MoldUDP64: sequence number near overflow ({} + {}), dropping packet",
             hdr.sequence_number, hdr.message_count);
         return 0;
@@ -164,7 +156,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
     // Early reject: each message needs at least a 2-byte length prefix,
     // so the buffer must hold the header plus 2 * message_count bytes minimum.
     if (len < moldudp64::kHeaderLen + hdr.message_count * size_t{2}) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+        EPH_LOG_WARN(detail::moldudp64_logger(),
             "MoldUDP64: buffer too small for {} messages (need >= {} bytes, have {})",
             hdr.message_count, moldudp64::kHeaderLen + hdr.message_count * size_t{2}, len);
         return 0;
@@ -176,7 +168,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
     for (uint16_t i = 0; i < hdr.message_count; ++i) {
         // Need at least 2 bytes for the message length prefix
         if (offset + 2 > len) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+            EPH_LOG_WARN(detail::moldudp64_logger(),
                 "MoldUDP64: truncated message length prefix at message {}/{}, "
                 "offset={} available={}",
                 i, hdr.message_count, offset, len);
@@ -188,7 +180,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
 
         // Verify the full message body is available
         if (offset + msg_len > len) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::moldudp64_logger(),
+            EPH_LOG_WARN(detail::moldudp64_logger(),
                 "MoldUDP64: truncated message body at message {}/{}, "
                 "need {} bytes but only {} available",
                 i, hdr.message_count, msg_len, len - offset);
@@ -197,7 +189,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
 
         uint64_t seq_num = hdr.sequence_number + i;
 
-        SPDLOG_LOGGER_TRACE(detail::moldudp64_logger(),
+        EPH_LOG_TRACE(detail::moldudp64_logger(),
             "MoldUDP64: delivering message {}/{} seq={} len={}",
             i + 1, hdr.message_count, seq_num, msg_len);
 
@@ -206,7 +198,7 @@ size_t parse_moldudp64(const uint8_t* data, size_t len, Fn&& callback) noexcept 
         offset += msg_len;
     }
 
-    SPDLOG_LOGGER_DEBUG(detail::moldudp64_logger(),
+    EPH_LOG_DEBUG(detail::moldudp64_logger(),
         "MoldUDP64: delivered {}/{} messages from session='{}' starting seq={}",
         delivered, hdr.message_count, hdr.session, hdr.sequence_number);
 

@@ -15,9 +15,16 @@
 #include <atomic>
 #include <csignal>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::utils {
+
+namespace detail {
+inline spdlog::logger* shutdown_signal_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.shutdown_signal");
+    return l;
+}
+} // namespace detail
 
 /// Process-wide running flag.  Hot loops should poll this with
 /// `std::memory_order_relaxed` and break when it goes false.
@@ -63,13 +70,13 @@ inline void on_shutdown_signal(int /*signo*/) noexcept {
 /// `sigaction` directly.
 inline void install_shutdown_handlers() noexcept {
     if (std::signal(SIGINT, detail::on_shutdown_signal) == SIG_ERR) {
-        SPDLOG_WARN("install_shutdown_handlers: std::signal(SIGINT) failed — "
+        EPH_LOG_WARN(detail::shutdown_signal_logger(), "install_shutdown_handlers: std::signal(SIGINT) failed — "
                     "default disposition (TERMINATE) remains in effect; "
                     "graceful shutdown via g_shutdown_flag is unavailable "
                     "for SIGINT");
     }
     if (std::signal(SIGTERM, detail::on_shutdown_signal) == SIG_ERR) {
-        SPDLOG_WARN("install_shutdown_handlers: std::signal(SIGTERM) failed "
+        EPH_LOG_WARN(detail::shutdown_signal_logger(), "install_shutdown_handlers: std::signal(SIGTERM) failed "
                     "— default disposition (TERMINATE) remains in effect; "
                     "graceful shutdown via g_shutdown_flag is unavailable "
                     "for SIGTERM");

@@ -26,8 +26,7 @@
 #include <optional>
 #include <span>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include "eph/core/log.hpp"
 
 namespace eph::book {
 
@@ -36,15 +35,8 @@ namespace detail {
 /// @brief Lazily-constructed spdlog logger for ArrayBook diagnostics.
 /// @return Pointer to the "book.array_book" logger instance.
 inline spdlog::logger* array_book_logger() {
-    static auto l = [] {
-        try {
-            return spdlog::stdout_color_mt("book.array_book");
-        } catch (const spdlog::spdlog_ex&) {
-            auto recovered = spdlog::get("book.array_book");
-            return recovered ? recovered : spdlog::default_logger();
-        }
-    }();
-    return l.get();
+    static spdlog::logger* l = ::eph::log::get("book.array_book");
+    return l;
 }
 } // namespace detail
 /// @endcond
@@ -105,7 +97,7 @@ public:
     /// @param qty    Quantity at this price.  Zero removes the level;
     ///               negative values are clamped to zero (treated as removal).
     void update_bid(double price, double qty) noexcept {
-        SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update_bid price={} qty={}", price, qty);
+        EPH_LOG_TRACE(detail::array_book_logger(), "update_bid price={} qty={}", price, qty);
         update_side(bids_, bid_count_, price, qty, /*descending=*/true);
     }
 
@@ -119,7 +111,7 @@ public:
     /// @param qty    Quantity at this price.  Zero removes the level;
     ///               negative values are clamped to zero (treated as removal).
     void update_ask(double price, double qty) noexcept {
-        SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update_ask price={} qty={}", price, qty);
+        EPH_LOG_TRACE(detail::array_book_logger(), "update_ask price={} qty={}", price, qty);
         update_side(asks_, ask_count_, price, qty, /*descending=*/false);
     }
 
@@ -185,7 +177,7 @@ public:
     void clear() noexcept {
         bid_count_ = 0;
         ask_count_ = 0;
-        SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "ArrayBook cleared");
+        EPH_LOG_DEBUG(detail::array_book_logger(), "ArrayBook cleared");
     }
 
     /// @brief Check whether the book is crossed (best bid > best ask).
@@ -276,7 +268,7 @@ private:
         //    price plus qty=0, which feeds rarely emit for fictional
         //    levels. !isfinite catches NaN and +/-Inf in one branch.
         if (!std::isfinite(price)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::array_book_logger(),
+            EPH_LOG_WARN(detail::array_book_logger(),
                 "update_side ignoring non-finite price={}", price);
             return;
         }
@@ -292,7 +284,7 @@ private:
         //    sum is Inf for the rest of the session. Treat both fail-
         //    soft like NaN price.
         if (!std::isfinite(qty)) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::array_book_logger(),
+            EPH_LOG_WARN(detail::array_book_logger(),
                 "update_side ignoring non-finite qty={} at price={}", qty, price);
             return;
         }
@@ -301,7 +293,7 @@ private:
         // Intentional: clamp to 0 so downstream removal logic doesn't need
         // to distinguish negative from zero — both mean "remove this level".
         if (qty < 0.0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::array_book_logger(), "update_side: negative qty={} at price={} clamped to 0 "
+            EPH_LOG_WARN(detail::array_book_logger(), "update_side: negative qty={} at price={} clamped to 0 "
                          "(treated as removal) — caller should use qty=0",
                          qty, price);
             qty = 0.0;
@@ -312,7 +304,7 @@ private:
             if (price_eq(levels[i].price, price)) {
                 if (qty <= 0.0) {
                     // Remove: shift remaining levels down by one.
-                    SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "remove level price={} idx={}", price, i);
+                    EPH_LOG_TRACE(detail::array_book_logger(), "remove level price={} idx={}", price, i);
                     if (i + 1 < count) {
                         std::memmove(&levels[i], &levels[i + 1],
                                      (count - i - 1) * sizeof(PriceLevel));
@@ -320,7 +312,7 @@ private:
                     --count;
                 } else {
                     // Update in-place.
-                    SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "update level price={} old_qty={} new_qty={}",
+                    EPH_LOG_TRACE(detail::array_book_logger(), "update level price={} old_qty={} new_qty={}",
                                  price, levels[i].qty, qty);
                     levels[i].qty = qty;
                 }
@@ -330,7 +322,7 @@ private:
 
         // -- Price not found: nothing to remove ------------------------------
         if (qty <= 0.0) {
-            SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "remove non-existent price={} — no-op", price);
+            EPH_LOG_TRACE(detail::array_book_logger(), "remove non-existent price={} — no-op", price);
             return;
         }
 
@@ -354,7 +346,7 @@ private:
         if (count >= MaxLevels) {
             if (pos >= MaxLevels) {
                 // New price is worse than everything we track — drop it.
-                SPDLOG_LOGGER_TRACE(detail::array_book_logger(), "book full, dropping worse price={}", price);
+                EPH_LOG_TRACE(detail::array_book_logger(), "book full, dropping worse price={}", price);
                 return;
             }
             // We will insert at `pos` and the last level falls off.
@@ -365,7 +357,7 @@ private:
             }
             levels[pos] = {price, qty};
             // count stays at MaxLevels (last level evicted).
-            SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (evicted worst)",
+            EPH_LOG_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (evicted worst)",
                          price, qty, pos);
             return;
         }
@@ -377,7 +369,7 @@ private:
         }
         levels[pos] = {price, qty};
         ++count;
-        SPDLOG_LOGGER_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (depth={})",
+        EPH_LOG_DEBUG(detail::array_book_logger(), "inserted price={} qty={} at idx={} (depth={})",
                      price, qty, pos, count);
     }
 };

@@ -50,7 +50,7 @@
 
 #include <unistd.h>     // getpid
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <rte_eal.h>
 #include <rte_errno.h>
@@ -62,6 +62,8 @@
 #include "eph/utils/scope_guard.hpp"
 
 namespace eph::dpdk::detail {
+
+inline spdlog::logger* mp_registry_logger() { static spdlog::logger* l = ::eph::log::get("net.dpdk.mp_registry"); return l; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Memzone naming
@@ -236,7 +238,7 @@ static_assert(alignof(MpRegistryHeader) >= 64,
                                    core::ErrorInfo>
 build_mp_registry_name(std::string_view file_prefix) noexcept {
     if (file_prefix.empty()) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(mp_registry_logger(),
             "MpRegistry::build_name: file_prefix is empty — "
             "PlatformConfig.file_prefix must be set for MP-IPC");
         return std::unexpected(core::ErrorInfo{
@@ -244,7 +246,7 @@ build_mp_registry_name(std::string_view file_prefix) noexcept {
             "MpRegistry: file_prefix must be non-empty"});
     }
     if (file_prefix.size() >= kMpRegistryFilePrefixMax) {
-        SPDLOG_ERROR(
+        EPH_LOG_ERROR(mp_registry_logger(),
             "MpRegistry::build_name: file_prefix='{}' size={} >= max {} "
             "(RTE_MEMZONE_NAMESIZE - len(\"eph_mp/\") - 1; final byte "
             "reserved for header NUL)",
@@ -440,7 +442,7 @@ public:
     [[nodiscard]] static std::expected<MpRegistryHandle, core::ErrorInfo>
     create_primary(std::string_view file_prefix, MpTopology const& topo) {
         if (!topo.valid()) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry::create_primary: MpTopology failed valid() "
                 "(self_index={} total_procs={} file_prefix='{}')",
                 topo.self_index, topo.total_procs, file_prefix);
@@ -458,7 +460,7 @@ public:
         // it first so we always start with fresh state — this is the
         // explicit "primary always resets" contract.
         if (auto* old = rte_memzone_lookup(name)) {
-            SPDLOG_INFO(
+            EPH_LOG_INFO(mp_registry_logger(),
                 "MpRegistry: primary found stale memzone '{}' from a "
                 "previous run; freeing before re-reserving",
                 name);
@@ -472,7 +474,7 @@ public:
             /*flags=*/0,
             /*align=*/64);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: rte_memzone_reserve_aligned('{}', size={}) "
                 "failed (rte_errno={})",
                 name, sizeof(MpRegistryHeader), rte_errno);
@@ -493,7 +495,7 @@ public:
         uint8_t expected = 0;
         if (!hdr->procs[topo.self_index].claimed.compare_exchange_strong(
                 expected, 1, std::memory_order_acq_rel)) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry::create_primary: CAS-claim of self_index={} "
                 "failed on freshly-initialized header — torn write or "
                 "memzone collision (file_prefix='{}' total_procs={})",
@@ -508,7 +510,7 @@ public:
         // Publish own pid for liveness probe by future peers.
         hdr->procs[topo.self_index].pid = static_cast<int32_t>(::getpid());
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(mp_registry_logger(),
             "MpRegistry: primary reserved memzone '{}' "
             "(magic=0x{:08x} ver={} total_procs={} self_index={} pid={})",
             name, kMpRegistryMagic, kMpRegistryVersion,
@@ -562,7 +564,7 @@ public:
         }};
 
         if (!topo.valid()) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry::attach_secondary: MpTopology failed valid() "
                 "(self_index={} total_procs={} file_prefix='{}' "
                 "already_claimed={})",
@@ -584,7 +586,7 @@ public:
 
         const auto* mz = rte_memzone_lookup(name);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: rte_memzone_lookup('{}') returned NULL — "
                 "primary not running, file_prefix mismatch, or EAL not "
                 "initialized as secondary",
@@ -608,7 +610,7 @@ public:
         }
 
         if (hdr->magic != kMpRegistryMagic) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: header magic mismatch on '{}' "
                 "(got=0x{:08x}, expected=0x{:08x}) — memzone collided "
                 "with a non-eph layout under the same file_prefix",
@@ -620,7 +622,7 @@ public:
                 "with a non-eph layout under the same file_prefix)"});
         }
         if (hdr->version != kMpRegistryVersion) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: header version mismatch on '{}' "
                 "(got={}, expected={}) — primary built with a different "
                 "eph-net-dpdk version. Recovery: stop all secondaries, "
@@ -635,7 +637,7 @@ public:
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),
                                   kMpRegistryFilePrefixMax - 1)) != 0) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: file_prefix mismatch on '{}' "
                 "(header='{}', supplied='{}')",
                 name, hdr->file_prefix, file_prefix);
@@ -645,7 +647,7 @@ public:
                 "one this secondary supplied"});
         }
         if (hdr->total_procs != topo.total_procs) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: total_procs mismatch on '{}' "
                 "(header={}, secondary's topo={})",
                 name, hdr->total_procs, topo.total_procs);
@@ -655,7 +657,7 @@ public:
                 "differs from the primary's view"});
         }
         if (topo.self_index >= hdr->total_procs) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: self_index ({}) >= total_procs ({}) on '{}'",
                 topo.self_index, hdr->total_procs, name);
             // self_index out of range — guard's idx_to_release was
@@ -681,7 +683,7 @@ public:
             declared.queue_hi   != wanted.queue_hi   ||
             declared.port_lo    != wanted.port_lo    ||
             declared.port_hi    != wanted.port_hi) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: secondary's spec for self_index={} does not "
                 "match primary's: declared queues=[{},{}) ports=[{},{}) "
                 "vs primary queues=[{},{}) ports=[{},{})",
@@ -731,7 +733,7 @@ public:
                 const uint64_t other_mask = hdr->procs[i].lcore_mask;
                 const uint64_t overlap = wanted.lcore_mask & other_mask;
                 if (overlap != 0) {
-                    SPDLOG_ERROR(
+                    EPH_LOG_ERROR(mp_registry_logger(),
                         "MpRegistry: lcore conflict — self_index={} "
                         "lcore_mask=0x{:016x} overlaps with active "
                         "slot[{}] (tag='{}') lcore_mask=0x{:016x}; "
@@ -761,7 +763,7 @@ public:
             uint8_t expected = 0;
             if (!hdr->procs[topo.self_index].claimed.compare_exchange_strong(
                     expected, 1, std::memory_order_acq_rel)) {
-                SPDLOG_ERROR(
+                EPH_LOG_ERROR(mp_registry_logger(),
                     "MpRegistry: self_index={} already claimed (another "
                     "peer is running with the same self_index — config "
                     "bug)",
@@ -778,7 +780,7 @@ public:
             // unclaimed slot (would race with a concurrent claimer).
             if (hdr->procs[topo.self_index].claimed.load(
                     std::memory_order_acquire) != 1) {
-                SPDLOG_ERROR(
+                EPH_LOG_ERROR(mp_registry_logger(),
                     "MpRegistry: attach_secondary(already_claimed=true) "
                     "but procs[{}].claimed != 1 — caller contract violated",
                     topo.self_index);
@@ -815,7 +817,7 @@ public:
         hdr->procs[topo.self_index].claimed.store(
             1, std::memory_order_release);
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(mp_registry_logger(),
             "MpRegistry: secondary attached to '{}' (self_index={} "
             "queues=[{},{}) ports=[{},{}) lcore_mask=0x{:016x})",
             name, topo.self_index,
@@ -859,7 +861,7 @@ public:
 
         const auto* mz = rte_memzone_lookup(name);
         if (mz == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: attach_secondary_readonly: "
                 "rte_memzone_lookup('{}') returned NULL — primary not "
                 "running, prefix mismatch, or EAL not initialized as "
@@ -874,7 +876,7 @@ public:
         auto* hdr = static_cast<MpRegistryHeader*>(mz->addr);
 
         if (hdr->magic != kMpRegistryMagic) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: header magic mismatch on '{}' "
                 "(got=0x{:08x}, expected=0x{:08x}) — memzone collided "
                 "with a non-eph layout under the same file_prefix "
@@ -886,7 +888,7 @@ public:
                 "with a non-eph layout under the same file_prefix)"});
         }
         if (hdr->version != kMpRegistryVersion) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: header version mismatch on '{}' "
                 "(got={}, expected={}) — primary built with a different "
                 "eph-net-dpdk version (read-only attach). Recovery: stop "
@@ -900,7 +902,7 @@ public:
         if (std::strncmp(hdr->file_prefix, file_prefix.data(),
                          std::min(file_prefix.size(),
                                   kMpRegistryFilePrefixMax - 1)) != 0) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: file_prefix mismatch on '{}' "
                 "(header='{}', supplied='{}') — read-only attach",
                 name, hdr->file_prefix, file_prefix);
@@ -921,7 +923,7 @@ public:
         // an opaque "MpTopology::valid() failed" three layers up.
         if (hdr->total_procs == 0
                 || hdr->total_procs > MpTopology::kMaxProcs) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry: header total_procs={} is out of contract "
                 "range [1, kMaxProcs={}] on '{}' — registry corruption "
                 "or undeclared schema skew (magic+version matched but "
@@ -935,7 +937,7 @@ public:
                 "schema skew despite magic+version match)"});
         }
 
-        SPDLOG_INFO(
+        EPH_LOG_INFO(mp_registry_logger(),
             "MpRegistry: attached read-only to '{}' "
             "(magic=0x{:08x} ver={} total_procs={})",
             name, hdr->magic, hdr->version, hdr->total_procs);
@@ -963,7 +965,7 @@ public:
     [[nodiscard]] std::expected<uint8_t, core::ErrorInfo>
     try_claim_free_slot() noexcept {
         if (hdr_ == nullptr) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry::try_claim_free_slot: handle is inert "
                 "(moved-from / never attached)");
             return std::unexpected(core::ErrorInfo{
@@ -971,7 +973,7 @@ public:
                 "MpRegistry::try_claim_free_slot: handle is inert"});
         }
         if (self_index_ != kMpRegistrySelfIndexUnset) {
-            SPDLOG_ERROR(
+            EPH_LOG_ERROR(mp_registry_logger(),
                 "MpRegistry::try_claim_free_slot: handle already owns "
                 "self_index={} — caller must use a fresh read-only handle",
                 self_index_);
@@ -1006,7 +1008,7 @@ public:
                 // on weakly-ordered cores.
                 hdr_->procs[i].claimed.store(
                     1, std::memory_order_release);
-                SPDLOG_INFO(
+                EPH_LOG_INFO(mp_registry_logger(),
                     "MpRegistry: try_claim_free_slot claimed self_index={} "
                     "(of total_procs={}, pid={})",
                     i, total, hdr_->procs[i].pid);
@@ -1051,7 +1053,7 @@ public:
                 // synchronize with future readers' acquire-loads).
                 hdr_->procs[i].claimed.store(
                     1, std::memory_order_release);
-                SPDLOG_WARN(
+                EPH_LOG_WARN(mp_registry_logger(),
                     "MpRegistry: try_claim_free_slot reclaimed stale "
                     "self_index={} (previous owner pid={} dead — kill -9 "
                     "/ OOM / segfault); now owned by pid={}",
@@ -1060,7 +1062,7 @@ public:
             }
             // Another peer raced us back to 1 — try next slot.
         }
-        SPDLOG_WARN(
+        EPH_LOG_WARN(mp_registry_logger(),
             "MpRegistry: try_claim_free_slot found all {} slots claimed "
             "(and all owners alive — resource exhausted)",
             total);
@@ -1149,19 +1151,19 @@ private:
             // Self slot was cleared above, so count_alive_procs() returns
             // peer count; non-zero means freeing would dangle peers' hdr_.
             if (count_alive_procs() != 0) {
-                SPDLOG_INFO(
+                EPH_LOG_INFO(mp_registry_logger(),
                     "MpRegistry: primary release_ — peers still attached, "
                     "deferring rte_memzone_free. memzone leaks until next "
                     "session (recycled by dpdk-teardown.sh).");
             } else {
                 const int rc = rte_memzone_free(mz_);
                 if (rc != 0) {
-                    SPDLOG_ERROR(
+                    EPH_LOG_ERROR(mp_registry_logger(),
                         "MpRegistry: rte_memzone_free failed (rc={}) — "
                         "hugepage segment will leak until process exit",
                         rc);
                 } else {
-                    SPDLOG_DEBUG(
+                    EPH_LOG_DEBUG(mp_registry_logger(),
                         "MpRegistry: primary freed memzone (self_index={})",
                         self_index_);
                 }

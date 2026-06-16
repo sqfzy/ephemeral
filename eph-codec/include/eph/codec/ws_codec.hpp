@@ -39,13 +39,11 @@
 #include <span>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
 #include "eph/codec/detail/span_packet_view.hpp"
 #include "eph/codec/detail/ws_inflate.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 #include "eph/net/detail/websocket.hpp"  // ws::decode_frame, encode_frame, opcode
 
 namespace eph::codec {
@@ -54,18 +52,7 @@ namespace detail {
 
 /// @brief Lazily-initialised logger for the WebSocket codec.
 inline spdlog::logger* ws_codec_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("codec.ws");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("codec.ws");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("codec.ws");
-            }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg.get();
-    }();
+    static spdlog::logger* l = ::eph::log::get("codec.ws");
     return l;
 }
 
@@ -146,7 +133,7 @@ public:
         bool server_no_ctx_takeover = false) noexcept {
         cfg_.permessage_deflate = true;
         cfg_.server_no_context_takeover = server_no_ctx_takeover;
-        SPDLOG_LOGGER_INFO(detail::ws_codec_logger(),
+        EPH_LOG_INFO(detail::ws_codec_logger(),
             "WsCodec: permessage-deflate enabled "
             "(server_no_context_takeover={})", server_no_ctx_takeover);
     }
@@ -210,7 +197,7 @@ public:
             case ws::DecodeError::kIncomplete:
                 // Header or payload not fully present yet — normal back-pressure
                 // case; return None so the caller waits for more bytes.
-                SPDLOG_LOGGER_TRACE(detail::ws_codec_logger(),
+                EPH_LOG_TRACE(detail::ws_codec_logger(),
                     "WsCodec::decode: incomplete frame, avail={}", avail);
                 return std::optional<Frame>{};
 
@@ -220,7 +207,7 @@ public:
             case ws::DecodeError::kInvalidOpcode:
             case ws::DecodeError::kInvalidLengthEncoding:
             case ws::DecodeError::kInvalidCloseFrame:
-                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                EPH_LOG_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: protocol error: {}",
                     ws::decode_error_name(decoded.error()));
                 return std::unexpected(core::ErrorInfo{
@@ -242,7 +229,7 @@ public:
         // protocol violation rather than try to inflate a 125-byte
         // control payload.
         if (frame.rsv1 && frame.is_control()) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: RSV1 set on control opcode 0x{:02X} "
                 "(RFC 7692 §6.1)", frame.opcode);
             return std::unexpected(core::ErrorInfo{
@@ -251,7 +238,7 @@ public:
         }
 
         if (frame.is_ping()) {
-            SPDLOG_LOGGER_DEBUG(detail::ws_codec_logger(),
+            EPH_LOG_DEBUG(detail::ws_codec_logger(),
                 "WsCodec::decode: ping, payload_len={}", frame.payload_len);
             if (cfg_.auto_pong) {
                 auto err = emit_pong(out, frame);
@@ -262,7 +249,7 @@ public:
         }
 
         if (frame.is_pong()) {
-            SPDLOG_LOGGER_DEBUG(detail::ws_codec_logger(),
+            EPH_LOG_DEBUG(detail::ws_codec_logger(),
                 "WsCodec::decode: pong, payload_len={}", frame.payload_len);
             view.trim_front(consumed);
             return std::optional<Frame>{};
@@ -270,7 +257,7 @@ public:
 
         if (frame.is_close()) {
             uint16_t code = frame.close_status_code();
-            SPDLOG_LOGGER_INFO(detail::ws_codec_logger(),
+            EPH_LOG_INFO(detail::ws_codec_logger(),
                 "WsCodec::decode: close received, code={}", code);
             if (cfg_.auto_close_ack) {
                 // RFC 6455 §7.4.1: if the peer's code is reserved/invalid
@@ -280,7 +267,7 @@ public:
                 if (frame.payload_len == 0) {
                     ack_code = ws::close_code::kNormal;
                 } else if (!ws::is_valid_close_code(code)) {
-                    SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                    EPH_LOG_WARN(detail::ws_codec_logger(),
                         "WsCodec::decode: invalid close code {}, "
                         "responding with kProtocolError", code);
                     ack_code = ws::close_code::kProtocolError;
@@ -299,7 +286,7 @@ public:
         // Guard: unexpected opcode (should have been caught by decode_frame
         // via kInvalidOpcode, but defensive).
         if (!frame.is_data()) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: non-data, non-control opcode 0x{:02X}",
                 frame.opcode);
             return std::unexpected(core::ErrorInfo{
@@ -318,7 +305,7 @@ public:
         // — clear silently without the WARN.
         if (!is_continuation) {
             if (frag_opcode_ != 0) {
-                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                EPH_LOG_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: new message started while {} bytes "
                     "of previous fragment pending, discarding",
                     frag_buf_.size());
@@ -343,7 +330,7 @@ public:
                 // already (we passed allow_rsv1=false), but defend
                 // anyway — silent acceptance would feed garbage to the
                 // application.
-                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                EPH_LOG_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: compressed frame seen but "
                     "permessage-deflate not negotiated");
                 return std::unexpected(core::ErrorInfo{
@@ -363,7 +350,7 @@ public:
             // rejected, otherwise its payload would be appended to the
             // previous message's bytes and delivered to the application
             // as a corrupted "reassembly".
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: continuation frame without initial "
                 "data frame");
             return std::unexpected(core::ErrorInfo{
@@ -372,7 +359,7 @@ public:
         } else if (frame.rsv1) [[unlikely]] {
             // RFC 7692 §6.1: continuation frames MUST NOT set RSV1.
             // The compressed-message bit is per-message, not per-frame.
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: RSV1 set on continuation frame");
             return std::unexpected(core::ErrorInfo{
                 core::Error::WsFrameBad,
@@ -389,7 +376,7 @@ public:
         if (compressed_msg_) {
             const std::size_t new_size = frag_buf_.size() + frame.payload_len;
             if (new_size > cfg_.max_message_size) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                EPH_LOG_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: compressed accum exceeds max "
                     "(accumulated={} max={})",
                     new_size, cfg_.max_message_size);
@@ -447,7 +434,7 @@ public:
                                         std::memory_order_relaxed);
             deflate_bytes_out_.fetch_add(inflated->size(),
                                          std::memory_order_relaxed);
-            SPDLOG_LOGGER_TRACE(detail::ws_codec_logger(),
+            EPH_LOG_TRACE(detail::ws_codec_logger(),
                 "WsCodec::decode: inflated {} -> {} bytes (ratio {:.2f}x)",
                 in_bytes, inflated->size(),
                 in_bytes ? double(inflated->size()) / double(in_bytes)
@@ -459,7 +446,7 @@ public:
         const bool single_frame = !is_continuation && is_final;
         if (single_frame && frag_buf_.empty()) {
             if (frame.payload_len > cfg_.max_message_size) [[unlikely]] {
-                SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+                EPH_LOG_WARN(detail::ws_codec_logger(),
                     "WsCodec::decode: oversized single-frame message, "
                     "payload_len={} max={}",
                     frame.payload_len, cfg_.max_message_size);
@@ -494,7 +481,7 @@ public:
         // Slow path: fragmented uncompressed message — accumulate into frag_buf_.
         const std::size_t new_size = frag_buf_.size() + frame.payload_len;
         if (new_size > cfg_.max_message_size) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::decode: oversized reassembled message, "
                 "accumulated={} max={}", new_size, cfg_.max_message_size);
             frag_buf_.clear();
@@ -550,7 +537,7 @@ public:
         namespace ws = eph::net::ws;
         const std::size_t needed = ws::total_frame_size(payload.size());
         if (needed == SIZE_MAX || needed > cap) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::encode: buffer too small (need {}, have {})",
                 needed, cap);
             return std::unexpected(core::ErrorInfo{
@@ -588,7 +575,7 @@ public:
         namespace ws = eph::net::ws;
         const std::size_t needed = ws::total_frame_size(payload.size());
         if (needed == SIZE_MAX || needed > cap) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::encode_text: buffer too small (need {}, have {})",
                 needed, cap);
             return std::unexpected(core::ErrorInfo{
@@ -630,7 +617,7 @@ public:
         const std::size_t needed =
             ws::kMaxFrameHeaderLen + 2 + reason.size();
         if (cap < needed) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::encode_close: buffer too small (need {}, have {})",
                 needed, cap);
             return std::unexpected(core::ErrorInfo{
@@ -665,7 +652,7 @@ private:
         // explicitly: a violation drops the pong (the connection will be
         // torn down anyway) instead of corrupting the stack.
         if (ping.payload_len > ws::kMaxControlPayloadLen) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_codec_logger(),
+            EPH_LOG_WARN(detail::ws_codec_logger(),
                 "WsCodec::emit_pong: ping.payload_len={} exceeds "
                 "kMaxControlPayloadLen={} — invariant violated, dropping pong",
                 ping.payload_len, ws::kMaxControlPayloadLen);

@@ -20,23 +20,14 @@
 #include <memory>
 #include <string>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::utils {
 
 namespace detail {
 /// @brief Lazily-initialized logger for the system-stats subsystem.
-inline const std::shared_ptr<spdlog::logger>& system_stats_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("utils.system_stats");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("utils.system_stats"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("utils.system_stats"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* system_stats_logger() {
+    static spdlog::logger* l = ::eph::log::get("utils.system_stats");
     return l;
 }
 } // namespace detail
@@ -123,7 +114,7 @@ struct SystemResourceStats {
 /// SystemStats sys_stats;
 /// // ... run code under test ...
 /// auto resource = sys_stats.snapshot();
-/// SPDLOG_INFO("Resource usage: {}", resource);
+/// EPH_LOG_INFO(logger, "Resource usage: {}", resource);
 /// @endcode
 class SystemStats {
    public:
@@ -131,7 +122,7 @@ class SystemStats {
     explicit SystemStats(bool auto_log = false)
         : auto_log_(auto_log) {
         if (getrusage(RUSAGE_SELF, &initial_rusage_) != 0) {
-            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+            EPH_LOG_WARN(detail::system_stats_logger(),
                 "getrusage failed at construction: {}", std::strerror(errno));
             initial_rusage_ = {};
         }
@@ -177,7 +168,7 @@ class SystemStats {
     [[nodiscard]] SystemResourceStats snapshot() const noexcept {
         rusage current{};
         if (getrusage(RUSAGE_SELF, &current) != 0) {
-            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+            EPH_LOG_WARN(detail::system_stats_logger(),
                 "getrusage failed in snapshot: {}", std::strerror(errno));
             return {};
         }
@@ -187,7 +178,7 @@ class SystemStats {
     /// Reset the baseline to the current resource state.
     void reset() noexcept {
         if (getrusage(RUSAGE_SELF, &initial_rusage_) != 0) {
-            SPDLOG_LOGGER_WARN(detail::system_stats_logger(),
+            EPH_LOG_WARN(detail::system_stats_logger(),
                 "getrusage failed in reset: {}", std::strerror(errno));
             initial_rusage_ = {};
         }
@@ -197,7 +188,7 @@ class SystemStats {
     void log_report() const {
         auto s = snapshot();
         auto log = detail::system_stats_logger();
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "System resources: user={:.4f}s sys={:.4f}s "
             "rss={}KB maxrss={}KB threads={} "
             "majflt={} minflt={} vcsw={} ivcsw={}",

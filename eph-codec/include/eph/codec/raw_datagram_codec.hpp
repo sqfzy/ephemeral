@@ -18,12 +18,10 @@
 #include <functional>
 #include <span>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-
 #include "eph/codec/detail/span_packet_view.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
+#include "eph/core/log.hpp"
 
 namespace eph::codec {
 
@@ -31,18 +29,7 @@ namespace detail {
 
 /// @brief Lazily-initialised logger for the raw datagram codec.
 inline spdlog::logger* raw_datagram_codec_logger() {
-    static auto* l = [] {
-        auto lg = spdlog::get("codec.raw_datagram");
-        if (!lg) {
-            try {
-                lg = spdlog::stdout_color_mt("codec.raw_datagram");
-            } catch (const spdlog::spdlog_ex&) {
-                lg = spdlog::get("codec.raw_datagram");
-            }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg.get();
-    }();
+    static spdlog::logger* l = ::eph::log::get("codec.raw_datagram");
     return l;
 }
 
@@ -78,7 +65,7 @@ public:
            const std::function<void(Frame)>& sink) noexcept {
         const std::size_t n = dgram.length();
         if (n == 0) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+            EPH_LOG_WARN(detail::raw_datagram_codec_logger(),
                 "RawDatagramCodec::decode: empty datagram rejected");
             return std::unexpected(core::ErrorInfo{
                 core::Error::CodecBad,
@@ -94,7 +81,7 @@ public:
         // The DPDK Mold64 sibling already handles this; mirror the
         // discipline here for cross-backend symmetry.
         if (!sink) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+            EPH_LOG_WARN(detail::raw_datagram_codec_logger(),
                 "RawDatagramCodec::decode: sink is empty (caller forgot "
                 "to assign or moved-from); rejecting datagram of {} bytes", n);
             return std::unexpected(core::ErrorInfo{
@@ -102,7 +89,7 @@ public:
                 "RawDatagramCodec::decode: sink is empty"});
         }
         sink(frame);
-        SPDLOG_LOGGER_TRACE(detail::raw_datagram_codec_logger(),
+        EPH_LOG_TRACE(detail::raw_datagram_codec_logger(),
             "RawDatagramCodec::decode: delivered {} bytes", n);
         return std::size_t{1};
     }
@@ -111,7 +98,7 @@ public:
     [[nodiscard]] std::expected<std::size_t, core::ErrorInfo>
     encode(uint8_t* buf, std::size_t cap, Frame payload) noexcept {
         if (payload.size() > cap) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::raw_datagram_codec_logger(),
+            EPH_LOG_WARN(detail::raw_datagram_codec_logger(),
                 "RawDatagramCodec::encode: buffer too small (need {}, have {})",
                 payload.size(), cap);
             return std::unexpected(core::ErrorInfo{

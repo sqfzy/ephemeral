@@ -46,9 +46,7 @@
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 
-#include <spdlog/spdlog.h>
-
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/codec.hpp"
 #include "eph/core/error.hpp"
 #include "eph/dpdk/multicast.hpp"   // multicast_mac_from_ip helper
@@ -70,7 +68,7 @@ namespace detail {
 
 /// @brief Lazily-initialized logger for the DPDK UDP socket subsystem.
 inline spdlog::logger* udp_socket_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.dpdk.udp_socket");
+    static spdlog::logger* l = ::eph::log::get("net.dpdk.udp_socket");
     return l;
 }
 
@@ -112,7 +110,7 @@ public:
     [[nodiscard]] static std::expected<std::unique_ptr<DpdkUdpSocket>, core::ErrorInfo>
     create(UdpConfig cfg) noexcept {
         auto* log = detail::udp_socket_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "DpdkUdpSocket::create: src=0x{:08x}:{} dst=0x{:08x}:{}",
             cfg.dpdk.wire.src_ip, cfg.dpdk.wire.src_port,
             cfg.dpdk.wire.dst_ip, cfg.dpdk.wire.dst_port);
@@ -120,7 +118,7 @@ public:
         // Validate the wire-level UdpConfig first.
         auto verr = cfg.dpdk.wire.validate();
         if (!verr.empty()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkUdpSocket::create: wire validate failed: {}", verr);
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
@@ -129,7 +127,7 @@ public:
 
         auto sender_r = ::eph::dpdk::UdpSender::create(cfg.dpdk.wire);
         if (!sender_r) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "DpdkUdpSocket::create: UdpSender::create failed: {}",
                 sender_r.error());
             return std::unexpected(core::ErrorInfo{
@@ -139,7 +137,7 @@ public:
 
         auto sock = std::unique_ptr<DpdkUdpSocket>(
             new DpdkUdpSocket(std::move(cfg), std::move(*sender_r)));
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "DpdkUdpSocket::create: ready, peer=0x{:08x}:{}",
             sock->cfg_.dpdk.wire.dst_ip, sock->cfg_.dpdk.wire.dst_port);
         return sock;
@@ -162,7 +160,7 @@ public:
         const auto mode = platform.dispatch_mode();
         const uint16_t nb_q = platform.nb_rx_queues();
         if (nb_q == 0) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "DpdkUdpSocket::create_and_attach: Platform has 0 RX queues "
                 "(port_id={})", platform.port_id());
             return std::unexpected(core::ErrorInfo{
@@ -174,7 +172,7 @@ public:
 
         if (mode == ::eph::net::dpdk::RxDispatchMode::Software) {
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue != 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: pin_to_queue={} != 0 "
                     "in Software dispatch mode (single-queue Platform)",
                     *cfg.dpdk.pin_to_queue);
@@ -191,7 +189,7 @@ public:
             // pin_to_queue AND supply an explicit cfg.dpdk.wire.src_port
             // measured (via tools/dpdk_rss_queue_probe --finder) to land on it.
             if (!cfg.dpdk.pin_to_queue) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: RssPartitioned requires "
                     "pin_to_queue + an explicit measured src_port "
                     "(run dpdk_rss_queue_probe --finder)");
@@ -202,7 +200,7 @@ public:
             }
             const uint16_t want = *cfg.dpdk.pin_to_queue;
             if (want >= nb_q) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
                     ">= nb_rx_queues={} (RssPartitioned)", want, nb_q);
                 return std::unexpected(core::ErrorInfo{
@@ -210,7 +208,7 @@ public:
                     "create_and_attach: pin_to_queue >= nb_rx_queues"});
             }
             if (cfg.dpdk.wire.src_port == 0) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: RssPartitioned with "
                     "pin_to_queue={} requires an explicit cfg.dpdk.wire.src_port "
                     "measured to land on that queue "
@@ -225,13 +223,13 @@ public:
             // TX queue alignment: same family as RX. UdpConfig has no
             // rx_queue_id field by design (Poller owns the RX queue).
             cfg.dpdk.wire.tx_queue_id = target_qid;
-            SPDLOG_LOGGER_INFO(log,
+            EPH_LOG_INFO(log,
                 "create_and_attach: RssPartitioned explicit src_port={} pinned "
                 "to queue={} (prediction retired; caller-measured)",
                 cfg.dpdk.wire.src_port, target_qid);
         } else {  // FlowDirector
             if (cfg.dpdk.pin_to_queue && *cfg.dpdk.pin_to_queue >= nb_q) {
-                SPDLOG_LOGGER_ERROR(log,
+                EPH_LOG_ERROR(log,
                     "DpdkUdpSocket::create_and_attach: pin_to_queue={} "
                     ">= nb_rx_queues={} (FlowDirector)",
                     *cfg.dpdk.pin_to_queue, nb_q);
@@ -292,7 +290,7 @@ public:
                 static_cast<uint16_t>(cfg.dpdk.pool_lcore_hint);
             auto* p = platform.pool_for_lcore(lcore_id);
             if (p == nullptr) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: pool_for_lcore({}) returned nullptr "
                     "(per_lcore_pools may be 0 with non-zero hint, or hint "
                     "exceeds per_lcore_pools)", lcore_id);
@@ -342,7 +340,7 @@ public:
             // tcp_stream.hpp for the full rationale.
             if (!rule && platform.is_secondary() &&
                 platform.is_multi_process()) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: local rte_flow_create rejected "
                     "({}); trying eph_fd_install IPC fallback",
                     rule.error());
@@ -351,7 +349,7 @@ public:
                     ::eph::net::dpdk::FlowProtocol::Udp);
             }
             if (!rule) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "create_and_attach: install_flow_rule failed: {}",
                     rule.error());
                 (void)poller->remove(sock.get());
@@ -363,7 +361,7 @@ public:
             sock->flow_rule_.emplace(std::move(*rule));
         }
 
-        SPDLOG_LOGGER_INFO(log,
+        EPH_LOG_INFO(log,
             "create_and_attach: UDP socket attached → port={}, queue={}, mode={}",
             platform.port_id(), target_qid,
             ::eph::net::dpdk::rx_dispatch_mode_name(mode));
@@ -375,11 +373,11 @@ public:
         // here signals a Poller/Socket lifecycle mismatch and should not
         // be silently swallowed.
         if (attached_to_ != nullptr) {
-            SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+            EPH_LOG_DEBUG(detail::udp_socket_logger(),
                 "~DpdkUdpSocket: auto-detach");
             auto r = attached_to_->remove(this);
             if (!r) {
-                SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                EPH_LOG_WARN(detail::udp_socket_logger(),
                     "~DpdkUdpSocket: auto-detach failed: {} — possible "
                     "Poller/Socket lifecycle mismatch",
                     r.error().detail ? r.error().detail : "unknown");
@@ -393,7 +391,7 @@ public:
         // socket churn the NIC's finite mcast filter table (commonly
         // 8-16 slots on AWS ENA) is exhausted.
         if (mcast_count_ > 0) {
-            SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+            EPH_LOG_DEBUG(detail::udp_socket_logger(),
                 "~DpdkUdpSocket: clearing {} multicast MAC filter(s)",
                 mcast_count_);
             mcast_count_ = 0;
@@ -617,7 +615,7 @@ public:
         // hung. Fail loudly instead.
         if (peer.ip.to_be32() != cfg_.dpdk.wire.dst_ip ||
             peer.port         != cfg_.dpdk.wire.dst_port) {
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "DpdkUdpSocket::connect_to: peer ip_be=0x{:08x}:{} does not "
                 "match configured fixed peer ip_be=0x{:08x}:{} — would silently "
                 "drop all inbound traffic",
@@ -630,7 +628,7 @@ public:
         }
         connected_peer_ = peer;
         connected_     = true;
-        SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+        EPH_LOG_DEBUG(detail::udp_socket_logger(),
             "DpdkUdpSocket::connect_to: peer set ip_be=0x{:08x} port={}",
             peer.ip.to_be32(), peer.port);
         return {};
@@ -770,7 +768,7 @@ public:
             if (ip_bad || l4_bad) [[unlikely]] {
                 if (ip_bad) inc_<::eph::net::StreamMetric::kRxIpChecksumBad>();
                 if (l4_bad) inc_<::eph::net::StreamMetric::kRxL4ChecksumBad>();
-                SPDLOG_LOGGER_TRACE(detail::udp_socket_logger(),
+                EPH_LOG_TRACE(detail::udp_socket_logger(),
                     "process_burst_: drop bad-checksum mbuf ol_flags={:#018x}"
                     " (strict={})", olf, strict);
                 rte_pktmbuf_free(mbufs[i]);
@@ -857,13 +855,13 @@ public:
                     std::span<const uint8_t>(out_sink.data(), out_sink.size()),
                     src_addr);
                 if (!sr) {
-                    SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+                    EPH_LOG_WARN(detail::udp_socket_logger(),
                         "DpdkUdpSocket::process_burst_: auto-response "
                         "send_to failed ({} bytes to {}): {}",
                         out_sink.size(), src_addr.to_string(),
                         sr.error().detail);
                 } else {
-                    SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+                    EPH_LOG_DEBUG(detail::udp_socket_logger(),
                         "DpdkUdpSocket::process_burst_: sent {} "
                         "auto-response bytes to {}",
                         out_sink.size(), src_addr.to_string());
@@ -879,7 +877,7 @@ public:
                 // operator must see. The shared shape lets a venue
                 // running both backends grep one query across logs.
                 inc_<::eph::net::StreamMetric::kCodecErrors>();
-                SPDLOG_LOGGER_ERROR(detail::udp_socket_logger(),
+                EPH_LOG_ERROR(detail::udp_socket_logger(),
                     "DpdkUdpSocket::process_burst_: decode err={} "
                     "src={} payload_len={} delivered_before_err={}",
                     dr.error().detail, src_addr.to_string(),
@@ -910,7 +908,7 @@ private:
             // here; without rte_errno operators see only "rc=-95".
             // (rte_errno.h is brought in transitively via multicast.hpp.)
             const int err = rte_errno;
-            SPDLOG_LOGGER_WARN(detail::udp_socket_logger(),
+            EPH_LOG_WARN(detail::udp_socket_logger(),
                 "DpdkUdpSocket::apply_mcast_list_: "
                 "rte_eth_dev_set_mc_addr_list failed: rc={} count={} port={} "
                 "rte_errno={} ({})",
@@ -919,7 +917,7 @@ private:
                 core::Error::InvalidConfig,
                 "rte_eth_dev_set_mc_addr_list failed (see rte_errno log)"});
         }
-        SPDLOG_LOGGER_DEBUG(detail::udp_socket_logger(),
+        EPH_LOG_DEBUG(detail::udp_socket_logger(),
             "DpdkUdpSocket::apply_mcast_list_: count={} port={}",
             mcast_count_, port);
         return {};

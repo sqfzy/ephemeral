@@ -24,11 +24,10 @@
 #include <format>
 #include <string>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include <sys/random.h>  // getrandom(2) for CSPRNG
 
-#include "eph/core/detail/logger.hpp"
 
 namespace eph::net::ws {
 
@@ -182,7 +181,7 @@ namespace detail {
 
 /// @return Pointer to the "transport.websocket" spdlog logger.
 inline spdlog::logger* ws_logger() {
-    static auto* l = ::eph::core::detail::make_logger("transport.websocket");
+    static spdlog::logger* l = ::eph::log::get("transport.websocket");
     return l;
 }
 
@@ -283,14 +282,14 @@ private:
                 pos_ = 0;
                 return;
             }
-            SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+            EPH_LOG_ERROR(detail::ws_logger(),
                 "getrandom() returned {} for WS mask key cache (attempt {}/3); "
                 "retrying", got, attempt + 1);
         }
 
         // All retries exhausted. Abort rather than emit predictable mask keys
         // — anti-cache-poisoning is the WHOLE POINT of RFC 6455 client masking.
-        SPDLOG_LOGGER_CRITICAL(detail::ws_logger(),
+        EPH_LOG_CRITICAL(detail::ws_logger(),
             "getrandom() failed 3x for WS mask key cache; aborting to avoid "
             "emitting predictable mask keys (RFC 6455 §5.3 violation)");
         std::abort();
@@ -329,14 +328,14 @@ inline void generate_mask_key(uint8_t mask[4]) noexcept {
                                    const uint8_t mask_key[4]) noexcept {
     // RFC 6455 §5.2: MSB of 64-bit payload length must be 0
     if (payload_len > kMaxPayloadLen) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+        EPH_LOG_ERROR(detail::ws_logger(),
             "payload_len {} exceeds maximum {} (MSB must be 0)",
             payload_len, kMaxPayloadLen);
         return 0;
     }
     // RFC 6455 §5.5: control frame payload must not exceed 125 bytes
     if ((opcode_val & 0x08) && payload_len > kMaxControlPayloadLen) [[unlikely]] {
-        SPDLOG_LOGGER_ERROR(detail::ws_logger(),
+        EPH_LOG_ERROR(detail::ws_logger(),
             "control frame (opcode=0x{:02X}) payload_len {} exceeds limit {}",
             opcode_val, payload_len, kMaxControlPayloadLen);
         return 0;
@@ -554,7 +553,7 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
     if (rsv_bits != 0) {
         const uint8_t allowed_mask = allow_rsv1 ? 0x40 : 0x00;
         if ((rsv_bits & ~allowed_mask) != 0) {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: non-zero RSV bits 0x{:02X} in byte0=0x{:02X} "
                 "(allow_rsv1={})",
                 rsv_bits, wire_bytes[pos], allow_rsv1);
@@ -594,7 +593,7 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
                             static_cast<uint64_t>(wire_bytes[pos + 1]);
         pos += 2;
         if (frame.payload_len < 126) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: non-minimal 2-byte length encoding "
                 "(value {} fits in 7-bit form, RFC 6455 §5.2)",
                 frame.payload_len);
@@ -610,14 +609,14 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
         // High bit MUST be 0 per RFC 6455 §5.2.  Equivalently:
         // payload_len > kMaxPayloadLen ⇔ MSB set.
         if (frame.payload_len > kMaxPayloadLen) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: 8-byte length form with high bit set "
                 "(payload_len=0x{:016X}, RFC 6455 §5.2)",
                 frame.payload_len);
             return std::unexpected(DecodeError::kInvalidLengthEncoding);
         }
         if (frame.payload_len <= 65535) [[unlikely]] {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: non-minimal 8-byte length encoding "
                 "(value {} fits in 2-byte form, RFC 6455 §5.2)",
                 frame.payload_len);
@@ -640,7 +639,7 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
     // RFC 6455 §5.2: opcodes 0x3-0x7 (data) and 0xB-0xF (control) are reserved
     if ((frame.opcode >= 0x3 && frame.opcode <= 0x7) ||
         (frame.opcode >= 0xB && frame.opcode <= 0xF)) {
-        SPDLOG_LOGGER_WARN(detail::ws_logger(),
+        EPH_LOG_WARN(detail::ws_logger(),
             "decode_frame: reserved opcode 0x{:02X} (RFC 6455 §5.2), "
             "payload_len={}",
             frame.opcode, frame.payload_len);
@@ -650,14 +649,14 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
     // RFC 6455 §5.5: control frames MUST have FIN=1 and payload <= 125
     if (frame.opcode & 0x08) {
         if (!frame.fin) {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: fragmented control frame opcode=0x{:02X} "
                 "(FIN=0, RFC 6455 §5.5)",
                 frame.opcode);
             return std::unexpected(DecodeError::kFragmentedControl);
         }
         if (frame.payload_len > 125) {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: control frame opcode=0x{:02X} payload_len={} "
                 "exceeds 125-byte limit (RFC 6455 §5.5)",
                 frame.opcode, frame.payload_len);
@@ -671,7 +670,7 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
         // frame is delivered as if it had no code, masking the protocol
         // violation and corrupting close-reason logging.
         if (frame.opcode == opcode::kClose && frame.payload_len == 1) {
-            SPDLOG_LOGGER_WARN(detail::ws_logger(),
+            EPH_LOG_WARN(detail::ws_logger(),
                 "decode_frame: close frame with 1-byte payload "
                 "(must be 0 or >= 2, RFC 6455 §5.5.1)");
             return std::unexpected(DecodeError::kInvalidCloseFrame);
@@ -699,7 +698,7 @@ decode_frame(const uint8_t* wire_bytes, size_t len,
     // Control frames MUST have payload <= 125 bytes (RFC 6455 §5.5)
     size_t reason_len = std::min(reason.size(), size_t{123});
     if (reason.size() > 123) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::ws_logger(),
+        EPH_LOG_WARN(detail::ws_logger(),
             "close frame reason truncated from {} to 123 bytes "
             "(RFC 6455 §5.5 control frame payload limit)",
             reason.size());

@@ -58,7 +58,7 @@
 #include <utility>
 #include <vector>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/core/error.hpp"
 #include "eph/net/concepts.hpp"
@@ -73,20 +73,8 @@ namespace detail {
 ///        the named logger is requested so callers do not need to register
 ///        a sink before issuing requests.
 [[nodiscard]] inline spdlog::logger* http_client_logger() noexcept {
-    static auto* L = []() noexcept -> spdlog::logger* {
-        auto existing = spdlog::get("net.http_client");
-        if (existing) return existing.get();
-        auto def = spdlog::default_logger();
-        // Mirror the default logger's sinks so the named logger inherits
-        // the global level + format. This is the same pattern used by
-        // other named loggers in eph-net.
-        auto created = std::make_shared<spdlog::logger>(
-            "net.http_client", def->sinks().begin(), def->sinks().end());
-        created->set_level(def->level());
-        spdlog::register_logger(created);
-        return created.get();
-    }();
-    return L;
+    static spdlog::logger* l = ::eph::log::get("net.http_client");
+    return l;
 }
 
 } // namespace detail
@@ -213,7 +201,7 @@ public:
           cfg_(cfg) {
         rx_buffer_.reserve(cfg_.initial_rx_capacity);
         request_buffer_.resize(cfg_.request_buf_capacity);
-        SPDLOG_LOGGER_DEBUG(detail::http_client_logger(),
+        EPH_LOG_DEBUG(detail::http_client_logger(),
             "HttpClient: constructed, max_response_bytes={}, "
             "request_buf_capacity={}",
             cfg_.max_response_bytes, cfg_.request_buf_capacity);
@@ -244,30 +232,30 @@ public:
     request(const Request&            req,
             std::function<void()>     poll_fn,
             std::chrono::milliseconds timeout) noexcept {
-        auto* log = detail::http_client_logger();
+        [[maybe_unused]] auto* log = detail::http_client_logger();
 
         // ── Pre-conditions ───────────────────────────────────────────────
         if (!stream_) {
-            SPDLOG_LOGGER_ERROR(log, "HttpClient::request: stream is null");
+            EPH_LOG_ERROR(log, "HttpClient::request: stream is null");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "HttpClient::request: stream is null"});
         }
         if (!poll_fn) {
-            SPDLOG_LOGGER_ERROR(log, "HttpClient::request: poll_fn is null");
+            EPH_LOG_ERROR(log, "HttpClient::request: poll_fn is null");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "HttpClient::request: poll_fn is null"});
         }
         if (req.method.empty() || req.path.empty()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "HttpClient::request: empty method or path");
             return std::unexpected(core::ErrorInfo{
                 core::Error::InvalidConfig,
                 "HttpClient::request: method and path must be non-empty"});
         }
         if (timeout <= std::chrono::milliseconds::zero()) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "HttpClient::request: non-positive timeout {}ms",
                 timeout.count());
             return std::unexpected(core::ErrorInfo{
@@ -275,7 +263,7 @@ public:
                 "HttpClient::request: timeout must be > 0"});
         }
         if (stream_->state() != TcpState::Established) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "HttpClient::request: stream not Established (state={})",
                 static_cast<int>(stream_->state()));
             return std::unexpected(core::ErrorInfo{
@@ -283,7 +271,7 @@ public:
                 "HttpClient::request: stream not in Established state"});
         }
 
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "HttpClient::request: {} {} body_bytes={} timeout={}ms",
             std::string(req.method), std::string(req.path),
             req.body.size(), timeout.count());
@@ -325,12 +313,12 @@ public:
                                         effective_headers.size()),
             req.body);
         if (!built) {
-            SPDLOG_LOGGER_WARN(log,
+            EPH_LOG_WARN(log,
                 "HttpClient::request: build_http_request failed: {}",
                 built.error().detail);
             return std::unexpected(built.error());
         }
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "HttpClient::request: serialized {} bytes", *built);
 
         // ── Send (one blocking-ish send, since the kernel buffers anyway) ─
@@ -353,7 +341,7 @@ public:
                 if (sr.error().code == core::Error::WouldBlock) {
                     poll_fn();
                     if (std::chrono::steady_clock::now() >= deadline) {
-                        SPDLOG_LOGGER_WARN(log,
+                        EPH_LOG_WARN(log,
                             "HttpClient::request: send timed out after "
                             "{} of {} bytes",
                             total_sent, tx_view.size());
@@ -363,14 +351,14 @@ public:
                     }
                     continue;
                 }
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: send failed at {}/{}: {}",
                     total_sent, tx_view.size(), sr.error().detail);
                 return std::unexpected(sr.error());
             }
             if (*sr == 0) {
                 // 0 bytes from a successful send is a peer-disconnect signal.
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: send returned 0 (peer closed?)");
                 return std::unexpected(core::ErrorInfo{
                     core::Error::Disconnected,
@@ -430,7 +418,7 @@ public:
                 std::span<HttpHeader>(parsed_storage.data(),
                                       parsed_storage.size()));
             if (!pr) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: parse failed: {} (rx_bytes={})",
                     pr.error().detail, rx_buffer_.size());
                 return std::unexpected(pr.error());
@@ -446,7 +434,7 @@ public:
                 // returned Response truly self-contained we deep-copy via a
                 // dedicated headers_storage_ buffer.
                 materialize_response_(out, (*pr)->value);
-                SPDLOG_LOGGER_DEBUG(log,
+                EPH_LOG_DEBUG(log,
                     "HttpClient::request: completed status={} body_bytes={}",
                     out.status_code, out.body.size());
                 // Drain consumed bytes from rx_buffer_ so the next request()
@@ -464,7 +452,7 @@ public:
             }
             // Not yet complete; check overflow.
             if (rx_buffer_.size() > cfg_.max_response_bytes) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: response exceeds max ({} > {})",
                     rx_buffer_.size(), cfg_.max_response_bytes);
                 return std::unexpected(core::ErrorInfo{
@@ -473,7 +461,7 @@ public:
             }
             // Check stream liveness — peer may have FIN'd.
             if (stream_->state() != TcpState::Established) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: stream left Established mid-recv "
                     "(state={}, rx_bytes={})",
                     static_cast<int>(stream_->state()),
@@ -484,7 +472,7 @@ public:
             }
             // Check timeout.
             if (std::chrono::steady_clock::now() >= deadline) {
-                SPDLOG_LOGGER_WARN(log,
+                EPH_LOG_WARN(log,
                     "HttpClient::request: timed out (rx_bytes={})",
                     rx_buffer_.size());
                 return std::unexpected(core::ErrorInfo{

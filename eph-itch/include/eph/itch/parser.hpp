@@ -13,8 +13,7 @@
 #include <span>
 #include <string_view>
 
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 #include "eph/itch/messages.hpp"
 
@@ -24,16 +23,8 @@ namespace eph::itch {
 namespace detail {
 /// @brief Get or create the ITCH parser module logger.
 /// @return Shared pointer reference to the spdlog logger instance.
-inline const std::shared_ptr<spdlog::logger>& itch_parser_logger() {
-    static auto l = [] {
-        auto lg = spdlog::get("itch.parser");
-        if (!lg) {
-            try { lg = spdlog::stdout_color_mt("itch.parser"); }
-            catch (const spdlog::spdlog_ex&) { lg = spdlog::get("itch.parser"); }
-        }
-        if (!lg) lg = spdlog::default_logger();
-        return lg;
-    }();
+inline spdlog::logger* itch_parser_logger() {
+    static spdlog::logger* l = ::eph::log::get("itch.parser");
     return l;
 }
 } // namespace detail
@@ -187,13 +178,13 @@ parse(const uint8_t* data, size_t len) noexcept {
     const size_t  expected = message_size(type);
 
     if (expected == 0) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
+        EPH_LOG_WARN(detail::itch_parser_logger(),
             "ITCH parse: unknown message type=0x{:02x} ('{:c}'), len={}",
             type, static_cast<char>(type), len);
         return std::unexpected(ParseError::kUnknownType);
     }
     if (len < expected) [[unlikely]] {
-        SPDLOG_LOGGER_WARN(detail::itch_parser_logger(),
+        EPH_LOG_WARN(detail::itch_parser_logger(),
             "ITCH parse: truncated {} message: have {} bytes, need {}",
             message_type_name(type), len, expected);
         return std::unexpected(ParseError::kTruncated);

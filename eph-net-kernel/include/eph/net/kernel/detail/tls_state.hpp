@@ -48,10 +48,8 @@
 #include <utility>
 #include <vector>
 
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 
-#include "eph/core/detail/logger.hpp"
+#include "eph/core/log.hpp"
 #include "eph/core/error.hpp"
 #include "eph/net/kernel/detail/byte_socket.hpp"
 #include "eph/net/tcp_state.hpp"
@@ -69,7 +67,7 @@ namespace eph::net::kernel::detail {
 /// extract_hot_state, key length, AEAD create, decrypt, record-header
 /// parse) tripped. See review-audit-net-batch3-round2 HIGH-1.
 inline spdlog::logger* tls_state_logger() {
-    static auto* l = ::eph::core::detail::make_logger("net.kernel.tls_state");
+    static spdlog::logger* l = ::eph::log::get("net.kernel.tls_state");
     return l;
 }
 
@@ -198,7 +196,7 @@ public:
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
     handshake(ByteSocket& sock, const ::eph::net::TlsConfig& cfg) noexcept {
         [[maybe_unused]] auto* log = tls_state_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::handshake: entry fd={} hostname='{}' verify_peer={}",
             sock.fd(), cfg.hostname, cfg.verify_peer);
 
@@ -207,7 +205,7 @@ public:
         auto sess_r = ::eph::net::TlsSession<ByteSocketTcpAdapter>::create(
             adapter, cfg);
         if (!sess_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake: TlsSession::create failed fd={} "
                 "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -217,7 +215,7 @@ public:
         auto& session = *sess_r;
 
         if (auto h = session.handshake(); !h) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake: session.handshake() failed fd={} "
                 "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -238,7 +236,7 @@ public:
     [[nodiscard]] std::expected<void, ::eph::core::ErrorInfo>
     begin_handshake(ByteSocket& sock, const ::eph::net::TlsConfig& cfg) noexcept {
         [[maybe_unused]] auto* log = tls_state_logger();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::begin_handshake: entry fd={} hostname='{}'",
             sock.fd(), cfg.hostname);
         // The adapter must outlive the session (the SSL BIO holds a pointer
@@ -248,7 +246,7 @@ public:
             *hs_adapter_, cfg);
         if (!sess_r) {
             hs_adapter_.reset();
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::begin_handshake: TlsSession::create failed fd={} "
                 "hostname='{}'", sock.fd(), cfg.hostname);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -276,7 +274,7 @@ public:
         }
         auto step = hs_session_->handshake_step();
         if (!step) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::handshake_step: handshake failed fd={}: {}",
                 hs_fd_, step.error());
             hs_session_.reset();
@@ -332,7 +330,7 @@ public:
     process_records(const uint8_t* ciphertext_in, std::size_t in_len,
                      std::vector<uint8_t>& plaintext_out) noexcept {
         if (!established_ || !crypto_) {
-            SPDLOG_LOGGER_ERROR(tls_state_logger(),
+            EPH_LOG_ERROR(tls_state_logger(),
                 "TlsState::process_records: called before established "
                 "(in_len={})", in_len);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -349,7 +347,7 @@ public:
                 // Bad header — surface as cipher failure. Log with context
                 // (offset, first few header bytes) so operators can triage
                 // between "proxy injected garbage" and "decrypt key desync".
-                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                EPH_LOG_ERROR(tls_state_logger(),
                     "TlsState::process_records: bad record header "
                     "offset={} total_buffered={} ct_byte=0x{:02x} "
                     "len_bytes=0x{:02x}{:02x}",
@@ -370,7 +368,7 @@ public:
                                    plaintext_out.data() + out_off, plaintext_len,
                                    &inner_ct)) {
                 plaintext_out.resize(out_off);  // unwind on failure
-                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                EPH_LOG_ERROR(tls_state_logger(),
                     "TlsState::process_records: TLS decrypt failed "
                     "offset={} record_total={} payload_len={} ct=0x{:02x}",
                     consumed, total, payload_len, ct);
@@ -395,7 +393,7 @@ public:
                 plaintext_out.resize(out_off + plaintext_len);
             } else {
                 plaintext_out.resize(out_off);  // discard non-appdata plaintext
-                SPDLOG_LOGGER_DEBUG(tls_state_logger(),
+                EPH_LOG_DEBUG(tls_state_logger(),
                     "TlsState::process_records: skipping non-appdata record "
                     "inner_ct=0x{:02x} plaintext_len={} record_total={} "
                     "offset={}",
@@ -414,7 +412,7 @@ public:
     encrypt_for_send(const uint8_t* plaintext, std::size_t len,
                       std::vector<uint8_t>& ciphertext_out) noexcept {
         if (!established_ || !crypto_) {
-            SPDLOG_LOGGER_ERROR(tls_state_logger(),
+            EPH_LOG_ERROR(tls_state_logger(),
                 "TlsState::encrypt_for_send: called before established "
                 "(len={})", len);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -436,7 +434,7 @@ public:
                                                        ciphertext_out.data() + out_off);
             if (written == 0) {
                 ciphertext_out.resize(out_off);
-                SPDLOG_LOGGER_ERROR(tls_state_logger(),
+                EPH_LOG_ERROR(tls_state_logger(),
                     "TlsState::encrypt_for_send: TLS encrypt failed "
                     "off={} chunk={} total_len={}",
                     off, chunk, len);
@@ -465,13 +463,13 @@ private:
         // just-completed full/abbreviated classification.
         was_resumed_     = session.was_resumed();
         captured_ticket_ = session.take_resumption_ticket();
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::finalize: resumed={} captured_ticket={}B fd={} host='{}'",
             was_resumed_, captured_ticket_.size(), fd, cfg.hostname);
 
         auto state_r = session.extract_hot_state();
         if (!state_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: extract_hot_state failed fd={}", fd);
             return std::unexpected(::eph::core::ErrorInfo{
                 ::eph::core::Error::TlsHandshakeFailed,
@@ -479,7 +477,7 @@ private:
         }
         const std::size_t key_len = session.cipher_key_len();
         if (key_len != 16 && key_len != 32) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: unsupported AEAD key length {} fd={}",
                 key_len, fd);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -488,7 +486,7 @@ private:
         }
         auto crypto_r = ::eph::net::TlsRecordCrypto::create(*state_r, key_len);
         if (!crypto_r) {
-            SPDLOG_LOGGER_ERROR(log,
+            EPH_LOG_ERROR(log,
                 "TlsState::finalize: TlsRecordCrypto::create failed fd={} "
                 "key_len={}", fd, key_len);
             return std::unexpected(::eph::core::ErrorInfo{
@@ -498,7 +496,7 @@ private:
         crypto_      = std::make_unique<::eph::net::TlsRecordCrypto>(
             std::move(*crypto_r));
         established_ = true;
-        SPDLOG_LOGGER_DEBUG(log,
+        EPH_LOG_DEBUG(log,
             "TlsState::finalize: success fd={} key_len={}", fd, key_len);
         return {};
     }

@@ -18,9 +18,16 @@
 #include <cstring>
 #include <sys/socket.h>
 
-#include <spdlog/spdlog.h>
+#include "eph/core/log.hpp"
 
 namespace eph::net::posix {
+
+namespace detail {
+inline spdlog::logger* posix_io_logger() {
+    static spdlog::logger* l = ::eph::log::get("net.posix_io");
+    return l;
+}
+} // namespace detail
 
 /// Write the entire `len`-byte buffer to `fd`.
 /// Retries on EINTR.  Returns false on any other error.
@@ -36,7 +43,7 @@ namespace eph::net::posix {
                            len - sent, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) continue;
-            SPDLOG_WARN("posix::send_all: send() failed fd={} sent={}/{} errno={} ({})",
+            EPH_LOG_WARN(detail::posix_io_logger(), "posix::send_all: send() failed fd={} sent={}/{} errno={} ({})",
                         fd, sent, len, errno, std::strerror(errno));
             return false;
         }
@@ -50,7 +57,7 @@ namespace eph::net::posix {
             // Test mocks deserve the same actionable diagnostic the
             // production byte_socket.hpp::send already emits for the same
             // edge case.
-            SPDLOG_WARN("posix::send_all: send() returned 0 fd={} sent={}/{} "
+            EPH_LOG_WARN(detail::posix_io_logger(), "posix::send_all: send() returned 0 fd={} sent={}/{} "
                         "(treating as stall to avoid infinite loop)",
                         fd, sent, len);
             return false;
@@ -74,12 +81,12 @@ namespace eph::net::posix {
                            len - got, 0);
         if (n < 0) {
             if (errno == EINTR) continue;
-            SPDLOG_WARN("posix::recv_exact: recv() failed fd={} got={}/{} errno={} ({})",
+            EPH_LOG_WARN(detail::posix_io_logger(), "posix::recv_exact: recv() failed fd={} got={}/{} errno={} ({})",
                         fd, got, len, errno, std::strerror(errno));
             return false;
         }
         if (n == 0) {
-            SPDLOG_DEBUG("posix::recv_exact: peer closed fd={} got={}/{}",
+            EPH_LOG_DEBUG(detail::posix_io_logger(), "posix::recv_exact: peer closed fd={} got={}/{}",
                          fd, got, len);
             return false; // peer closed
         }
