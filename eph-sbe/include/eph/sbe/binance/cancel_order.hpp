@@ -8,13 +8,15 @@
 /// Authoritative layout (spot_3_2.xml, `<sbe:message id="305">`):
 ///   fixed block (blockLength = 137): 29 fields. Only the few consumed here are
 ///   named; offsets are computed from the schema field order/types:
-///     field id=10 status  orderStatus (uint8) @ +58
+///     field id=5  transactTime utcTimestampUs (int64, µs) @ +18
+///       (= 2×exponent8[1] + 2×orderId[8]; verified against status @ +58)
+///     field id=10 status       orderStatus    (uint8)     @ +58
 ///   data id=200 symbol            varString8
 ///   data id=201 origClientOrderId varString8
 ///   data id=202 clientOrderId     varString8   (our cid — the 3rd trailing string)
 ///
-/// Only `status` + `clientOrderId` are exposed (what the gateway maps back to the
-/// strategy); the rest of the rich block is intentionally not surfaced.
+/// Exposes `status`, `transactTime`, `clientOrderId` (what the gateway maps back to
+/// the strategy + cancel uplink latency); the rest of the rich block is not surfaced.
 
 #include <cstddef>
 #include <cstdint>
@@ -28,11 +30,18 @@ namespace eph::sbe::binance {
 
 namespace cancel_order {
 
-inline constexpr std::size_t kOffStatus = 58;  ///< field id=10 orderStatus (uint8)
+inline constexpr std::size_t kOffTransactTime = 18;  ///< field id=5 transactTime (int64, µs)
+inline constexpr std::size_t kOffStatus       = 58;  ///< field id=10 orderStatus (uint8)
 
 /// @brief Raw orderStatus byte (see binance::OrderStatus enum values; 3 = Canceled).
 [[nodiscard]] inline uint8_t status(const MessageView& view) noexcept {
     return view.body()[kOffStatus];
+}
+
+/// @brief Exchange transaction time (microseconds since epoch) — when the venue
+///        processed the cancel. Symmetric with new_order_ack::transact_time_us().
+[[nodiscard]] inline int64_t transact_time_us(const MessageView& view) noexcept {
+    return read_le_i64(view.body() + kOffTransactTime);
 }
 
 /// @brief Trading symbol (1st trailing varString8).

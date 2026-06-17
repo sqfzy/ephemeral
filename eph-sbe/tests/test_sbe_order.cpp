@@ -48,6 +48,23 @@ std::vector<uint8_t> build_error(int16_t code, const std::string& msg) {
     return b;
 }
 
+// CancelOrderResponse(305): fixed block(137) | symbol vs8 | origClientOrderId vs8 |
+// clientOrderId vs8. The block carries transactTime @ +18 and orderStatus @ +58
+// (the only two fixed fields the accessor surfaces); the rest is left zeroed.
+std::vector<uint8_t> build_cancel_order(int64_t transact_us, uint8_t status, const std::string& symbol,
+                                        const std::string& orig_cid, const std::string& cid) {
+    auto b = hdr(137, 305);
+    std::vector<uint8_t> block(137, 0);
+    uint64_t u; std::memcpy(&u, &transact_us, 8);
+    for (int i = 0; i < 8; ++i) block[18 + i] = uint8_t(u >> (8 * i));   // transactTime @ +18
+    block[58] = status;                                                  // orderStatus @ +58
+    b.insert(b.end(), block.begin(), block.end());
+    put_vs8(b, symbol);       // data 200
+    put_vs8(b, orig_cid);     // data 201
+    put_vs8(b, cid);          // data 202 — our cid
+    return b;
+}
+
 // Wrap an inner full SBE message as the WebSocketResponse(50) envelope.
 std::vector<uint8_t> build_envelope(uint16_t status, const std::string& id,
                                     const std::vector<uint8_t>& inner) {
@@ -84,6 +101,23 @@ TEST(SbeOrder, envelope_wraps_new_order_ack) {
     EXPECT_EQ(ack::transact_time_us(env->result), 1718000000123000);
     EXPECT_EQ(ack::symbol(env->result), "BTCUSDT");
     EXPECT_EQ(ack::client_order_id(env->result), "1001");
+}
+
+TEST(SbeOrder, envelope_wraps_cancel_order) {
+    auto inner = build_cancel_order(/*transact*/1718000000999000, /*status Canceled*/3, "SOLUSDT", "orig9", "1042");
+    auto buf = build_envelope(/*status*/200, /*id*/"99", inner);
+
+    auto v = parse(buf.data(), buf.size());
+    ASSERT_TRUE(v.has_value()) << parse_error_name(v.error());
+    auto env = binance::web_socket_response::decode(*v);
+    ASSERT_TRUE(env.has_value()) << parse_error_name(env.error());
+    EXPECT_EQ(env->result.template_id, 305);
+
+    namespace co = binance::cancel_order;
+    EXPECT_EQ(co::transact_time_us(env->result), 1718000000999000);   // offset +18 verified here
+    EXPECT_EQ(co::status(env->result), 3);                            // offset +58
+    EXPECT_EQ(co::symbol(env->result), "SOLUSDT");
+    EXPECT_EQ(co::client_order_id(env->result), "1042");
 }
 
 TEST(SbeOrder, envelope_wraps_error_response) {
