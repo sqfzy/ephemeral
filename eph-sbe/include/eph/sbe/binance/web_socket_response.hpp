@@ -87,6 +87,49 @@ decode(const MessageView& view) noexcept {
                     .result = res->view };
 }
 
+/// @brief One decoded `rateLimits` group entry (spot 3:2, group id=100; 19-byte block).
+///        Layout: rateLimitType@+0, interval@+1, intervalNum@+2, rateLimit(i64)@+3,
+///        current(i64)@+11. Reports binance's per-IP usage as of this response.
+struct RateLimit {
+    uint8_t type;          ///< rateLimitType: 0=RAW_REQUESTS 1=CONNECTIONS 2=REQUEST_WEIGHT 3=ORDERS
+    uint8_t interval;      ///< rateLimitInterval: 0=SECOND 1=MINUTE 2=HOUR 3=DAY
+    uint8_t interval_num;  ///< multiplier on `interval` (interval=MINUTE,num=1 → per-minute)
+    int64_t limit;         ///< the cap (schema field `rateLimit`)
+    int64_t current;       ///< current usage in this window (schema field `current`)
+};
+
+inline constexpr std::size_t kRateLimitEntryLen = 19;  ///< 1+1+1+8+8
+
+/// @brief Walk the envelope's rateLimits group (id=100) — it trails the fixed block,
+/// BEFORE `id`/`result` (so this reads the same region decode() skips over). Reports
+/// per-IP REQUEST_WEIGHT / ORDERS / CONNECTIONS {limit, current} as binance sees it
+/// (cross-connection, cross-process truth). Bounds- and schema-checked; strides by the
+/// on-wire entry blockLength so appended schema fields don't break iteration.
+///
+/// @tparam Fn  Callable invoked as `fn(const RateLimit&)` per entry.
+/// @param view Parsed envelope view (template id should be 50).
+/// @return number of entries delivered, or ParseError on truncation / wrong schema.
+template <typename Fn>
+[[nodiscard]] inline std::expected<std::size_t, ParseError>
+for_each_rate_limit(const MessageView& view, Fn&& fn) noexcept {
+    if (!is_supported(view)) [[unlikely]] return std::unexpected(ParseError::kMalformedGroup);
+    const uint8_t* const body = view.body();
+    const std::size_t avail = view.body_len();
+    std::size_t off = view.block_length;
+    if (off + kGroupHeaderSize > avail) [[unlikely]] return std::unexpected(ParseError::kTruncated);
+    const GroupHeader gh = read_group_header(body + off);
+    // A fixed block smaller than our known layout means the reads would overrun — reject.
+    if (gh.block_length < kRateLimitEntryLen) [[unlikely]] return std::unexpected(ParseError::kMalformedGroup);
+    off += kGroupHeaderSize;
+    for (uint16_t i = 0; i < gh.num_in_group; ++i) {
+        if (off + gh.block_length > avail) [[unlikely]] return std::unexpected(ParseError::kTruncated);
+        const uint8_t* const e = body + off;
+        fn(RateLimit{ e[0], e[1], e[2], read_le_i64(e + 3), read_le_i64(e + 11) });
+        off += gh.block_length;
+    }
+    return static_cast<std::size_t>(gh.num_in_group);
+}
+
 } // namespace web_socket_response
 
 } // namespace eph::sbe::binance

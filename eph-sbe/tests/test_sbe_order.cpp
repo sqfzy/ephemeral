@@ -65,15 +65,24 @@ std::vector<uint8_t> build_cancel_order(int64_t transact_us, uint8_t status, con
     return b;
 }
 
-// Wrap an inner full SBE message as the WebSocketResponse(50) envelope.
+// One rateLimits group entry (19-byte block): type, interval, intervalNum, limit, current.
+struct RL { uint8_t type, interval, interval_num; int64_t limit, current; };
+
+// Wrap an inner full SBE message as the WebSocketResponse(50) envelope, optionally with
+// rateLimits group entries (default none → numInGroup=0, the common low-latency case).
 std::vector<uint8_t> build_envelope(uint16_t status, const std::string& id,
-                                    const std::vector<uint8_t>& inner) {
+                                    const std::vector<uint8_t>& inner,
+                                    const std::vector<RL>& rls = {}) {
     auto b = hdr(3, 50);
     b.push_back(0);               // sbeSchemaIdVersionDeprecated boolEnum
     put_le16(b, status);          // status u16
-    // rateLimits group (groupSize16Encoding): entryBlockLength=19, numInGroup=0.
+    // rateLimits group (groupSize16Encoding): entryBlockLength=19, numInGroup=rls.size().
     put_le16(b, 19);
-    put_le16(b, 0);
+    put_le16(b, uint16_t(rls.size()));
+    for (const auto& r : rls) {   // each entry: 1+1+1+8+8 = 19 bytes
+        b.push_back(r.type); b.push_back(r.interval); b.push_back(r.interval_num);
+        put_le_i64(b, r.limit); put_le_i64(b, r.current);
+    }
     put_vs8(b, id);               // echoed request id
     put_le32(b, uint32_t(inner.size()));  // result messageData length
     b.insert(b.end(), inner.begin(), inner.end());
@@ -81,6 +90,41 @@ std::vector<uint8_t> build_envelope(uint16_t status, const std::string& id,
 }
 
 } // namespace
+
+TEST(SbeOrder, envelope_rate_limits) {
+    namespace ws = binance::web_socket_response;
+    auto inner = build_new_order_ack(1, 1, "X", "1");
+    // REQUEST_WEIGHT(2)/MINUTE: 6000 cap, 1234 used · ORDERS(3)/10s: 50 cap, 7 used.
+    auto buf = build_envelope(200, "9", inner, {{2, 1, 1, 6000, 1234}, {3, 0, 10, 50, 7}});
+
+    auto v = parse(buf.data(), buf.size());
+    ASSERT_TRUE(v.has_value()) << parse_error_name(v.error());
+
+    std::vector<ws::RateLimit> got;
+    auto n = ws::for_each_rate_limit(*v, [&](const ws::RateLimit& rl) { got.push_back(rl); });
+    ASSERT_TRUE(n.has_value()) << parse_error_name(n.error());
+    ASSERT_EQ(*n, 2u);
+    EXPECT_EQ(got[0].type, 2);   EXPECT_EQ(got[0].limit, 6000); EXPECT_EQ(got[0].current, 1234);
+    EXPECT_EQ(got[1].type, 3);   EXPECT_EQ(got[1].interval_num, 10); EXPECT_EQ(got[1].current, 7);
+
+    // decode() must still locate id/result PAST a non-empty rateLimits group.
+    auto env = ws::decode(*v);
+    ASSERT_TRUE(env.has_value()) << parse_error_name(env.error());
+    EXPECT_EQ(env->id, "9");
+    EXPECT_EQ(env->result.template_id, 300);
+}
+
+TEST(SbeOrder, envelope_no_rate_limits_yields_zero) {
+    auto inner = build_new_order_ack(1, 1, "X", "1");
+    auto buf = build_envelope(200, "1", inner);   // numInGroup=0
+    auto v = parse(buf.data(), buf.size());
+    ASSERT_TRUE(v.has_value());
+    std::size_t seen = 0;
+    auto n = binance::web_socket_response::for_each_rate_limit(*v, [&](const auto&) { ++seen; });
+    ASSERT_TRUE(n.has_value());
+    EXPECT_EQ(*n, 0u);
+    EXPECT_EQ(seen, 0u);
+}
 
 TEST(SbeOrder, envelope_wraps_new_order_ack) {
     auto inner = build_new_order_ack(/*orderId*/555, /*transact*/1718000000123000, "BTCUSDT", "1001");
