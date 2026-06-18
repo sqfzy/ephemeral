@@ -110,6 +110,12 @@ public:
         }
 
         std::lock_guard<std::mutex> lk(mu_);
+        // Circuit-breaker: while penalized (a venue rate-limit/ban response told us
+        // to back off), reject regardless of token count.
+        if (std::chrono::steady_clock::now() < blocked_until_) {
+            EPH_LOG_DEBUG(detail::rate_limiter_logger(), "TokenBucket::try_acquire penalized — reject");
+            return false;
+        }
         refill_locked_();
 
         if (tokens_ >= static_cast<double>(weight)) {
@@ -147,6 +153,29 @@ public:
 
     [[nodiscard]] std::uint32_t capacity()    const noexcept { return capacity_; }
     [[nodiscard]] double        refill_rate() const noexcept { return refill_per_sec_; }
+
+    /// Circuit-breaker: drain the bucket and reject every `try_acquire` for the
+    /// next `d` (extends, never shortens, any existing penalty). Use when a venue
+    /// tells you to back off (rate-limit warning / temporary ban): feed the
+    /// retry-after / banned-for duration here and the bucket stops handing out
+    /// tokens until it elapses. `d <= 0` is a no-op. Duration-based (not an
+    /// absolute deadline) so it is clock-domain-safe against wall-clock skew.
+    void penalize_for(std::chrono::milliseconds d) noexcept {
+        if (d <= std::chrono::milliseconds::zero()) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        tokens_ = 0.0;
+        const auto until = std::chrono::steady_clock::now() + d;
+        if (until > blocked_until_) blocked_until_ = until;
+        EPH_LOG_DEBUG(detail::rate_limiter_logger(), "TokenBucket::penalize_for {}ms", d.count());
+    }
+
+    /// True while a `penalize_for` window is still in effect (i.e. `try_acquire`
+    /// would reject solely due to the penalty). For gating non-token-counted work
+    /// (e.g. "is the venue currently telling us to stop?") off the same authority.
+    [[nodiscard]] bool blocked() const noexcept {
+        std::lock_guard<std::mutex> lk(mu_);
+        return std::chrono::steady_clock::now() < blocked_until_;
+    }
 
 private:
     /// Sanitize the constructor's `refill_per_second` argument:
@@ -196,8 +225,9 @@ private:
     const double        refill_per_sec_;
 
     mutable std::mutex                              mu_;
-    double                                          tokens_;       // guarded by mu_
-    std::chrono::steady_clock::time_point           last_refill_;  // guarded by mu_
+    double                                          tokens_;        // guarded by mu_
+    std::chrono::steady_clock::time_point           last_refill_;   // guarded by mu_
+    std::chrono::steady_clock::time_point           blocked_until_{};  // penalty deadline; guarded by mu_ (epoch = not blocked)
 };
 
 // Sanity: TokenBucket must not inherit virtual dispatch and must remain

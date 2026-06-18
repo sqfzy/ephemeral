@@ -40,6 +40,39 @@ TEST(TokenBucketTest, getters_return_constructor_values) {
     EXPECT_DOUBLE_EQ(tb.refill_rate(), 20.0);
 }
 
+// ---------------------------------------------------------------------------
+// penalize_for / blocked (circuit-breaker)
+// ---------------------------------------------------------------------------
+
+TEST(TokenBucketTest, penalize_for_rejects_even_when_full) {
+    TokenBucket tb{{.capacity = 10, .refill_per_second = 1000.0}};
+    EXPECT_FALSE(tb.blocked());
+    EXPECT_TRUE(tb.try_acquire(1));        // full → ok before penalty
+    tb.penalize_for(std::chrono::milliseconds(60));
+    EXPECT_TRUE(tb.blocked());
+    EXPECT_FALSE(tb.try_acquire(1));       // penalized → reject despite tokens + fast refill
+    sleep_ms(90);
+    EXPECT_FALSE(tb.blocked());
+    EXPECT_TRUE(tb.try_acquire(1));        // penalty elapsed → ok again
+}
+
+TEST(TokenBucketTest, penalize_for_extends_never_shortens) {
+    TokenBucket tb{{.capacity = 10, .refill_per_second = 1000.0}};
+    tb.penalize_for(std::chrono::milliseconds(200));
+    tb.penalize_for(std::chrono::milliseconds(10));   // shorter → must not cut the window
+    EXPECT_TRUE(tb.blocked());
+    sleep_ms(40);
+    EXPECT_TRUE(tb.blocked()) << "10ms penalty must not have shortened the 200ms one";
+}
+
+TEST(TokenBucketTest, penalize_for_nonpositive_is_noop) {
+    TokenBucket tb{{.capacity = 10, .refill_per_second = 1.0}};
+    tb.penalize_for(std::chrono::milliseconds(0));
+    tb.penalize_for(std::chrono::milliseconds(-5));
+    EXPECT_FALSE(tb.blocked());
+    EXPECT_TRUE(tb.try_acquire(1));
+}
+
 TEST(TokenBucketTest, non_positive_refill_is_clamped_to_zero) {
     TokenBucket tb{{.capacity = 5, .refill_per_second = -1.0}};
     EXPECT_DOUBLE_EQ(tb.refill_rate(), 0.0);
