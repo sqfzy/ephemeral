@@ -7,6 +7,28 @@ on the `dev` branch touching `eph-utils/`.
 
 ## [Unreleased]
 
+### Removed (2026-06-22) — eph-utils scope trim (BREAKING)
+
+- Deleted five headers (plus their tests and benchmarks) that had **zero
+  consumers** across the library, examples, and benchmark framework, and
+  that fell outside eph's networking-infrastructure scope:
+  - `ema.hpp` (`Ema` / `EmaCrossover`) — trading-strategy signal math, not
+    networking. Not part of the documented public surface.
+  - `audit_log.hpp` (`AuditLog<N>` / `AuditEntry` / `AuditEvent` / `Side`) —
+    order-lifecycle compliance trail; app/trading-domain, zero consumers,
+    carried a known torn-read race under concurrent `record_mt` readers.
+  - `phased_timer.hpp` (`PhasedTimer`) — orphaned bench helper; the actual
+    latency framework uses `Recorder` + `warmup_samples`, never this.
+  - `hugepage.hpp` (`HugePage`) — placement-new-on-hugepage allocator; both
+    backends manage memory their own way (DPDK EAL / kernel), zero consumers.
+  - `timestamp.hpp` (exchange epoch conversions, ISO 8601) — feed-domain,
+    zero consumers; belongs in a feed module if ever revived.
+- `utils.hpp` umbrella no longer includes any of the above. No header that
+  remains depended on them, so downstream compilation is unaffected unless a
+  consumer included one of the deleted headers directly.
+- Recovery: the deleted headers are recoverable from git history
+  (pre-2026-06-22 on `eph-utils/include/eph/utils/`).
+
 ### Added (2026-06-01) — generic retry-backoff library (`backoff.hpp` / `retry.hpp`)
 
 - `Backoff` concept + `ExponentialBackoff` / `ConstantBackoff` (`backoff.hpp`):

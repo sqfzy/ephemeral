@@ -4,8 +4,7 @@ Header-only C++23 foundation library for the `ephemeral_dev` low-latency
 networking and trading codebase. Provides the primitives that every other
 `eph-*` subproject builds on: TSC-based nanosecond timing, HDR histograms
 and latency recorders, CPU topology / affinity / strict pinning / real-time
-scheduling, huge-page allocation, cache-line alignment, a regulatory audit
-trail, wall-clock helpers, EMAs, a two-phase bench timer, a metrics console
+scheduling, cache-line alignment, a metrics console
 sink, a `getrusage`-based system profiler, HFT-grade compliance primitives
 (kill switch, token-bucket rate limiter), generic retry-backoff strategies
 plus a blocking `retry()` driver (backon-style), a cooperative shutdown
@@ -26,7 +25,6 @@ eph-utils/
 │   │                                 does NOT include every module)
 │   └── utils/
 │       ├── alignment.hpp          -- CACHE_LINE_SIZE, Align<T>
-│       ├── audit_log.hpp          -- AuditLog<N>, AuditEntry, AuditEvent
 │       ├── backoff.hpp            -- Backoff concept, ExponentialBackoff,
 │       │                             ConstantBackoff (retry-backoff math)
 │       ├── console_sink.hpp       -- ConsoleSink (core::MetricsSink impl)
@@ -37,13 +35,9 @@ eph-utils/
 │       │                             SMT / NUMA / IRQ validation),
 │       │                             register_external_pin (DPDK lcore
 │       │                             & RT framework integration)
-│       ├── ema.hpp                -- Ema, EmaCrossover
 │       ├── hdr_histogram.hpp      -- HdrHistogram, measure_tsc, ScopedTSC,
 │       │                             Stats
-│       ├── hugepage.hpp           -- HugePage::make<T>, allocate,
-│       │                             deallocate
 │       ├── kill_switch.hpp        -- KillSwitch (single-fire, irreversible)
-│       ├── phased_timer.hpp       -- PhasedTimer (warmup + measurement)
 │       ├── rate_limiter.hpp       -- TokenBucket (weighted, thread-safe)
 │       ├── record.hpp             -- aggregation header (hdr + recorder +
 │       │                             system_stats)
@@ -54,21 +48,20 @@ eph-utils/
 │       │                             install_shutdown_handlers()
 │       ├── system_stats.hpp       -- SystemStats, SystemResourceStats
 │       ├── time.hpp               -- TSC (rdtscp / cntvct_el0 / fallback)
-│       ├── timestamp.hpp          -- wall-clock helpers, ISO 8601 format
 │       └── linux/
 │           └── netns.hpp          -- enter_netns() for test fixtures
-├── tests/                         -- GoogleTest unit tests (24 files)
-├── benchmarks/                    -- Google Benchmark microbenchmarks (9)
+├── tests/                         -- GoogleTest unit tests
+├── benchmarks/                    -- Google Benchmark microbenchmarks
 └── xmake.lua                      -- build description
 ```
 
 ### Aggregation header
 
 `include/eph/utils.hpp` pulls in every header under `include/eph/utils/`
-(`alignment`, `audit_log`, `backoff`, `console_sink`, `cpu`, `ema`,
-`hdr_histogram`, `hugepage`, `kill_switch`, `phased_timer`,
+(`alignment`, `backoff`, `console_sink`, `cpu`,
+`hdr_histogram`, `kill_switch`,
 `rate_limiter`, `record`, `recorder`, `retry`, `shutdown_signal`,
-`system_stats`, `time`, `timestamp`).
+`system_stats`, `time`).
 
 The only public header **not** transitively included is
 `linux/netns.hpp` — it is POSIX/Linux-only and used by test fixtures
@@ -194,53 +187,6 @@ running EAL lcores. See
 [`eph-net-dpdk/docs/lcore-pin-integration.md`](../eph-net-dpdk/docs/lcore-pin-integration.md)
 for the full rationale and escape-hatch rules.
 
-### Huge pages
-
-```cpp
-#include <eph/utils/hugepage.hpp>
-
-auto buf = eph::utils::HugePage::make<std::array<char, 10 * 1024 * 1024>>();
-// unique_ptr<T, HugePage::Deleter<T>> — mmap(MAP_HUGETLB) on Linux,
-// VirtualAlloc(MEM_LARGE_PAGES) on Windows, aligned_alloc fallback
-// everywhere else. Fallback is silent, logged at WARN.
-```
-
-### Regulatory audit log
-
-```cpp
-#include <eph/utils/audit_log.hpp>
-
-eph::utils::AuditLog<8192> audit;  // capacity must be power of 2
-(void)audit.record(eph::utils::AuditEvent::NewOrder,
-                   /*order_id=*/12345, /*price=*/50100.50,
-                   /*qty=*/1.5, eph::utils::Side::Buy,
-                   /*venue_id=*/0);
-// ... later, flush to disk for compliance reporting
-(void)audit.flush_to_file("/var/log/audit/session.bin");
-```
-
-64-byte cache-line-aligned entries, single-writer `record()` or
-multi-writer `record_mt()` via an atomic head index and per-slot
-`committed_` publication flags to avoid readers observing torn writes.
-
-### EMA / crossover
-
-```cpp
-#include <eph/utils/ema.hpp>
-
-eph::utils::EmaCrossover cross(5, 20);  // fast=5, slow=20
-for (double price : stream) {
-    switch (cross.update(price)) {
-        case eph::utils::EmaCrossover::Signal::BullishCross: enter_long(); break;
-        case eph::utils::EmaCrossover::Signal::BearishCross: exit_long(); break;
-        case eph::utils::EmaCrossover::Signal::None: break;
-    }
-}
-```
-
-NaN / Inf inputs are silently rejected (state unchanged) so a single
-bad tick can't poison the signal.
-
 ### Kill switch (irreversible, single-fire)
 
 ```cpp
@@ -304,23 +250,19 @@ integration fixtures that need namespace isolation. Requires
 
 ## Tests
 
-24 GoogleTest files under `tests/`, covering every public module plus
+GoogleTest files under `tests/`, covering every public module plus
 `test_version`. All tests are `[nodiscard]`-clean and exercise boundary
 conditions:
 
 | Test file                       | Covers                                                      |
 |---------------------------------|-------------------------------------------------------------|
 | `test_alignment.cpp`            | `CACHE_LINE_SIZE`, `Align<T>`                               |
-| `test_audit_log.cpp`            | ring wrap, multi-writer CAS, flush, dump, side display      |
 | `test_console_sink.cpp`         | counter/gauge/histogram, tag quoting                        |
 | `test_cpu.cpp`                  | topology, affinity, `cpu_relax`, `CpuTopologyInfo` format   |
 | `test_cpu_pin.cpp`              | `pin_thread` isolcpus / SMT / NUMA / IRQ checks             |
-| `test_ema.cpp`                  | alpha bounds, NaN rejection, crossover edge cases           |
 | `test_hdr_histogram.cpp`        | percentiles, merge/subtract, linear / percentile iter       |
-| `test_hugepage.cpp`             | zero-size, fallback, destructor                             |
 | `test_kill_switch.cpp`          | single-fire idempotency, CAS under concurrent trip          |
 | `test_netns_compile.cpp`        | Compile-time gate for `linux/netns.hpp` on non-Linux hosts  |
-| `test_phased_timer.cpp`         | warmup → measurement transition, uncalibrated fall-through  |
 | `test_rate_limiter.cpp`         | `TokenBucket` refill, weighted acquire, capacity clamp      |
 | `test_rate_limiter_edge.cpp`    | `weight=0` / `weight>capacity`, clock-backward, long idle   |
 | `test_record.cpp`               | Stats dump/json, operator-                                  |
@@ -331,18 +273,15 @@ conditions:
 | `test_spin_for_ns.cpp`          | busy-wait accuracy at 1 us / 10 us / 100 us                 |
 | `test_system_stats.cpp`         | delta, move semantics, format                               |
 | `test_time.cpp`                 | TSC calibration, CV, NaN/Inf edge cases, delta_ns           |
-| `test_timestamp.cpp`            | ms/us/ns conversions, ISO 8601, Y2K38 guard                 |
 | `test_version.cpp`              | `eph::version_at_least(...)` consteval feature gate         |
 
 ## Benchmarks
 
-9 Google Benchmark files under `benchmarks/`. Typical numbers on a
+Google Benchmark files under `benchmarks/`. Typical numbers on a
 3.4 GHz x86-64 host (from the historical `bench_*` commits):
 
 - `TSC::now()` ~6 ns
 - `HdrHistogram::record()` ~5-10 ns
-- `EmaCrossover::update()` ~10 ns
-- `AuditLog::record()` ~15 ns (single-writer)
 - `cpu_relax()` ~2 ns
 
 Run one with `xmake build bench_<name> && xmake run bench_<name>`.

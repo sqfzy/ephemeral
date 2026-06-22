@@ -21,8 +21,8 @@ git. It does **not** assume you have seen xmake before.
   # or on Arch:  pacman -S xmake
   ```
 - **Linux kernel 5.x+** (for full support) — `eph-utils` also builds on
-  macOS and Windows, but some features (isolcpus-aware pinning, huge
-  pages, system stats) degrade or disable gracefully on non-Linux.
+  macOS and Windows, but some features (isolcpus-aware pinning,
+  system stats) degrade or disable gracefully on non-Linux.
 - **spdlog**, **gtest**, **google-benchmark** — auto-fetched by xmake
   through its package manager; no manual install required.
 - **Optional**: `numactl` (NUMA checks), `dpdk` (only if you work on
@@ -53,9 +53,8 @@ xmake run test_spin_for_ns         # busy-wait accuracy
 xmake run test_kill_switch         # HFT compliance: single-fire CAS
 xmake run test_rate_limiter        # TokenBucket basic
 xmake run test_rate_limiter_edge   # TokenBucket corner cases
-xmake run test_phased_timer        # warmup → measurement transition
 xmake run test_shutdown_signal     # SIGINT/SIGTERM flag
-# ... etc — 20 test binaries total under tests/
+# ... etc — more test binaries under tests/
 ```
 
 `xmake build -g tests` builds tests for the entire monorepo, not just
@@ -67,7 +66,6 @@ the moment, so prefer building specific targets by name when iterating.
 ```bash
 # Unit tests
 xmake run test_time            # TSC calibration must succeed
-xmake run test_hugepage        # HugePage allocate + fallback
 xmake run test_hdr_histogram   # percentile math
 xmake run test_spin_for_ns     # 1us / 10us / 100us busy-wait
 
@@ -99,22 +97,19 @@ time.hpp (TSC)
    +-- cpu.hpp          (spin_for_ns uses TSC; also hosts
    |                     pin_thread / CpuPinPolicy — there is no
    |                     separate cpu_pin.hpp header)
-   +-- audit_log.hpp    (entries carry TSC timestamps)
-   +-- phased_timer.hpp
    +-- hdr_histogram.hpp
    +-- recorder.hpp     (TSC cycles -> ns conversion)
 
 record.hpp — aggregates hdr_histogram + recorder + system_stats
-utils.hpp  — aggregates the core set only (alignment, audit_log,
-             console_sink, cpu, ema, hugepage, record, recorder,
-             system_stats, time, timestamp)
+utils.hpp  — aggregates the core set only (alignment,
+             console_sink, cpu, record, recorder,
+             system_stats, time)
 
 Opt-in headers that utils.hpp does NOT transitively include
 (#include them directly when needed):
 
    kill_switch.hpp       HFT compliance: irreversible single-fire switch
    rate_limiter.hpp      HFT control:    TokenBucket weighted rate limit
-   phased_timer.hpp      Bench helper:   warmup + measurement TSC windows
    shutdown_signal.hpp   CLI / ops:      process-wide SIGINT/SIGTERM flag
    linux/netns.hpp       Test fixture:   setns(CLONE_NEWNET) (Linux only)
 ```
@@ -144,7 +139,7 @@ Opt-in headers that utils.hpp does NOT transitively include
    related; there is no `cpu_pin.hpp`.
 6. `kill_switch.hpp` + `rate_limiter.hpp` — the HFT compliance /
    control primitives (single-fire safety, token bucket).
-7. The remaining modules (`phased_timer`, `shutdown_signal`,
+7. The remaining modules (`shutdown_signal`,
    `linux/netns`, etc.) as you need them.
 
 ## Daily development
@@ -215,7 +210,7 @@ check `/proc/cpuinfo | grep -E 'constant_tsc|nonstop_tsc'`.
 
 ### Naming
 
-- Classes: `PascalCase` (`Recorder`, `AuditLog`).
+- Classes: `PascalCase` (`Recorder`, `KillSwitch`).
 - Functions / methods: `snake_case` (`set_thread_affinity`,
   `record_values`).
 - Private members: trailing underscore (`name_`, `histogram_`).
@@ -315,16 +310,6 @@ The TSC is unstable on your machine. Probable causes: running under
 a VM with frequency scaling, running on a laptop with aggressive
 power management, or running on a non-isolated core under heavy
 load. Re-run on a quiet machine or pin to an isolated core.
-
-### Q: `HugePage::make` always falls back to `aligned_alloc`
-
-Your system has no huge pages configured. Check:
-
-```bash
-cat /proc/meminfo | grep Huge
-# HugePages_Total: 0  -> none configured
-sudo sysctl -w vm.nr_hugepages=1024   # reserve 1024 x 2MB pages
-```
 
 ### Q: `pin_thread` fails with "cpu is not in isolated"
 
