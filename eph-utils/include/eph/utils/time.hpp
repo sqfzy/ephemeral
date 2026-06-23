@@ -99,38 +99,6 @@ public:
 #endif
   }
 
-  /// @brief Current wall-clock epoch time in nanoseconds, extrapolated from the
-  ///        monotonic TSC against an anchor captured at `init()`.
-  ///
-  /// Unlike `CLOCK_REALTIME`, this never jumps: it advances purely with the
-  /// TSC, immune to NTP slew / manual clock steps. That makes a single clock
-  /// source serve BOTH roles — an epoch timestamp (exchange auth `expires`,
-  /// cross-process `created_ns`) AND a duration/scheduling clock (reconnect
-  /// backoff, RTO) that can't be poisoned by a wall-clock step.
-  ///
-  /// @return Epoch nanoseconds (CLOCK_REALTIME base at the anchor, TSC-paced).
-  ///
-  /// @note If `init()` has not completed, falls back to a raw `system_clock`
-  ///       read — short-lived tools (shm_init, smoke harnesses) that never
-  ///       calibrate still get a valid epoch. Long-running bins call `init()`
-  ///       and get the monotonic, NTP-jump-immune TSC extrapolation, which is
-  ///       also what makes it safe as a duration/scheduling clock.
-  [[nodiscard]] static inline uint64_t epoch_ns() noexcept {
-    if (!initialized_.load(std::memory_order_acquire)) [[unlikely]] {
-      return static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::system_clock::now().time_since_epoch())
-              .count());
-    }
-    return epoch_anchor_ns_ +
-           static_cast<uint64_t>(
-               static_cast<double>(now() - tsc_anchor_) * ns_per_cycle_);
-  }
-
-  /// @brief Current wall-clock epoch time in milliseconds. See `epoch_ns()`.
-  [[nodiscard]] static inline uint64_t epoch_ms() noexcept {
-    return epoch_ns() / 1'000'000ull;
-  }
 
   /// @brief Calibrate the TSC frequency against the system clock.
   ///
@@ -305,11 +273,6 @@ private:
   static inline double calibration_cv_ = 0.0;
   static inline std::atomic<bool> initialized_{false};
   static inline std::once_flag init_flag_;
-  // Epoch (CLOCK_REALTIME) anchor captured at init(), paired back-to-back with
-  // tsc_anchor_, so epoch_ns() can extrapolate wall-clock time from the
-  // monotonic TSC. Published before initialized_ via the release store below.
-  static inline uint64_t epoch_anchor_ns_ = 0;
-  static inline uint64_t tsc_anchor_ = 0;
 
   /// Actual calibration logic, called exactly once via std::call_once.
   static bool
@@ -398,19 +361,9 @@ private:
           cv * 100);
     }
 
-    // === 5. Anchor wall-clock epoch to the TSC ===
-    // Capture both reads back-to-back so epoch_ns() can extrapolate epoch time
-    // from the monotonic counter with minimal anchor skew. ns_per_cycle_ is
-    // already set above, so the extrapolation is valid from here on.
-    tsc_anchor_      = now();
-    epoch_anchor_ns_ = static_cast<uint64_t>(
-        duration_cast<nanoseconds>(system_clock::now().time_since_epoch())
-            .count());
-
-    // === 6. Mark as initialized ===
-    // Release store: guarantees all preceding writes (ns_per_cycle_, the epoch
-    // anchor pair) are visible to any thread that observes initialized_==true
-    // via acquire load.
+    // === 5. Mark as initialized ===
+    // Release store: guarantees all preceding writes (ns_per_cycle_) are visible
+    // to any thread that observes initialized_==true via acquire load.
     initialized_.store(true, std::memory_order_release);
 
     EPH_LOG_INFO(log,
@@ -472,5 +425,18 @@ private:
 #endif
   }
 };
+
+/// Wall-clock nanoseconds since the Unix epoch (CLOCK_REALTIME). Subject to NTP
+/// steps / manual clock changes — for monotonic durations or scheduling use the
+/// TSC counter (TSC::now() + TSC::to_ns()), never this.
+[[nodiscard]] inline uint64_t epoch_ns() noexcept {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+}
+/// Wall-clock milliseconds since the Unix epoch (CLOCK_REALTIME). See epoch_ns().
+[[nodiscard]] inline uint64_t epoch_ms() noexcept {
+    return epoch_ns() / 1'000'000ull;
+}
 
 } // namespace eph::utils
