@@ -134,6 +134,21 @@ public:
     return static_cast<double>(cycles) * ns_per_cycle_;
   }
 
+  /// @brief Monotonic nanoseconds from the TSC (arbitrary origin).
+  ///
+  /// `= to_ns(now())`: one monotonic ns clock for DURATIONS / deadlines /
+  /// scheduling (reconnect backoff, RTO, watchdogs). Immune to NTP slew / manual
+  /// wall-clock steps — unlike `epoch_ns()`. NOT a wall-clock epoch; never compare
+  /// it to exchange/peer timestamps (use `epoch_ns()` for those).
+  ///
+  /// @note If `init()` has not completed, falls back to a raw `steady_clock` read
+  ///       so uncalibrated callers still get a monotonic value (never 0).
+  [[nodiscard]] static inline uint64_t now_ns() noexcept {
+    if (auto ns = to_ns(now())) return static_cast<uint64_t>(*ns);
+    return static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+  }
+
   /// @brief Convert nanoseconds to CPU cycles.
   ///
   /// @tparam Rep Numeric type for the nanosecond value (default `double`).
